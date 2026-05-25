@@ -88,17 +88,35 @@ auth gate (not recommended on untrusted networks).</p>
 """
 
 
-def render_login_html() -> str:
-    """Return the full HTML for ``GET /login``."""
+def render_login_html(*, next_path: str = "") -> str:
+    """Return the full HTML for ``GET /login``.
+
+    ``next_path`` — when set, the post-login landing path the user
+    originally requested. Threaded into each provider button's ``href``
+    as a ``next=`` query parameter so the OAuth round trip carries it
+    end-to-end. The caller (``routes.login_page``) is responsible for
+    validating ``next_path`` against the same-origin rules before we
+    emit it; we still HTML-escape it as defence in depth.
+    """
     providers = list_providers()
     if not providers:
         return _EMPTY_HTML
+
+    if next_path:
+        # URL-encode then HTML-escape. The URL-encode step matches the
+        # gate's ``_safe_next_target`` output shape (also URL-encoded),
+        # so a value that round-tripped from /login?next=... back into
+        # the button href is byte-identical.
+        from urllib.parse import quote
+        next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}"
+    else:
+        next_qs = ""
 
     buttons = []
     for p in providers:
         buttons.append(
             f'    <a class="provider-btn" '
-            f'href="/auth/login?provider={html.escape(p.name, quote=True)}">'
+            f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
             f'Sign in with {html.escape(p.display_name)}</a>'
         )
     return _LOGIN_HTML_TEMPLATE.format(provider_buttons="\n".join(buttons))

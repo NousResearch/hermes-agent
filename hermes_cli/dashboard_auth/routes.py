@@ -71,8 +71,15 @@ def _client_ip(request: Request) -> str:
 
 @router.get("/login", name="login_page")
 async def login_page(request: Request) -> HTMLResponse:
+    # Read the ``next=`` query the gate's ``_unauth_response`` set on
+    # the redirect URL. Validate against the same same-origin rules the
+    # callback applies (defence in depth — the gate already filters,
+    # but /login is reachable directly too).
+    next_path = _validate_post_login_target(
+        request.query_params.get("next", "")
+    )
     return HTMLResponse(
-        render_login_html(),
+        render_login_html(next_path=next_path),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 
@@ -105,7 +112,7 @@ async def api_auth_providers() -> Any:
 
 
 @router.get("/auth/login", name="auth_login")
-async def auth_login(request: Request, provider: str):
+async def auth_login(request: Request, provider: str, next: str = ""):
     p = get_provider(provider)
     if p is None:
         raise HTTPException(
@@ -140,6 +147,16 @@ async def auth_login(request: Request, provider: str):
     pkce = ls.cookie_payload.get("hermes_session_pkce", "")
     if "provider=" not in pkce:
         pkce = f"provider={provider};{pkce}" if pkce else f"provider={provider}"
+    # Carry ``next=`` through the round trip in the PKCE cookie. Real
+    # IDPs only echo back ``code`` + ``state`` on the callback URL, so
+    # query-string transport would lose the value — the cookie is the
+    # only server-controlled channel that survives. Validate before we
+    # store it so an attacker who reaches /auth/login directly with
+    # ``next=//evil.example`` can't poison the cookie.
+    safe_next = _validate_post_login_target(next)
+    if safe_next:
+        from urllib.parse import quote
+        pkce = f"{pkce};next={quote(safe_next, safe='')}"
     set_pkce_cookie(resp, payload=pkce, use_https=detect_https(request))
     return resp
 
@@ -151,7 +168,6 @@ async def auth_callback(
     state: str = "",
     error: str = "",
     error_description: str = "",
-    next: str = "",
 ):
     pkce_raw = read_pkce_cookie(request)
     if not pkce_raw:
@@ -165,13 +181,21 @@ async def auth_callback(
             detail="Missing PKCE state cookie",
         )
 
-    # Parse ``provider=...;state=...;verifier=...``
+    # Parse ``provider=...;state=...;verifier=...;next=...`` — the
+    # ``next`` segment is optional (only present when /auth/login was
+    # given a next= query). All keys live in the same flat namespace;
+    # ``next`` carries a URL-encoded path so it never contains ``;``.
     parts = dict(
         seg.split("=", 1) for seg in pkce_raw.split(";") if "=" in seg
     )
     provider_name = parts.get("provider", "")
     expected_state = parts.get("state", "")
     verifier = parts.get("verifier", "")
+    # Read next= from the cookie ONLY. The IDP doesn't echo next= back
+    # on the callback URL (it only carries ``code`` + ``state``), so any
+    # next= query parameter on the callback URL is attacker-controlled
+    # and MUST be ignored.
+    next_from_cookie = parts.get("next", "")
 
     p = get_provider(provider_name)
     if p is None:
@@ -242,11 +266,13 @@ async def auth_callback(
     )
 
     expires_in = max(60, session.expires_at - int(time.time()))
-    # Honour the ``next=`` query param the gate's _unauth_response set in
-    # the redirect URL. Validated against the same same-origin rules as
-    # the gate's _safe_next_target — any absolute URL / protocol-relative
-    # path / loop back to /login is dropped in favour of ``/``.
-    landing = _validate_post_login_target(next) or "/"
+    # Honour the ``next=`` value the gate's _unauth_response set in the
+    # /login redirect URL and that /auth/login persisted into the PKCE
+    # cookie. We re-validate against the same-origin rules here — the
+    # cookie is server-set so this is defence in depth, but a regression
+    # that lets attacker-controlled bytes into the cookie would otherwise
+    # produce an open redirect.
+    landing = _validate_post_login_target(next_from_cookie) or "/"
     resp = RedirectResponse(url=landing, status_code=302)
     set_session_cookies(
         resp,

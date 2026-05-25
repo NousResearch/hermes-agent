@@ -918,6 +918,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     po_architect_complete.add_argument("--json", action="store_true",
                                        help="Emit JSON output")
 
+    po_dev_complete = po_sub.add_parser(
+        "dev-complete",
+        help="Run Slice 7 DevOS build completion for an existing production order",
+    )
+    po_dev_complete.add_argument(
+        "production_order_id",
+        help="Production order ID in ARCHITECT_READY_FOR_DEV",
+    )
+    po_dev_complete.add_argument("--board", default=None,
+                                 help="Kanban board slug (default: current board)")
+    po_dev_complete.add_argument(
+        "--result-file",
+        required=True,
+        help="Path to a JSON file containing the DevOS build/result packet",
+    )
+    po_dev_complete.add_argument("--json", action="store_true",
+                                 help="Emit JSON output")
+
     return kanban_parser
 
 
@@ -2765,6 +2783,7 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
         list_production_orders,
         log_workflow_event,
         run_architect_spec_bridge,
+        run_devos_complete_bridge,
         run_full_bridge,
         run_orchestrator_triage_bridge,
         validate_brief,
@@ -2946,6 +2965,58 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
         else:
             print(format_production_order_status(po))
             print("\nSlice 6 architect completion complete: DevOS handoff attached.")
+        return 0
+
+    if po_action == "dev-complete":
+        po_id = getattr(args, "production_order_id", None)
+        result_file = getattr(args, "result_file", None)
+        if not po_id:
+            print(
+                "kanban production-order dev-complete: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not result_file:
+            print(
+                "kanban production-order dev-complete: --result-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(result_file, "r", encoding="utf-8") as f:
+                devos_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order dev-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_devos_complete_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    devos_packet=devos_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order dev-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_audit_os",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nSlice 7 DevOS completion complete: AuditOS handoff attached.")
         return 0
 
     if po_action == "show":

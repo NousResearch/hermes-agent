@@ -40,21 +40,25 @@ from hermes_cli.production_order_db import (
     StateTransitionError,
     _base36_random,
     create_architect_handoff,
+    create_auditos_handoff,
     create_devos_handoff,
     create_orchestrator_handoff,
     create_production_kanban_graph,
     create_production_order,
     detect_approval_phrase,
     freeze_handoff_on_card,
+    freeze_result_on_card,
     generate_production_order_id,
     list_production_orders,
     log_workflow_event,
     run_architect_spec_bridge,
+    run_devos_complete_bridge,
     run_full_bridge,
     run_orchestrator_triage_bridge,
     transition_state,
     validate_architect_spec_packet,
     validate_brief,
+    validate_devos_build_packet,
     validate_state_transition,
 )
 from hermes_cli.kanban import _cmd_production_order
@@ -149,6 +153,45 @@ def architect_spec_packet(production_order_id: str) -> dict:
         "artifact_references": ["architect-spec.json"],
         "next_state": "ARCHITECT_READY_FOR_DEV",
     }
+
+
+def devos_build_packet(production_order_id: str) -> dict:
+    """Minimal DevOS build/result packet for Slice 7 tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "dev_os",
+        "source_state": "ARCHITECT_READY_FOR_DEV",
+        "result_type": "build_complete",
+        "summary": "Implemented the approved Slice 7 bridge and preserved graph semantics.",
+        "files_changed": [
+            "hermes_cli/production_order_db.py",
+            "hermes_cli/kanban.py",
+            "tests/hermes_cli/test_production_order_bridge.py",
+        ],
+        "tests_run": [
+            "pytest tests/hermes_cli/test_production_order_bridge.py -q",
+        ],
+        "test_status": "green",
+        "limitations_or_notes": ["AuditOS should verify smoke evidence against the existing board."],
+        "next_handoff_target": "audit_os",
+    }
+
+
+def create_ready_for_dev_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order through Slice 6 for Slice 7 tests."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    po = run_orchestrator_triage_bridge(conn, production_order_id=po.production_order_id)
+    return run_architect_spec_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        architect_packet=architect_spec_packet(po.production_order_id),
+    )
 
 # ---------------------------------------------------------------------------
 # Production Order ID Generation
@@ -986,6 +1029,322 @@ def test_cli_architect_complete_json(capsys, conn, tmp_path, sample_brief):
     assert parsed["current_owner_profile"] == "dev_os"
     assert parsed["child_card_ids"] == po.child_kanban_card_ids
     assert "Slice 6" not in captured.out
+
+
+def test_validate_devos_build_packet_accepts_minimal_packet():
+    packet = devos_build_packet("PO-20260525-test")
+
+    validated = validate_devos_build_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+    )
+
+    assert validated is packet
+
+
+def test_validate_devos_build_packet_accepts_stage_result_and_implementation_artifacts():
+    packet = devos_build_packet("PO-20260525-test")
+    packet.pop("result_type")
+    packet.pop("files_changed")
+    packet["stage_result"] = "build_complete"
+    packet["implementation_artifacts"] = ["runtime-bridge.patch"]
+
+    validated = validate_devos_build_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+    )
+
+    assert validated is packet
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_message"),
+    [
+        (lambda packet: packet.pop("summary"), "summary"),
+        (lambda packet: packet.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        (lambda packet: packet.__setitem__("owner_profile", "architect_os"), "owner_profile"),
+        (lambda packet: packet.__setitem__("source_state", "ARCHITECT_SPEC"), "source_state"),
+        (lambda packet: packet.__setitem__("test_status", "failed"), "pass/green/success"),
+        (lambda packet: packet.__setitem__("next_handoff_target", "dev_os"), "next_handoff_target"),
+    ],
+)
+def test_validate_devos_build_packet_rejects_invalid_fields(mutator, expected_message):
+    packet = devos_build_packet("PO-20260525-test")
+    mutator(packet)
+
+    with pytest.raises(ValueError, match=expected_message):
+        validate_devos_build_packet(
+            packet,
+            expected_production_order_id="PO-20260525-test",
+        )
+
+
+def test_freeze_result_on_card_appends_packet(conn):
+    task_id = kb.create_task(conn, title="DevOS card", body="existing")
+    result_packet = devos_build_packet("PO-20260525-test")
+
+    freeze_result_on_card(conn, task_id, result_packet)
+
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.body is not None
+    assert "existing" in task.body
+    assert "--- RESULT PACKET ---" in task.body
+    assert '"owner_profile": "dev_os"' in task.body
+
+
+def test_create_auditos_handoff_contains_expected_fields(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+
+    handoff = create_auditos_handoff(po, devos_build_packet(po.production_order_id))
+
+    assert handoff["production_order_id"] == po.production_order_id
+    assert handoff["from_profile"] == "dev_os"
+    assert handoff["to_profile"] == "audit_os"
+    assert handoff["from_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert handoff["to_state"] == "DEV_COMPLETE"
+    assert handoff["devos_summary"]
+    assert handoff["implementation_artifacts"]
+    assert handoff["tests_and_evidence"]["tests_run"]
+    assert handoff["tests_and_evidence"]["test_status"] == "green"
+    assert handoff["acceptance_criteria"]
+    assert handoff["stop_conditions"]
+    assert handoff["reference_workflow_spec"] == WORKFLOW_SPEC_SOURCE
+
+
+def test_devos_complete_bridge_moves_existing_order_to_dev_complete(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    original_parent_id = po.parent_kanban_card_id
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_devos_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_build_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "DEV_COMPLETE"
+    assert completed.current_owner_profile == "audit_os"
+    assert completed.parent_kanban_card_id == original_parent_id
+    assert completed.child_kanban_card_ids == original_child_ids
+    assert len(completed.child_kanban_card_ids) == 6
+    assert any(
+        s.from_state == "ARCHITECT_READY_FOR_DEV" and s.to_state == "DEV_COMPLETE"
+        for s in completed.stage_history
+    )
+
+    link_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (completed.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert link_count == 6
+
+    devos_card = kb.get_task(conn, original_child_ids[2])
+    audit_card = kb.get_task(conn, original_child_ids[3])
+    assert devos_card is not None
+    assert audit_card is not None
+    assert devos_card.body is not None
+    assert audit_card.body is not None
+    assert "--- RESULT PACKET ---" in devos_card.body
+    assert '"owner_profile": "dev_os"' in devos_card.body
+    assert "--- HANDOFF PACKET ---" in audit_card.body
+    assert '\"to_profile\": \"audit_os\"' in audit_card.body
+    assert audit_card.status == "ready"
+
+    events = conn.execute(
+        "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events][-2:] == [
+        "dev_build_completed",
+        "handoff_created",
+    ]
+    assert events[-2]["from_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert events[-2]["to_state"] == "DEV_COMPLETE"
+    assert events[-2]["owner_profile"] == "dev_os"
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_exception", "expected_message"),
+    [
+        (lambda po, packet: packet.pop("summary"), ValueError, "summary"),
+        (lambda po, packet: packet.__setitem__("production_order_id", "PO-wrong"), ValueError, "production_order_id"),
+        (lambda po, packet: packet.__setitem__("owner_profile", "architect_os"), ValueError, "owner_profile"),
+        (lambda po, packet: packet.__setitem__("source_state", "ARCHITECT_SPEC"), ValueError, "source_state"),
+        (lambda po, packet: packet.__setitem__("test_status", "failed"), ValueError, "pass/green/success"),
+    ],
+)
+def test_devos_complete_bridge_failures_do_not_mutate_state(
+    conn,
+    sample_brief,
+    mutator,
+    expected_exception,
+    expected_message,
+):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    packet = devos_build_packet(po.production_order_id)
+    original_parent = kb.get_task(conn, po.parent_kanban_card_id)
+    original_devos = kb.get_task(conn, po.child_kanban_card_ids[2])
+    original_audit = kb.get_task(conn, po.child_kanban_card_ids[3])
+    original_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    assert original_parent is not None
+    assert original_devos is not None
+    assert original_audit is not None
+    mutator(po, packet)
+
+    with pytest.raises(expected_exception, match=expected_message):
+        run_devos_complete_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+            devos_packet=packet,
+        )
+
+    refreshed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    refreshed_parent = kb.get_task(conn, refreshed.parent_kanban_card_id)
+    refreshed_devos = kb.get_task(conn, refreshed.child_kanban_card_ids[2])
+    refreshed_audit = kb.get_task(conn, refreshed.child_kanban_card_ids[3])
+    refreshed_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    assert refreshed_parent is not None
+    assert refreshed_devos is not None
+    assert refreshed_audit is not None
+    assert refreshed.current_state == "ARCHITECT_READY_FOR_DEV"
+    assert refreshed.current_owner_profile == "dev_os"
+    assert refreshed_parent.current_state == original_parent.current_state
+    assert refreshed_devos.body == original_devos.body
+    assert refreshed_audit.body == original_audit.body
+    assert refreshed_event_count == original_event_count
+    assert len(refreshed.child_kanban_card_ids) == 6
+
+
+def test_devos_complete_bridge_rejects_wrong_runtime_state_without_mutation(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    original_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    conn.execute(
+        "UPDATE tasks SET current_state = ? WHERE id = ?",
+        ("ARCHITECT_SPEC", po.parent_kanban_card_id),
+    )
+
+    with pytest.raises(StateTransitionError, match="expected 'ARCHITECT_READY_FOR_DEV'"):
+        run_devos_complete_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+            devos_packet=devos_build_packet(po.production_order_id),
+        )
+
+    refreshed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    refreshed_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    assert refreshed.current_state == "ARCHITECT_SPEC"
+    assert refreshed.current_owner_profile == "architect_os"
+    assert len(refreshed.child_kanban_card_ids) == 6
+    assert refreshed_event_count == original_event_count
+
+
+def test_cli_dev_complete_requires_result_file(capsys):
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="dev-complete",
+        production_order_id="PO-20260525-test",
+        board=None,
+        result_file=None,
+        json=False,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "--result-file is required" in captured.err
+
+
+def test_cli_dev_complete_json(capsys, conn, tmp_path, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    packet_path = tmp_path / "devos-packet.json"
+    packet_path.write_text(json.dumps(devos_build_packet(po.production_order_id)), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="dev-complete",
+        production_order_id=po.production_order_id,
+        board=None,
+        result_file=str(packet_path),
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["production_order_id"] == po.production_order_id
+    assert parsed["current_state"] == "DEV_COMPLETE"
+    assert parsed["current_owner_profile"] == "audit_os"
+    assert parsed["child_card_ids"] == po.child_kanban_card_ids
+    assert "Slice 7" not in captured.out
+
+
+def test_dev_complete_show_events_json_is_strict_json(capsys, conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    run_devos_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_build_packet(po.production_order_id),
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["current_state"] == "DEV_COMPLETE"
+    assert parsed["current_owner_profile"] == "audit_os"
+    event_types = [event["event_type"] for event in parsed["events"]]
+    assert event_types[-2:] == ["dev_build_completed", "handoff_created"]
+    assert "\n  Events (" not in captured.out
+
+
+def test_dev_complete_show_events_text_remains_human_readable(capsys, conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    run_devos_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_build_packet(po.production_order_id),
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=False,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Events (11):" in captured.out
+    assert "dev_build_completed" in captured.out
+    assert "handoff_created" in captured.out
+    assert "dispatch_audit_os" not in captured.out
 
 
 # ---------------------------------------------------------------------------

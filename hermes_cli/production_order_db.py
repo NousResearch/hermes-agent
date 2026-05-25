@@ -95,6 +95,7 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "PRODUCTION_ORDER_CREATED":     {"ORCHESTRATOR_TRIAGE"},
     "ORCHESTRATOR_TRIAGE":          {"ARCHITECT_SPEC"},
     "ARCHITECT_SPEC":               {"ARCHITECT_READY_FOR_DEV"},
+    "ARCHITECT_READY_FOR_DEV":      {"DEV_COMPLETE"},
 }
 
 STATE_OWNERS: dict[str, str] = {
@@ -104,6 +105,7 @@ STATE_OWNERS: dict[str, str] = {
     "ORCHESTRATOR_TRIAGE":          "orchestrator_os",
     "ARCHITECT_SPEC":               "architect_os",
     "ARCHITECT_READY_FOR_DEV":      "dev_os",
+    "DEV_COMPLETE":                 "audit_os",
 }
 
 WORKFLOW_INITIAL_STATE = "PRODUCTION_ORDER_CREATED"
@@ -223,6 +225,25 @@ REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS = {
     "files_or_areas_allowed",
     "stop_conditions",
     "next_state",
+}
+
+DEVOS_BUILD_RESULT_TEMPLATE: dict[str, Any] = {
+    "from_profile": "dev_os",
+    "to_profile": "audit_os",
+    "from_state": "ARCHITECT_READY_FOR_DEV",
+    "to_state": "DEV_COMPLETE",
+    "reference_workflow_spec": WORKFLOW_SPEC_SOURCE,
+}
+
+REQUIRED_DEVOS_BUILD_PACKET_FIELDS = {
+    "production_order_id",
+    "owner_profile",
+    "source_state",
+    "summary",
+    "tests_run",
+    "test_status",
+    "limitations_or_notes",
+    "next_handoff_target",
 }
 
 # Child card definitions for production Kanban graph (from spec section 7 + feature brief section 8)
@@ -971,10 +992,145 @@ def create_devos_handoff(
     return packet
 
 
+def _require_non_empty_field(
+    packet: dict[str, Any],
+    field_name: str,
+    *,
+    aliases: tuple[str, ...] = (),
+) -> Any:
+    for key in (field_name, *aliases):
+        if key in packet and packet[key] not in (None, "", [], {}):
+            return packet[key]
+    alias_text = f" (or {', '.join(aliases)})" if aliases else ""
+    raise ValueError(
+        f"DevOS build packet missing required field: {field_name}{alias_text}"
+    )
+
+
+def _normalize_test_status(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("DevOS build packet test_status must be a non-empty string")
+    return value.strip().lower()
+
+
+def validate_devos_build_packet(
+    packet: dict[str, Any],
+    *,
+    expected_production_order_id: str,
+) -> dict[str, Any]:
+    """Validate the explicit DevOS build/result packet for Slice 7."""
+    if not isinstance(packet, dict):
+        raise ValueError("DevOS build packet must be a JSON object")
+
+    missing = sorted(
+        field for field in REQUIRED_DEVOS_BUILD_PACKET_FIELDS
+        if field not in packet or packet[field] in (None, "", [], {})
+    )
+    if missing:
+        raise ValueError(
+            "DevOS build packet missing required field(s): " + ", ".join(missing)
+        )
+
+    if "result_type" not in packet and "stage_result" not in packet:
+        raise ValueError("DevOS build packet requires result_type or stage_result")
+    if "files_changed" not in packet and "implementation_artifacts" not in packet:
+        raise ValueError(
+            "DevOS build packet requires files_changed or implementation_artifacts"
+        )
+
+    if packet["production_order_id"] != expected_production_order_id:
+        raise ValueError(
+            "DevOS build packet production_order_id does not match the requested production order"
+        )
+    if packet["owner_profile"] != "dev_os":
+        raise ValueError("DevOS build packet owner_profile must be 'dev_os'")
+    if packet["source_state"] != "ARCHITECT_READY_FOR_DEV":
+        raise ValueError(
+            "DevOS build packet source_state must be 'ARCHITECT_READY_FOR_DEV'"
+        )
+    if packet["next_handoff_target"] != "audit_os":
+        raise ValueError(
+            "DevOS build packet next_handoff_target must be 'audit_os'"
+        )
+
+    test_status = _normalize_test_status(packet["test_status"])
+    if not any(token in test_status for token in ("pass", "green", "success")):
+        raise ValueError(
+            "DevOS build packet test_status must clearly indicate pass/green/success"
+        )
+    if any(token in test_status for token in ("fail", "failed", "red", "error")):
+        raise ValueError(
+            "DevOS build packet test_status must not indicate failure/red/error"
+        )
+
+    _require_non_empty_field(packet, "result_type", aliases=("stage_result",))
+    _require_non_empty_field(
+        packet,
+        "files_changed",
+        aliases=("implementation_artifacts",),
+    )
+
+    return packet
+
+
+def create_auditos_handoff(
+    po: ProductionOrder,
+    devos_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the deterministic AuditOS handoff packet from DevOS output."""
+    packet = dict(DEVOS_BUILD_RESULT_TEMPLATE)
+    packet["production_order_id"] = po.production_order_id
+    packet["devos_summary"] = devos_packet["summary"]
+    packet["implementation_artifacts"] = devos_packet.get(
+        "files_changed",
+        devos_packet.get("implementation_artifacts", []),
+    )
+    packet["tests_and_evidence"] = {
+        "tests_run": devos_packet["tests_run"],
+        "test_status": devos_packet["test_status"],
+    }
+    packet["acceptance_criteria"] = [
+        "Verify the implementation matches the approved brief and ArchitectOS spec.",
+        "Verify the supplied test evidence is credible and green.",
+        "Reject if scope widened beyond the approved production-order brief.",
+    ]
+    packet["stop_conditions"] = [
+        "Evidence is missing or not credible.",
+        "Implementation exceeds approved scope.",
+        "Audit requires unavailable environment access.",
+    ]
+    packet["limitations_or_notes"] = devos_packet["limitations_or_notes"]
+    return packet
+
+
+def _append_json_packet_to_card(
+    conn: sqlite3.Connection,
+    card_id: str,
+    packet: dict[str, Any],
+    *,
+    marker: str,
+) -> None:
+    current_body = conn.execute(
+        "SELECT body FROM tasks WHERE id = ?", (card_id,)
+    ).fetchone()
+    if current_body is None:
+        raise ValueError(f"Card {card_id} not found")
+    existing = current_body["body"] or ""
+    section = (
+        f"\n\n--- {marker} ---\n"
+        f"{json.dumps(packet, indent=2)}\n"
+        f"--- END {marker} ---"
+    )
+    conn.execute(
+        "UPDATE tasks SET body = ? WHERE id = ?",
+        (existing + section, card_id),
+    )
+
+
 def freeze_handoff_on_card(
     conn: sqlite3.Connection,
     card_id: str,
-    handoff_packet: dict[str, str],
+    handoff_packet: dict[str, Any],
 ) -> None:
     """Store/serialize the handoff packet onto a Kanban card's body.
 
@@ -982,20 +1138,25 @@ def freeze_handoff_on_card(
     comment section so the receiving profile can read it without
     requiring chat memory.  The existing body is preserved.
     """
-    current_body = conn.execute(
-        "SELECT body FROM tasks WHERE id = ?", (card_id,)
-    ).fetchone()
-    if current_body is None:
-        raise ValueError(f"Card {card_id} not found")
-    existing = current_body["body"] or ""
-    handoff_section = (
-        f"\n\n--- HANDOFF PACKET ---\n"
-        f"{json.dumps(handoff_packet, indent=2)}\n"
-        f"--- END HANDOFF PACKET ---"
+    _append_json_packet_to_card(
+        conn,
+        card_id,
+        handoff_packet,
+        marker="HANDOFF PACKET",
     )
-    conn.execute(
-        "UPDATE tasks SET body = ? WHERE id = ?",
-        (existing + handoff_section, card_id),
+
+
+def freeze_result_on_card(
+    conn: sqlite3.Connection,
+    card_id: str,
+    result_packet: dict[str, Any],
+) -> None:
+    """Store/serialize the DevOS result packet onto the DevOS card body."""
+    _append_json_packet_to_card(
+        conn,
+        card_id,
+        result_packet,
+        marker="RESULT PACKET",
     )
 
 
@@ -1255,6 +1416,99 @@ def run_architect_spec_bridge(
     conn.execute(
         "UPDATE tasks SET status = 'ready' WHERE id = ?",
         (devos_card_id,),
+    )
+
+    return po
+
+
+def run_devos_complete_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    devos_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance ARCHITECT_READY_FOR_DEV → DEV_COMPLETE for an existing order."""
+    matches = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == production_order_id
+    ]
+    if not matches:
+        raise ValueError(f"production order {production_order_id!r} not found")
+    po = matches[0]
+
+    if po.current_state != "ARCHITECT_READY_FOR_DEV":
+        raise StateTransitionError(
+            f"Production order {production_order_id} is in {po.current_state!r}; "
+            "expected 'ARCHITECT_READY_FOR_DEV'"
+        )
+    if po.current_owner_profile != "dev_os":
+        raise StateTransitionError(
+            f"Production order {production_order_id} is owned by "
+            f"{po.current_owner_profile!r}; expected 'dev_os'"
+        )
+    if not po.parent_kanban_card_id:
+        raise ValueError("production order parent Kanban card is missing")
+    if len(po.child_kanban_card_ids) != 6:
+        raise ValueError(
+            f"production order Kanban graph must have 6 child cards; "
+            f"found {len(po.child_kanban_card_ids)}"
+        )
+    if len(set(po.child_kanban_card_ids)) != 6:
+        raise ValueError("production order Kanban graph contains duplicate child card IDs")
+
+    placeholders = ",".join(["?"] * len(po.child_kanban_card_ids))
+    existing_child_count = conn.execute(
+        f"SELECT COUNT(*) AS n FROM tasks WHERE id IN ({placeholders})",
+        tuple(po.child_kanban_card_ids),
+    ).fetchone()["n"]
+    if existing_child_count != 6:
+        raise ValueError(
+            f"production order Kanban graph references {6 - existing_child_count} "
+            "missing child card(s)"
+        )
+
+    packet = validate_devos_build_packet(
+        devos_packet,
+        expected_production_order_id=production_order_id,
+    )
+    devos_card_id = po.child_kanban_card_ids[2]
+    auditos_card_id = po.child_kanban_card_ids[3]
+    audit_handoff = create_auditos_handoff(po, packet)
+
+    freeze_result_on_card(conn, devos_card_id, packet)
+    freeze_handoff_on_card(conn, auditos_card_id, audit_handoff)
+
+    transition_state(
+        conn,
+        po,
+        "DEV_COMPLETE",
+        "dev_os",
+        result="dev build completed; AuditOS handoff attached",
+        next_action="dispatch_audit_os",
+        card_id=po.parent_kanban_card_id,
+        event_type="dev_build_completed",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="ARCHITECT_READY_FOR_DEV",
+        to_state="DEV_COMPLETE",
+        owner_profile="dev_os",
+        kanban_card_id=auditos_card_id,
+        result="AuditOS handoff packet attached",
+        next_action="dispatch_audit_os",
+    )
+
+    for cid in po.child_kanban_card_ids:
+        conn.execute(
+            "UPDATE tasks SET current_state = ? WHERE id = ?",
+            (po.current_state, cid),
+        )
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (auditos_card_id,),
     )
 
     return po

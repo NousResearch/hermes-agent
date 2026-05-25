@@ -90,17 +90,17 @@ class TestRefreshTokenCookieDeprecation:
         client = TestClient(self._build_app(refresh_token=""))
         r = client.get("/set")
         cookies = r.headers.get_list("set-cookie")
-        rt_cookies = [c for c in cookies if c.startswith(f"{SESSION_RT_COOKIE}=")]
+        rt_cookies = [c for c in cookies if SESSION_RT_COOKIE in c]
         assert rt_cookies == []
-        # AT cookie still set.
-        at_cookies = [c for c in cookies if c.startswith(f"{SESSION_AT_COOKIE}=")]
+        # AT cookie still set (whichever variant the request resolves to).
+        at_cookies = [c for c in cookies if SESSION_AT_COOKIE in c]
         assert len(at_cookies) == 1
 
     def test_present_refresh_token_still_emits_rt_cookie(self):
         client = TestClient(self._build_app(refresh_token="forward-compat"))
         r = client.get("/set")
         cookies = r.headers.get_list("set-cookie")
-        rt_cookies = [c for c in cookies if c.startswith(f"{SESSION_RT_COOKIE}=")]
+        rt_cookies = [c for c in cookies if SESSION_RT_COOKIE in c]
         assert len(rt_cookies) == 1
         assert "forward-compat" in rt_cookies[0]
 
@@ -120,7 +120,7 @@ class TestRefreshTokenCookieDeprecation:
         r = client.get("/clear")
         cookies = r.headers.get_list("set-cookie")
         assert any(
-            c.startswith(f"{SESSION_RT_COOKIE}=") and "Max-Age=0" in c
+            SESSION_RT_COOKIE in c and "Max-Age=0" in c
             for c in cookies
         )
 
@@ -456,7 +456,7 @@ class TestAuthLoginPkceCookieNext:
         )
         assert r.status_code == 302
         cookies = r.headers.get_list("set-cookie")
-        pkce = next(c for c in cookies if c.startswith("hermes_session_pkce="))
+        pkce = next(c for c in cookies if "hermes_session_pkce" in c)
         assert "next=" not in pkce
 
     def test_safe_next_query_encoded_into_cookie(self, gated_app):
@@ -465,7 +465,7 @@ class TestAuthLoginPkceCookieNext:
             follow_redirects=False,
         )
         cookies = r.headers.get_list("set-cookie")
-        pkce = next(c for c in cookies if c.startswith("hermes_session_pkce="))
+        pkce = next(c for c in cookies if "hermes_session_pkce" in c)
         # ``next=`` segment present, URL-encoded.
         assert "next=%2Fsessions" in pkce
 
@@ -479,5 +479,5 @@ class TestAuthLoginPkceCookieNext:
             follow_redirects=False,
         )
         cookies = r.headers.get_list("set-cookie")
-        pkce = next(c for c in cookies if c.startswith("hermes_session_pkce="))
+        pkce = next(c for c in cookies if "hermes_session_pkce" in c)
         assert "next=" not in pkce

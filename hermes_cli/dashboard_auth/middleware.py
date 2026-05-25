@@ -73,10 +73,22 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
     HTML redirects also carry the ``next=`` query string so direct
     navigation to ``/sessions`` (etc.) without a cookie comes back to
     ``/sessions`` after login.
+
+    Under a reverse proxy with ``X-Forwarded-Prefix: /hermes``, the
+    ``login_url`` is prefixed (``/hermes/login?next=...``) so the
+    browser's window.location.assign / Location: follow lands on the
+    proxied login page rather than the bare ``/login`` (which the
+    proxy doesn't route to the dashboard).
     """
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
     path = request.url.path
     next_param = _safe_next_target(request)
-    login_url = f"/login?next={next_param}" if next_param else "/login"
+    prefix = prefix_from_request(request)
+    login_url = (
+        f"{prefix}/login?next={next_param}" if next_param
+        else f"{prefix}/login"
+    )
 
     if path.startswith("/api/"):
         # API routes never get redirects: the browser fetch() API would
@@ -183,9 +195,12 @@ async def gated_auth_middleware(
         # Clear the dead cookie so the browser doesn't keep sending it.
         # Contract v1: no refresh token to retry with, so the only correct
         # next step is full re-auth via /login. Importing locally avoids a
-        # cycle with cookies → middleware at module load.
+        # cycle with cookies → middleware at module load. Pass the active
+        # prefix so the deletion's Path matches the set-Path (otherwise
+        # the browser ignores it).
         from hermes_cli.dashboard_auth.cookies import clear_session_cookies
-        clear_session_cookies(response)
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+        clear_session_cookies(response, prefix=prefix_from_request(request))
         return response
 
     request.state.session = session

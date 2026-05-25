@@ -1,14 +1,25 @@
 """Tests for Nous subscription feature detection."""
 
+from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli import nous_subscription as ns
+
+
+def _account(*, logged_in: bool, paid: bool | None = None) -> NousPortalAccountInfo:
+    return NousPortalAccountInfo(
+        logged_in=logged_in,
+        source="jwt" if logged_in else "none",
+        fresh=False,
+        paid_service_access=paid,
+    )
 
 
 def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatch):
     env = {"EXA_API_KEY": "exa-test"}
 
     monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {})
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
@@ -26,8 +37,9 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
 def test_get_nous_subscription_features_prefers_managed_modal_in_auto_mode(monkeypatch):
     monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=True, paid=True)
+    )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "terminal")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
@@ -46,8 +58,9 @@ def test_get_nous_subscription_features_prefers_managed_modal_in_auto_mode(monke
 
 def test_get_nous_subscription_features_marks_browser_use_as_managed_when_gateway_ready(monkeypatch):
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=True, paid=True)
+    )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: True)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
@@ -78,8 +91,9 @@ def test_get_nous_subscription_features_uses_direct_browserbase_when_no_managed_
     }
 
     monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=True, paid=True)
+    )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: True)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
@@ -103,8 +117,9 @@ def test_get_nous_subscription_features_prefers_camofox_over_managed_browser_use
     env = {"CAMOFOX_URL": "http://localhost:9377"}
 
     monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=True, paid=True)
+    )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
@@ -133,8 +148,9 @@ def test_get_nous_subscription_features_requires_agent_browser_for_browserbase(m
     }
 
     monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {})
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
@@ -155,8 +171,9 @@ def test_get_nous_subscription_features_does_not_treat_quoted_false_as_gateway_o
     env = {"EXA_API_KEY": "exa-test"}
 
     monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
-    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=True, paid=True)
+    )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")

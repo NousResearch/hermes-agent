@@ -12765,5 +12765,137 @@ Scope: tools/mcp_tool.py, tools/plugins.py, agent/skill_utils.py, agent/skill_co
 
 ---
 
-*Pass #91 complete — 2026-05-26T10:45:00Z*
+## Pass #92 – Regression & Hotfix Verification — Reverted Commits Deep Dive – 2026-05-26T12:10:00Z
+
+**Commit at scan: 5a51a1f65**
+
+---
+
+### 1. Reverted Commits — May 18-19 Batch
+
+All four features were reverted by Teknium on May 18-19. None of the root-cause issues were separately fixed before reverting.
+
+| Revert Commit | Original Commit | Feature | Date |
+|---|---|---|---|
+| `4d44304e8` | `db50af910` | Telegram ALLOWED_USERS allowlist enforcement | May 18 23:56 |
+| `22120ef00` | `b1acf80e1` | Telegram quick-command-only menus | May 18 23:55 |
+| `bbd2b4653` | `cf814c96f` | send_message @username mention auto-detection | May 18 23:56 |
+| `57af46fae` | `273ff5c4a` | firecrawl integration tags | May 19 11:05 |
+
+#### 🔴 P0 SECURITY REGRESSION — 4d44304e8 (Telegram Allowlist Bypass)
+
+**Original fix (db50af910):** TELEGRAM_ALLOWED_USERS was only checked for callback/inline-button actions (6 call sites) but NOT for inbound text/command/media messages. Fix added the allowlist check to `_should_process_message()` which gates ALL message types.
+
+**After revert (4d44304e8):** `_should_process_message()` (telegram.py:4689) does NOT check `_is_callback_user_authorized`. Only the 6 callback/inline sites enforce the allowlist. The P0 bypass (issue #23778) is **still open**.
+
+Current code inspection confirms:
+- `_is_callback_user_authorized` is called only at lines 2994, 3060, 3160, 3262, 3333 — all for callback/inline actions
+- `_should_process_message` (line 4689) calls `_is_group_chat` but skips the user allowlist check entirely
+- A message from an unauthorized user can reach the agent in both DMs and groups when `TELEGRAM_ALLOWED_USERS` is set
+
+**Impact:** Any Telegram bot configured with `TELEGRAM_ALLOWED_USERS` to restrict access is vulnerable to unauthorized access via direct messages or group messages (P0).
+
+#### 🔴 QUICK-COMMAND MENUS (22120ef00) — Documentation Also Reverted
+
+The quick-command-only menus feature was fully reverted including documentation changes to:
+- `website/docs/reference/slash-commands.md`
+- `website/docs/user-guide/configuration.md`
+
+No root cause was separately addressed. The feature remains unimplemented.
+
+#### 🟡 send_message MENTION DETECTION (bbd2b4653) — Code Removed
+
+Original commit `cf814c96f` added `MessageEntity` mention detection and `_MENTION_RE` regex to `tools/send_message_tool.py` so Telegram `@username` mentions would trigger `require_mention` on the receiving Gateway.
+
+Post-revert code: `grep` confirms no `MessageEntity`, `_entities`, or `_MENTION_RE` in `send_message_tool.py`. Feature is fully removed.
+
+#### 🟢 firecrawl INTEGRATION TAGS (57af46fae)
+
+Original commit `273ff5c4a` added `FIRECRAWL_INTEGRATION_TAG = "hermes"` to both browser and web firecrawl providers, passing the tag on every API call for usage attribution.
+
+Reverted after ~18 hours (May 19 11:05). No stated reason in revert commit message. Firecrawl usage is now unidentifiable to Firecrawl's backend. Low severity but indicates hasty feature introduction without integration review.
+
+---
+
+### 2. Hotfix Quality — Regression Tests
+
+**test_telegram_group_gating.py (1007 lines):** Tests gate logic but explicitly bypass `_is_callback_user_authorized`:
+```python
+adapter._is_callback_user_authorized = lambda user_id, **_kw: True
+```
+This means the allowlist enforcement path is **never exercised in tests** — it was added to the untested `_should_process_message` path.
+
+**test_telegram_documents.py:141** comment references PRs #28492 and #28494 which added the allowlist gate — but both those PRs were already reverted. The monkeypatch comment is now dead code confirming the regression.
+
+**No regression test added** for the allowlist enforcement before the revert was merged.
+
+---
+
+### 3. Emergency Changes — No Hotfix Commits Found
+
+`git log --oneline -50 | grep -i "hotfix\|emergency\|urgent"` returned no matches.
+
+However, the plugin path traversal RCE fixes (`8bf99227f` for GHSA-5qr3-c538-wm9j, `09f85f2cf`) were committed **after** the scan commit 5a51a1f65 (they are not yet in this scan). These appear to be genuine emergency fixes that postdate the Pass #92 scan point.
+
+---
+
+### 4. Security-Related Commits
+
+#### CVE Patches (d725407c5 — May 16)
+Bumped aiohttp → 3.13.4 (CVE-2026-34513/34518/34519/34520/34525), anthropic → 0.87.0 (CVE-2026-34450/34452), cryptography → 46.0.7. Properly documented in commit message.
+
+#### Post-Scan Security Fixes (ahead of scan commit)
+- `8bf99227f` — fix(plugins): block plugin-api path traversal + project RCE (#29156) — GHSA-5qr3-c538-wm9j half two
+- `09f85f2cf` — fix(plugins): apply truthy env semantics to project-plugin gate (#29156) — GHSA-5qr3-c538-wm9j half one
+- `973255986` — fix(security): restrict dashboard websockets to loopback clients (#30741)
+
+These are newer than scan commit 5a51a1f65 and represent **unscanned security changes**.
+
+#### GHSA References in Code (already integrated)
+- `tools/terminal_tool.py`: GHSA-qg5c-hvr5-hjgr (terminal callback isolation)
+- `tools/env_passthrough.py`: GHSA-rhgp-j443-p4rf (skill credential scrubbing)
+- `hermes_cli/web_server.py`: GHSA-ppp5-vxwm-4cf7 (Host header validation), GHSA-5qr3-c538-wm9j (plugin API path traversal guard)
+
+---
+
+### 5. Changelog vs Reality
+
+No `CHANGELOG.md` file exists in the repository. There is no single changelog — release notes are scattered across:
+- Commit messages tagged `chore(release):`
+- `website/docs/release/` directory
+- GitHub Releases page
+
+**v0.14.0 release** (a91a57fa5, May 16) — no entries for any of the four reverted features, so no changelog cleanup needed for those reversions.
+
+**No orphaned changelog entries** found for the reverted features.
+
+---
+
+### 6. Summary Table
+
+| ID | Issue | Severity | Status |
+|---|---|---|---|
+| P92-1 | Telegram ALLOWED_USERS allowlist not enforced on inbound messages (P0 bypass, #23778) | 🔴 CRITICAL | **REGRESSION — STILL OPEN** |
+| P92-2 | No regression test for allowlist enforcement in `_should_process_message` | 🟡 MEDIUM | GAP |
+| P92-3 | Quick-command menus fully reverted — feature missing | 🟡 MEDIUM | UNRESOLVED |
+| P92-4 | send_message mention entities removed — feature missing | 🟡 MEDIUM | UNRESOLVED |
+| P92-5 | firecrawl integration tags reverted after 18h — re-add and keep | 🟢 LOW | NEEDS RE-ADD |
+| P92-6 | GHSA-5qr3-c538-wm9j plugin RCE fixes (8bf99227f, 09f85f2cf) post-date scan | 🟢 INFO | UNSCANNED |
+| P92-7 | Dashboard websocket loopback fix (973255986) post-dates scan | 🟢 INFO | UNSCANNED |
+
+---
+
+### 7. Recommendations
+
+1. **Re-implement TELEGRAM_ALLOWED_USERS enforcement in `_should_process_message`** — this is a P0 security issue. The revert commit has no justification in its message and no separate fix was attempted.
+
+2. **Add regression test** that sets `TELEGRAM_ALLOWED_USERS` and asserts that a message from an unauthorized user is dropped by `_should_process_message` without mocking `_is_callback_user_authorized`.
+
+3. **Re-evaluate firecrawl integration tags** — the revert was likely accidental given the 18-hour window. Re-add with proper Firecrawl API compatibility verification.
+
+4. **Rescan after 8bf99227f, 09f85f2cf, 973255986** — these security fixes should be reviewed in a future pass.
+
+---
+
+*Pass #92 complete — 2026-05-26T12:15:00Z*
 *Commit at scan: 5a51a1f65*

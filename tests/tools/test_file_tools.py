@@ -13,10 +13,31 @@ from tools.file_tools import (
     WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
     SEARCH_FILES_SCHEMA,
+    _handle_read_file,
 )
 
 
 class TestReadFileHandler:
+    def test_schema_path_rejects_empty_string(self):
+        path_schema = READ_FILE_SCHEMA["parameters"]["properties"]["path"]
+        assert path_schema["type"] == "string"
+        assert path_schema["minLength"] == 1
+
+    def test_missing_path_key_returns_error(self):
+        result = json.loads(_handle_read_file({}))
+        assert "error" in result
+        assert "missing required field 'path'" in result["error"]
+
+    def test_empty_path_returns_error(self):
+        result = json.loads(_handle_read_file({"path": ""}))
+        assert "error" in result
+        assert "missing required field 'path'" in result["error"]
+
+    def test_non_string_path_returns_error(self):
+        result = json.loads(_handle_read_file({"path": ["not", "a", "string"]}))
+        assert "error" in result
+        assert "missing required field 'path'" in result["error"]
+
     @patch("tools.file_tools._get_file_ops")
     def test_returns_file_content(self, mock_get):
         mock_ops = MagicMock()

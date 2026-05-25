@@ -217,6 +217,13 @@ export const af: Translations = {
     next: "Volgende",
     pause: "Pouse",
     resume: "Hervat",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "Voer nou uit",
     delivery: {
       local: "Plaaslik",

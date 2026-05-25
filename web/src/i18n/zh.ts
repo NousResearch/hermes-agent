@@ -214,6 +214,13 @@ export const zh: Translations = {
     next: "下次",
     pause: "暂停",
     resume: "恢复",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "立即触发",
     delivery: {
       local: "本地",

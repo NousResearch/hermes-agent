@@ -218,6 +218,13 @@ export const en: Translations = {
     pause: "Pause",
     resume: "Resume",
     triggerNow: "Trigger now",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     delivery: {
       local: "Local",
       telegram: "Telegram",

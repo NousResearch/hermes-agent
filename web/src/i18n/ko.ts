@@ -217,6 +217,13 @@ export const ko: Translations = {
     next: "다음",
     pause: "일시 정지",
     resume: "재개",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "지금 실행",
     delivery: {
       local: "로컬",

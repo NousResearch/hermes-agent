@@ -217,6 +217,13 @@ export const ja: Translations = {
     next: "次回",
     pause: "一時停止",
     resume: "再開",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "今すぐ実行",
     delivery: {
       local: "ローカル",

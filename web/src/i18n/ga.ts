@@ -217,6 +217,13 @@ export const ga: Translations = {
     next: "Ar aghaidh",
     pause: "Sos",
     resume: "Lean ar aghaidh",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "Spreag anois",
     delivery: {
       local: "Áitiúil",

@@ -217,6 +217,13 @@ export const zhHant: Translations = {
     next: "下次",
     pause: "暫停",
     resume: "繼續",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "立即觸發",
     delivery: {
       local: "本機",

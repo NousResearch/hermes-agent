@@ -238,6 +238,13 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    sortBy: string;
+    sortNextSoonest: string;
+    sortNextLatest: string;
+    sortLastRecent: string;
+    sortLastOldest: string;
+    sortName: string;
+    sortState: string;
     delivery: {
       local: string;
       telegram: string;

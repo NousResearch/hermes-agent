@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Clock, Pause, Play, Trash2, X, Zap } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { Clock, Pause, Play, Plus, Trash2, X, Zap, ArrowUpDown } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -100,6 +100,7 @@ export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("all");
+  const [sortBy, setSortBy] = useState("next_asc");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
@@ -137,6 +138,62 @@ export default function CronPage() {
   useEffect(() => {
     loadJobs();
   }, [loadJobs]);
+
+  // Sort jobs client-side
+  const sortedJobs = useMemo(() => {
+    const sorted = [...jobs];
+    switch (sortBy) {
+      case "next_asc":
+        sorted.sort((a, b) => {
+          const aTime = a.next_run_at ? new Date(a.next_run_at).getTime() : Infinity;
+          const bTime = b.next_run_at ? new Date(b.next_run_at).getTime() : Infinity;
+          return aTime - bTime;
+        });
+        break;
+      case "next_desc":
+        sorted.sort((a, b) => {
+          const aTime = a.next_run_at ? new Date(a.next_run_at).getTime() : -Infinity;
+          const bTime = b.next_run_at ? new Date(b.next_run_at).getTime() : -Infinity;
+          return bTime - aTime;
+        });
+        break;
+      case "last_desc":
+        sorted.sort((a, b) => {
+          const aTime = a.last_run_at ? new Date(a.last_run_at).getTime() : -Infinity;
+          const bTime = b.last_run_at ? new Date(b.last_run_at).getTime() : -Infinity;
+          return bTime - aTime;
+        });
+        break;
+      case "last_asc":
+        sorted.sort((a, b) => {
+          const aTime = a.last_run_at ? new Date(a.last_run_at).getTime() : Infinity;
+          const bTime = b.last_run_at ? new Date(b.last_run_at).getTime() : Infinity;
+          return aTime - bTime;
+        });
+        break;
+      case "name_asc":
+        sorted.sort((a, b) => {
+          const aName = getJobTitle(a).toLowerCase();
+          const bName = getJobTitle(b).toLowerCase();
+          return aName.localeCompare(bName);
+        });
+        break;
+      case "state":
+        sorted.sort((a, b) => {
+          const aState = getJobState(a);
+          const bState = getJobState(b);
+          // enabled/scheduled first, then paused, then error/completed
+          const order: Record<string, number> = {
+            enabled: 0, scheduled: 0, paused: 1, error: 2, completed: 2, disabled: 2,
+          };
+          return (order[aState] ?? 3) - (order[bState] ?? 3);
+        });
+        break;
+      default:
+        break;
+    }
+    return sorted;
+  }, [jobs, sortBy]);
 
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {
@@ -250,7 +307,7 @@ export default function CronPage() {
   }
 
   const pendingJob = jobDelete.pendingId
-    ? jobs.find((j) => getJobKey(j) === jobDelete.pendingId)
+    ? sortedJobs.find((j) => getJobKey(j) === jobDelete.pendingId)
     : null;
 
   return (
@@ -401,27 +458,48 @@ export default function CronPage() {
             className="flex items-center gap-2 text-muted-foreground"
           >
             <Clock className="h-4 w-4" />
-            {t.cron.scheduledJobs} ({jobs.length})
+            {t.cron.scheduledJobs} ({sortedJobs.length})
           </H2>
 
-          <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
-            <Select
-              id="cron-profile-filter"
-              value={selectedProfile}
-              onValueChange={(v) => setSelectedProfile(v)}
-            >
-              <SelectOption value="all">All profiles</SelectOption>
-              {profiles.map((profile) => (
-                <SelectOption key={profile.name} value={profile.name}>
-                  {profileLabel(profile.name)}
-                </SelectOption>
-              ))}
-            </Select>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="grid gap-1 min-w-[180px]">
+              <Label htmlFor="cron-sort">
+                <ArrowUpDown className="h-3 w-3 inline mr-1" />
+                {t.cron.sortBy}
+              </Label>
+              <Select
+                id="cron-sort"
+                value={sortBy}
+                onValueChange={(v) => setSortBy(v)}
+              >
+                <SelectOption value="next_asc">{t.cron.sortNextSoonest}</SelectOption>
+                <SelectOption value="next_desc">{t.cron.sortNextLatest}</SelectOption>
+                <SelectOption value="last_desc">{t.cron.sortLastRecent}</SelectOption>
+                <SelectOption value="last_asc">{t.cron.sortLastOldest}</SelectOption>
+                <SelectOption value="name_asc">{t.cron.sortName}</SelectOption>
+                <SelectOption value="state">{t.cron.sortState}</SelectOption>
+              </Select>
+            </div>
+
+            <div className="grid gap-1 min-w-[200px]">
+              <Label htmlFor="cron-profile-filter">Profile</Label>
+              <Select
+                id="cron-profile-filter"
+                value={selectedProfile}
+                onValueChange={(v) => setSelectedProfile(v)}
+              >
+                <SelectOption value="all">All profiles</SelectOption>
+                {profiles.map((profile) => (
+                  <SelectOption key={profile.name} value={profile.name}>
+                    {profileLabel(profile.name)}
+                  </SelectOption>
+                ))}
+              </Select>
+            </div>
           </div>
         </div>
 
-        {jobs.length === 0 && (
+        {sortedJobs.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
               {t.cron.noJobs}
@@ -429,7 +507,7 @@ export default function CronPage() {
           </Card>
         )}
 
-        {jobs.map((job) => {
+        {sortedJobs.map((job) => {
           const state = getJobState(job);
           const promptText = getJobPrompt(job);
           const title = getJobTitle(job);

@@ -217,6 +217,13 @@ export const tr: Translations = {
     next: "Sonraki",
     pause: "Duraklat",
     resume: "Devam ettir",
+    sortBy: "Sort by",
+    sortNextSoonest: "Next run (soonest)",
+    sortNextLatest: "Next run (latest)",
+    sortLastRecent: "Last run (recent)",
+    sortLastOldest: "Last run (oldest)",
+    sortName: "Name",
+    sortState: "State",
     triggerNow: "Şimdi tetikle",
     delivery: {
       local: "Yerel",

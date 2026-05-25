@@ -1,3 +1,6 @@
+import { execFile, spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
@@ -19,6 +22,8 @@ import type { Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
+const CODEX_LIMITS_REFRESH_MS = 60_000
+const CODEX_LIMITS_TIMEOUT_MS = 8_000
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
@@ -241,6 +246,172 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
   return fmtDuration(now - startedAt)
 }
 
+const CODEX_APP_BINARY = '/Applications/Codex.app/Contents/Resources/codex'
+
+function codexLimitsCommand() {
+  const configured = process.env.HERMES_CODEX_LIMITS_CMD?.trim()
+  return configured && existsSync(configured) ? configured : null
+}
+
+function windowName(minutes?: null | number) {
+  if (minutes === 300) {
+    return '5h'
+  }
+
+  if (minutes === 10080) {
+    return 'wk'
+  }
+
+  if (!minutes) {
+    return 'win'
+  }
+
+  if (minutes % 1440 === 0) {
+    return `${minutes / 1440}d`
+  }
+
+  if (minutes % 60 === 0) {
+    return `${minutes / 60}h`
+  }
+
+  return `${minutes}m`
+}
+
+function miniCodexLimitStatus(result: any) {
+  const byId = result?.rateLimitsByLimitId ?? {}
+  const snapshot = byId.codex ?? result?.rateLimits ?? Object.values(byId)[0]
+
+  if (!snapshot || typeof snapshot !== 'object') {
+    return ''
+  }
+
+  const pieces = ['primary', 'secondary'].flatMap(key => {
+    const window = snapshot[key]
+
+    if (!window || typeof window !== 'object') {
+      return []
+    }
+
+    const used = Number(window.usedPercent ?? 0)
+    const left = Math.max(0, Math.round(100 - used))
+    return [`${windowName(Number(window.windowDurationMins))} ${left}%`]
+  })
+
+  return pieces.length ? `Codex ${pieces.join(' ')}` : ''
+}
+
+function readCodexLimitsStatus(): Promise<string> {
+  const overrideCmd = codexLimitsCommand()
+
+  if (overrideCmd) {
+    return new Promise(resolve => {
+      execFile(overrideCmd, ['--mini'], { timeout: CODEX_LIMITS_TIMEOUT_MS }, (error, stdout) => {
+        resolve(error ? '' : stdout.trim().replace(/\s+/g, ' '))
+      })
+    })
+  }
+
+  if (!existsSync(CODEX_APP_BINARY)) {
+    return Promise.resolve('')
+  }
+
+  return new Promise(resolve => {
+    const child = spawn(CODEX_APP_BINARY, ['app-server', '--listen', 'stdio://'], {
+      stdio: ['pipe', 'pipe', 'ignore']
+    })
+    let output = ''
+    let done = false
+    const finish = (status = '') => {
+      if (done) {
+        return
+      }
+
+      done = true
+      clearTimeout(timer)
+      child.kill()
+      resolve(status)
+    }
+    const timer = setTimeout(() => finish(''), CODEX_LIMITS_TIMEOUT_MS)
+
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', chunk => {
+      output += chunk
+      const lines = output.split('\n')
+      output = lines.pop() ?? ''
+
+      for (const line of lines) {
+        try {
+          const message = JSON.parse(line)
+
+          if (message?.id === 2) {
+            finish(message.error ? '' : miniCodexLimitStatus(message.result))
+            return
+          }
+        } catch {
+          // Ignore non-JSON notifications/noise from the local app-server.
+        }
+      }
+    })
+    child.on('error', () => finish(''))
+    child.on('close', () => finish(''))
+    child.stdin.write(
+      `${JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'hermes-tui', version: '0.1' }, capabilities: { experimentalApi: true } } })}\n`
+    )
+    child.stdin.write(`${JSON.stringify({ id: 2, method: 'account/rateLimits/read', params: null })}\n`)
+  })
+}
+
+function codexLimitColor(label: string, t: Theme) {
+  const values = [...label.matchAll(/(\d+)%/g)].map(match => Number(match[1]))
+  const lowest = values.length ? Math.min(...values) : 100
+
+  if (lowest <= 10) {
+    return t.color.statusCritical
+  }
+
+  if (lowest <= 25) {
+    return t.color.statusBad
+  }
+
+  if (lowest <= 50) {
+    return t.color.statusWarn
+  }
+
+  return t.color.statusGood
+}
+
+function useCodexLimitsStatus() {
+  const [status, setStatus] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+
+    const refresh = () => {
+      readCodexLimitsStatus()
+        .then(nextStatus => {
+          if (!cancelled) {
+            setStatus(nextStatus)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setStatus('')
+          }
+        })
+    }
+
+    refresh()
+    const id = setInterval(refresh, CODEX_LIMITS_REFRESH_MS)
+
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [])
+
+  return status
+}
+
 const effortLabel = (effort?: string) => {
   const value = String(effort ?? '')
     .trim()
@@ -306,6 +477,8 @@ export function StatusRule({
 }: StatusRuleProps) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
+  const codexLimitsStatus = useCodexLimitsStatus()
+  const codexLimitsColor = codexLimitsStatus ? codexLimitColor(codexLimitsStatus, t) : t.color.muted
 
   const ctxLabel = usage.context_max
     ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
@@ -340,6 +513,7 @@ export function StatusRule({
               <SessionDuration startedAt={sessionStartedAt} />
             </Text>
           ) : null}
+          {codexLimitsStatus ? <Text color={codexLimitsColor}> │ {codexLimitsStatus}</Text> : null}
           {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
             <Text color={t.color.muted}>
               {' │ '}

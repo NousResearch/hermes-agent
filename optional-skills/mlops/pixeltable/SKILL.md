@@ -44,21 +44,6 @@ python3 -c "import pixeltable as pxt; print(f'Pixeltable {pxt.__version__} ready
 
 Pixeltable auto-starts an embedded PostgreSQL instance on first import. No external database setup is needed.
 
-**Optional — MCP server for native tool access:**
-
-```bash
-uvx mcp-server-pixeltable-developer
-```
-
-Then add to `~/.hermes/config.yaml`:
-
-```yaml
-mcpServers:
-  pixeltable:
-    command: uvx
-    args: [mcp-server-pixeltable-developer]
-```
-
 **Optional — AI provider keys** (set in `~/.hermes/.env`):
 
 - `OPENAI_API_KEY` — for OpenAI embeddings, chat completions
@@ -81,6 +66,12 @@ pip show pixeltable
 ```
 
 If Pixeltable is in a conda or virtualenv (e.g., `/opt/miniconda3/envs/pxt/bin/python3`), use the full path for all commands.
+
+**Always check existing state first** before creating tables:
+
+```bash
+python3 -c "import pixeltable as pxt; print(pxt.list_tables())"
+```
 
 Run Pixeltable operations via `terminal`:
 
@@ -112,12 +103,34 @@ For multi-step workflows, write a Python script with `write_file` and execute wi
 | Define a query function | `@pxt.query` decorator — returns a query expression, no `.collect()` inside |
 | Drop table | `pxt.drop_table('mydir.t')` |
 | List tables | `pxt.list_tables()` |
+| Get existing table | `t = pxt.get_table('mydir.t')` |
+| Row count | `t.count()` |
 
 Column types: `pxt.String`, `pxt.Int`, `pxt.Float`, `pxt.Bool`, `pxt.Timestamp`, `pxt.Json`, `pxt.Array`, `pxt.Image`, `pxt.Video`, `pxt.Audio`, `pxt.Document`.
 
 **ResultSet**: `.collect()` returns a `ResultSet`. Print it directly with `print(results)` for a table view. Iterate with `for row in results: print(row)` (each row is a dict). Do NOT use `.iterrows()`, `.to_string()`, or index with `results[i][1]`.
 
 ## Procedure
+
+### 0. Discover existing tables (always run first)
+
+Before creating anything, check what already exists:
+
+```python
+import pixeltable as pxt
+tables = pxt.list_tables()
+print(tables)
+```
+
+If the table you need already exists, reuse it:
+
+```python
+t = pxt.get_table('images.local_gallery')
+print(t.count())
+print(t.select(t.image).limit(3).collect())
+```
+
+Only create new tables if `list_tables()` shows nothing relevant. Use `if_exists='ignore'` so re-runs are safe.
 
 ### 1. Image cross-modal search with CLIP (no API keys needed)
 
@@ -232,6 +245,8 @@ print(results)
 - **API keys**: Functions from `pixeltable.functions.openai`, `.anthropic`, etc. require the corresponding API keys set as environment variables.
 - **First import is slow**: The initial `import pixeltable` downloads and starts PostgreSQL (~10 seconds on first run, ~2 seconds thereafter).
 - **Wrong Python interpreter**: If `python3` resolves to a system or virtualenv Python without Pixeltable, commands will fail. Run `python3 -c "import pixeltable"` first. If it fails, use the full path to the correct interpreter (e.g., `/opt/miniconda3/envs/pxt/bin/python3`) for all subsequent commands.
+
+- **Rebuilding existing tables**: Always call `pxt.list_tables()` before creating. Use `pxt.get_table('name')` to reuse existing tables. Never use `if_exists='replace'` unless the user explicitly asks to start fresh — it destroys all data and computed columns.
 
 **Common mistakes — do NOT use these patterns:**
 

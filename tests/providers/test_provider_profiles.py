@@ -47,6 +47,89 @@ class TestNvidiaProfile:
         assert p.default_headers == {}
 
 
+class TestCerebrasProfile:
+    def test_registered(self):
+        p = get_provider_profile("cerebras")
+        assert p is not None
+        assert p.name == "cerebras"
+
+    def test_openai_compatible_chat_completions(self):
+        p = get_provider_profile("cerebras")
+        assert p.api_mode == "chat_completions"
+
+    def test_base_url(self):
+        p = get_provider_profile("cerebras")
+        assert p.base_url == "https://api.cerebras.ai/v1"
+
+    def test_api_key_auth_and_env_vars(self):
+        p = get_provider_profile("cerebras")
+        assert p.auth_type == "api_key"
+        assert p.env_vars == ("CEREBRAS_API_KEY", "CEREBRAS_BASE_URL")
+
+    def test_aux_model_in_fallbacks(self):
+        p = get_provider_profile("cerebras")
+        assert p.default_aux_model == "gpt-oss-120b"
+        assert p.default_aux_model in p.fallback_models
+
+    def test_fallback_models_curated(self):
+        p = get_provider_profile("cerebras")
+        assert p.fallback_models == ("gpt-oss-120b", "zai-glm-4.7")
+
+    def test_temperature_and_token_defaults(self):
+        p = get_provider_profile("cerebras")
+        assert p.fixed_temperature is None
+        assert p.default_max_tokens is None
+        assert p.default_headers == {}
+
+    def test_reasoning_effort_for_reasoning_models(self):
+        p = get_provider_profile("cerebras")
+        _, top = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}, model="gpt-oss-120b"
+        )
+        assert top == {"reasoning_effort": "high"}
+        _, top = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"}, model="zai-glm-4.7"
+        )
+        assert top == {"reasoning_effort": "low"}
+
+    def test_reasoning_effort_max_clamps_to_high(self):
+        p = get_provider_profile("cerebras")
+        _, top = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"}, model="gpt-oss-120b"
+        )
+        assert top == {"reasoning_effort": "high"}
+
+    def test_reasoning_effort_defaults_to_medium(self):
+        p = get_provider_profile("cerebras")
+        _, top = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True}, model="gpt-oss-120b"
+        )
+        assert top == {"reasoning_effort": "medium"}
+
+    def test_reasoning_disabled_omits_effort(self):
+        p = get_provider_profile("cerebras")
+        eb, top = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": False}, model="gpt-oss-120b"
+        )
+        assert eb == {} and top == {}
+
+    def test_reasoning_effort_omitted_for_non_reasoning_model(self):
+        p = get_provider_profile("cerebras")
+        eb, top = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}, model="llama3.1-8b"
+        )
+        assert eb == {} and top == {}
+
+    def test_no_reasoning_config_omits_effort(self):
+        p = get_provider_profile("cerebras")
+        eb, top = p.build_api_kwargs_extras(reasoning_config=None, model="gpt-oss-120b")
+        assert eb == {} and top == {}
+
+    def test_models_dev_mapping_present(self):
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV
+        assert PROVIDER_TO_MODELS_DEV.get("cerebras") == "cerebras"
+
+
 class TestKimiProfile:
     def test_temperature_omit(self):
         p = get_provider_profile("kimi")

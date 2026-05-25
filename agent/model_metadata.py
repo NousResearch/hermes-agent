@@ -170,6 +170,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
     "gpt-4": 128000,
+    "gpt-oss": 131072,                 # OpenAI gpt-oss-120b / 20b open models (131k)
     # Google
     "gemini": 1048576,
     # Gemma (open models served via AI Studio)

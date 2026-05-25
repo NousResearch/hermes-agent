@@ -78,6 +78,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `NOVITA_BASE_URL` | Override NovitaAI base URL (default: `https://api.novita.ai/openai/v1`) |
 | `NVIDIA_API_KEY` | NVIDIA NIM API key — Nemotron and open models ([build.nvidia.com](https://build.nvidia.com)) |
 | `NVIDIA_BASE_URL` | Override NVIDIA base URL (default: `https://integrate.api.nvidia.com/v1`; set to `http://localhost:8000/v1` for a local NIM endpoint) |
+| `CEREBRAS_API_KEY` | Cerebras Inference API key — ultra-fast wafer-scale inference for open models ([cloud.cerebras.ai](https://cloud.cerebras.ai/)) |
+| `CEREBRAS_BASE_URL` | Override Cerebras base URL (default: `https://api.cerebras.ai/v1`) |
 | `STEPFUN_API_KEY` | StepFun API key — Step-series models ([platform.stepfun.com](https://platform.stepfun.com)) |
 | `STEPFUN_BASE_URL` | Override StepFun base URL (default: `https://api.stepfun.com/v1`) |
 | `OLLAMA_API_KEY` | Ollama Cloud API key — managed Ollama catalog without local GPU ([ollama.com/settings/keys](https://ollama.com/settings/keys)) |

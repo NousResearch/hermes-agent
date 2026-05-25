@@ -687,6 +687,74 @@ class UnVerifyPayInfoInput(BaseModel):
     voucher_type: str = Field(..., description="单据类型（48=收款；49=付款）（必填）")
 
 
+
+
+# ===================== 获取付款单待办任务 数据模型 =====================
+class GetPayTasksInput(BaseModel):
+    """获取付款单待办任务输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    page_index: Optional[str] = Field(None, description="页号")
+    rows_per_page: Optional[str] = Field(None, description="每页行数")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，可以通过api/person获取")
+    user_id: Optional[str] = Field(None, description="审批人用户编码")
+    state: Optional[int] = Field(None, description="状态(0=待审;2=审批完成)")
+    task_type_begin: Optional[int] = Field(None, description="起始类型值(1=正常;4=退回;5=退回到提交人)")
+    task_type_end: Optional[int] = Field(None, description="结束类型值(1=正常;4=退回;5=退回到提交人)")
+    task_desc: Optional[str] = Field(None, description="描述")
+    submitter_code_begin: Optional[int] = Field(None, description="起始发起人编码")
+    submitter_code_end: Optional[int] = Field(None, description="结束发起人编码")
+    submitter_name: Optional[str] = Field(None, description="发起人名称关键字")
+
+# ===================== 获取付款单审批进程 数据模型 =====================
+class GetPayHistoryInput(BaseModel):
+    """获取付款单审批进程输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    user_id: Optional[str] = Field(None, description="审批人(用户编码)，user_id与person_code输入一个参数即可")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，user_id与person_code输入一个参数即可")
+    voucher_code: str = Field(..., description="单据编号（必填）")
+
+# ===================== 获取付款单是否启用工作流 数据模型 =====================
+class GetPayFlowenabledInput(BaseModel):
+    """获取付款单是否启用工作流输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，可以通过api/person获取")
+    user_id: Optional[str] = Field(None, description="审批人用户编码")
+
+# ===================== 获取付款单工作流按钮是否可用状态 数据模型 =====================
+class GetPayButtonstateInput(BaseModel):
+    """获取付款单工作流按钮是否可用状态输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，可以通过api/person获取")
+    user_id: Optional[str] = Field(None, description="审批人用户编码")
+    voucher_code: str = Field(..., description="单据编号（必填）")
+
+# ===================== 审核付款单 数据模型 =====================
+class AuditPayInfoInput(BaseModel):
+    """审核付款单输入模型"""
+    voucher_code: str = Field(..., description="单据编号（必填）")
+    user_id: Optional[str] = Field(None, description="审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    opinion: Optional[str] = Field(None, description="审批意见")
+    agree: int = Field(..., description="是否同意(1=同意;0=不同意)（必填）")
+
+# ===================== 弃审付款单 数据模型 =====================
+class AbandonPayInfoInput(BaseModel):
+    """弃审付款单输入模型"""
+    voucher_code: str = Field(..., description="单据编号（必填）")
+    user_id: Optional[str] = Field(None, description="审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    opinion: Optional[str] = Field(None, description="审批意见")
+
+
+
+
+
+
+
+
+
+
+
 # ===================== 新增一张付款单 Tool函数 =====================
 def u8_pay_add_tool(input_data: AddPayInfoInput, client: U8OpenAPIClient) -> str:
     """
@@ -868,6 +936,239 @@ def u8_pay_unverify_tool(input_data: UnVerifyPayInfoInput, client: U8OpenAPIClie
 
 
 
+
+
+# ===================== 获取付款单待办任务 Tool函数 =====================
+def u8_pay_tasks_tool(input_data: GetPayTasksInput, client: U8OpenAPIClient) -> str:
+    """
+    获取付款单待办任务列表，支持多条件筛选和分页查询。
+    """
+    # 构造接口请求参数（仅传递非None的参数）
+    params = input_data.model_dump(exclude_none=True)
+
+    # 付款单待办任务接口路径
+    api_path = "/api/pay/tasks"
+
+    try:
+        # 发送 GET 请求（公共参数由 U8OpenAPIClient 自动拼接）
+        result = client.request_api("GET", api_path, inparams=params)
+
+        # 统一返回格式
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款单待办任务失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款单待办任务成功",
+            "data": {
+                "page_index": result.get("page_index"),
+                "rows_per_page": result.get("rows_per_page"),
+                "row_count": result.get("row_count"),
+                "page_count": result.get("page_count"),
+                "tasks": result.get("tasks")
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 获取付款单审批进程 Tool函数 =====================
+def u8_pay_history_tool(input_data: GetPayHistoryInput, client: U8OpenAPIClient) -> str:
+    """
+    查看付款单审批进程，获取单据的审批历史记录。
+    """
+    # 构造接口请求参数（仅传递非None的参数）
+    params = input_data.model_dump(exclude_none=True)
+
+    # 付款单审批进程接口路径
+    api_path = "/api/pay/history"
+
+    try:
+        # 发送 GET 请求（公共参数由 U8OpenAPIClient 自动拼接）
+        result = client.request_api("GET", api_path, inparams=params)
+
+        # 统一返回格式
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款单审批进程失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款单审批进程成功",
+            "data": {
+                "history": result.get("history", [])
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 获取付款单是否启用工作流 Tool函数 =====================
+def u8_pay_flowenabled_tool(input_data: GetPayFlowenabledInput, client: U8OpenAPIClient) -> str:
+    """
+    获取付款单是否启用工作流。
+    """
+    # 构造接口请求参数（仅传递非None的参数）
+    params = input_data.model_dump(exclude_none=True)
+
+    # 付款单是否启用工作流接口路径
+    api_path = "/api/pay/flowenabled"
+
+    try:
+        # 发送 GET 请求（公共参数由 U8OpenAPIClient 自动拼接）
+        result = client.request_api("GET", api_path, inparams=params)
+
+        # 统一返回格式
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款单工作流启用状态失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款单工作流启用状态成功",
+            "data": {
+                "flowenabled": result.get("flowenabled")
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 获取付款单工作流按钮是否可用状态 Tool函数 =====================
+def u8_pay_buttonstate_tool(input_data: GetPayButtonstateInput, client: U8OpenAPIClient) -> str:
+    """
+    获取付款单工作流按钮是否可用状态。
+    """
+    # 构造接口请求参数（仅传递非None的参数）
+    params = input_data.model_dump(exclude_none=True)
+
+    # 付款单工作流按钮状态接口路径
+    api_path = "/api/pay/buttonstate"
+
+    try:
+        # 发送 GET 请求（公共参数由 U8OpenAPIClient 自动拼接）
+        result = client.request_api("GET", api_path, inparams=params)
+
+        # 统一返回格式
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款单工作流按钮状态失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款单工作流按钮状态成功",
+            "data": {
+                "buttonstate": result.get("buttonstate")
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 审核付款单 Tool函数 =====================
+def u8_pay_audit_tool(input_data: AuditPayInfoInput, client: U8OpenAPIClient) -> str:
+    """
+    审核付款单（工作流审批，支持同意或不同意）。
+    执行审批动作前，需要保证审批人已经进行ERP登录授权。
+    """
+    # 构造接口要求的标准 JSON 结构（外层包一层 pay）
+    request_body: dict = {
+        "pay": input_data.model_dump(exclude_none=True)
+    }
+
+    # 付款单审核接口路径
+    api_path = "/api/pay/audit"
+
+    try:
+        # 发送 POST 请求
+        result = client.request_api("POST", api_path, inparams=None, json_body=request_body, is_tradeid=True, is_user_login_v2=True)
+
+        # 统一返回格式
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "付款单审核失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "付款单审核成功",
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 弃审付款单 Tool函数 =====================
+def u8_pay_abandon_tool(input_data: AbandonPayInfoInput, client: U8OpenAPIClient) -> str:
+    """
+    弃审付款单（工作流弃审）。
+    执行弃审动作前，需要保证审批人已经进行ERP登录授权。
+    """
+    # 构造接口要求的标准 JSON 结构（外层包一层 pay）
+    request_body: dict = {
+        "pay": input_data.model_dump(exclude_none=True)
+    }
+
+    # 付款单弃审接口路径
+    api_path = "/api/pay/abandon"
+
+    try:
+        # 发送 POST 请求
+        result = client.request_api("POST", api_path, inparams=None, json_body=request_body, is_tradeid=True, is_user_login_v2=True)
+
+        # 统一返回格式
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "付款单弃审失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "付款单弃审成功",
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
 
 
 
@@ -1081,6 +1382,785 @@ U8_PAY_UNVERIFY_SCHEMA = {
         ]
     }
 }
+
+
+
+
+
+
+
+# ===================== 获取付款单待办任务 Schema定义 =====================
+U8_PAY_TASKS_SCHEMA = {
+    "name": "u8_pay_tasks",
+    "description": "获取付款单待办任务列表，支持分页、状态、类型、发起人等多条件筛选",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "page_index": {"type": "string", "description": "页号"},
+            "rows_per_page": {"type": "string", "description": "每页行数"},
+            "person_code": {"type": "string", "description": "审批人(人员编码)，可以通过api/person获取"},
+            "user_id": {"type": "string", "description": "审批人用户编码"},
+            "state": {"type": "number", "description": "状态(0=待审;2=审批完成)"},
+            "task_type_begin": {"type": "number", "description": "起始类型值(1=正常;4=退回;5=退回到提交人)"},
+            "task_type_end": {"type": "number", "description": "结束类型值(1=正常;4=退回;5=退回到提交人)"},
+            "task_desc": {"type": "string", "description": "描述"},
+            "submitter_code_begin": {"type": "number", "description": "起始发起人编码"},
+            "submitter_code_end": {"type": "number", "description": "结束发起人编码"},
+            "submitter_name": {"type": "string", "description": "发起人名称关键字"}
+        },
+        "required": []  # 所有参数均为可选，无必填项
+    }
+}
+
+# ===================== 获取付款单审批进程 Schema定义 =====================
+U8_PAY_HISTORY_SCHEMA = {
+    "name": "u8_pay_history",
+    "description": "查看付款单审批进程，获取单据的审批历史记录。执行审批动作前，需要保证审批人已经进行ERP登录授权。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "user_id": {"type": "string", "description": "审批人(用户编码)，user_id与person_code输入一个参数即可"},
+            "person_code": {"type": "string", "description": "审批人(人员编码)，user_id与person_code输入一个参数即可"},
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            }
+        },
+        "required": ["voucher_code"]
+    }
+}
+
+# ===================== 获取付款单是否启用工作流 Schema定义 =====================
+U8_PAY_FLOWENABLED_SCHEMA = {
+    "name": "u8_pay_flowenabled",
+    "description": "获取付款单是否启用工作流",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "person_code": {"type": "string", "description": "审批人(人员编码)，可以通过api/person获取"},
+            "user_id": {"type": "string", "description": "审批人用户编码"}
+        },
+        "required": []  # 所有参数均为可选，无必填项
+    }
+}
+
+# ===================== 获取付款单工作流按钮是否可用状态 Schema定义 =====================
+U8_PAY_BUTTONSTATE_SCHEMA = {
+    "name": "u8_pay_buttonstate",
+    "description": "获取付款单工作流按钮是否可用状态（同意、不同意、弃审、转签、重新提交）。只支持12.0版本，且需要打最新的WF补丁。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "person_code": {"type": "string", "description": "审批人(人员编码)，可以通过api/person获取"},
+            "user_id": {"type": "string", "description": "审批人用户编码"},
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            }
+        },
+        "required": ["voucher_code"]
+    }
+}
+
+# ===================== 审核付款单 Schema定义 =====================
+U8_PAY_AUDIT_SCHEMA = {
+    "name": "u8_pay_audit",
+    "description": "审核付款单（工作流审批，支持同意或不同意）。执行审批动作前，需要保证审批人已经进行ERP登录授权。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            },
+            "user_id": {
+                "type": "string",
+                "description": "审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "person_code": {
+                "type": "string",
+                "description": "审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "opinion": {
+                "type": "string",
+                "description": "审批意见"
+            },
+            "agree": {
+                "type": "number",
+                "description": "是否同意(1=同意;0=不同意)（必填）"
+            }
+        },
+        "required": [
+            "voucher_code",
+            "agree"
+        ]
+    }
+}
+
+# ===================== 弃审付款单 Schema定义 =====================
+U8_PAY_ABANDON_SCHEMA = {
+    "name": "u8_pay_abandon",
+    "description": "弃审付款单（工作流弃审）。执行弃审动作前，需要保证审批人已经进行ERP登录授权。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            },
+            "user_id": {
+                "type": "string",
+                "description": "审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "person_code": {
+                "type": "string",
+                "description": "审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "opinion": {
+                "type": "string",
+                "description": "审批意见"
+            }
+        },
+        "required": [
+            "voucher_code"
+        ]
+    }
+}
+
+
+
+
+
+
+
+# ===================== 获取付款申请单列表 数据模型 =====================
+class GetPayrequestListInfoInput(BaseModel):
+    """获取付款申请单列表输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    code_begin: Optional[str] = Field(None, description="起始单据编号")
+    code_end: Optional[str] = Field(None, description="结束单据编号")
+    date_begin: Optional[str] = Field(None, description="起始单据日期")
+    date_end: Optional[str] = Field(None, description="结束单据日期")
+    cvouchtype: Optional[str] = Field(None, description="单据类型")
+    cdwcode: Optional[str] = Field(None, description="供应商编码")
+    cvenabbname: Optional[str] = Field(None, description="供应商")
+    cdepcode: Optional[str] = Field(None, description="部门编码")
+    cdepname: Optional[str] = Field(None, description="部门")
+    csscode: Optional[str] = Field(None, description="结算方式编号")
+    cssname: Optional[str] = Field(None, description="结算方式")
+    ccode: Optional[str] = Field(None, description="结算科目")
+    citemcode: Optional[str] = Field(None, description="项目编码")
+    citemname: Optional[str] = Field(None, description="项目名称关键字")
+    citem_class: Optional[str] = Field(None, description="项目大类编号")
+    citem_name: Optional[str] = Field(None, description="项目大类")
+    cdigest: Optional[str] = Field(None, description="备注关键字")
+    istate: Optional[int] = Field(None, description="单据状态")
+    iverifystate: Optional[int] = Field(None, description="审批状态")
+    ibustype: Optional[int] = Field(None, description="业务类型编号")
+    cbustype: Optional[str] = Field(None, description="业务类型")
+    ipaytype: Optional[int] = Field(None, description="付款类型编号")
+    cpaytype: Optional[str] = Field(None, description="付款类型")
+    cagentcuscode: Optional[str] = Field(None, description="代理商编码")
+
+# ===================== 获取付款申请单待办任务 数据模型 =====================
+class GetPayrequestTasksInput(BaseModel):
+    """获取付款申请单待办任务输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    page_index: Optional[str] = Field(None, description="页号")
+    rows_per_page: Optional[str] = Field(None, description="每页行数")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，可以通过api/person获取")
+    user_id: Optional[str] = Field(None, description="审批人用户编码")
+    state: Optional[int] = Field(None, description="状态(0=待审;2=审批完成)")
+    task_type_begin: Optional[int] = Field(None, description="起始类型值(1=正常;4=退回;5=退回到提交人)")
+    task_type_end: Optional[int] = Field(None, description="结束类型值(1=正常;4=退回;5=退回到提交人)")
+    task_desc: Optional[str] = Field(None, description="描述")
+    submitter_code_begin: Optional[int] = Field(None, description="起始发起人编码")
+    submitter_code_end: Optional[int] = Field(None, description="结束发起人编码")
+    submitter_name: Optional[str] = Field(None, description="发起人名称关键字")
+
+# ===================== 撤销付款申请单 数据模型 =====================
+class ReturnPayrequestInfoInput(BaseModel):
+    """撤销付款申请单输入模型"""
+    voucher_code: str = Field(..., description="单据编号（必填）")
+    user_id: Optional[str] = Field(None, description="审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    opinion: Optional[str] = Field(None, description="审批意见")
+
+# ===================== 获取付款申请单审批进程 数据模型 =====================
+class GetPayrequestHistoryInput(BaseModel):
+    """获取付款申请单审批进程输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    user_id: Optional[str] = Field(None, description="审批人(用户编码)，user_id与person_code输入一个参数即可")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，user_id与person_code输入一个参数即可")
+    voucher_code: str = Field(..., description="单据编号（必填）")
+
+# ===================== 获取单个付款申请单 数据模型 =====================
+class GetPayrequestInfoInput(BaseModel):
+    """获取单个付款申请单输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    id: Optional[str] = Field(None, description="付款申请单编号")
+
+# ===================== 获取付款申请单是否启用工作流 数据模型 =====================
+class GetPayrequestFlowenabledInput(BaseModel):
+    """获取付款申请单是否启用工作流输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，可以通过api/person获取")
+    user_id: Optional[str] = Field(None, description="审批人用户编码")
+
+# ===================== 获取付款申请单工作流按钮是否可用状态 数据模型 =====================
+class GetPayrequestButtonstateInput(BaseModel):
+    """获取付款申请单工作流按钮是否可用状态输入模型"""
+    ds_sequence: Optional[int] = Field(None, description="数据源序号（默认取应用的第一个数据源）")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，可以通过api/person获取")
+    user_id: Optional[str] = Field(None, description="审批人用户编码")
+    voucher_code: str = Field(..., description="单据编号（必填）")
+
+# ===================== 审核付款申请单（工作流） 数据模型 =====================
+class AuditPayrequestInfoInput(BaseModel):
+    """审核付款申请单输入模型"""
+    voucher_code: str = Field(..., description="单据编号（必填）")
+    user_id: Optional[str] = Field(None, description="审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    opinion: Optional[str] = Field(None, description="审批意见")
+    agree: int = Field(..., description="是否同意(1=同意;0=不同意)（必填）")
+
+# ===================== 弃审付款申请单 数据模型 =====================
+class AbandonPayrequestInfoInput(BaseModel):
+    """弃审付款申请单输入模型"""
+    voucher_code: str = Field(..., description="单据编号（必填）")
+    user_id: Optional[str] = Field(None, description="审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    person_code: Optional[str] = Field(None, description="审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id")
+    opinion: Optional[str] = Field(None, description="审批意见")
+
+
+
+
+
+
+
+# ===================== 获取付款申请单列表 Tool函数 =====================
+def u8_payrequest_list_get_tool(input_data: GetPayrequestListInfoInput, client: U8OpenAPIClient) -> str:
+    """
+    获取付款申请单列表信息，支持多条件筛选和分页查询。
+    """
+    params = input_data.model_dump(exclude_none=True)
+    api_path = "/api/payrequestlist/batch_get"
+
+    try:
+        result = client.request_api("GET", api_path, inparams=params)
+
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款申请单列表失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款申请单列表成功",
+            "data": {
+                "page_index": result.get("page_index"),
+                "rows_per_page": result.get("rows_per_page"),
+                "row_count": result.get("row_count"),
+                "page_count": result.get("page_count"),
+                "payrequestlist": result.get("payrequestlist", [])
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 获取付款申请单待办任务 Tool函数 =====================
+def u8_payrequest_tasks_tool(input_data: GetPayrequestTasksInput, client: U8OpenAPIClient) -> str:
+    """
+    获取付款申请单待办任务列表，支持多条件筛选和分页查询。
+    """
+    params = input_data.model_dump(exclude_none=True)
+    api_path = "/api/payrequest/tasks"
+
+    try:
+        result = client.request_api("GET", api_path, inparams=params)
+
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款申请单待办任务失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款申请单待办任务成功",
+            "data": {
+                "page_index": result.get("page_index"),
+                "rows_per_page": result.get("rows_per_page"),
+                "row_count": result.get("row_count"),
+                "page_count": result.get("page_count"),
+                "tasks": result.get("tasks")
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 撤销付款申请单 Tool函数 =====================
+def u8_payrequest_return_tool(input_data: ReturnPayrequestInfoInput, client: U8OpenAPIClient) -> str:
+    """
+    撤销付款申请单（工作流撤销）。
+    执行撤销动作前，需要保证审批人已经进行ERP登录授权。
+    """
+    request_body: dict = {
+        "payrequest": input_data.model_dump(exclude_none=True)
+    }
+    api_path = "/api/payrequest/return"
+
+    try:
+        result = client.request_api("POST", api_path, inparams=None, json_body=request_body, is_tradeid=True, is_user_login_v2=True)
+
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "付款申请单撤销失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "付款申请单撤销成功",
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 获取付款申请单审批进程 Tool函数 =====================
+def u8_payrequest_history_tool(input_data: GetPayrequestHistoryInput, client: U8OpenAPIClient) -> str:
+    """
+    查看付款申请单审批进程，获取单据的审批历史记录。
+    """
+    params = input_data.model_dump(exclude_none=True)
+    api_path = "/api/payrequest/history"
+
+    try:
+        result = client.request_api("GET", api_path, inparams=params)
+
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款申请单审批进程失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款申请单审批进程成功",
+            "data": {
+                "history": result.get("history", [])
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 获取单个付款申请单 Tool函数 =====================
+def u8_payrequest_get_tool(input_data: GetPayrequestInfoInput, client: U8OpenAPIClient) -> str:
+    """
+    通过付款申请单编号获取用友U8中的付款申请单单据信息。
+    """
+    params = input_data.model_dump(exclude_none=True)
+    api_path = "/api/payrequest/get"
+
+    try:
+        result = client.request_api("GET", api_path, inparams=params)
+
+        if result.get("errcode") != "0":
+            return json.dumps({"error": result.get("errmsg", "Unknown error"), "data": result}, ensure_ascii=False)
+
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+# ===================== 获取付款申请单是否启用工作流 Tool函数 =====================
+def u8_payrequest_flowenabled_tool(input_data: GetPayrequestFlowenabledInput, client: U8OpenAPIClient) -> str:
+    """
+    获取付款申请单是否启用工作流。
+    """
+    params = input_data.model_dump(exclude_none=True)
+    api_path = "/api/payrequest/flowenabled"
+
+    try:
+        result = client.request_api("GET", api_path, inparams=params)
+
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款申请单工作流启用状态失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款申请单工作流启用状态成功",
+            "data": {
+                "flowenabled": result.get("flowenabled")
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 获取付款申请单工作流按钮是否可用状态 Tool函数 =====================
+def u8_payrequest_buttonstate_tool(input_data: GetPayrequestButtonstateInput, client: U8OpenAPIClient) -> str:
+    """
+    获取付款申请单工作流按钮是否可用状态。
+    """
+    params = input_data.model_dump(exclude_none=True)
+    api_path = "/api/payrequest/buttonstate"
+
+    try:
+        result = client.request_api("GET", api_path, inparams=params)
+
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "获取付款申请单工作流按钮状态失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "获取付款申请单工作流按钮状态成功",
+            "data": {
+                "buttonstate": result.get("buttonstate")
+            },
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 审核付款申请单（工作流） Tool函数 =====================
+def u8_payrequest_audit_tool(input_data: AuditPayrequestInfoInput, client: U8OpenAPIClient) -> str:
+    """
+    审核付款申请单（工作流审批，支持同意或不同意）。
+    执行审批动作前，需要保证审批人已经进行ERP登录授权。
+    """
+    request_body: dict = {
+        "payrequest": input_data.model_dump(exclude_none=True)
+    }
+    api_path = "/api/payrequest/audit"
+
+    try:
+        result = client.request_api("POST", api_path, inparams=None, json_body=request_body, is_tradeid=True, is_user_login_v2=True)
+
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "付款申请单审核失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "付款申请单审核成功",
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+# ===================== 弃审付款申请单 Tool函数 =====================
+def u8_payrequest_abandon_tool(input_data: AbandonPayrequestInfoInput, client: U8OpenAPIClient) -> str:
+    """
+    弃审付款申请单（工作流弃审）。
+    执行弃审动作前，需要保证审批人已经进行ERP登录授权。
+    """
+    request_body: dict = {
+        "payrequest": input_data.model_dump(exclude_none=True)
+    }
+    api_path = "/api/payrequest/abandon"
+
+    try:
+        result = client.request_api("POST", api_path, inparams=None, json_body=request_body, is_tradeid=True, is_user_login_v2=True)
+
+        if str(result.get("errcode", "")) != "0":
+            return json.dumps({
+                "success": False,
+                "error": result.get("errmsg", "付款申请单弃审失败"),
+                "raw_response": result
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "message": "付款申请单弃审成功",
+            "raw_response": result
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"程序异常：{str(e)}"
+        }, ensure_ascii=False, indent=2)
+
+
+
+
+# ===================== 获取付款申请单列表 Schema定义 =====================
+U8_PAYREQUEST_LIST_GET_SCHEMA = {
+    "name": "u8_payrequest_list_get",
+    "description": "获取付款申请单列表信息，支持单据号/日期范围、供应商/部门/项目/业务类型/付款类型等多条件筛选",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "code_begin": {"type": "string", "description": "起始单据编号"},
+            "code_end": {"type": "string", "description": "结束单据编号"},
+            "date_begin": {"type": "string", "description": "起始单据日期"},
+            "date_end": {"type": "string", "description": "结束单据日期"},
+            "cvouchtype": {"type": "string", "description": "单据类型"},
+            "cdwcode": {"type": "string", "description": "供应商编码"},
+            "cvenabbname": {"type": "string", "description": "供应商"},
+            "cdepcode": {"type": "string", "description": "部门编码"},
+            "cdepname": {"type": "string", "description": "部门"},
+            "csscode": {"type": "string", "description": "结算方式编号"},
+            "cssname": {"type": "string", "description": "结算方式"},
+            "ccode": {"type": "string", "description": "结算科目"},
+            "citemcode": {"type": "string", "description": "项目编码"},
+            "citemname": {"type": "string", "description": "项目名称关键字"},
+            "citem_class": {"type": "string", "description": "项目大类编号"},
+            "citem_name": {"type": "string", "description": "项目大类"},
+            "cdigest": {"type": "string", "description": "备注关键字"},
+            "istate": {"type": "number", "description": "单据状态"},
+            "iverifystate": {"type": "number", "description": "审批状态"},
+            "ibustype": {"type": "number", "description": "业务类型编号"},
+            "cbustype": {"type": "string", "description": "业务类型"},
+            "ipaytype": {"type": "number", "description": "付款类型编号"},
+            "cpaytype": {"type": "string", "description": "付款类型"},
+            "cagentcuscode": {"type": "string", "description": "代理商编码"}
+        },
+        "required": []  # 所有参数均为可选，无必填项
+    }
+}
+
+# ===================== 获取付款申请单待办任务 Schema定义 =====================
+U8_PAYREQUEST_TASKS_SCHEMA = {
+    "name": "u8_payrequest_tasks",
+    "description": "获取付款申请单待办任务列表，支持分页、状态、类型、发起人等多条件筛选",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "page_index": {"type": "string", "description": "页号"},
+            "rows_per_page": {"type": "string", "description": "每页行数"},
+            "person_code": {"type": "string", "description": "审批人(人员编码)，可以通过api/person获取"},
+            "user_id": {"type": "string", "description": "审批人用户编码"},
+            "state": {"type": "number", "description": "状态(0=待审;2=审批完成)"},
+            "task_type_begin": {"type": "number", "description": "起始类型值(1=正常;4=退回;5=退回到提交人)"},
+            "task_type_end": {"type": "number", "description": "结束类型值(1=正常;4=退回;5=退回到提交人)"},
+            "task_desc": {"type": "string", "description": "描述"},
+            "submitter_code_begin": {"type": "number", "description": "起始发起人编码"},
+            "submitter_code_end": {"type": "number", "description": "结束发起人编码"},
+            "submitter_name": {"type": "string", "description": "发起人名称关键字"}
+        },
+        "required": []  # 所有参数均为可选，无必填项
+    }
+}
+
+# ===================== 撤销付款申请单 Schema定义 =====================
+U8_PAYREQUEST_RETURN_SCHEMA = {
+    "name": "u8_payrequest_return",
+    "description": "撤销付款申请单（工作流撤销）。执行撤销动作前，需要保证审批人已经进行ERP登录授权。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            },
+            "user_id": {
+                "type": "string",
+                "description": "审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "person_code": {
+                "type": "string",
+                "description": "审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "opinion": {
+                "type": "string",
+                "description": "审批意见"
+            }
+        },
+        "required": [
+            "voucher_code"
+        ]
+    }
+}
+
+# ===================== 获取付款申请单审批进程 Schema定义 =====================
+U8_PAYREQUEST_HISTORY_SCHEMA = {
+    "name": "u8_payrequest_history",
+    "description": "查看付款申请单审批进程，获取单据的审批历史记录。执行审批动作前，需要保证审批人已经进行ERP登录授权。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "user_id": {"type": "string", "description": "审批人(用户编码)，user_id与person_code输入一个参数即可"},
+            "person_code": {"type": "string", "description": "审批人(人员编码)，user_id与person_code输入一个参数即可"},
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            }
+        },
+        "required": ["voucher_code"]
+    }
+}
+
+# ===================== 获取单个付款申请单 Schema定义 =====================
+U8_PAYREQUEST_GET_SCHEMA = {
+    "name": "u8_payrequest_get",
+    "description": "通过付款申请单编号获取单个付款申请单详细信息",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "id": {
+                "type": "string",
+                "description": "付款申请单编号"
+            }
+        },
+        "required": []  # 所有参数均为可选
+    }
+}
+
+# ===================== 获取付款申请单是否启用工作流 Schema定义 =====================
+U8_PAYREQUEST_FLOWENABLED_SCHEMA = {
+    "name": "u8_payrequest_flowenabled",
+    "description": "获取付款申请单是否启用工作流",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "person_code": {"type": "string", "description": "审批人(人员编码)，可以通过api/person获取"},
+            "user_id": {"type": "string", "description": "审批人用户编码"}
+        },
+        "required": []  # 所有参数均为可选，无必填项
+    }
+}
+
+# ===================== 获取付款申请单工作流按钮是否可用状态 Schema定义 =====================
+U8_PAYREQUEST_BUTTONSTATE_SCHEMA = {
+    "name": "u8_payrequest_buttonstate",
+    "description": "获取付款申请单工作流按钮是否可用状态（同意、不同意、弃审、转签、重新提交）。只支持12.0版本，且需要打最新的WF补丁。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "ds_sequence": {"type": "integer", "description": "数据源序号（默认取应用的第一个数据源）"},
+            "person_code": {"type": "string", "description": "审批人(人员编码)，可以通过api/person获取"},
+            "user_id": {"type": "string", "description": "审批人用户编码"},
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            }
+        },
+        "required": ["voucher_code"]
+    }
+}
+
+# ===================== 审核付款申请单（工作流） Schema定义 =====================
+U8_PAYREQUEST_AUDIT_SCHEMA = {
+    "name": "u8_payrequest_audit",
+    "description": "审核付款申请单（工作流审批，支持同意或不同意）。执行审批动作前，需要保证审批人已经进行ERP登录授权。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            },
+            "user_id": {
+                "type": "string",
+                "description": "审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "person_code": {
+                "type": "string",
+                "description": "审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "opinion": {
+                "type": "string",
+                "description": "审批意见"
+            },
+            "agree": {
+                "type": "number",
+                "description": "是否同意(1=同意;0=不同意)（必填）"
+            }
+        },
+        "required": [
+            "voucher_code",
+            "agree"
+        ]
+    }
+}
+
+# ===================== 弃审付款申请单 Schema定义 =====================
+U8_PAYREQUEST_ABANDON_SCHEMA = {
+    "name": "u8_payrequest_abandon",
+    "description": "弃审付款申请单（工作流弃审）。执行弃审动作前，需要保证审批人已经进行ERP登录授权。",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "voucher_code": {
+                "type": "string",
+                "description": "单据编号（必填）"
+            },
+            "user_id": {
+                "type": "string",
+                "description": "审批人(操作员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "person_code": {
+                "type": "string",
+                "description": "审批人(人员编码)，user_id与person_code输入一个参数即可，同时传入取user_id"
+            },
+            "opinion": {
+                "type": "string",
+                "description": "审批意见"
+            }
+        },
+        "required": [
+            "voucher_code"
+        ]
+    }
+}
+
 
 
 

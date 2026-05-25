@@ -69,9 +69,11 @@ _HERMES_CORE_TOOLS = [
     "u8_customer_get","u8_customer_add",
     # u8_ar
     "u8_pay_add_tool","u8_pay_get_tool","u8_pay_list_get_tool","u8_pay_verify_tool","u8_pay_unverify_tool",
+    "u8_pay_tasks_tool","u8_pay_history_tool","u8_pay_flowenabled_tool","u8_pay_buttonstate_tool","u8_pay_audit_tool","u8_pay_abandon_tool",
     "u8_accept_add","u8_accept_get_tool","u8_accept_list_get_tool","u8_accept_verify_tool","u8_accept_unverify",
     "u8_oughtpay_add_tool","u8_oughtpay_get_tool","u8_oughtpay_list_get_tool","u8_oughtpay_verify_tool","u8_oughtpay_unverify_tool",
-    "u8_oughtreceive_add_tool","u8_oughtreceive_get_tool","u8_oughtreceive_list_get_tool","u8_oughtreceive_verify_tool","u8_oughtreceive_unverify_tool"
+    "u8_oughtreceive_add_tool","u8_oughtreceive_get_tool","u8_oughtreceive_list_get_tool","u8_oughtreceive_verify_tool","u8_oughtreceive_unverify_tool",
+    "u8_payrequest_list_get_tool","u8_payrequest_tasks_tool","u8_payrequest_return_tool","u8_payrequest_history_tool","u8_payrequest_get_tool","u8_payrequest_flowenabled_tool","u8_payrequest_buttonstate_tool","u8_payrequest_audit_tool","u8_payrequest_abandon_tool"
 ]
 
 
@@ -517,9 +519,11 @@ TOOLSETS = {
         "description": "u8erp openapi toolset",
         "tools": ["u8_customer_get","u8_customer_add",
                   "u8_pay_add_tool","u8_pay_get_tool","u8_pay_list_get_tool","u8_pay_verify_tool","u8_pay_unverify_tool",
+                  "u8_pay_tasks_tool","u8_pay_history_tool","u8_pay_flowenabled_tool","u8_pay_buttonstate_tool","u8_pay_audit_tool","u8_pay_abandon_tool",
                   "u8_accept_add","u8_accept_get_tool","u8_accept_list_get_tool","u8_accept_verify_tool","u8_accept_unverify",
                   "u8_oughtpay_add_tool","u8_oughtpay_get_tool","u8_oughtpay_list_get_tool","u8_oughtpay_verify_tool","u8_oughtpay_unverify_tool",
-                  "u8_oughtreceive_add_tool","u8_oughtreceive_get_tool","u8_oughtreceive_list_get_tool","u8_oughtreceive_verify_tool","u8_oughtreceive_unverify_tool"],
+                  "u8_oughtreceive_add_tool","u8_oughtreceive_get_tool","u8_oughtreceive_list_get_tool","u8_oughtreceive_verify_tool","u8_oughtreceive_unverify_tool"
+                  "u8_payrequest_list_get_tool","u8_payrequest_tasks_tool","u8_payrequest_return_tool","u8_payrequest_history_tool","u8_payrequest_get_tool","u8_payrequest_flowenabled_tool","u8_payrequest_buttonstate_tool","u8_payrequest_audit_tool","u8_payrequest_abandon_tool"],
         "includes": []
     }
 }

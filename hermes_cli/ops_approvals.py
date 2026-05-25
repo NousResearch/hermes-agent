@@ -153,6 +153,24 @@ class ApprovalStore:
                 return item
         raise ApprovalError("Approval not found")
 
+    def audit_events(self, approval_id: Optional[str] = None) -> list[Dict[str, Any]]:
+        if not self.audit_path.exists():
+            return []
+        events: list[Dict[str, Any]] = []
+        for line in self.audit_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if approval_id and event.get("approval_id") != approval_id:
+                continue
+            events.append(event)
+        return events
+
     def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
         created_at = _now_utc()
         risk_label = _required_text(data, "risk_label")

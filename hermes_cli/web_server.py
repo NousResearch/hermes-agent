@@ -2645,6 +2645,14 @@ async def propose_ops_approval(body: ApprovalCreate):
         raise _approval_error(exc) from exc
 
 
+@app.get("/api/ops/approvals/audit")
+async def list_ops_approval_audit(approval_id: Optional[str] = None):
+    try:
+        return _approval_store().audit_events(approval_id)
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.post("/api/ops/approvals/{approval_id}/approve")
 async def approve_ops_approval(approval_id: str, body: ApprovalDecision):
     try:

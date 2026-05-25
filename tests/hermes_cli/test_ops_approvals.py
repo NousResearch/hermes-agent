@@ -183,6 +183,47 @@ def test_approval_api_can_ingest_context_proposal(_isolate_hermes_home):
     assert created["execution_allowed"] is False
 
 
+def test_approval_audit_listing_filters_by_approval_id(_isolate_hermes_home):
+    from hermes_cli.ops_approvals import ApprovalStore
+
+    store = ApprovalStore()
+    first = store.create(_valid_request(title="First approval"))
+    second = store.create(_valid_request(title="Second approval"))
+    store.decide(first["id"], "approved", decided_by="Travis", decision_note="ok")
+
+    first_events = store.audit_events(first["id"])
+    all_events = store.audit_events()
+
+    assert [event["event"] for event in first_events] == ["created", "approved"]
+    assert all(event["approval_id"] == first["id"] for event in first_events)
+    assert {event["approval_id"] for event in all_events} == {first["id"], second["id"]}
+    assert all("timestamp" in event for event in all_events)
+
+
+def test_approval_api_lists_audit_events(_isolate_hermes_home):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    created = client.post("/api/ops/approvals", json=_valid_request()).json()
+    client.post(
+        f"/api/ops/approvals/{created['id']}/reject",
+        json={"decided_by": "Travis", "decision_note": "not now"},
+    )
+
+    resp = client.get(f"/api/ops/approvals/audit?approval_id={created['id']}")
+
+    assert resp.status_code == 200
+    events = resp.json()
+    assert [event["event"] for event in events] == ["created", "rejected"]
+    assert all(event["approval_id"] == created["id"] for event in events)
+
+
 def test_approval_api_records_decision_but_has_no_execute_route(_isolate_hermes_home):
     try:
         from starlette.testclient import TestClient

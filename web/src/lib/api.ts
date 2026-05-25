@@ -162,6 +162,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  getOpsApprovalAudit: (approvalId?: string) => {
+    const qs = approvalId ? `?approval_id=${encodeURIComponent(approvalId)}` : "";
+    return fetchJSON<OpsApprovalAuditEvent[]>(`/api/ops/approvals/audit${qs}`);
+  },
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
@@ -628,6 +632,15 @@ export interface OpsApprovalCreate {
 export interface OpsApprovalDecision {
   decided_by: string;
   decision_note?: string;
+}
+
+export interface OpsApprovalAuditEvent {
+  event: string;
+  approval_id?: string | null;
+  status?: string | null;
+  actor?: string | null;
+  note?: string | null;
+  timestamp: string;
 }
 
 export interface CronJob {

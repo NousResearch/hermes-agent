@@ -20,7 +20,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsApproval, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -36,6 +36,25 @@ type ApprovalItem = {
   safeNext: string;
   blockedAction: string;
   sourcePath?: string;
+};
+
+type ApprovalFilter = "all" | "pending" | "decided";
+
+const EMPTY_PROPOSAL_FORM: OpsApprovalCreate = {
+  title: "",
+  project: "Hermes Ops",
+  profile: "default",
+  risk_label: "Live-service",
+  proposed_action: "",
+  target: "",
+  preview: "",
+  reason: "",
+  rollback_or_verification: "",
+  created_by: "dashboard",
+  source_surface: "dashboard",
+  source_ref: "manual-form:/approvals",
+  conversation_excerpt: "",
+  related_paths: [],
 };
 
 const STANDING_APPROVALS: ApprovalItem[] = [
@@ -152,11 +171,33 @@ function problemJobs(jobs: CronJob[]): CronJob[] {
   return jobs.filter((job) => Boolean(job.last_error || (job.state || "").toLowerCase().includes("error") || (job.state || "").toLowerCase().includes("fail")));
 }
 
+function approvalMatchesFilter(item: OpsApproval, filter: ApprovalFilter): boolean {
+  if (filter === "pending") return item.status === "pending";
+  if (filter === "decided") return item.status !== "pending";
+  return true;
+}
+
+function isProposalFormReady(form: OpsApprovalCreate): boolean {
+  return Boolean(
+    form.title.trim()
+      && form.project.trim()
+      && form.risk_label.trim()
+      && form.proposed_action.trim()
+      && form.target.trim()
+      && form.preview.trim()
+      && form.reason.trim()
+      && form.rollback_or_verification.trim(),
+  );
+}
+
 export default function ApprovalInboxPage() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [approvals, setApprovals] = useState<OpsApproval[]>([]);
+  const [auditEvents, setAuditEvents] = useState<OpsApprovalAuditEvent[]>([]);
+  const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>("all");
+  const [proposalForm, setProposalForm] = useState<OpsApprovalCreate>(EMPTY_PROPOSAL_FORM);
   const [decisionNote, setDecisionNote] = useState("Approved in dashboard; Jenny must still execute through normal chat/tool flow only.");
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -165,11 +206,12 @@ export default function ApprovalInboxPage() {
 
   const load = useCallback(() => {
     setError(null);
-    Promise.allSettled([api.getStatus(), api.getCronJobs("all"), api.getOpsApprovals()]).then(([statusResult, jobsResult, approvalsResult]) => {
+    Promise.allSettled([api.getStatus(), api.getCronJobs("all"), api.getOpsApprovals(), api.getOpsApprovalAudit()]).then(([statusResult, jobsResult, approvalsResult, auditResult]) => {
       if (statusResult.status === "fulfilled") setStatus(statusResult.value);
       if (jobsResult.status === "fulfilled") setJobs(jobsResult.value);
       if (approvalsResult.status === "fulfilled") setApprovals(approvalsResult.value);
-      if (statusResult.status === "rejected" || jobsResult.status === "rejected" || approvalsResult.status === "rejected") {
+      if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value);
+      if (statusResult.status === "rejected" || jobsResult.status === "rejected" || approvalsResult.status === "rejected" || auditResult.status === "rejected") {
         setError("Some approval-context sources could not refresh.");
       }
     });
@@ -192,6 +234,17 @@ export default function ApprovalInboxPage() {
 
   const problems = useMemo(() => problemJobs(jobs), [jobs]);
   const pendingApprovals = useMemo(() => approvals.filter((item) => item.status === "pending"), [approvals]);
+  const visibleApprovals = useMemo(() => approvals.filter((item) => approvalMatchesFilter(item, approvalFilter)), [approvals, approvalFilter]);
+  const auditByApproval = useMemo(() => {
+    const map = new Map<string, OpsApprovalAuditEvent[]>();
+    for (const event of auditEvents) {
+      if (!event.approval_id) continue;
+      const list = map.get(event.approval_id) || [];
+      list.push(event);
+      map.set(event.approval_id, list);
+    }
+    return map;
+  }, [auditEvents]);
   const visibleItems = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return STANDING_APPROVALS;
@@ -221,10 +274,39 @@ export default function ApprovalInboxPage() {
       .then((item) => {
         setApprovals((current) => [item, ...current]);
         setMessage("Created approval request. It is only a decision record; execution remains blocked.");
+        return api.getOpsApprovalAudit();
       })
+      .then(setAuditEvents)
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setActioningId(null));
   }, []);
+
+  const createProposalFromForm = useCallback(() => {
+    if (!isProposalFormReady(proposalForm)) {
+      setError("Proposal form needs title, project, risk, action, target, preview, reason, and verification.");
+      return;
+    }
+    setActioningId("form");
+    setMessage(null);
+    setError(null);
+    const paths = Array.isArray(proposalForm.related_paths)
+      ? proposalForm.related_paths
+      : String(proposalForm.related_paths || "").split("\n");
+    api.proposeOpsApproval({
+      ...proposalForm,
+      related_paths: paths.map((item) => String(item).trim()).filter(Boolean),
+      created_by: proposalForm.created_by || "dashboard",
+    })
+      .then((item) => {
+        setApprovals((current) => [item, ...current]);
+        setProposalForm(EMPTY_PROPOSAL_FORM);
+        setMessage("Proposal created and queued as pending. No action was executed.");
+        return api.getOpsApprovalAudit();
+      })
+      .then(setAuditEvents)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setActioningId(null));
+  }, [proposalForm]);
 
   const decide = useCallback((item: OpsApproval, action: "approve" | "reject" | "clarify" | "snooze") => {
     setActioningId(`${item.id}:${action}`);
@@ -234,7 +316,9 @@ export default function ApprovalInboxPage() {
       .then((updated) => {
         setApprovals((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
         setMessage(action === "approve" ? "Approved and command generated. No action was executed." : `Decision recorded: ${action}.`);
+        return api.getOpsApprovalAudit();
       })
+      .then(setAuditEvents)
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setActioningId(null));
   }, [decisionNote]);
@@ -303,9 +387,47 @@ export default function ApprovalInboxPage() {
           />
         </section>
 
-        {approvals.length > 0 && (
+        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <div className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-text-primary">Create proposal</div>
+              <div className="text-xs text-text-secondary">Manual proposal form for gated work. Creates a pending record only.</div>
+            </div>
+            <Button onClick={createProposalFromForm} disabled={actioningId === "form" || !isProposalFormReady(proposalForm)} className="w-fit gap-2">
+              <ClipboardCheck className="h-4 w-4" /> Queue proposal
+            </Button>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-3">
+            <input value={proposalForm.title} onChange={(event) => setProposalForm((form) => ({ ...form, title: event.target.value }))} placeholder="Title" className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+            <input value={proposalForm.project} onChange={(event) => setProposalForm((form) => ({ ...form, project: event.target.value }))} placeholder="Project" className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+            <select value={proposalForm.risk_label} onChange={(event) => setProposalForm((form) => ({ ...form, risk_label: event.target.value }))} className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60">
+              {["Read-only", "Draft-only", "Local-build", "Private-send", "Live-service", "External-side-effect", "Money/customer", "Credential/auth", "Destructive", "Security boundary"].map((risk) => <option key={risk} value={risk}>{risk}</option>)}
+            </select>
+            <input value={proposalForm.target} onChange={(event) => setProposalForm((form) => ({ ...form, target: event.target.value }))} placeholder="Target" className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+            <input value={proposalForm.source_ref || ""} onChange={(event) => setProposalForm((form) => ({ ...form, source_ref: event.target.value }))} placeholder="Source reference" className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+            <input value={(proposalForm.related_paths || []).join("\n")} onChange={(event) => setProposalForm((form) => ({ ...form, related_paths: event.target.value.split("\n") }))} placeholder="Related paths, one per line" className="rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+          </div>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <textarea value={proposalForm.proposed_action} onChange={(event) => setProposalForm((form) => ({ ...form, proposed_action: event.target.value }))} placeholder="Proposed action" className="min-h-24 rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+            <textarea value={proposalForm.preview} onChange={(event) => setProposalForm((form) => ({ ...form, preview: event.target.value }))} placeholder="Preview / affected scope" className="min-h-24 rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+            <textarea value={proposalForm.reason} onChange={(event) => setProposalForm((form) => ({ ...form, reason: event.target.value }))} placeholder="Reason Jenny recommends it" className="min-h-24 rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+            <textarea value={proposalForm.rollback_or_verification} onChange={(event) => setProposalForm((form) => ({ ...form, rollback_or_verification: event.target.value }))} placeholder="Verification / rollback" className="min-h-24 rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60" />
+            <textarea value={proposalForm.conversation_excerpt || ""} onChange={(event) => setProposalForm((form) => ({ ...form, conversation_excerpt: event.target.value }))} placeholder="Conversation excerpt / context" className="min-h-20 rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60 lg:col-span-2" />
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-text-secondary">Approval records:</span>
+            {(["all", "pending", "decided"] as ApprovalFilter[]).map((filter) => (
+              <Button key={filter} ghost={approvalFilter !== filter} onClick={() => setApprovalFilter(filter)}>{filter}</Button>
+            ))}
+          </div>
+        </section>
+
+        {visibleApprovals.length > 0 && (
           <section className="space-y-3">
-            {approvals.map((item) => (
+            {visibleApprovals.map((item) => (
               <Card key={item.id} className="border-white/10 bg-white/[0.035]">
                 <CardContent className="space-y-4 p-5">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -339,6 +461,22 @@ export default function ApprovalInboxPage() {
                       )}
                     </div>
                   )}
+
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">Audit history</div>
+                    {(auditByApproval.get(item.id) || []).length > 0 ? (
+                      <div className="space-y-1 text-xs text-text-secondary">
+                        {(auditByApproval.get(item.id) || []).map((event, index) => (
+                          <div key={`${item.id}-${event.event}-${index}`} className="flex flex-wrap gap-2">
+                            <span className="text-text-primary">{event.event}</span>
+                            <span>{formatTime(event.timestamp)}</span>
+                            {event.actor && <span>by {event.actor}</span>}
+                            {event.note && <span className="break-all text-text-primary">— {event.note}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div className="text-xs text-text-secondary">No audit events loaded.</div>}
+                  </div>
 
                   {item.status === "pending" && (
                     <div className="flex flex-wrap gap-2">

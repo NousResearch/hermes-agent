@@ -93,7 +93,7 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertFalse(_is_blocked_device_path("/proc/self/fd/3"))
 
     def test_proc_sensitive_pseudo_files_blocked(self):
-        """environ/cmdline/maps under /proc/<pid> must be blocked (issue #4427)."""
+        """environ/cmdline/maps (and maps variants) under /proc/<pid> must be blocked (issue #4427)."""
         for path in (
             "/proc/self/environ",
             "/proc/12345/environ",
@@ -101,6 +101,14 @@ class TestDevicePathBlocking(unittest.TestCase):
             "/proc/99/cmdline",
             "/proc/self/maps",
             "/proc/1/maps",
+            "/proc/self/smaps",
+            "/proc/12345/smaps",
+            "/proc/self/smaps_rollup",
+            "/proc/99/smaps_rollup",
+            "/proc/self/numa_maps",
+            "/proc/1/numa_maps",
+            "/proc/self/mem",
+            "/proc/12345/mem",
         ):
             self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
 

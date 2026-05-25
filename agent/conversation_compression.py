@@ -312,6 +312,19 @@ def compress_context(
         except Exception:
             pass
 
+    # Notify plugins before compression so they can flush state,
+    # snapshot context, or persist memories
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(
+            "pre_compact",
+            session_id=agent.session_id,
+            project_dir=str(Path.cwd()),
+        )
+    except Exception:
+        pass
+
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
@@ -479,6 +492,20 @@ def compress_context(
         agent.session_id or "none", _pre_msg_count, len(compressed),
         f"{_compressed_est:,}",
     )
+
+    # Notify plugins after compression completes so they can react
+    # to the new session state (e.g., UI integrations can un-mark busy)
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(
+            "post_compact",
+            session_id=agent.session_id,
+            project_dir=str(Path.cwd()),
+        )
+    except Exception:
+        pass
+
     return compressed, new_system_prompt
 
 

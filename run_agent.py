@@ -4029,35 +4029,6 @@ class AIAgent:
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
             self._tool_guardrail_halt_decision = decision
 
-    def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
-        tool = decision.tool_name or "a tool"
-        return (
-            f"I stopped retrying {tool} because it hit the tool-call guardrail "
-            f"({decision.code}) after {decision.count} repeated non-progressing "
-            "attempts. The last tool result explains the blocker; the next step is "
-            "to change strategy instead of repeating the same call."
-        )
-
-    def _append_guardrail_observation(
-        self,
-        tool_name: str,
-        function_args: dict,
-        function_result: str,
-        *,
-        failed: bool,
-    ) -> str:
-        decision = self._tool_guardrails.after_call(
-            tool_name,
-            function_args,
-            function_result,
-            failed=failed,
-        )
-        if decision.action in {"warn", "halt"}:
-            function_result = append_toolguard_guidance(function_result, decision)
-        if decision.should_halt:
-            self._set_tool_guardrail_halt(decision)
-        return function_result
-
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)

@@ -165,6 +165,11 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Context compaction lifecycle hooks. Fired around context compression
+    # so plugins can flush state, snapshot context, or persist memories
+    # before/after the compressor summarises messages.
+    "pre_compact",
+    "post_compact",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -1603,9 +1608,13 @@ def discover_plugins(force: bool = False) -> None:
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook on all loaded plugins.
 
+    Auto-discovers plugins on first call if not yet discovered.
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    manager = get_plugin_manager()
+    if not manager._discovered:
+        manager.discover_and_load()
+    return manager.invoke_hook(hook_name, **kwargs)
 
 
 

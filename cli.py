@@ -3864,6 +3864,17 @@ class HermesCLI:
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                    # Let plugins contribute extra fragments (e.g. quota status)
+                    try:
+                        from hermes_cli.plugins import invoke_hook as _invoke_hook
+                        extra_results = _invoke_hook("on_status_bar_render", snapshot=snapshot)
+                        if extra_results and isinstance(extra_results, list):
+                            extra_str = " · ".join(str(x) for x in extra_results if x)
+                            if extra_str:
+                                frags.append(("class:status-bar-dim", " · "))
+                                frags.append(("class:status-bar", extra_str))
+                    except Exception:
+                        pass
                     frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
@@ -3903,6 +3914,17 @@ class HermesCLI:
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+                    # Let plugins contribute extra fragments (e.g. quota status)
+                    try:
+                        from hermes_cli.plugins import invoke_hook as _invoke_hook
+                        extra_results = _invoke_hook("on_status_bar_render", snapshot=snapshot)
+                        if extra_results and isinstance(extra_results, list):
+                            extra_str = " │ ".join(str(x) for x in extra_results if x)
+                            if extra_str:
+                                frags.append(("class:status-bar-dim", " │ "))
+                                frags.append(("class:status-bar", extra_str))
+                    except Exception:
+                        pass
                     frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),

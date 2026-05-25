@@ -733,6 +733,47 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 old_text=function_args.get("old_text"),
                 store=agent._memory_store,
             )
+            # Surface memory write outcomes to gateway/IM users via the
+            # existing _emit_warning plumbing (#2771). Three cases:
+            #   1. success=False                — surface the underlying error
+            #   2. success=True + truncated     — tell user content was cut
+            #   3. success=True + usage >= 80%  — proactive capacity warning
+            # Wrapped in a broad try/except so a malformed result can never
+            # break the tool path.
+            try:
+                _mem_data = (
+                    json.loads(function_result)
+                    if isinstance(function_result, str)
+                    else None
+                )
+                if isinstance(_mem_data, dict):
+                    if _mem_data.get("success") is False:
+                        _err = str(_mem_data.get("error", "unknown error"))[:200]
+                        agent._emit_warning(
+                            f"Memory write failed ({target}): {_err}"
+                        )
+                    elif _mem_data.get("success") is True:
+                        if _mem_data.get("truncated"):
+                            _orig = _mem_data.get("original_length", 0)
+                            _saved = _mem_data.get("saved_length", 0)
+                            agent._emit_warning(
+                                f"Memory entry truncated to fit: kept "
+                                f"{_saved}/{_orig} chars in {target}."
+                            )
+                        _usage = _mem_data.get("usage", "")
+                        if isinstance(_usage, str) and "%" in _usage:
+                            try:
+                                _pct = int(_usage.split("%", 1)[0].strip())
+                                if _pct >= 80:
+                                    agent._emit_warning(
+                                        f"Memory store '{target}' at "
+                                        f"{_pct}% capacity. Consider "
+                                        f"/compress or pruning entries soon."
+                                    )
+                            except (ValueError, IndexError):
+                                pass
+            except (ValueError, TypeError):
+                pass  # JSON parse failed -- silently skip warning
             # Bridge: notify external memory provider of built-in memory writes
             if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
                 try:

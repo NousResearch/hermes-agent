@@ -8141,6 +8141,7 @@ class GatewayRunner:
                 current_usage_tokens=sum(
                     len(m.get("content", "")) for m in history
                 ) // 4,
+                target_model=_resolve_gateway_model(),
             )
             if _orch_trim.get("trimmed_blocks"):
                 logger.info(

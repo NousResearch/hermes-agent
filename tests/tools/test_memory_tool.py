@@ -636,3 +636,82 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+# =========================================================================
+# Auto-truncation on capacity overflow (#2771)
+#
+# When an add() would push the store past its char_limit, the store now
+# attempts one retry with the new entry shrunk to ~60%% of its original
+# length (capped by the actual available budget, word-boundary preserved).
+# If even the salvageable budget is too small to be meaningful (<50 chars)
+# the original overflow error is returned unchanged.
+# =========================================================================
+
+
+class TestAutoTruncation:
+    """add() salvages over-budget entries instead of failing outright."""
+
+    def test_add_truncates_when_over_limit(self, store):
+        # Fixture limit is 500 chars. Pre-fill so only ~100 chars remain,
+        # then try to add a 400-char entry. The retry should shrink it to
+        # ~60%% (=240 chars) and then cap to the actual available budget.
+        store.add("memory", "x" * 380)
+        oversized = "the quick brown fox " * 30  # ~600 chars
+        before_len = len(oversized.strip())
+
+        result = store.add("memory", oversized)
+
+        assert result["success"] is True
+        assert result.get("truncated") is True
+        assert result["original_length"] == before_len
+        assert result["saved_length"] <= int(before_len * 0.6) + 1
+        assert result["saved_length"] < before_len
+        # And the stored entry actually fits the limit.
+        from tools.memory_tool import ENTRY_DELIMITER
+        total = len(ENTRY_DELIMITER.join(store.memory_entries))
+        assert total <= 500
+
+    def test_add_no_truncation_when_within_limit(self, store):
+        # Normal add path: truncated flag must be absent.
+        result = store.add("memory", "Plain entry that fits easily.")
+        assert result["success"] is True
+        assert "truncated" not in result
+        assert "original_length" not in result
+        assert "saved_length" not in result
+
+    def test_truncation_preserves_word_boundary(self, store):
+        # Stuff the store so the budget is small but >50 chars; truncated
+        # entry must NOT end mid-word (i.e. last char shouldn't be a
+        # letter followed by a chopped-off remainder).
+        store.add("memory", "x" * 300)
+        sentence = "alpha bravo charlie delta echo foxtrot golf hotel " * 10
+        result = store.add("memory", sentence)
+        assert result["success"] is True
+        assert result.get("truncated") is True
+        saved = store.memory_entries[-1]
+        # The original sentence is built from whole space-separated words.
+        # If the truncated string was cut mid-word, its final whitespace-
+        # separated token would not appear in the original word list.
+        words = sentence.split()
+        last_token = saved.split()[-1]
+        assert last_token in words, (
+            f"truncated entry ends mid-word: ...{saved[-30:]!r}"
+        )
+
+    def test_truncation_skipped_when_too_small_budget(self, tmp_path, monkeypatch):
+        # Use a very small char_limit so 60%% of the new entry would be
+        # below the 50-char floor. Must return the original overflow
+        # error, not save a useless stub.
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        tiny_store = MemoryStore(memory_char_limit=60, user_char_limit=60)
+        tiny_store.load_from_disk()
+        tiny_store.add("memory", "x" * 50)  # near-full
+
+        result = tiny_store.add("memory", "another fact that will not fit")
+
+        assert result["success"] is False
+        assert "exceed" in result["error"].lower()
+        assert "truncated" not in result
+        # Store is unchanged (only the original 50-char entry).
+        assert len(tiny_store.memory_entries) == 1

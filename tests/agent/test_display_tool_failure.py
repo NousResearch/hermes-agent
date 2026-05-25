@@ -85,6 +85,19 @@ class TestDetectToolFailureMemory:
         result = json.dumps({"success": False, "error": "would exceed the limit"})
         assert _detect_tool_failure("memory", result) == (True, " [full]")
 
+    def test_memory_full_keyword_returns_full_suffix(self):
+        # Broadened detection: any error message containing 'full' should
+        # collapse to ' [full]' too — covers MemoryFullError, 'store is
+        # full', etc. without needing the exact 'exceed the limit' phrase.
+        result = json.dumps({"success": False, "error": "memory store is full"})
+        assert _detect_tool_failure("memory", result) == (True, " [full]")
+
+    def test_memory_full_case_insensitive(self):
+        # Matching is case-insensitive so future LLM-formatted errors with
+        # different capitalisation also collapse cleanly.
+        result = json.dumps({"success": False, "error": "MEMORY STORE IS FULL"})
+        assert _detect_tool_failure("memory", result) == (True, " [full]")
+
     def test_memory_other_error_returns_specific_message(self):
         # An error that's NOT a "full" overflow falls through to the
         # structured-error path and surfaces the actual message.

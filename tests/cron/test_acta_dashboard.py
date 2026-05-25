@@ -1608,6 +1608,44 @@ def test_catalog_outputs_valid_hrefs_remain_readable_openable_rows():
     assert 'aria-disabled="true"' not in row
 
 
+def test_catalog_outputs_local_artifact_base_uses_file_clickable_html_sources():
+    item_cls = collect_catalog_outputs.__globals__["ActaOutputItem"]
+    catalog_items = [
+        item_cls(
+            id="decision-tree",
+            title="Decision Tree",
+            href="/outputs/decision-tree",
+            summary="Openable local artifact.",
+            tags=("acta",),
+            source_name="decision-tree.html",
+            created_at="2026-05-24T16:00:00+00:00",
+            updated_at="2026-05-24T16:00:00+00:00",
+        ),
+        item_cls(
+            id="encoded-traversal",
+            title="Encoded Traversal",
+            href="/outputs/encoded-traversal",
+            summary="Encoded path separators must not enter local file URLs.",
+            tags=(),
+            source_name="%2e%2e%2fsecret.html",
+            created_at="2026-05-24T16:02:00+00:00",
+            updated_at="2026-05-24T16:02:00+00:00",
+        ),
+    ]
+
+    html = render_catalog_outputs_page(
+        catalog_items,
+        generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc),
+        local_artifact_base="../../../artifacts/acta-outputs",
+    )
+
+    assert 'href="../../../artifacts/acta-outputs/decision-tree.html"' in html
+    assert 'data-open-url="../../../artifacts/acta-outputs/decision-tree.html"' in html
+    assert '<a class="output-open-overlay" href="../../../artifacts/acta-outputs/decision-tree.html"' in html
+    assert "../../../artifacts/acta-outputs/%2e%2e%2fsecret.html" not in html
+    assert 'href="/outputs/encoded-traversal"' in html
+
+
 def test_run_history_scans_multiple_files_excludes_acta_and_joins_job_metadata(tmp_path: Path):
     for job_id in ("daily", "htmlonly", "acta-situation-room"):
         (tmp_path / "cron" / "output" / job_id).mkdir(parents=True)
@@ -1795,11 +1833,14 @@ def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
     assert path.exists()
     assert url == "https://acta.imperatr.com/"
     output_publish = next(item for item in published if item["object_key"] == "public/outputs/index.html")
-    assert output_publish["path"].name == "outputs.html"
+    assert output_publish["path"].name == "outputs.publish.html"
     assert "Acta Outputs" in output_publish["html"]
     assert '<a class="active" href="/outputs">Outputs</a>' in output_publish["html"]
     assert "Hermes Agent Lanes &amp; Specialist Agents" in output_publish["html"]
     assert 'href="/outputs/hermes-agent-lanes-decision-tree"' in output_publish["html"]
+    local_outputs_html = (tmp_path / "cron" / "output" / "acta-situation-room" / "outputs.html").read_text(encoding="utf-8")
+    assert 'href="../../../artifacts/acta-outputs/hermes-agent-lanes-decision-tree.html"' in local_outputs_html
+    assert 'data-open-url="../../../artifacts/acta-outputs/hermes-agent-lanes-decision-tree.html"' in local_outputs_html
     assert "https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc" not in output_publish["html"]
     backing_publish = next(item for item in published if item["object_key"] == "public/outputs/hermes-agent-lanes-decision-tree.html")
     assert backing_publish["path"].name == "hermes-agent-lanes-decision-tree.html"

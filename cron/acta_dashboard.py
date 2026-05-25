@@ -1487,6 +1487,7 @@ def render_outputs_page(
 def render_catalog_outputs_page(
     outputs: Sequence[ActaOutputItem],
     generated_at: datetime | None = None,
+    local_artifact_base: str | None = None,
 ) -> str:
     now = generated_at or datetime.now(timezone.utc)
     rows: list[str] = []
@@ -1494,6 +1495,13 @@ def render_catalog_outputs_page(
     unread = sum(1 for item in outputs if not item.read and _is_safe_catalog_href(item.href))
     for index, item in enumerate(outputs, start=1):
         href = item.href if _is_safe_catalog_href(item.href) else ""
+        if (
+            href
+            and local_artifact_base
+            and Path(item.source_name).name == item.source_name
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.html", item.source_name)
+        ):
+            href = f"{local_artifact_base.rstrip('/')}/{item.source_name}"
         escaped_href = html.escape(href, quote=True) if href else ""
         updated = _parse_iso_datetime(item.updated_at)
         age = _age_label(updated, now) if updated else "catalog"
@@ -1881,9 +1889,19 @@ def build_dashboard(
         outputs_path = output_dir / "outputs.html"
         catalog_outputs = collect_catalog_outputs(home)
         publish_catalog_output_artifacts(catalog_outputs, home, publish_settings)
-        outputs_path.write_text(render_catalog_outputs_page(catalog_outputs, generated_at=generated_at), encoding="utf-8")
+        local_artifact_base = os.path.relpath(default_outputs_dir(home), output_dir)
+        outputs_path.write_text(
+            render_catalog_outputs_page(
+                catalog_outputs,
+                generated_at=generated_at,
+                local_artifact_base=local_artifact_base,
+            ),
+            encoding="utf-8",
+        )
+        publish_outputs_path = output_dir / "outputs.publish.html"
+        publish_outputs_path.write_text(render_catalog_outputs_page(catalog_outputs, generated_at=generated_at), encoding="utf-8")
         publish_html_artifact(
-            outputs_path,
+            publish_outputs_path,
             {"id": "acta-situation-room"},
             {**publish_settings, "object_key": "public/outputs/index.html"},
         )

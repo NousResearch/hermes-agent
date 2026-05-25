@@ -16,6 +16,7 @@
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "dependencies": {
+    "@askjo/camofox-browser": "^1.10.1",
     "agent-browser": "^0.26.0"
   },
   "overrides": {

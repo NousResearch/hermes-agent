@@ -377,6 +377,42 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+    def test_whatsapp_lid_target_bypasses_home_channel_fallback(self):
+        whatsapp_cfg = SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000})
+        home = SimpleNamespace(chat_id="home-chat@lid")
+        config = SimpleNamespace(
+            platforms={Platform.WHATSAPP: whatsapp_cfg},
+            get_home_channel=lambda _platform: home,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name") as resolve_mock, \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "whatsapp:12345@lid",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        resolve_mock.assert_not_called()
+        send_mock.assert_awaited_once_with(
+            Platform.WHATSAPP,
+            whatsapp_cfg,
+            "12345@lid",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path):
         config, telegram_cfg = _make_config()
         secret = tmp_path / "secret.pdf"
@@ -1149,6 +1185,20 @@ class TestParseTargetRefE164:
     def test_whatsapp_e164_is_explicit(self):
         chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
         assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_whatsapp_lid_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "12345@lid")
+        assert chat_id == "12345@lid"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whatsapp_phone_jid_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "whatsapp", "15551234567@s.whatsapp.net"
+        )
+        assert chat_id == "15551234567@s.whatsapp.net"
+        assert thread_id is None
         assert is_explicit is True
 
     def test_signal_bare_digits_still_work(self):

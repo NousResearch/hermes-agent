@@ -1868,6 +1868,24 @@ def text_to_speech_tool(
 
     # Determine output path
     if output_path:
+        # Reject '..' traversal components in the user-supplied path. An
+        # explicit absolute path is fine (the agent legitimately writes
+        # audio to user-specified locations), but a path that uses ``..``
+        # to escape its declared base is almost always either a bug or
+        # prompt-injection-controlled — e.g.
+        # ``output_path="audio/../../etc/cron.d/x"``. The terminal tool
+        # can still write anywhere with approval; this just keeps the
+        # unattended TTS surface from materializing files via traversal.
+        from tools.path_security import has_traversal_component
+        if has_traversal_component(output_path):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"output_path contains '..' traversal component: "
+                    f"{output_path}. Use an absolute path or one relative "
+                    "to the current directory without '..'."
+                ),
+            }, ensure_ascii=False)
         file_path = Path(output_path).expanduser()
         if command_provider_config is not None:
             # Respect caller-supplied path but align the extension with the

@@ -1489,6 +1489,17 @@ def _launch_tui(
     env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
 
+    # Contain the bundled-TUI libopentui.so /tmp leak (#32283): redirect
+    # the child's TMPDIR to a profile-scoped path under HERMES_HOME and
+    # sweep stale .<hex>-<digits>.so leak files from /tmp on every launch.
+    try:
+        from hermes_cli.tui_tmpdir import prepare_tui_tmpdir
+        from hermes_constants import get_hermes_home
+
+        prepare_tui_tmpdir(env, get_hermes_home())
+    except Exception:
+        pass
+
     wt_info = None
     if worktree:
         try:

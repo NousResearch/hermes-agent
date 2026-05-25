@@ -8673,6 +8673,17 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                for _result in _invoke_hook("transform_tts_text", text=text, event=event):
+                    if isinstance(_result, str):
+                        text = _result
+            except Exception:
+                logger.warning(
+                    "transform_tts_text hook failed; using original text",
+                    exc_info=True,
+                )
+
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
                 return

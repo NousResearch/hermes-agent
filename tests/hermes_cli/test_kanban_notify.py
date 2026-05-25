@@ -17,11 +17,6 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    # Allow the kanban notifier path-validator to upload artifacts the
-    # tests write under ``tmp_path``. Without this, every artifact-delivery
-    # test silently drops files because ``tmp_path`` isn't inside the
-    # default ``MEDIA_DELIVERY_SAFE_ROOTS`` cache dirs.
-    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
     kb.init_db()
     return home
 
@@ -328,6 +323,84 @@ def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_tick_reuses_one_connection_for_health_probe(kanban_home):
+    """The dispatcher should reuse the board connection for health telemetry.
+
+    Regression for #31736: the embedded gateway dispatcher used to open a
+    second SQLite connection per board on the same tick just to ask whether
+    ready/review work was still pending. That extra open amplifies WAL/FD
+    churn in a long-lived gateway.
+    """
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {}
+
+    fake_result = SimpleNamespace(
+        reclaimed=0,
+        promoted=0,
+        spawned=[],
+        skipped_unassigned=[],
+        skipped_nonspawnable=[],
+        crashed=[],
+        auto_blocked=[],
+        timed_out=[],
+        stale=[],
+        respawn_guarded=[],
+    )
+
+    connect_calls: list[object] = []
+    ready_calls: list[object] = []
+    review_calls: list[object] = []
+    fake_conn = object()
+
+    def _fake_connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        return fake_conn
+
+    def _fake_ready(conn):
+        ready_calls.append(conn)
+        return False
+
+    def _fake_review(conn):
+        review_calls.append(conn)
+        return False
+
+    def _fake_dispatch_once(conn, **kwargs):
+        assert conn is fake_conn
+        return fake_result
+
+    _orig_sleep = asyncio.sleep
+    sleep_calls = 0
+
+    async def _fast_sleep(_delay):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        await _orig_sleep(0)
+        if sleep_calls >= 2:
+            runner._running = False
+
+    with patch("hermes_cli.config.load_config", return_value={"kanban": {"dispatch_in_gateway": True, "auto_decompose": False, "dispatch_interval_seconds": 1}}), \
+         patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep), \
+         patch.object(kb, "list_boards", return_value=[{"slug": "default"}]), \
+         patch.object(kb, "connect", side_effect=_fake_connect), \
+         patch.object(kb, "dispatch_once", side_effect=_fake_dispatch_once), \
+         patch.object(kb, "has_spawnable_ready", side_effect=_fake_ready), \
+         patch.object(kb, "has_spawnable_review", side_effect=_fake_review):
+        await asyncio.wait_for(runner._kanban_dispatcher_watcher(), timeout=10.0)
+
+    assert len(connect_calls) == 1, (
+        "The dispatcher should open one DB connection per board tick and reuse "
+        "it for the readiness probe; opening a second connection reintroduces "
+        "the WAL/FD churn in #31736."
+    )
+    assert ready_calls == [fake_conn]
+    assert review_calls == [fake_conn]
+
+
+@pytest.mark.asyncio
 async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
     """Each gateway keeps its watcher on, but only the subscribing profile claims."""
     import hermes_cli.kanban_db as kb
@@ -487,7 +560,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
 
 
 @pytest.mark.asyncio
-async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
+async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path):
     """When a completed event carries ``artifacts`` in its payload, the
     notifier uploads each file to the subscribed chat as a native
     attachment. Images batch through send_multiple_images; documents
@@ -498,13 +571,6 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
     from gateway.run import GatewayRunner
     from gateway.config import Platform
     from tools import kanban_tools as kt
-
-    # ``_deliver_kanban_artifacts`` routes candidates through
-    # ``BasePlatformAdapter.filter_local_delivery_paths``, which only accepts
-    # paths under ``MEDIA_DELIVERY_SAFE_ROOTS`` or roots explicitly allowlisted
-    # via ``HERMES_MEDIA_ALLOW_DIRS``. Test fixtures live under ``tmp_path``,
-    # so allowlist it for the duration of the test.
-    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
 
     # Materialize real files so os.path.isfile passes inside the helper.
     chart_path = tmp_path / "q3-revenue.png"
@@ -584,7 +650,7 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch):
+async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path):
     """Missing artifact paths are silently skipped — they may have been
     referenced by name only. The notifier must not crash and must still
     deliver any artifacts that do exist."""
@@ -592,10 +658,6 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     from gateway.run import GatewayRunner
     from gateway.config import Platform
     from tools import kanban_tools as kt
-
-    # Allow ``tmp_path`` through the media-delivery safety filter. See the
-    # companion test for the full explanation.
-    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
 
     real_pdf = tmp_path / "real.pdf"
     real_pdf.write_bytes(b"%PDF-fake")

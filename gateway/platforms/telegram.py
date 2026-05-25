@@ -3451,21 +3451,41 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_dm_topic_reply_anchor_retry(
-                        self._bot.send_voice,
-                        {
-                            "chat_id": int(chat_id),
-                            "voice": audio_file,
-                            "caption": caption[:1024] if caption else None,
-                            "reply_to_message_id": reply_to_id,
-                            **voice_thread_kwargs,
-                            **self._notification_kwargs(metadata),
-                        },
-                        metadata,
-                        reply_to_id,
-                        "voice",
-                        reset_media=lambda: audio_file.seek(0),
-                    )
+                    # Try MarkdownV2 caption first; fall back to plain text
+                    # if Telegram rejects the formatting (strict MarkdownV2).
+                    caption_base = caption[:1024] if caption else None
+                    msg = None
+                    for use_markdown in (True, False):
+                        try:
+                            formatted_caption = (
+                                self.format_message(caption_base)[:1024]
+                                if use_markdown and caption_base
+                                else caption_base
+                            )
+                            send_kwargs = {
+                                "chat_id": int(chat_id),
+                                "voice": audio_file,
+                                "caption": formatted_caption,
+                                "reply_to_message_id": reply_to_id,
+                                **voice_thread_kwargs,
+                                **self._notification_kwargs(metadata),
+                            }
+                            if use_markdown and caption_base:
+                                send_kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
+                            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                                self._bot.send_voice,
+                                send_kwargs,
+                                metadata,
+                                reply_to_id,
+                                "voice",
+                                reset_media=lambda: audio_file.seek(0),
+                            )
+                            break
+                        except Exception:
+                            if use_markdown:
+                                audio_file.seek(0)
+                                continue
+                            raise
                 elif ext in {".mp3", ".m4a"}:
                     # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
@@ -3477,21 +3497,40 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_dm_topic_reply_anchor_retry(
-                        self._bot.send_audio,
-                        {
-                            "chat_id": int(chat_id),
-                            "audio": audio_file,
-                            "caption": caption[:1024] if caption else None,
-                            "reply_to_message_id": reply_to_id,
-                            **audio_thread_kwargs,
-                            **self._notification_kwargs(metadata),
-                        },
-                        metadata,
-                        reply_to_id,
-                        "audio",
-                        reset_media=lambda: audio_file.seek(0),
-                    )
+                    # Try MarkdownV2 caption first; fall back to plain text.
+                    caption_base = caption[:1024] if caption else None
+                    msg = None
+                    for use_markdown in (True, False):
+                        try:
+                            formatted_caption = (
+                                self.format_message(caption_base)[:1024]
+                                if use_markdown and caption_base
+                                else caption_base
+                            )
+                            send_kwargs = {
+                                "chat_id": int(chat_id),
+                                "audio": audio_file,
+                                "caption": formatted_caption,
+                                "reply_to_message_id": reply_to_id,
+                                **audio_thread_kwargs,
+                                **self._notification_kwargs(metadata),
+                            }
+                            if use_markdown and caption_base:
+                                send_kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
+                            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                                self._bot.send_audio,
+                                send_kwargs,
+                                metadata,
+                                reply_to_id,
+                                "audio",
+                                reset_media=lambda: audio_file.seek(0),
+                            )
+                            break
+                        except Exception:
+                            if use_markdown:
+                                audio_file.seek(0)
+                                continue
+                            raise
                 else:
                     # Formats Telegram can't play natively (.wav, .flac, ...)
                     # — fall back to document delivery instead of raising.
@@ -3674,21 +3713,41 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
             with open(image_path, "rb") as image_file:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_photo,
-                    {
-                        "chat_id": int(chat_id),
-                        "photo": image_file,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "photo",
-                    reset_media=lambda: image_file.seek(0),
-                )
+                # Try MarkdownV2 caption first; fall back to plain text.
+                caption_base = caption[:1024] if caption else None
+                msg = None
+                for use_markdown in (True, False):
+                    try:
+                        formatted_caption = (
+                            self.format_message(caption_base)[:1024]
+                            if use_markdown and caption_base
+                            else caption_base
+                        )
+                        send_kwargs = {
+                            "chat_id": int(chat_id),
+                            "photo": image_file,
+                            "caption": formatted_caption,
+                            "reply_to_message_id": reply_to_id,
+                            **thread_kwargs,
+                            **self._notification_kwargs(metadata),
+                        }
+                        if use_markdown and caption_base:
+                            send_kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
+                        msg = await self._send_with_dm_topic_reply_anchor_retry(
+                            self._bot.send_photo,
+                            send_kwargs,
+                            metadata,
+                            reply_to_id,
+                            "photo",
+                            reset_media=lambda: image_file.seek(0),
+                        )
+                        break
+                    except Exception:
+                        if use_markdown:
+                            image_file.seek(0)
+                            continue
+                        # Let the outer handler deal with it (dimension errors etc.)
+                        raise
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             error_str = str(e)
@@ -3770,22 +3829,41 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             with open(file_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_document,
-                    {
-                        "chat_id": int(chat_id),
-                        "document": f,
-                        "filename": display_name,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "document",
-                    reset_media=lambda: f.seek(0),
-                )
+                # Try MarkdownV2 caption first; fall back to plain text.
+                caption_base = caption[:1024] if caption else None
+                msg = None
+                for use_markdown in (True, False):
+                    try:
+                        formatted_caption = (
+                            self.format_message(caption_base)[:1024]
+                            if use_markdown and caption_base
+                            else caption_base
+                        )
+                        send_kwargs = {
+                            "chat_id": int(chat_id),
+                            "document": f,
+                            "filename": display_name,
+                            "caption": formatted_caption,
+                            "reply_to_message_id": reply_to_id,
+                            **thread_kwargs,
+                            **self._notification_kwargs(metadata),
+                        }
+                        if use_markdown and caption_base:
+                            send_kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
+                        msg = await self._send_with_dm_topic_reply_anchor_retry(
+                            self._bot.send_document,
+                            send_kwargs,
+                            metadata,
+                            reply_to_id,
+                            "document",
+                            reset_media=lambda: f.seek(0),
+                        )
+                        break
+                    except Exception:
+                        if use_markdown:
+                            f.seek(0)
+                            continue
+                        raise
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send document: {e}")
@@ -3818,21 +3896,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
             with open(video_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_video,
-                    {
-                        "chat_id": int(chat_id),
-                        "video": f,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "video",
-                    reset_media=lambda: f.seek(0),
-                )
+                # Try MarkdownV2 caption first; fall back to plain text.
+                caption_base = caption[:1024] if caption else None
+                msg = None
+                for use_markdown in (True, False):
+                    try:
+                        formatted_caption = (
+                            self.format_message(caption_base)[:1024]
+                            if use_markdown and caption_base
+                            else caption_base
+                        )
+                        send_kwargs = {
+                            "chat_id": int(chat_id),
+                            "video": f,
+                            "caption": formatted_caption,
+                            "reply_to_message_id": reply_to_id,
+                            **thread_kwargs,
+                            **self._notification_kwargs(metadata),
+                        }
+                        if use_markdown and caption_base:
+                            send_kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
+                        msg = await self._send_with_dm_topic_reply_anchor_retry(
+                            self._bot.send_video,
+                            send_kwargs,
+                            metadata,
+                            reply_to_id,
+                            "video",
+                            reset_media=lambda: f.seek(0),
+                        )
+                        break
+                    except Exception:
+                        if use_markdown:
+                            f.seek(0)
+                            continue
+                        raise
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send video: {e}")

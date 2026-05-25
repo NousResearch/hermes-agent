@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
@@ -283,119 +283,16 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
     """
-    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+    from agent.skill_utils import EXCLUDED_SKILL_DIRS, get_all_skills_dirs
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
-            if is_excluded_skill_path(skill_md):
+            if any(part in EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
     return None
-
-
-def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
-    """Look for ``name`` under SKILL.md across OTHER Hermes profiles.
-
-    Returns a list of ``(profile_name, skill_dir)`` pairs. Used to make
-    the "Skill X not found" error explain when the user is editing the
-    wrong profile. Empty list when no other profile has the skill (or
-    when profile discovery fails — fail-quiet, the caller falls back to
-    the plain "not found" error).
-    """
-    matches: List[Tuple[str, Path]] = []
-    try:
-        from hermes_constants import get_default_hermes_root
-        from agent.skill_utils import is_excluded_skill_path
-    except Exception:
-        return matches
-
-    try:
-        root = get_default_hermes_root()
-    except Exception:
-        return matches
-
-    # Collect (profile_name, skills_dir) for every profile EXCEPT the
-    # one whose SKILLS_DIR we already searched in _find_skill().
-    active_dir = SKILLS_DIR.resolve() if SKILLS_DIR.exists() else SKILLS_DIR
-    candidates: List[Tuple[str, Path]] = []
-
-    # Default profile (~/.hermes/skills) — only consider when active is non-default.
-    default_skills = root / "skills"
-    try:
-        if default_skills.resolve() != active_dir:
-            candidates.append(("default", default_skills))
-    except (OSError, RuntimeError):
-        pass
-
-    # All named profiles (~/.hermes/profiles/*/skills)
-    profiles_root = root / "profiles"
-    if profiles_root.is_dir():
-        try:
-            for entry in profiles_root.iterdir():
-                if not entry.is_dir():
-                    continue
-                pskills = entry / "skills"
-                try:
-                    if pskills.resolve() == active_dir:
-                        continue
-                except (OSError, RuntimeError):
-                    continue
-                candidates.append((entry.name, pskills))
-        except OSError:
-            pass
-
-    for profile_name, skills_dir in candidates:
-        if not skills_dir.is_dir():
-            continue
-        try:
-            for skill_md in skills_dir.rglob("SKILL.md"):
-                if is_excluded_skill_path(skill_md):
-                    continue
-                if skill_md.parent.name == name:
-                    matches.append((profile_name, skill_md.parent))
-                    break  # one match per profile is enough
-        except OSError:
-            continue
-    return matches
-
-
-def _skill_not_found_error(name: str, suffix: str = "") -> str:
-    """Build a "skill not found" error that names other profiles holding
-    the same skill, so the agent can recognize a profile-scoping mistake.
-
-    ``suffix`` is appended after the cross-profile hint if present
-    (e.g. ``" Create it first with action='create'."``).
-    """
-    from agent.file_safety import _resolve_active_profile_name
-    active = _resolve_active_profile_name()
-    base = f"Skill '{name}' not found in active profile '{active}'."
-
-    others = _find_skill_in_other_profiles(name)
-    if others:
-        if len(others) == 1:
-            other_profile, other_path = others[0]
-            base += (
-                f" A skill by that name exists in profile "
-                f"'{other_profile}' ({other_path}). To edit a skill in "
-                f"another profile, switch profiles (`hermes -p "
-                f"{other_profile}`) or operate via explicit file tools "
-                f"with ``cross_profile=True``."
-            )
-        else:
-            names = ", ".join(f"'{p}'" for p, _ in others)
-            base += (
-                f" Skills by that name exist in other profiles: {names}. "
-                f"Switch profiles (`hermes -p <name>`) to edit there, or "
-                f"operate via explicit file tools with ``cross_profile=True``."
-            )
-    else:
-        base += " Use skills_list() to see available skills."
-
-    if suffix:
-        base += suffix
-    return base
 
 
 def _validate_file_path(file_path: str) -> Optional[str]:
@@ -469,6 +366,20 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         raise
 
 
+def _verify_persisted_write(file_path: Path, expected_content: str) -> Optional[str]:
+    """Confirm a write reached disk before reporting success."""
+    try:
+        if not file_path.exists():
+            return f"Skill file was not persisted to disk at {file_path}."
+        actual_content = file_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"Unable to verify persisted write for {file_path}: {exc}"
+
+    if actual_content != expected_content:
+        return f"Skill file content did not persist correctly at {file_path}."
+    return None
+
+
 # =============================================================================
 # Core actions
 # =============================================================================
@@ -508,6 +419,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     # Write SKILL.md atomically
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
+    persist_error = _verify_persisted_write(skill_md, content)
+    if persist_error:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        return {"success": False, "error": persist_error}
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
@@ -542,12 +457,20 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": _skill_not_found_error(name)}
+        return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     _atomic_write_text(skill_md, content)
+    persist_error = _verify_persisted_write(skill_md, content)
+    if persist_error:
+        if original_content is not None:
+            try:
+                _atomic_write_text(skill_md, original_content)
+            except Exception:
+                pass
+        return {"success": False, "error": persist_error}
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
@@ -582,7 +505,7 @@ def _patch_skill(
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": _skill_not_found_error(name)}
+        return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
 
@@ -598,6 +521,7 @@ def _patch_skill(
         # Patching SKILL.md
         target = skill_dir / "SKILL.md"
 
+    assert target is not None
     if not target.exists():
         return {"success": False, "error": f"File not found: {target.relative_to(skill_dir)}"}
 
@@ -643,7 +567,12 @@ def _patch_skill(
             }
 
     original_content = content  # for rollback
+    assert target is not None
     _atomic_write_text(target, new_content)
+    persist_error = _verify_persisted_write(target, new_content)
+    if persist_error:
+        _atomic_write_text(target, original_content)
+        return {"success": False, "error": persist_error}
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
@@ -671,7 +600,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     """
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": _skill_not_found_error(name)}
+        return {"success": False, "error": f"Skill '{name}' not found."}
 
     pinned_err = _pinned_guard(name)
     if pinned_err:
@@ -714,6 +643,96 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     }
 
 
+def _rename_skill(name: str, new_name: str) -> Dict[str, Any]:
+    """Rename a skill directory and keep telemetry/frontmatter aligned."""
+    err = _validate_name(new_name)
+    if err:
+        return {"success": False, "error": err}
+
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": f"Skill '{name}' not found."}
+
+    pinned_err = _pinned_guard(name)
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
+
+    renamed = _find_skill(new_name)
+    if renamed:
+        return {"success": False, "error": f"A skill named '{new_name}' already exists at {renamed['path']}."}
+
+    old_dir = existing["path"]
+    new_dir = old_dir.with_name(new_name)
+    skill_md = old_dir / "SKILL.md"
+    original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+
+    if original_content is not None:
+        updated_content = re.sub(r"(?m)^name:\s*.*$", f"name: {new_name}", original_content, count=1)
+        if updated_content != original_content:
+            _atomic_write_text(skill_md, updated_content)
+
+    try:
+        old_dir.rename(new_dir)
+    except OSError:
+        shutil.move(str(old_dir), str(new_dir))
+
+    try:
+        from tools.skill_usage import move_record
+        move_record(name, new_name)
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": f"Skill '{name}' renamed to '{new_name}'.",
+        "path": str(new_dir),
+    }
+
+
+def _soft_delete_skill(name: str) -> Dict[str, Any]:
+    """Move a skill to the local archive instead of deleting it outright."""
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": f"Skill '{name}' not found."}
+
+    pinned_err = _pinned_guard(name)
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
+
+    skill_dir = existing["path"]
+    skills_root = _containing_skills_root(skill_dir)
+    archive_root = skills_root / ".archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+
+    dest = archive_root / skill_dir.name
+    suffix = 2
+    while dest.exists():
+        dest = archive_root / f"{skill_dir.name}-{suffix}"
+        suffix += 1
+
+    try:
+        skill_dir.rename(dest)
+    except OSError:
+        shutil.move(str(skill_dir), str(dest))
+
+    try:
+        from tools.skill_usage import set_state, STATE_ARCHIVED
+        set_state(name, STATE_ARCHIVED)
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": f"Skill '{name}' archived to {dest}.",
+        "path": str(dest),
+    }
+
+
+def _merge_skill(name: str, absorbed_into: str) -> Dict[str, Any]:
+    """Explicit merge alias for delete(absorbed_into=...)."""
+    return _delete_skill(name, absorbed_into=absorbed_into)
+
+
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
     err = _validate_file_path(file_path)
@@ -740,15 +759,26 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
+        return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
+    assert target is not None
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
     _atomic_write_text(target, file_content)
+    persist_error = _verify_persisted_write(target, file_content)
+    if persist_error:
+        if original_content is not None:
+            try:
+                _atomic_write_text(target, original_content)
+            except Exception:
+                pass
+        else:
+            target.unlink(missing_ok=True)
+        return {"success": False, "error": persist_error}
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
@@ -774,7 +804,7 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": _skill_not_found_error(name)}
+        return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
 
@@ -824,6 +854,7 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    new_name: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -847,6 +878,19 @@ def skill_manage(
             return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
+    elif action == "rename":
+        if not new_name:
+            return tool_error("new_name is required for 'rename'. Provide the destination skill name.", success=False)
+        result = _rename_skill(name, new_name)
+
+    elif action == "merge":
+        if not absorbed_into or not isinstance(absorbed_into, str) or not absorbed_into.strip():
+            return tool_error("absorbed_into is required for 'merge'. Provide the umbrella skill name.", success=False)
+        result = _merge_skill(name, absorbed_into.strip())
+
+    elif action == "soft_delete":
+        result = _soft_delete_skill(name)
+
     elif action == "delete":
         result = _delete_skill(name, absorbed_into=absorbed_into)
 
@@ -863,7 +907,7 @@ def skill_manage(
         result = _remove_file(name, file_path)
 
     else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, rename, merge, soft_delete, delete, write_file, remove_file"}
 
     if result.get("success"):
         try:
@@ -878,15 +922,20 @@ def skill_manage(
         # user-directed, and those skills belong to the user (the curator must
         # not touch them). Best-effort; telemetry failures never break the tool.
         try:
-            from tools.skill_usage import bump_patch, forget, mark_agent_created
+            from tools.skill_usage import bump_patch, forget, mark_agent_created, move_record
             from tools.skill_provenance import is_background_review
             if action == "create":
                 if is_background_review():
                     mark_agent_created(name)
             elif action in {"patch", "edit", "write_file", "remove_file"}:
                 bump_patch(name)
-            elif action == "delete":
+            elif action == "rename":
+                move_record(name, new_name or name)
+            elif action in {"delete", "merge"}:
                 forget(name)
+            elif action == "soft_delete":
+                from tools.skill_usage import set_state, STATE_ARCHIVED
+                set_state(name, STATE_ARCHIVED)
         except Exception:
             pass
 
@@ -900,111 +949,59 @@ def skill_manage(
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     "description": (
-        "Manage skills (create, update, delete). Skills are your procedural "
-        "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
-        "Actions: create (full SKILL.md + optional category), "
-        "patch (old_string/new_string — preferred for fixes), "
-        "edit (full SKILL.md rewrite — major overhauls only), "
-        "delete, write_file, remove_file.\n\n"
-        "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
-        "skill's content into another one, or `absorbed_into=\"\"` when you're "
-        "pruning it with no forwarding target. This lets the curator tell "
-        "consolidation from pruning without guessing, so downstream consumers "
-        "(cron jobs that reference the old skill name, etc.) get updated "
-        "correctly. The target you name in `absorbed_into` must already "
-        "exist — create/patch the umbrella first, then delete.\n\n"
-        "Create when: complex task succeeded (5+ calls), errors overcome, "
-        "user-corrected approach worked, non-trivial workflow discovered, "
-        "or user asks you to remember a procedure.\n"
-        "Update when: instructions stale/wrong, OS-specific failures, "
-        "missing steps or pitfalls found during use. "
-        "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
-        "After difficult/iterative tasks, offer to save as a skill. "
-        "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
-        "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
-        "Pinned skills are protected from deletion only — skill_manage(action='delete') "
-        "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
-        "Patches and edits go through on pinned skills so you can still improve them as "
-        "pitfalls come up; pin only guards against irrecoverable loss."
+        "Manage skills. New skills go to "
+        f"{display_hermes_home()}/skills/; existing skills can be edited in place.\n\n"
+        "Actions: create, patch, edit, rename, merge, soft_delete, delete, write_file, remove_file.\n"
+        "Delete uses absorbed_into=<umbrella> to merge, or absorbed_into=\"\" to prune.\n"
+        "Rename preserves the usage record, soft_delete archives the skill, and pinned skills cannot be deleted."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
-                "description": "The action to perform."
+                "enum": ["create", "patch", "edit", "rename", "merge", "soft_delete", "delete", "write_file", "remove_file"],
+                "description": "Action to perform."
             },
             "name": {
                 "type": "string",
-                "description": (
-                    "Skill name (lowercase, hyphens/underscores, max 64 chars). "
-                    "Must match an existing skill for patch/edit/delete/write_file/remove_file."
-                )
+                "description": "Skill name (lowercase, hyphens/underscores, max 64 chars). Required for patch/edit/rename/merge/soft_delete/delete/write_file/remove_file."
             },
             "content": {
                 "type": "string",
-                "description": (
-                    "Full SKILL.md content (YAML frontmatter + markdown body). "
-                    "Required for 'create' and 'edit'. For 'edit', read the skill "
-                    "first with skill_view() and provide the complete updated text."
-                )
+                "description": "Full SKILL.md (frontmatter + body). Required for create/edit; for edit, read the skill first and pass the full updated file."
             },
             "old_string": {
                 "type": "string",
-                "description": (
-                    "Text to find in the file (required for 'patch'). Must be unique "
-                    "unless replace_all=true. Include enough surrounding context to "
-                    "ensure uniqueness."
-                )
+                "description": "Text to find for patch. Must be unique unless replace_all=true."
             },
             "new_string": {
                 "type": "string",
-                "description": (
-                    "Replacement text (required for 'patch'). Can be empty string "
-                    "to delete the matched text."
-                )
+                "description": "Replacement text for patch; may be empty to delete."
             },
             "replace_all": {
                 "type": "boolean",
-                "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false)."
+                "description": "For patch, replace all matches instead of requiring one unique match."
+            },
+            "new_name": {
+                "type": "string",
+                "description": "Rename only. New canonical skill name to move the skill directory to."
             },
             "category": {
                 "type": "string",
-                "description": (
-                    "Optional category/domain for organizing the skill (e.g., 'devops', "
-                    "'data-science', 'mlops'). Creates a subdirectory grouping. "
-                    "Only used with 'create'."
-                )
+                "description": "Optional category/directory for create (e.g. devops, data-science, mlops)."
             },
             "file_path": {
                 "type": "string",
-                "description": (
-                    "Path to a supporting file within the skill directory. "
-                    "For 'write_file'/'remove_file': required, must be under references/, "
-                    "templates/, scripts/, or assets/. "
-                    "For 'patch': optional, defaults to SKILL.md if omitted."
-                )
+                "description": "Path within the skill dir. Required for write_file/remove_file under references/, templates/, scripts/, or assets/; optional for patch (defaults to SKILL.md)."
             },
             "file_content": {
                 "type": "string",
-                "description": "Content for the file. Required for 'write_file'."
+                "description": "File content for write_file."
             },
             "absorbed_into": {
                 "type": "string",
-                "description": (
-                    "For 'delete' only — declares intent so the curator can "
-                    "tell consolidation from pruning without guessing. "
-                    "Pass the umbrella skill name when this skill's content "
-                    "was merged into another (the target must already exist). "
-                    "Pass an empty string when the skill is truly stale and "
-                    "being pruned with no forwarding target. Omitting the arg "
-                    "on delete is supported for backward compatibility but "
-                    "downstream tooling (e.g. cron-job skill reference "
-                    "rewriting) will have to guess at intent."
-                )
+                "description": "Delete only. Umbrella skill name when merging, or empty string to prune. Omit only for backward compatibility."
             },
         },
         "required": ["action", "name"],
@@ -1029,6 +1026,7 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        new_name=args.get("new_name")),
     emoji="📝",
 )

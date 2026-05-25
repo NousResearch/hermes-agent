@@ -20,6 +20,8 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    _rename_skill,
+    _soft_delete_skill,
     skill_manage,
     VALID_NAME_RE,
     ALLOWED_SUBDIRS,
@@ -219,6 +221,15 @@ class TestCreateSkill:
         with _skill_dir(tmp_path):
             result = _create_skill("my-skill", "no frontmatter here")
         assert result["success"] is False
+
+    def test_create_rejects_missing_persisted_skill_md(self, tmp_path, monkeypatch):
+        with _skill_dir(tmp_path):
+            monkeypatch.setattr("tools.skill_manager_tool._atomic_write_text", lambda *args, **kwargs: None)
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is False
+        assert "persist" in result["error"].lower()
+        assert not (tmp_path / "my-skill" / "SKILL.md").exists()
 
     def test_create_rejects_category_traversal(self, tmp_path):
         skills_dir = tmp_path / "skills"
@@ -423,6 +434,41 @@ class TestDeleteSkill:
         assert result["success"] is True
 
 
+class TestRenameSkill:
+    def test_rename_skill_updates_directory_and_telemetry(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", VALID_SKILL_CONTENT)
+            result = _rename_skill("old-skill", "new-skill")
+        assert result["success"] is True
+        assert (tmp_path / "new-skill").exists()
+        assert not (tmp_path / "old-skill").exists()
+        assert (tmp_path / "new-skill" / "SKILL.md").read_text(encoding="utf-8").startswith("---\nname: new-skill")
+
+    def test_rename_skill_rejects_existing_target(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("old-skill", VALID_SKILL_CONTENT)
+            _create_skill("new-skill", VALID_SKILL_CONTENT)
+            result = _rename_skill("old-skill", "new-skill")
+        assert result["success"] is False
+        assert (tmp_path / "old-skill").exists()
+
+
+class TestSoftDeleteSkill:
+    def test_soft_delete_moves_skill_to_archive(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("archivable", VALID_SKILL_CONTENT)
+            result = _soft_delete_skill("archivable")
+        assert result["success"] is True
+        assert not (tmp_path / "archivable").exists()
+        assert (tmp_path / ".archive").exists()
+        assert any(p.name.startswith("archivable") for p in (tmp_path / ".archive").iterdir())
+
+    def test_soft_delete_rejects_missing_skill(self, tmp_path):
+        with _skill_dir(tmp_path):
+            result = _soft_delete_skill("missing")
+        assert result["success"] is False
+
+
 # ---------------------------------------------------------------------------
 # write_file / remove_file
 # ---------------------------------------------------------------------------
@@ -435,6 +481,16 @@ class TestWriteFile:
             result = _write_file("my-skill", "references/api.md", "# API\nEndpoint docs.")
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_write_rejects_missing_persisted_supporting_file(self, tmp_path, monkeypatch):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            monkeypatch.setattr("tools.skill_manager_tool._atomic_write_text", lambda *args, **kwargs: None)
+            result = _write_file("my-skill", "references/api.md", "# API\nEndpoint docs.")
+
+        assert result["success"] is False
+        assert "persist" in result["error"].lower()
+        assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
 
     def test_write_to_nonexistent_skill(self, tmp_path):
         with _skill_dir(tmp_path):

@@ -4728,7 +4728,9 @@ def _builtin_setup_fn(key: str):
         # via the plugin path in _configure_platform().
         "slack": _s._setup_slack,
         "matrix": _s._setup_matrix,
-        "mattermost": _s._setup_mattermost,
+        # mattermost moved into the plugin: setup_fn is registered by
+        # plugins/platforms/mattermost/adapter.py::register() and dispatched
+        # via the plugin path in _configure_platform().
         "bluebubbles": _s._setup_bluebubbles,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,

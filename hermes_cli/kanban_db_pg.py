@@ -24,7 +24,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
 
-from hermes_cli import kanban_db as _sqlite
+from hermes_cli import kanban_db_sqlite as _sqlite
 
 try:  # pragma: no cover - exercised in environments with psycopg installed
     import psycopg  # type: ignore

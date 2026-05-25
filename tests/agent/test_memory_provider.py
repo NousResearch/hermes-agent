@@ -1,6 +1,7 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import logging
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -150,17 +151,166 @@ class TestMemoryManager:
         mgr.add_provider(p2)
         assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
-    def test_second_external_rejected(self):
-        """Only one non-builtin provider is allowed."""
+    def test_accepts_multiple_external_providers(self):
+        """MemoryManager should accept multiple external providers."""
         mgr = MemoryManager()
         builtin = FakeMemoryProvider("builtin")
         ext1 = FakeMemoryProvider("mem0")
         ext2 = FakeMemoryProvider("hindsight")
         mgr.add_provider(builtin)
         mgr.add_provider(ext1)
+        mgr.add_provider(ext2)
+        assert [p.name for p in mgr.providers] == ["builtin", "mem0", "hindsight"]
+        assert len(mgr.providers) == 3
+
+    def test_rejects_duplicate_provider_name(self):
+        """MemoryManager should reject duplicate provider names."""
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        ext1 = FakeMemoryProvider("mem0")
+        ext2 = FakeMemoryProvider("mem0")  # duplicate name
+        mgr.add_provider(builtin)
+        mgr.add_provider(ext1)
         mgr.add_provider(ext2)  # should be rejected
         assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
         assert len(mgr.providers) == 2
+        # The second "mem0" should be the rejected one
+        assert mgr.providers[1] is ext1  # first one wins
+
+    def test_remove_provider(self):
+        """MemoryManager.remove_provider() should deregister a provider."""
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin", tools=[
+            {"name": "builtin_tool", "description": "Builtin", "parameters": {}},
+        ])
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "External", "parameters": {}},
+        ])
+        mgr.add_provider(builtin)
+        mgr.add_provider(ext)
+        assert len(mgr.providers) == 2
+        assert mgr.has_tool("ext_recall")
+
+        # Remove the external provider
+        result = mgr.remove_provider("ext")
+        assert result is True
+        assert len(mgr.providers) == 1
+        assert [p.name for p in mgr.providers] == ["builtin"]
+        assert not mgr.has_tool("ext_recall")
+        assert ext.shutdown_called
+
+    def test_remove_provider_nonexistent(self):
+        """remove_provider returns False for unknown provider names."""
+        mgr = MemoryManager()
+        result = mgr.remove_provider("nonexistent")
+        assert result is False
+
+    def test_remove_provider_builtin_rejected(self):
+        """Cannot remove the builtin provider."""
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin")
+        mgr.add_provider(builtin)
+        result = mgr.remove_provider("builtin")
+        assert result is False
+        assert len(mgr.providers) == 1
+
+    def test_remove_provider_cleans_up_tool_routing(self):
+        """Removing a provider should remove its tools from routing."""
+        mgr = MemoryManager()
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "Recall", "parameters": {}},
+            {"name": "ext_retain", "description": "Retain", "parameters": {}},
+        ])
+        mgr.add_provider(ext)
+        assert mgr.has_tool("ext_recall")
+        assert mgr.has_tool("ext_retain")
+
+        mgr.remove_provider("ext")
+        assert not mgr.has_tool("ext_recall")
+        assert not mgr.has_tool("ext_retain")
+
+    def test_add_provider_after_remove(self):
+        """A provider with the same name can be added after removal."""
+        mgr = MemoryManager()
+        ext1 = FakeMemoryProvider("ext")
+        mgr.add_provider(ext1)
+        mgr.remove_provider("ext")
+
+        ext2 = FakeMemoryProvider("ext")
+        mgr.add_provider(ext2)
+        assert len(mgr.providers) == 1
+        assert mgr.providers[0] is ext2
+
+    def test_remove_provider_shutdown_exception_still_removes(self):
+        """If shutdown() raises, the provider is still removed and tools cleaned up."""
+        mgr = MemoryManager()
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_recall", "description": "Recall", "parameters": {}},
+            {"name": "ext_retain", "description": "Retain", "parameters": {}},
+        ])
+        ext.shutdown = MagicMock(side_effect=RuntimeError("shutdown boom"))
+        mgr.add_provider(ext)
+        assert mgr.has_tool("ext_recall")
+        assert mgr.has_tool("ext_retain")
+
+        result = mgr.remove_provider("ext")
+        assert result is True
+        assert len(mgr.providers) == 0
+        assert not mgr.has_tool("ext_recall")
+        assert not mgr.has_tool("ext_retain")
+        ext.shutdown.assert_called_once()
+
+    def test_schema_loading_failure_prevents_registration(self):
+        """If get_tool_schemas() raises, the provider is NOT registered."""
+        mgr = MemoryManager()
+        bad = FakeMemoryProvider("bad")
+        bad.get_tool_schemas = MagicMock(side_effect=RuntimeError("schema boom"))
+
+        mgr.add_provider(bad)  # must not raise
+
+        assert len(mgr.providers) == 0
+        assert mgr.get_provider("bad") is None
+
+    def test_namespace_prefix_warning_on_mismatch(self):
+        """A warning is logged when tool names don't match provider prefix."""
+        mgr = MemoryManager()
+        # Provider name "holographic" but tools use "fact_" prefix
+        p = FakeMemoryProvider("holographic", tools=[
+            {"name": "fact_store", "description": "Store", "parameters": {}},
+        ])
+
+        with patch("agent.memory_manager.logger") as mock_log:
+            mgr.add_provider(p)
+            # Should have logged a namespace warning
+            warning_calls = [c for c in mock_log.warning.call_args_list
+                             if "naming convention" in str(c)]
+            assert len(warning_calls) >= 1
+
+    def test_tool_budget_warning_above_threshold(self):
+        """A warning is logged when total tools exceed 20."""
+        mgr = MemoryManager()
+        # Create a provider with 25 tools
+        tools = [{"name": f"ext_tool_{i}", "description": f"Tool {i}", "parameters": {}}
+                 for i in range(25)]
+        p = FakeMemoryProvider("ext", tools=tools)
+        mgr.add_provider(p)
+
+        with patch("agent.memory_manager.logger") as mock_log:
+            mgr.get_all_tool_schemas()
+            warning_calls = [c for c in mock_log.warning.call_args_list
+                             if "budget" in str(c).lower()]
+            assert len(warning_calls) >= 1
+
+    def test_schema_loading_failure_prevents_registration(self):
+        """If get_tool_schemas() raises, the provider is NOT registered (fixes #9948)."""
+        mgr = MemoryManager()
+        bad = FakeMemoryProvider("bad")
+        bad.get_tool_schemas = MagicMock(side_effect=RuntimeError("schema boom"))
+
+        mgr.add_provider(bad)  # must not raise
+
+        assert len(mgr.providers) == 0
+        assert mgr.get_provider("bad") is None
 
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
@@ -377,6 +527,121 @@ class TestMemoryManager:
 
         result = mgr.build_system_prompt()
         assert result == "works fine"
+
+
+class TestMemoryManagerConcurrency:
+    """Thread-safety tests for MemoryManager."""
+
+    def test_concurrent_add_provider_no_duplicates(self):
+        """Multiple threads adding the same provider should not create duplicates."""
+        import threading
+        mgr = MemoryManager()
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_tool", "description": "Tool", "parameters": {}},
+        ])
+
+        def adder():
+            mgr.add_provider(ext)
+
+        threads = [threading.Thread(target=adder) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Only one provider should be registered
+        assert len(mgr.providers) == 1
+        assert mgr.providers[0].name == "ext"
+        assert mgr.has_tool("ext_tool")
+
+    def test_concurrent_add_different_providers(self):
+        """Multiple threads adding different providers should all succeed."""
+        import threading
+        mgr = MemoryManager()
+        providers = [
+            FakeMemoryProvider(f"ext{i}", tools=[
+                {"name": f"ext{i}_tool", "description": "Tool", "parameters": {}},
+            ])
+            for i in range(5)
+        ]
+
+        threads = [threading.Thread(target=mgr.add_provider, args=(p,)) for p in providers]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(mgr.providers) == 5
+        for i in range(5):
+            assert mgr.has_tool(f"ext{i}_tool")
+
+    def test_concurrent_add_and_remove(self):
+        """Concurrent add and remove operations should not corrupt state."""
+        import threading
+        mgr = MemoryManager()
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_tool", "description": "Tool", "parameters": {}},
+        ])
+        mgr.add_provider(ext)
+
+        def adder():
+            # Try to add again (should be rejected as duplicate)
+            mgr.add_provider(ext)
+
+        def remover():
+            mgr.remove_provider("ext")
+
+        threads = []
+        for _ in range(5):
+            threads.append(threading.Thread(target=adder))
+            threads.append(threading.Thread(target=remover))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # State should be consistent: either present or absent, not corrupted
+        assert len(mgr.providers) in (0, 1)
+        if len(mgr.providers) == 1:
+            assert mgr.providers[0].name == "ext"
+            assert mgr.has_tool("ext_tool")
+        else:
+            assert not mgr.has_tool("ext_tool")
+
+    def test_concurrent_tool_routing_while_adding(self):
+        """Tool calls during provider addition should not crash."""
+        import threading
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin", tools=[
+            {"name": "builtin_tool", "description": "Builtin", "parameters": {}},
+        ])
+        mgr.add_provider(builtin)
+
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_tool", "description": "External", "parameters": {}},
+        ])
+
+        results = []
+        def router():
+            try:
+                result = mgr.handle_tool_call("builtin_tool", {})
+                results.append(("ok", result))
+            except Exception as e:
+                results.append(("err", str(e)))
+
+        threads = [threading.Thread(target=router) for _ in range(20)]
+        threads.append(threading.Thread(target=mgr.add_provider, args=(ext,)))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All routing calls should have succeeded
+        errors = [r for r in results if r[0] == "err"]
+        assert len(errors) == 0, f"Concurrent routing errors: {errors}"
+        assert mgr.has_tool("ext_tool")
 
 
 class TestPluginMemoryDiscovery:

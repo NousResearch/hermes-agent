@@ -103,9 +103,9 @@ WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with
 
 :::tip Allow-all shorthand
 Setting `WHATSAPP_ALLOWED_USERS=*` allows **all** senders (equivalent to `WHATSAPP_ALLOW_ALL_USERS=true`).
-This is consistent with [Signal group allowlists](/docs/reference/environment-variables).
+This is consistent with [Signal group allowlists](/reference/environment-variables).
 To use the pairing flow instead, remove both variables and rely on the
-[DM pairing system](/docs/user-guide/security#dm-pairing-system).
+[DM pairing system](/user-guide/security#dm-pairing-system).
 :::
 
 Optional behavior settings in `~/.hermes/config.yaml`:

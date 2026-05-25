@@ -1309,7 +1309,7 @@ def test_outputs_page_uses_v9_shell_and_signed_source_rows():
     assert '<span class="read-state">UNREAD</span>' in html
     assert "document.querySelectorAll('.output-row.readable')" in html
     assert "el.querySelectorAll('.output-open-overlay')" in html
-    assert "state[k]=true; save(); apply(el);" in html
+    assert "setRead(el, true);" in html
     assert "script-src 'sha256-" in html
     assert "script-src 'unsafe-inline'" not in html
     assert "COOKIE='acta_read_v1'" in html
@@ -1518,7 +1518,7 @@ def test_collect_catalog_outputs_preserves_unsafe_and_missing_catalog_hrefs_as_d
         "missing-href": "",
         "unsafe-js": "",
     }
-    assert '<div class="stat">Unread <b>0</b></div>' in html
+    assert '<div class="stat">Unread <b data-unread-count="0">0</b></div>' in html
     assert "javascript:alert" not in html
     for title in ("Unsafe JS Output", "Missing Href Output"):
         row = row_by_title[title]
@@ -1527,6 +1527,7 @@ def test_collect_catalog_outputs_preserves_unsafe_and_missing_catalog_hrefs_as_d
         assert "data-read-key" not in row
         assert "output-open-overlay" not in row
         assert '<span class="open">OPEN</span>' not in row
+        assert "read-toggle" not in row
         assert 'aria-disabled="true"' in row
         assert "No public link" in row
 
@@ -1534,6 +1535,7 @@ def test_collect_catalog_outputs_preserves_unsafe_and_missing_catalog_hrefs_as_d
     assert 'data-open-url="/outputs/valid-output"' in valid_row
     assert 'data-read-key="output:valid-output"' in valid_row
     assert '<a class="output-open-overlay" href="/outputs/valid-output"' in valid_row
+    assert '<button class="read-toggle" type="button" aria-label="Mark output unread: Valid Output">Mark unread</button>' in valid_row
     assert '<span class="open">OPEN</span>' in valid_row
     assert 'aria-disabled="true"' not in valid_row
 
@@ -1607,6 +1609,7 @@ def test_catalog_outputs_valid_hrefs_remain_readable_openable_rows():
     assert 'data-open-url="/outputs/valid-output"' in row
     assert '<a class="output-open-overlay" href="/outputs/valid-output"' in row
     assert '<span class="read-state">READ</span>' in row
+    assert '<button class="read-toggle" type="button" aria-label="Mark output unread: Valid Output">Mark unread</button>' in row
     assert '<span class="open">OPEN</span>' in row
     assert 'aria-disabled="true"' not in row
 
@@ -1617,6 +1620,67 @@ def test_catalog_outputs_read_hydration_falls_back_to_server_initial_state():
     assert "Object.prototype.hasOwnProperty.call(state,k)" in script
     assert "el.dataset.readInitial==='true'" in script
     assert "var isRead=!!state[k];" not in script
+
+
+def test_catalog_outputs_read_script_updates_aggregate_and_toggle_button():
+    script = _outputs_read_state_script()
+
+    assert "function updateUnreadCount()" in script
+    assert "document.querySelectorAll('[data-unread-count]')" in script
+    assert "el.dataset.unreadCount=String(unread)" in script
+    assert "var button=el.querySelector('.read-toggle')" in script
+    assert "button.addEventListener('click'" in script
+    assert "ev.stopPropagation();" in script
+    assert "setRead(el, el.classList.contains('read') ? false : true);" in script
+    assert "setRead(el, true);" in script
+    assert "updateUnreadCount();" in script
+
+
+def test_catalog_outputs_unread_stat_and_read_toggle_only_for_safe_rows():
+    item_cls = collect_catalog_outputs.__globals__["ActaOutputItem"]
+    catalog_items = [
+        item_cls(
+            id="safe-output",
+            title="Safe Output",
+            href="/outputs/safe-output",
+            summary="Safe catalog output.",
+            tags=("acta",),
+            source_name="catalog",
+            created_at="2026-05-24T16:00:00+00:00",
+            updated_at="2026-05-24T16:00:00+00:00",
+            read=False,
+        ),
+        item_cls(
+            id="unsafe-output",
+            title="Unsafe Output",
+            href="javascript:alert(1)",
+            summary="Unsafe catalog output.",
+            tags=(),
+            source_name="catalog",
+            created_at="2026-05-24T16:00:00+00:00",
+            updated_at="2026-05-24T16:00:00+00:00",
+            read=False,
+        ),
+    ]
+
+    html = render_catalog_outputs_page(catalog_items, generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc))
+    rows = re.findall(r"<article class=\"output-row[^>]*>.*?</article>", html, re.S)
+    row_by_title = {}
+    for row in rows:
+        title_match = re.search(r"<b>(.*?)</b>", row, re.S)
+        assert title_match is not None
+        row_by_title[title_match.group(1)] = row
+
+    assert '<div class="stat">Unread <b data-unread-count="1">1</b></div>' in html
+    safe_row = row_by_title["Safe Output"]
+    assert 'data-read-title="Safe Output"' in safe_row
+    assert '<button class="read-toggle" type="button" aria-label="Mark output read: Safe Output">Mark read</button>' in safe_row
+    assert ".output-actions a, .output-actions button { pointer-events:auto; }" in html
+    assert ".output-actions button:focus-visible" in html
+    unsafe_row = row_by_title["Unsafe Output"]
+    assert "read-toggle" not in unsafe_row
+    assert "data-read-key" not in unsafe_row
+    assert "data-unread-count" not in unsafe_row
 
 
 def test_catalog_outputs_local_artifact_base_uses_file_clickable_html_sources():

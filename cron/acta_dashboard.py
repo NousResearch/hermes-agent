@@ -113,16 +113,41 @@ def _outputs_read_state_script() -> str:
     el.classList.toggle('unread', !isRead);
     var label=el.querySelector('.read-state');
     if(label) label.textContent=isRead?'READ':'UNREAD';
+    var button=el.querySelector('.read-toggle');
+    if(button){
+      button.textContent=isRead?'Mark unread':'Mark read';
+      button.setAttribute('aria-label', (isRead?'Mark output unread: ':'Mark output read: ')+(el.dataset.readTitle||''));
+    }
+  }
+  function updateUnreadCount(){
+    var unread=0;
+    document.querySelectorAll('.output-row.readable').forEach(function(row){ if(!row.classList.contains('read')) unread++; });
+    document.querySelectorAll('[data-unread-count]').forEach(function(el){ el.textContent=String(unread); el.dataset.unreadCount=String(unread); });
+  }
+  function setRead(el, value){
+    var k=el.dataset.readKey || '';
+    if(!k) return;
+    state[k]=!!value;
+    save();
+    apply(el);
+    updateUnreadCount();
   }
   document.querySelectorAll('.output-row.readable').forEach(function(el){
     apply(el);
+    el.querySelectorAll('.read-toggle').forEach(function(button){
+      button.addEventListener('click', function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        setRead(el, el.classList.contains('read') ? false : true);
+      });
+    });
     el.querySelectorAll('.output-open-overlay').forEach(function(anchor){
       anchor.addEventListener('click', function(){
-        var k=el.dataset.readKey || '';
-        if(k){ state[k]=true; save(); apply(el); }
+        setRead(el, true);
       });
     });
   });
+  updateUnreadCount();
 })();
 """.strip()
 
@@ -1225,7 +1250,7 @@ h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 v
 .output-row .read-state { color:#fff; }
 .output-open-overlay { position:absolute; inset:0; z-index:1; border:0; text-decoration:none; }
 .output-actions { position:relative; z-index:2; pointer-events:none; }
-.output-actions a { pointer-events:auto; }
+.output-actions a, .output-actions button { pointer-events:auto; }
 .output-meta .followup-meta { position:relative; z-index:2; }
 .output-row:before { content:""; width:2px; height:36px; border-radius:999px; background:linear-gradient(180deg,var(--acta),var(--acta2)); position:absolute; left:0; top:50%; transform:translateY(-50%); z-index:3; }
 .output-rank { color:var(--acta2); font:800 10px var(--mono); }
@@ -1236,7 +1261,9 @@ h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 v
 .output-meta .confidence-chip { color:#fff; border-color:rgba(35,167,255,.34); background:rgba(117,108,255,.16); letter-spacing:.08em; }
 .output-meta .followup-meta { color:var(--body); text-decoration:none; border-color:rgba(35,167,255,.38); }
 .output-actions { display:flex; gap:6px; align-items:center; }
-.output-actions a, .output-actions span { color:#fff; text-decoration:none; border:1px solid var(--line-soft); border-radius:999px; padding:6px 8px; font:760 10px var(--mono); text-transform:uppercase; white-space:nowrap; }
+.output-actions a, .output-actions span, .output-actions button { color:#fff; text-decoration:none; border:1px solid var(--line-soft); border-radius:999px; padding:6px 8px; font:760 10px var(--mono); text-transform:uppercase; white-space:nowrap; }
+.output-actions button { appearance:none; background:rgba(255,255,255,.045); cursor:pointer; }
+.output-actions button:focus-visible { outline:2px solid var(--acta2); outline-offset:2px; }
 .output-actions .open { background:rgba(117,108,255,.22); border-color:rgba(117,108,255,.42); }
 .output-actions .ask { background:rgba(117,108,255,.34); border-color:rgba(35,167,255,.38); }
 .output-actions .muted { color:var(--muted); background:rgba(255,255,255,.026); }
@@ -1515,11 +1542,18 @@ def render_catalog_outputs_page(
         read_class = f" readable{' read' if item.read else ' unread'}" if escaped_href else ""
         read_key_attr = f' data-read-key="{html.escape(f"output:{item.id}", quote=True)}"' if escaped_href else ""
         read_initial_attr = f' data-read-initial="{str(bool(item.read)).lower()}"' if escaped_href else ""
+        read_title_attr = f' data-read-title="{html.escape(item.title, quote=True)}"' if escaped_href else ""
         read_state_chip = f"<span class=\"read-state\">{'READ' if item.read else 'UNREAD'}</span>" if escaped_href else ""
         open_action = '<span class="open">OPEN</span>' if escaped_href else '<span class="muted">No public link</span>'
+        read_toggle = (
+            f'<button class="read-toggle" type="button" aria-label="Mark output {"unread" if item.read else "read"}: {html.escape(item.title, quote=True)}">'
+            f'{"Mark unread" if item.read else "Mark read"}</button>'
+            if escaped_href
+            else ""
+        )
         rows.append(
             f"""
-<article class="output-row{read_class} fresh"{read_key_attr}{read_initial_attr}{row_open_attr}>
+<article class="output-row{read_class} fresh"{read_key_attr}{read_initial_attr}{read_title_attr}{row_open_attr}>
   {open_overlay}
   <div class="output-rank">{index:02d}</div>
   <div class="output-main">
@@ -1527,7 +1561,7 @@ def render_catalog_outputs_page(
     <p>{_safe_text(item.summary or "Persistent Acta output.")}</p>
     <div class="output-meta">{read_state_chip}<span class="confidence-chip">CATALOG</span><span>{'PINNED' if item.pinned else 'OUTPUT'}</span><span>{_safe_text(age)}</span><span>SOURCE {_safe_text(item.source_name)}</span><span>ID {_safe_text(item.id)}</span>{tags}</div>
   </div>
-  <div class="output-actions">{open_action}</div>
+  <div class="output-actions">{read_toggle}{open_action}</div>
 </article>"""
         )
     read_state_script = _outputs_read_state_script()
@@ -1548,7 +1582,7 @@ def render_catalog_outputs_page(
   <h1>Persistent catalog.</h1>
   <p class="lede">Durable Acta outputs imported from the persistent catalog, separate from run history.</p>
   <nav class="quick-nav"><a href="/">Today</a><a class="active" href="/outputs">Outputs</a><a href="/runs">Runs</a><a href="/jobs">Jobs</a><a href="/archive">Archive</a></nav>
-  <section class="stats"><div class="stat">Outputs <b>{len(rows)}</b></div><div class="stat">Pinned <b>{pinned}</b></div><div class="stat">Unread <b>{unread}</b></div></section>
+  <section class="stats"><div class="stat">Outputs <b>{len(rows)}</b></div><div class="stat">Pinned <b>{pinned}</b></div><div class="stat">Unread <b data-unread-count="{unread}">{unread}</b></div></section>
   <section class="outputs-panel">
     {''.join(rows) or '<p class="prompt">No persistent Acta outputs yet.</p>'}
   </section>

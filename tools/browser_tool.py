@@ -18,6 +18,9 @@ Features:
   ``agent-browser install --with-deps`` (also installs system libraries for
   Debian/Ubuntu/Docker).
 - **Cloud mode**: Browserbase or Browser Use cloud execution when configured.
+- **Explicit CDP mode**: ``BROWSER_CDP_URL`` or ``browser.cdp_url`` attaches to
+  a running Chromium-family browser. Without that explicit override, these
+  tools do **not** control the user's already-open logged-in Chrome profile.
 - Session isolation per task ID
 - Text-based page snapshots using accessibility tree
 - Element interaction via ref selectors (@e1, @e2, etc.)
@@ -35,6 +38,9 @@ Environment Variables:
   requires paid plan (default: "true")
 - BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
   beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
+- BROWSER_CDP_URL: explicit Chrome DevTools endpoint for an already-running
+  Chromium-family browser. Use this (or browser.cdp_url in config.yaml) for
+  authenticated browser work that depends on the user's real logged-in profile.
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
@@ -1471,7 +1477,7 @@ atexit.register(_stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. Important: this tool does not automatically control the user's already-open logged-in Chrome; it uses an isolated/local/cloud browser unless BROWSER_CDP_URL or browser.cdp_url explicitly points to a live Chrome DevTools endpoint. For existing-login tasks, attach real Chrome via CDP first. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
         "parameters": {
             "type": "object",
             "properties": {

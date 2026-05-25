@@ -404,7 +404,7 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 |---------|-----------------|
 | `web` | Web search and content extraction |
 | `search` | Web search only (subset of `web`) |
-| `browser` | Browser automation (Browserbase, Camofox, or local Chromium) |
+| `browser` | Browser automation (Browserbase, Browser Use, Camofox, local Chromium, or explicit CDP override). Important: `browser_*` tools do **not** automatically control the user's already-open logged-in Chrome unless `BROWSER_CDP_URL` or `browser.cdp_url` points at a usable Chrome DevTools endpoint. For authenticated UI work, attach real/root Chrome through browser-harness/CDP first; otherwise the generic browser may be isolated and logged out. |
 | `terminal` | Shell commands and process management |
 | `file` | File read/write/search/patch |
 | `code_execution` | Sandboxed Python execution |

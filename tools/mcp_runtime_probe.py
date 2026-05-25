@@ -49,19 +49,23 @@ def _parse_boolish(value: Any, *, default: bool = True) -> bool:
     return default
 
 
-def _env_refs(value: Any) -> set[str]:
+def _env_refs(value: Any, *, include_mapping_keys: bool = False) -> set[str]:
     refs: set[str] = set()
     if isinstance(value, str):
         for match in _ENV_REF_RE.finditer(value):
             refs.add(match.group(1) or match.group(2))
     elif isinstance(value, Mapping):
         for key, nested in value.items():
-            if isinstance(key, str) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            if (
+                include_mapping_keys
+                and isinstance(key, str)
+                and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key)
+            ):
                 refs.add(key)
-            refs.update(_env_refs(nested))
+            refs.update(_env_refs(nested, include_mapping_keys=include_mapping_keys))
     elif isinstance(value, list):
         for nested in value:
-            refs.update(_env_refs(nested))
+            refs.update(_env_refs(nested, include_mapping_keys=include_mapping_keys))
     return refs
 
 
@@ -204,7 +208,7 @@ def normalize_mcp_servers(raw_configs: Mapping[str, Any]) -> list[NormalizedMCPS
             headers = cfg.get("headers") if isinstance(cfg.get("headers"), Mapping) else {}
             bearer_env_var = str(bearer_env_var or _bearer_env_from_headers(headers) or "").strip() or None
             env_vars = set()
-            env_vars.update(_env_refs(cfg.get("env") or {}))
+            env_vars.update(_env_refs(cfg.get("env") or {}, include_mapping_keys=True))
             env_vars.update(_env_refs(headers))
             if bearer_env_var:
                 env_vars.add(bearer_env_var)

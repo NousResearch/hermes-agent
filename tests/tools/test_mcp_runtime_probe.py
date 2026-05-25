@@ -92,6 +92,8 @@ def test_normalizes_hermes_codex_and_claude_configs_without_secret_values():
         "host": "api.githubcopilot.com",
         "path": "/mcp/readonly",
     }
+    assert summaries["hermes:github"]["env_vars"] == ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+    assert "Authorization" not in summaries["hermes:github"]["env_vars"]
     assert summaries["codex:cloudflare-api"]["env_vars"] == ["CLOUDFLARE_API_TOKEN"]
     assert summaries["claude:filesystem"]["command"] == {
         "basename": "npx",

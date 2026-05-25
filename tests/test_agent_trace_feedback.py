@@ -6,6 +6,7 @@ from tools.agent_trace_feedback import (
     EvalResult,
     evaluate_traces,
     extract_traces,
+    main,
     render_feedback_report,
     run_pipeline,
     write_jsonl,
@@ -138,6 +139,41 @@ def test_extract_traces_from_state_db_includes_tool_calls_and_paths(tmp_path):
     assert trace["tool_calls"] == ["terminal", "mcp_gbrain_put_page"]
     assert trace["paths_written"] == ["gbrain/hermes/reports/ok"]
     assert trace["final_response_summary"] == "It is 12:00 EDT."
+    assert trace["selected_skills"] == []
+    assert trace["retry_count"] == 0
+    assert trace["retry_tools"] == []
+
+
+def test_extract_traces_includes_selected_skills_corrections_and_retries(tmp_path):
+    db_path = tmp_path / "state.db"
+    _make_state_db(db_path)
+    con = sqlite3.connect(db_path)
+    skill_call = json.dumps([
+        {"function": {"name": "skill_view", "arguments": json.dumps({"name": "writing-plans"})}},
+        {"function": {"name": "terminal", "arguments": json.dumps({"command": "false"})}},
+        {"function": {"name": "terminal", "arguments": json.dumps({"command": "false"})}},
+    ])
+    con.execute(
+        "UPDATE messages SET tool_calls = ? WHERE session_id = 's1' AND role = 'assistant' AND timestamp = 102.0",
+        (skill_call,),
+    )
+    con.execute(
+        "INSERT INTO messages (session_id, role, content, tool_calls, tool_name, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "tool", "ERROR: command failed", None, "terminal", 103.5),
+    )
+    con.execute(
+        "INSERT INTO messages (session_id, role, content, tool_calls, tool_name, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "user", "You missed the actual current timezone.", None, None, 105.0),
+    )
+    con.commit()
+    con.close()
+
+    trace = extract_traces(db_path)[0]
+
+    assert trace["selected_skills"] == ["writing-plans"]
+    assert trace["retry_count"] == 1
+    assert trace["retry_tools"] == ["terminal"]
+    assert trace["user_followup_or_correction"] == "You missed the actual current timezone."
 
 
 def test_evaluate_traces_passes_tool_required_prompt_when_tool_was_used(tmp_path):
@@ -212,6 +248,19 @@ def test_run_pipeline_writes_trace_eval_and_report_files(tmp_path):
     assert outputs["report_path"].read_text(encoding="utf-8").startswith("# Feedback-to-Plan Report — 2026-05-25")
 
 
+def test_main_runs_pipeline_from_cli_args(tmp_path):
+    db_path = tmp_path / "state.db"
+    workspace = tmp_path / "workspace"
+    _make_state_db(db_path)
+
+    exit_code = main(["--db", str(db_path), "--workspace", str(workspace), "--date", "2026-05-25"])
+
+    assert exit_code == 0
+    assert (workspace / "traces" / "2026-05-25.jsonl").exists()
+    assert (workspace / "evals" / "wq-021" / "results" / "2026-05-25.jsonl").exists()
+    assert (workspace / "reports" / "feedback-to-plan" / "2026-05-25.md").exists()
+
+
 def test_write_jsonl_and_render_feedback_report(tmp_path):
     results = [
         EvalResult(
@@ -220,7 +269,14 @@ def test_write_jsonl_and_render_feedback_report(tmp_path):
             status="fail",
             detail="canonical write: entities/foo",
             suggested_delta="Route writes to gbrain/hermes/* or Dobby.",
-        )
+        ),
+        EvalResult(
+            rule_id="no_canonical_gbrain_writes_by_hermes",
+            trace_id="bad2",
+            status="fail",
+            detail="canonical write: entities/bar",
+            suggested_delta="Route writes to gbrain/hermes/* or Dobby.",
+        ),
     ]
     output_path = tmp_path / "results.jsonl"
 
@@ -231,3 +287,5 @@ def test_write_jsonl_and_render_feedback_report(tmp_path):
     assert "# Feedback-to-Plan Report — 2026-05-25" in report
     assert "no_canonical_gbrain_writes_by_hermes" in report
     assert "Route writes to gbrain/hermes/* or Dobby." in report
+    assert "Count: 2" in report
+    assert "Traces: `bad1`, `bad2`" in report

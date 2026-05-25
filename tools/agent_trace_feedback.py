@@ -8,13 +8,15 @@ report that can be copied into gbrain/hermes reports.
 
 from __future__ import annotations
 
+import argparse
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
 import sqlite3
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 
 CANONICAL_GBRAIN_PREFIXES = (
@@ -36,6 +38,10 @@ TOOL_REQUIRED_PROMPT_RE = re.compile(
     re.IGNORECASE,
 )
 PATH_KEYS = {"path", "file_path", "slug", "page_slug", "repo", "workdir"}
+CORRECTION_RE = re.compile(
+    r"\b(wrong|missed|missing|not quite|did you test|gap|wasn't|was not|incorrect|failed)\b",
+    re.IGNORECASE,
+)
 WRITE_TOOL_NAMES = {
     "write_file",
     "patch",
@@ -129,6 +135,22 @@ def run_pipeline(
     return {"trace_path": trace_path, "eval_path": eval_path, "report_path": report_path}
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI entrypoint for manual WQ-021 trace/eval/feedback runs."""
+
+    parser = argparse.ArgumentParser(description="Run Hermes trace/eval/feedback MVP pipeline.")
+    parser.add_argument("--db", default=str(Path.home() / ".hermes" / "state.db"), help="Path to Hermes state.db")
+    parser.add_argument("--workspace", default=str(Path.home() / ".hermes" / "workspace"), help="Output workspace directory")
+    parser.add_argument("--date", default=None, help="Run date YYYY-MM-DD; defaults to today UTC")
+    parser.add_argument("--since-ts", type=float, default=None, help="Only include sessions started at or after this Unix timestamp")
+    args = parser.parse_args(argv)
+
+    outputs = run_pipeline(args.db, args.workspace, date=args.date, since_ts=args.since_ts)
+    for key, value in outputs.items():
+        print(f"{key}: {value}")
+    return 0
+
+
 def render_feedback_report(results: Iterable[EvalResult], date: str | None = None) -> str:
     """Render a compact Markdown feedback-to-plan report."""
 
@@ -149,14 +171,16 @@ def render_feedback_report(results: Iterable[EvalResult], date: str | None = Non
         "## New failures",
         "",
     ]
-    if failures:
-        for result in failures:
+    grouped_failures = _group_failures(failures)
+    if grouped_failures:
+        for group in grouped_failures:
             lines.extend(
                 [
-                    f"- Rule: `{result.rule_id}`",
-                    f"  - Trace: `{result.trace_id}`",
-                    f"  - Detail: {result.detail}",
-                    f"  - Suggested delta: {result.suggested_delta or 'Investigate and convert into a concrete task.'}",
+                    f"- Rule: `{group['rule_id']}`",
+                    f"  - Count: {group['count']}",
+                    f"  - Traces: {group['traces']}",
+                    f"  - Example detail: {group['detail']}",
+                    f"  - Suggested delta: {group['suggested_delta'] or 'Investigate and convert into a concrete task.'}",
                 ]
             )
     else:
@@ -169,9 +193,9 @@ def render_feedback_report(results: Iterable[EvalResult], date: str | None = Non
             "",
         ]
     )
-    if failures:
-        for result in failures:
-            lines.append(f"- `{result.rule_id}`: {result.suggested_delta or result.detail}")
+    if grouped_failures:
+        for group in grouped_failures:
+            lines.append(f"- `{group['rule_id']}` ({group['count']}): {group['suggested_delta'] or group['detail']}")
     else:
         lines.append("- None.")
 
@@ -185,6 +209,25 @@ def render_feedback_report(results: Iterable[EvalResult], date: str | None = Non
         ]
     )
     return "\n".join(lines)
+
+
+def _group_failures(failures: list[EvalResult]) -> list[dict[str, str | int]]:
+    groups: dict[tuple[str, str], list[EvalResult]] = defaultdict(list)
+    for failure in failures:
+        groups[(failure.rule_id, failure.suggested_delta or failure.detail)].append(failure)
+
+    rendered: list[dict[str, str | int]] = []
+    for (rule_id, suggested_delta), items in sorted(groups.items(), key=lambda item: (-len(item[1]), item[0][0])):
+        rendered.append(
+            {
+                "rule_id": rule_id,
+                "count": len(items),
+                "traces": ", ".join(f"`{item.trace_id}`" for item in items),
+                "detail": items[0].detail,
+                "suggested_delta": suggested_delta,
+            }
+        )
+    return rendered
 
 
 def _fetch_sessions(con: sqlite3.Connection, since_ts: float | None) -> list[sqlite3.Row]:
@@ -210,6 +253,7 @@ def _session_to_trace(con: sqlite3.Connection, session: sqlite3.Row) -> dict[str
     tool_names = [call["name"] for call in parsed_tool_calls]
     errors = _extract_errors(messages)
     paths_read, paths_written = _extract_paths(parsed_tool_calls)
+    retry_count, retry_tools = _extract_retries(parsed_tool_calls, errors)
 
     return {
         "trace_id": session["id"],
@@ -219,14 +263,17 @@ def _session_to_trace(con: sqlite3.Connection, session: sqlite3.Row) -> dict[str
         "user_prompt_summary": _summarize(first_user),
         "model_provider": _model_provider(session),
         "model": session["model"],
+        "selected_skills": _extract_selected_skills(parsed_tool_calls),
         "tool_calls": tool_names,
         "tool_call_details": parsed_tool_calls,
         "tool_call_count": len(tool_names) or int(session["tool_call_count"] or 0),
         "paths_read": sorted(paths_read),
         "paths_written": sorted(paths_written),
         "errors": errors,
+        "retry_count": retry_count,
+        "retry_tools": retry_tools,
         "final_response_summary": _summarize(last_assistant),
-        "user_followup_or_correction": "",
+        "user_followup_or_correction": _extract_user_correction(messages),
         "risk_flags": _risk_flags(paths_written, errors),
     }
 
@@ -316,6 +363,49 @@ def _extract_paths(calls: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
         else:
             paths_read.update(path for path in paths if path.startswith("/") or "/" in path)
     return paths_read, paths_written
+
+
+def _extract_selected_skills(calls: list[dict[str, Any]]) -> list[str]:
+    skills: list[str] = []
+    for call in calls:
+        if call.get("name") != "skill_view":
+            continue
+        raw_arguments = call.get("arguments")
+        arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+        skill_name = str(arguments.get("name") or "")
+        if skill_name and skill_name not in skills:
+            skills.append(skill_name)
+    return skills
+
+
+def _extract_retries(calls: list[dict[str, Any]], errors: list[str]) -> tuple[int, list[str]]:
+    if not errors:
+        return 0, []
+    retry_tools: list[str] = []
+    retry_count = 0
+    previous_signature: tuple[str, str] | None = None
+    for call in calls:
+        name = str(call.get("name") or "")
+        signature = (name, json.dumps(call.get("arguments", {}), sort_keys=True))
+        if signature == previous_signature:
+            retry_count += 1
+            if name and name not in retry_tools:
+                retry_tools.append(name)
+        previous_signature = signature
+    return retry_count, retry_tools
+
+
+def _extract_user_correction(messages: list[sqlite3.Row]) -> str:
+    seen_assistant = False
+    for message in messages:
+        if message["role"] == "assistant" and message["content"]:
+            seen_assistant = True
+            continue
+        if seen_assistant and message["role"] == "user" and message["content"]:
+            content = str(message["content"])
+            if CORRECTION_RE.search(content):
+                return _summarize(content)
+    return ""
 
 
 def _walk_path_values(value: Any, key: str | None = None) -> Iterable[str]:
@@ -561,3 +651,7 @@ def _summarize(text: str, limit: int = 240) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1].rstrip() + "…"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

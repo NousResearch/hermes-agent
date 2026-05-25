@@ -1125,11 +1125,32 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
 
 
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
+    """Return a provider's persisted state.
+
+    In profile mode, falls back to the global-root ``auth.json`` when the
+    profile has no entry for ``provider_id``. This mirrors the per-provider
+    shadowing already used by ``read_credential_pool``: workers spawned in a
+    profile can see providers (e.g. ``nous``) that were only authenticated at
+    global scope. Once the user runs ``hermes auth login <provider>`` inside
+    the profile, the profile state fully shadows the global state on the next
+    read. See issue #18594 follow-up.
+    """
     providers = auth_store.get("providers")
-    if not isinstance(providers, dict):
-        return None
-    state = providers.get(provider_id)
-    return dict(state) if isinstance(state, dict) else None
+    if isinstance(providers, dict):
+        state = providers.get(provider_id)
+        if isinstance(state, dict):
+            return dict(state)
+
+    # Read-only fallback to the global-root auth store (profile mode only;
+    # returns empty dict in classic mode so this is a no-op).
+    global_store = _load_global_auth_store()
+    if global_store:
+        global_providers = global_store.get("providers")
+        if isinstance(global_providers, dict):
+            global_state = global_providers.get(provider_id)
+            if isinstance(global_state, dict):
+                return dict(global_state)
+    return None
 
 
 def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any]) -> None:
@@ -1283,23 +1304,18 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None.
 
-    In profile mode, falls back to the global-root ``auth.json`` when the
-    profile has no state for this provider. Profile state always wins when
-    present. Writes (``_save_auth_store`` / ``persist_*_credentials``) are
-    unchanged — they still target the profile only. This mirrors
+    In profile mode, ``_load_provider_state`` already falls back to the
+    global-root ``auth.json`` per-provider when the profile has no entry —
+    so this is now a thin convenience wrapper. Profile state always wins
+    when present. Writes (``_save_auth_store`` / ``persist_*_credentials``)
+    are unchanged — they still target the profile only. This mirrors
     ``read_credential_pool``'s per-provider shadowing semantics so that
     ``_seed_from_singletons`` can reseed a profile's credential pool from
     global-scope provider state (e.g. a globally-authenticated Anthropic
     OAuth or Nous device-code session). See issue #18594 follow-up.
     """
     auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, provider_id)
-    if state is not None:
-        return state
-    global_store = _load_global_auth_store()
-    if not global_store:
-        return None
-    return _load_provider_state(global_store, provider_id)
+    return _load_provider_state(auth_store, provider_id)
 
 
 def get_active_provider() -> Optional[str]:

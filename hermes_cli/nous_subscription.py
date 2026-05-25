@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
 from hermes_cli.auth import get_nous_auth_status
-from hermes_cli.config import get_env_value, load_config
+# Use the prefer-dotenv variant: every get_env_value call in this module
+# is a credential probe gating subscription-feature availability, so a
+# stale shell-exported value would mask a freshly rotated .env key
+# (issue #20591).  Aliased to keep call sites unchanged.
+from hermes_cli.config import (  # noqa: F401
+    get_env_value_prefer_dotenv as get_env_value,
+    load_config,
+)
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (

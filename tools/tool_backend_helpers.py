@@ -131,14 +131,12 @@ def fal_key_is_configured() -> bool:
     checks and CLI setup-time checks agree.  A whitespace-only value
     is treated as unset everywhere.
     """
-    value = os.getenv("FAL_KEY")
-    if value is None:
-        # Fall back to the .env file for CLI paths that may run before
-        # dotenv is loaded into os.environ.
-        try:
-            from hermes_cli.config import get_env_value
+    # Prefer ~/.hermes/.env over inherited os.environ so a freshly
+    # rotated key wins immediately (issue #20591).
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv
 
-            value = get_env_value("FAL_KEY")
-        except Exception:
-            value = None
+        value = get_env_value_prefer_dotenv("FAL_KEY")
+    except Exception:
+        value = os.getenv("FAL_KEY")
     return bool(value and value.strip())

@@ -5053,10 +5053,35 @@ def get_env_value(key: str) -> Optional[str]:
     # Check environment first
     if key in os.environ:
         return os.environ[key]
-    
+
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
+
+
+# NOTE: Will be reconciled with the helper from PR #20602 on rebase.
+# That PR introduces the same name+semantics in this module; this PR
+# extends the policy to credential-bearing call sites #20602 leaves
+# untouched (Azure Foundry, Nous subscription probes, tool-side helpers).
+def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
+    """Get a credential value, preferring ``~/.hermes/.env`` over ``os.environ``.
+
+    Mirror of :func:`get_env_value` with the lookup order inverted.  Use
+    this on credential-RESOLVE paths (the values returned are passed to
+    upstream APIs) so that a key freshly rotated in ``~/.hermes/.env``
+    immediately wins over a stale value inherited from a parent shell.
+
+    Do NOT use on display-only paths (``hermes status``, ``hermes
+    doctor``).  Those should keep matching what the shell sees so that
+    diagnostic output reflects the user's actual environment.
+
+    See issue #20591 for the underlying bug class.
+    """
+    env_vars = load_env()
+    val = env_vars.get(key)
+    if val is None or val == "":
+        val = os.environ.get(key)
+    return val
 
 
 # =============================================================================

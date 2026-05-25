@@ -1024,8 +1024,8 @@ def _resolve_azure_foundry_runtime(
     api_key = explicit_api_key
     if not api_key:
         try:
-            from hermes_cli.config import get_env_value
-            api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
+            from hermes_cli.config import get_env_value_prefer_dotenv
+            api_key = get_env_value_prefer_dotenv("AZURE_FOUNDRY_API_KEY") or ""
         except Exception:
             api_key = ""
     if not api_key:

@@ -7693,12 +7693,18 @@ def _detect_concurrent_hermes_instances(
         exclude_pids: set[int] = {exclude_pid}
     else:
         exclude_pids = {os.getpid()}
+    # The parent-walk is best-effort: if psutil rejects a PID (NoSuchProcess /
+    # AccessDenied) we stop walking and use whatever we've collected so far.
+    # Broader Exception catch on the outer block guards against partially-
+    # stubbed psutil in unit tests (e.g. a SimpleNamespace lacking Process /
+    # NoSuchProcess) — the surrounding update flow documents this helper as
+    # "never raises".
     try:
         current = psutil.Process(next(iter(exclude_pids)))
         while True:
             try:
                 parent = current.parent()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except Exception:
                 break
             if parent is None or parent.pid <= 0:
                 break
@@ -7706,7 +7712,7 @@ def _detect_concurrent_hermes_instances(
                 break  # loop detected
             exclude_pids.add(parent.pid)
             current = parent
-    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+    except Exception:
         pass
 
     # Resolve every shim path to its canonical form once for cheap comparison.

@@ -4,12 +4,13 @@ import asyncio
 import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
-from plugins.cursor_sdk import register
-from plugins.cursor_sdk import tools as cursor_tools
-from plugins.cursor_sdk.tools import (
+from plugins.cursor_agent_sdk import register
+from plugins.cursor_agent_sdk import tools as cursor_tools
+from plugins.cursor_agent_sdk.tools import (
     CURSOR_AGENT_SCHEMA,
     DEFAULT_TIMEOUT_SECONDS,
     check_cursor_sdk_available,
@@ -76,6 +77,12 @@ def test_register_exposes_cursor_agent_tool():
         tool["schema"]["parameters"]["properties"]["timeout_seconds"]["default"]
         == DEFAULT_TIMEOUT_SECONDS
     )
+
+
+def test_plugin_package_does_not_shadow_cursor_sdk_package():
+    repo_root = Path(__file__).resolve().parents[2]
+
+    assert not (repo_root / "plugins" / "cursor_sdk").exists()
 
 
 def test_register_real_context_sets_result_size_cap():
@@ -323,7 +330,8 @@ def test_handle_cursor_agent_local_run_invokes_sdk(monkeypatch, tmp_path):
     assert calls["create"]["client"].launched is True
     assert calls["create"]["client"].kwargs == {
         "workspace": str(tmp_path.resolve()),
-        "client_timeout": 12,
+        "timeout": pytest.approx(12, rel=0.01),
+        "client_timeout": pytest.approx(12, rel=0.01),
         "max_retries": 0,
         "allow_api_key_env_fallback": True,
     }
@@ -577,6 +585,76 @@ def test_handle_cursor_agent_timeout_cancels_run(monkeypatch, tmp_path):
     assert calls["cancelled"] is True
 
 
+def test_handle_cursor_agent_runs_inside_active_event_loop(monkeypatch, tmp_path):
+    class FakeAgent:
+        @classmethod
+        async def create(cls, **kwargs):
+            return types.SimpleNamespace(
+                agent_id="agent",
+                send=lambda prompt: types.SimpleNamespace(id="run", text=lambda: "ok"),
+                close=lambda: None,
+            )
+
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor-key")
+    monkeypatch.setitem(
+        sys.modules,
+        "cursor_sdk",
+        types.SimpleNamespace(
+            AsyncAgent=FakeAgent,
+            LocalAgentOptions=lambda **kwargs: kwargs,
+            CloudAgentOptions=object(),
+            CloudRepository=object(),
+            AsyncClient=_FakeCursorClient,
+        ),
+    )
+
+    async def call_handler():
+        return handle_cursor_agent({"prompt": "work", "cwd": str(tmp_path)})
+
+    result = json.loads(asyncio.run(call_handler()))
+
+    assert result["success"] is True
+    assert result["text"] == "ok"
+
+
+def test_handle_cursor_agent_awaits_async_run_text_fallback(monkeypatch):
+    class FakeRun:
+        id = "run"
+
+        async def wait(self):
+            return types.SimpleNamespace(status="finished", result="")
+
+        async def text(self):
+            return "async run text"
+
+    class FakeAgent:
+        @classmethod
+        async def create(cls, **kwargs):
+            return types.SimpleNamespace(
+                agent_id="agent",
+                send=lambda prompt: FakeRun(),
+                close=lambda: None,
+            )
+
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor-key")
+    monkeypatch.setitem(
+        sys.modules,
+        "cursor_sdk",
+        types.SimpleNamespace(
+            AsyncAgent=FakeAgent,
+            LocalAgentOptions=lambda **kwargs: kwargs,
+            CloudAgentOptions=object(),
+            CloudRepository=object(),
+            AsyncClient=_FakeCursorClient,
+        ),
+    )
+
+    result = json.loads(handle_cursor_agent({"prompt": "work"}))
+
+    assert result["success"] is True
+    assert result["text"] == "async run text"
+
+
 def test_handle_cursor_agent_uses_bridge_env_client(monkeypatch, tmp_path):
     calls = {}
 
@@ -616,9 +694,9 @@ def test_handle_cursor_agent_uses_bridge_env_client(monkeypatch, tmp_path):
     assert calls["create"]["client"].kwargs == {
         "base_url": "http://127.0.0.1:12345",
         "auth_token": "bridge-token",
-        "timeout": 34,
-        "unary_timeout": 34,
-        "stream_timeout": 34,
+        "timeout": pytest.approx(34, rel=0.01),
+        "unary_timeout": pytest.approx(34, rel=0.01),
+        "stream_timeout": pytest.approx(34, rel=0.01),
         "max_retries": 0,
         "allow_api_key_env_fallback": False,
     }

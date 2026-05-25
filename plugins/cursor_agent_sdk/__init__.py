@@ -8,7 +8,7 @@ loop.
 
 from __future__ import annotations
 
-from plugins.cursor_sdk.tools import (
+from .tools import (
     CURSOR_AGENT_SCHEMA,
     check_cursor_sdk_available,
     handle_cursor_agent,

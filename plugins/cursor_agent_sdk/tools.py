@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -134,6 +136,7 @@ def handle_cursor_agent(args: Mapping[str, Any], **kwargs: Any) -> str:
     model = str(args.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
     try:
+        cwd: Path | None = None
         timeout_seconds = _coerce_timeout_seconds(args.get("timeout_seconds"))
         if runtime == "local":
             _ensure_local_terminal_backend()
@@ -166,7 +169,7 @@ def handle_cursor_agent(args: Mapping[str, Any], **kwargs: Any) -> str:
                 prompt=prompt,
                 create_kwargs=create_kwargs,
                 runtime_payload=runtime_payload,
-                cwd=cwd if runtime == "local" else None,
+                cwd=cwd,
                 timeout_seconds=timeout_seconds,
             )
         )
@@ -190,27 +193,31 @@ async def _execute_cursor_agent(
     agent = None
     client = None
     run = None
+    deadline = time.monotonic() + timeout_seconds
     try:
         client = await _create_cursor_client(
             AsyncClient,
             cwd=cwd,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=_remaining_timeout(deadline),
         )
-        agent = await _maybe_await(
-            AsyncAgent.create(
-                client=client,
-                api_key=api_key,
-                model=model,
-                **create_kwargs,
-            )
+        agent = await _wait_for_deadline(
+            _maybe_await(
+                AsyncAgent.create(
+                    client=client,
+                    api_key=api_key,
+                    model=model,
+                    **create_kwargs,
+                )
+            ),
+            timeout_seconds=_remaining_timeout(deadline),
         )
         run = await _wait_for_deadline(
             _maybe_await(agent.send(prompt)),
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=_remaining_timeout(deadline),
         )
         text, status = await _wait_for_deadline(
             _run_text_and_status(run),
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=_remaining_timeout(deadline),
         )
         success = status in {"", SUCCESS_STATUS}
         response = {
@@ -225,9 +232,11 @@ async def _execute_cursor_agent(
         if not success:
             response["error"] = f"Cursor SDK run ended with status: {status}"
         return response
-    except CursorRunTimeout:
+    except CursorRunTimeout as exc:
         await _cancel_run(run)
-        raise
+        raise TimeoutError(
+            f"Cursor SDK run exceeded timeout_seconds={timeout_seconds}"
+        ) from exc
     except Exception:
         await _cancel_run(run)
         raise
@@ -238,11 +247,24 @@ async def _execute_cursor_agent(
 
 def _run_async(coro: Any) -> Any:
     try:
-        asyncio.get_running_loop()
+        from model_tools import _run_async as run_model_tools_async
+    except Exception:
+        return _run_async_fallback(coro)
+    return run_model_tools_async(coro)
+
+
+def _run_async_fallback(coro: Any) -> Any:
+    try:
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    coro.close()
-    raise RuntimeError("cursor_agent cannot run inside an active asyncio event loop")
+
+    if not loop.is_running():
+        return asyncio.run(coro)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(asyncio.run, coro)
+        return future.result()
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -261,6 +283,13 @@ async def _wait_for_deadline(awaitable: Any, *, timeout_seconds: float) -> Any:
         raise CursorRunTimeout(
             f"Cursor SDK run exceeded timeout_seconds={timeout_seconds}"
         ) from exc
+
+
+def _remaining_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise CursorRunTimeout("Cursor SDK run exceeded timeout_seconds")
+    return remaining
 
 
 async def _close_agent(agent: Any) -> None:
@@ -292,13 +321,13 @@ async def _run_text_and_status(run: Any) -> tuple[str, str]:
     if callable(wait_fn):
         result = await _maybe_await(wait_fn())
         if result is not None:
-            text = _text_from_object(result)
+            text = await _text_from_object(result)
             if not text:
-                text = _text_from_object(run)
+                text = await _text_from_object(run)
             status = _status_from_object(result) or _status_from_object(run)
             return text, status
 
-    return _text_from_object(run), _status_from_object(run)
+    return await _text_from_object(run), _status_from_object(run)
 
 
 async def _cancel_run(run: Any) -> None:
@@ -315,7 +344,7 @@ async def _create_cursor_client(
     AsyncClient: Any,
     *,
     cwd: Path | None,
-    timeout_seconds: int,
+    timeout_seconds: float,
 ) -> Any:
     bridge_url = str(os.getenv("CURSOR_SDK_BRIDGE_URL") or "").strip()
     bridge_token = str(
@@ -338,6 +367,7 @@ async def _create_cursor_client(
     return await _maybe_await(
         AsyncClient.launch_bridge(
             workspace=str(cwd) if cwd is not None else None,
+            timeout=timeout_seconds,
             client_timeout=timeout_seconds,
             max_retries=0,
             allow_api_key_env_fallback=True,
@@ -438,11 +468,12 @@ def _coerce_timeout_seconds(value: Any) -> int:
     return timeout_seconds
 
 
-def _text_from_object(obj: Any) -> str:
+async def _text_from_object(obj: Any) -> str:
     for name in ("text", "result"):
         value = getattr(obj, name, None)
         if callable(value):
             value = value()
+        value = await _maybe_await(value)
         if value is not None:
             return str(value)
     return ""

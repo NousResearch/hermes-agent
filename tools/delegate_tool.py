@@ -1348,7 +1348,16 @@ def _run_single_child(
         leased_cred_id = child_pool.acquire_lease()
         if leased_cred_id is not None:
             try:
-                leased_entry = child_pool.current()
+                # P30-9 FIX: re-select to bypass any entries that became
+                # exhausted between pool assignment (line 1154 area) and now.
+                # The parent may have rotated away the current key while the
+                # child was being constructed; we must use a fresh, unexhausted
+                # credential at the moment of first use.
+                re_selected = child_pool.select()
+                if re_selected is not None:
+                    leased_entry = re_selected
+                else:
+                    leased_entry = child_pool.current()
                 if leased_entry is not None and hasattr(child, "_swap_credential"):
                     child._swap_credential(leased_entry)
             except Exception as exc:

@@ -1848,6 +1848,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
+                # reply_to_mode="off" on the existing telegram_dm_topic_reply_fallback path
+                # is an explicit user opt-in to "message_thread_id alone is enough" (PR #23994
+                # / commit 21a15b671). Honor it — don't fail loud just because the anchor was
+                # suppressed by config. The new fail-loud contract only applies when the caller
+                # didn't ask for the anchor to be dropped.
+                dm_topic_reply_to_off = (
+                    private_dm_topic_send
+                    and self._reply_to_mode == "off"
+                    and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+                )
                 reply_to_source = reply_to or (
                     str(metadata_reply_to) if private_dm_topic_send and metadata_reply_to is not None else None
                 )
@@ -1859,7 +1869,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)
                 reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
-                if private_dm_topic_send and reply_to_id is None:
+                if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
                     return SendResult(
                         success=False,
                         error=self._dm_topic_missing_anchor_error(),

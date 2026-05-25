@@ -243,13 +243,22 @@ def _dashboard_inline_script() -> str:
     if(label) label.textContent=isRead?'READ':'UNREAD';
     var action=el.querySelector('.swipe-action');
     if(action) action.textContent=isRead?'MARK UNREAD':'MARK READ';
+    var button=el.querySelector('.read-toggle');
+    if(button){
+      var title=el.dataset.readTitle || 'briefing';
+      button.textContent=isRead?'Mark unread':'Mark read';
+      button.setAttribute('aria-label', (isRead?'Mark briefing unread: ':'Mark briefing read: ')+title);
+    }
   }
-  function toggle(el){
+  function setRead(el, value){
     var k=el.dataset.readKey || '';
     if(!k) return;
-    state[k]=!state[k];
+    state[k]=!!value;
     save();
     apply(el);
+  }
+  function toggle(el){
+    setRead(el, el.classList.contains('read') ? false : true);
     el.classList.add('swipe-peek');
     setTimeout(function(){ el.classList.remove('swipe-peek'); }, 260);
   }
@@ -257,8 +266,7 @@ def _dashboard_inline_script() -> str:
     apply(el);
     var sx=0, sy=0, dx=0, swiping=false, didSwipe=false, active=false;
     function openReadable(){
-      var k=el.dataset.readKey || '';
-      if(k){ state[k]=true; save(); apply(el); }
+      setRead(el, true);
       var openUrl=el.dataset.openUrl || '';
       if(openUrl) window.location.href=openUrl;
     }
@@ -294,13 +302,20 @@ def _dashboard_inline_script() -> str:
     }
     el.addEventListener('click', function(ev){
       if(didSwipe){ ev.preventDefault(); ev.stopPropagation(); didSwipe=false; return; }
-      if(ev.target && ev.target.closest && ev.target.closest('a')) return;
+      if(ev.target && ev.target.closest && ev.target.closest('a,button')) return;
       openReadable();
     }, true);
+    var button=el.querySelector('.read-toggle');
+    if(button){
+      button.addEventListener('click', function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        setRead(el, el.classList.contains('read') ? false : true);
+      });
+    }
     el.querySelectorAll('.row-open-overlay').forEach(function(anchor){
       anchor.addEventListener('click', function(){
-        var k=el.dataset.readKey || '';
-        if(k){ state[k]=true; save(); apply(el); }
+        setRead(el, true);
       });
     });
     el.addEventListener('touchstart', start, {passive:true});
@@ -989,7 +1004,8 @@ def render_dashboard(
             else ""
         )
         read_key = html.escape(_read_key(item), quote=True) if href else ""
-        open_attr = f' data-open-url="{href}" data-read-key="{read_key}"' if href else ' aria-disabled="true"'
+        read_title = html.escape(item.name, quote=True) if href else ""
+        open_attr = f' data-open-url="{href}" data-read-key="{read_key}" data-read-title="{read_title}"' if href else ' aria-disabled="true"'
         readable_class = " readable unread" if href else ""
         open_overlay = (
             f'<a class="row-open-overlay" href="{href}" aria-label="Open briefing: {html.escape(item.name, quote=True)}"></a>'
@@ -999,6 +1015,11 @@ def render_dashboard(
         swipe_action = '<div class="swipe-action" aria-hidden="true">MARK READ</div>' if href else ""
         read_state = '<span class="read-state">UNREAD</span>' if href else ""
         row_read_dot = '<span class="read-dot"></span>' if href else ""
+        read_toggle = (
+            f'<button class="read-toggle" type="button" aria-label="Mark briefing read: {read_title}">Mark read</button>'
+            if href
+            else ""
+        )
         rows_by_lane[lane].append(
             f"""
 <section class="brief-row{readable_class} {status_class}" data-feed-lane="{_safe_text(lane)}"{open_attr}>
@@ -1012,7 +1033,7 @@ def render_dashboard(
       <div class="row-kicker"><span class="lane-chip">{_safe_text(_feed_lane_label(lane))}</span>{read_state}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span><span>{_safe_text(item.schedule or "manual")}</span></div>
       <div class="source-line">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}</div>
     </div>
-    <span class="card-actions"><span class="open-label">{open_label}</span>{ask_link}</span>
+    <span class="card-actions">{read_toggle}<span class="open-label">{open_label}</span>{ask_link}</span>
   </div>
 </section>"""
         )
@@ -1085,9 +1106,15 @@ def render_dashboard(
         else ""
     )
     lead_read_key = html.escape(_read_key(lead_item), quote=True) if lead_item and lead_href else ""
+    lead_read_title = html.escape(lead_item.name, quote=True) if lead_item and lead_href else ""
     lead_class = "lead readable unread" if lead_href else "lead"
-    lead_read_attr = f' data-read-key="{lead_read_key}"' if lead_href else ""
+    lead_read_attr = f' data-read-key="{lead_read_key}" data-read-title="{lead_read_title}"' if lead_href else ""
     lead_label_read_state = '<span class="read-dot"></span><span class="read-state">UNREAD</span>' if lead_href else ""
+    lead_read_toggle = (
+        f'<button class="read-toggle" type="button" aria-label="Mark briefing read: {lead_read_title}">Mark read</button>'
+        if lead_href
+        else ""
+    )
     lead_open_hint = "open first" if lead_href else "no page"
     lead_row_meta = "row opens" if lead_href else "signed rows only"
     lead_confidence = _confidence_label(lead_item, now) if lead_item else "CONF LOW/GAP"
@@ -1145,7 +1172,7 @@ a {{ color:inherit; }}
 h1 {{ grid-column:1; font:720 clamp(18px,2.3vw,24px)/1.08 var(--ui); letter-spacing:-.025em; margin:0; color:#fff; max-width:980px; }}
 .lead p {{ grid-column:1; font:13px/1.32 var(--ui); color:var(--body); max-width:940px; margin:0; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }}
 .meta {{ grid-column:1/-1; display:flex; flex-wrap:wrap; gap:6px; margin-top:0; color:var(--muted); font:10px var(--mono); text-transform:uppercase; }}
-.meta span, .meta .ask-label {{ border:1px solid var(--line-soft); border-radius:999px; padding:3px 6px; background:rgba(255,255,255,.026); }}
+.meta span, .meta .ask-label, .meta .read-toggle {{ border:1px solid var(--line-soft); border-radius:999px; padding:3px 6px; background:rgba(255,255,255,.026); }}
 .meta b {{ color:#fff; font-weight:700; }}
 .output-summary {{ grid-column:2; grid-row:2 / span 2; align-self:center; justify-self:end; display:grid; gap:2px; min-width:58px; text-align:right; font:10px var(--mono); color:var(--muted); text-transform:uppercase; }}
 .output-summary b {{ color:#fff; font:760 16px/1 var(--ui); }}
@@ -1183,6 +1210,9 @@ h2 {{ font:680 15px/1.12 var(--ui); margin:0 0 2px; color:#fff; letter-spacing:-
 .brief-copy p {{ font:13px/1.25 var(--ui); color:var(--body); margin:0; max-width:860px; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }}
 .source-line {{ display:block; font:9.5px var(--mono); color:var(--faint); margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .open-label {{ justify-self:end; align-self:center; border:1px solid var(--line-soft); border-radius:999px; color:#fff; padding:5px 7px; font:10px var(--mono); background:rgba(255,255,255,.035); }}
+.read-toggle {{ appearance:none; -webkit-appearance:none; border:1px solid rgba(35,167,255,.38); border-radius:999px; color:#fff; background:rgba(35,167,255,.13); padding:5px 7px; font:760 10px var(--mono); line-height:1; cursor:pointer; white-space:nowrap; text-transform:none; }}
+.read-toggle:focus-visible {{ outline:2px solid var(--acta2); outline-offset:2px; }}
+.readable.read .read-toggle {{ color:var(--muted); border-color:var(--line-soft); background:rgba(255,255,255,.026); }}
 .card-actions {{ justify-self:end; align-self:center; display:flex; gap:6px; align-items:center; }}
 .ask-label {{ border:1px solid rgba(35,167,255,.38); border-radius:999px; color:#fff; background:rgba(117,108,255,.34); text-decoration:none; padding:5px 7px; font:760 10px var(--mono); }}
 .brief-row[data-open-url]:hover .open-label {{ border-color:var(--acta2); color:#fff; }}
@@ -1272,7 +1302,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
           <div class="output-summary"><b>{visible}/{active}</b><span>fresh</span><span>{missing} gaps</span></div>
-          <div class="meta"><span>{html.escape(day_label)}</span><span>{_safe_text(lead_confidence)}</span><span>{silent} silent</span><span>{len(archive_dates)} archive days</span><span>{lead_row_meta}</span>{lead_ask_link}</div>
+          <div class="meta"><span>{html.escape(day_label)}</span><span>{_safe_text(lead_confidence)}</span><span>{silent} silent</span><span>{len(archive_dates)} archive days</span><span>{lead_row_meta}</span>{lead_read_toggle}{lead_ask_link}</div>
         </article>
         <div class="panel-title"><b>Output Streams</b><span>daily life separated from dev cycles</span></div>
         {daily_section}

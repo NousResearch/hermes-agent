@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from cron.acta_dashboard import (
+    _dashboard_inline_script,
     _feed_lane,
     _outputs_read_state_script,
     acta_dashboard_config,
@@ -657,8 +658,10 @@ def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
     assert '<a class="row-open-overlay" href="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc" aria-label="Open briefing: Lead Brief"></a>' in html
     assert 'aria-label="Open briefing: Lead Brief"' in html
     assert 'data-read-key="lead:' in html
+    assert 'data-read-title="Lead Brief"' in html
     assert '<span class="read-state">UNREAD</span>' in html
     assert 'MARK READ' in html
+    assert '<button class="read-toggle" type="button" aria-label="Mark briefing read: Lead Brief">Mark read</button>' in html
     assert ".row-open-overlay:focus-visible" in html
     assert ".brief-row > .swipe-content" in html
     assert ".brief-row > :not(.row-open-overlay)" not in html
@@ -713,6 +716,21 @@ def test_feed_rows_are_keyboard_accessible_signed_links():
     assert 'data-open-url="https://acta.imperatr.com/r/second/detail.html?exp=1&amp;sig=abc"' in html
     assert '<a class="row-open-overlay" href="https://acta.imperatr.com/r/second/detail.html?exp=1&amp;sig=abc" aria-label="Open briefing: Second Brief"></a>' in html
     assert 'aria-label="Open briefing: Second Brief"' in html
+    assert 'data-read-title="Second Brief"' in html
+    assert '<button class="read-toggle" type="button" aria-label="Mark briefing read: Second Brief">Mark read</button>' in html
+
+
+def test_dashboard_read_toggle_script_updates_button_and_stays_in_row():
+    script = _dashboard_inline_script()
+
+    assert "var button=el.querySelector('.read-toggle')" in script
+    assert "button.textContent=isRead?'Mark unread':'Mark read';" in script
+    assert "button.setAttribute('aria-label', (isRead?'Mark briefing unread: ':'Mark briefing read: ')+title);" in script
+    assert "button.addEventListener('click'" in script
+    assert "ev.preventDefault();" in script
+    assert "ev.stopPropagation();" in script
+    assert "setRead(el, el.classList.contains('read') ? false : true);" in script
+    assert "setRead(el, true);" in script
 
 
 def test_today_dashboard_requires_signed_acta_artifact_urls_for_open_overlays():
@@ -840,9 +858,11 @@ def test_today_dashboard_requires_signed_acta_artifact_urls_for_open_overlays():
         assert 'aria-disabled="true"' in disabled_row
         assert "readable" not in disabled_row
         assert "data-read-key" not in disabled_row
+        assert "data-read-title" not in disabled_row
         assert "row-open-overlay" not in disabled_row
         assert "read-dot" not in disabled_row
         assert "read-state" not in disabled_row
+        assert "read-toggle" not in disabled_row
         assert "MARK READ" not in disabled_row
 
 
@@ -869,9 +889,11 @@ def test_today_dashboard_gates_lead_read_state_to_signed_detail_links():
     assert 'aria-disabled="true"' in lead_article.group(0)
     assert "readable" not in lead_article.group(0)
     assert "data-read-key" not in lead_article.group(0)
+    assert "data-read-title" not in lead_article.group(0)
     assert "row-open-overlay" not in lead_article.group(0)
     assert "read-dot" not in lead_article.group(0)
     assert "read-state" not in lead_article.group(0)
+    assert "read-toggle" not in lead_article.group(0)
     assert "no page" in lead_article.group(0)
     assert "https://acta.imperatr.com/r/lead/detail.html?exp=1" not in html
 
@@ -983,7 +1005,8 @@ def test_read_state_has_cookie_fallback_and_applies_on_open(tmp_path: Path):
     assert "document.cookie" in html
     assert "readFromCookie" in html
     assert "writeToCookie" in html
-    assert "state[k]=true; save(); apply(el);" in html
+    assert "function setRead(el, value)" in html
+    assert "setRead(el, true);" in html
 
 
 def test_dashboard_surfaces_confidence_without_changing_read_state():

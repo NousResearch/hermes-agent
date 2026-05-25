@@ -52,18 +52,23 @@ from typing import Dict, List, Tuple
 # Default test discovery roots.
 _DEFAULT_ROOTS = ["tests"]
 
-# Directories to skip during discovery — the e2e + integration suites
-# require real services and are run separately. Match exactly the
-# ``--ignore=`` flags the previous CI command used.
+# Directories to skip during discovery — these suites require real
+# external services (a model gateway, a docker daemon with a prebuilt
+# image, etc.) and are run in their own dedicated CI jobs:
 #
-# ``docker`` joined this list in the salvage of PR #30136: the new
-# tests/docker/ harness builds the real Dockerfile in a session
-# fixture and runs ``docker run`` against it. On a CI runner where
-# Docker IS available (ubuntu-latest), the build can exceed
-# pytest-timeout's 180s ceiling and surface as a setup-timeout
-# instead of a real test failure. The harness has its own dedicated
-# action (.github/actions/hermes-smoke-test) plus the docker-lint
-# workflow; it is NOT meant to run in the regular ``test (N)`` shards.
+#   tests/e2e/         — .github/workflows/tests.yml :: e2e job
+#   tests/integration/ — historical; legacy --ignore flags
+#   tests/docker/      — .github/workflows/docker-publish.yml ::
+#                        build-amd64 job (runs against the freshly-loaded
+#                        nousresearch/hermes-agent:test image, via
+#                        ``HERMES_TEST_IMAGE`` so the fixture skips
+#                        rebuild). The full pytest-shard runner can't
+#                        host these because the session-scoped
+#                        ``built_image`` fixture would do a 3-7min
+#                        ``docker build`` inside a 180s per-test
+#                        pytest-timeout cap (set by tests/docker/conftest.py),
+#                        so the build is guaranteed to die in fixture
+#                        setup. The dedicated job sidesteps both costs.
 _SKIP_PARTS = {"integration", "e2e", "docker"}
 
 # Per-file wall-clock cap. Generous default — pytest-timeout still
@@ -145,7 +150,10 @@ def _discover_files(roots: List[Path]) -> List[Path]:
 
     Exclude any file whose path contains a component in ``_SKIP_PARTS``,
     UNLESS the user explicitly named it as a root (in which case the
-    user's intent overrides the skip filter).
+    user's intent overrides the skip filter). This makes
+    ``scripts/run_tests.sh tests/docker/`` work locally the same way
+    ``pytest tests/docker/`` does — the CI-level skip exists to keep
+    the sharded matrix from blowing up, not to block targeted runs.
     """
     seen: set[Path] = set()
     out: List[Path] = []
@@ -160,8 +168,17 @@ def _discover_files(roots: List[Path]) -> List[Path]:
                 seen.add(real)
                 out.append(root)
             continue
+        # If the explicit root itself sits inside a skipped dir (e.g.
+        # the user said ``tests/docker``), the user has overridden the
+        # skip for that subtree. Compute the set of skip-parts the user
+        # opted into, and only filter files whose path crosses a
+        # skip-part *outside* that opt-in.
+        root_skip_overrides = {
+            part for part in root.parts if part in _SKIP_PARTS
+        }
+        effective_skips = _SKIP_PARTS - root_skip_overrides
         for path in root.rglob("test_*.py"):
-            if any(part in _SKIP_PARTS for part in path.parts):
+            if any(part in effective_skips for part in path.parts):
                 continue
             real = path.resolve()
             if real in seen:

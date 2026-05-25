@@ -18202,6 +18202,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _shutdown_ctx = None
             logger.debug("snapshot_shutdown_context failed: %s", _e)
 
+        if (
+            not planned_takeover
+            and not planned_stop
+            and received_signal == signal.SIGTERM
+            and _shutdown_ctx is not None
+            and _shutdown_ctx.get("under_systemd")
+        ):
+            # ``systemctl stop|restart`` delivers SIGTERM without a Hermes
+            # planned-stop marker.  Treat that service-manager signal as an
+            # orderly shutdown so normal operator restarts don't produce a
+            # spurious ``Failed with result 'exit-code'`` journal warning.
+            planned_stop = True
+
         if planned_takeover:
             logger.info(
                 "Received %s as a planned --replace takeover — exiting cleanly",
@@ -18224,7 +18237,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # is one line, key=value, parent_cmdline last (often long).
         if _shutdown_ctx is not None:
             try:
-                logger.warning(
+                logger.info(
                     "Shutdown context: %s", format_context_for_log(_shutdown_ctx)
                 )
             except Exception as _e:

@@ -3436,13 +3436,31 @@ async def _broadcast_event(channel: str, payload: str) -> None:
     async with _event_lock:
         subs = list(_event_channels.get(channel, ()))
 
+    stale_subs = []
     for sub in subs:
         try:
             await sub.send_text(payload)
-        except Exception:
-            # Subscriber went away mid-send; the /api/events finally clause
-            # will remove it from the registry on its next iteration.
-            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
+        except Exception as exc:
+            # Browser event subscribers can disappear before /api/events reaches
+            # its receive-loop finally block (e.g. tab closed or WebSocket
+            # keepalive timeout).  Remove them immediately so every subsequent
+            # tool event does not log the same benign disconnect with a full
+            # traceback.
+            stale_subs.append(sub)
+            _log.debug(
+                "dropping stale event subscriber on %s after send failure: %s",
+                channel,
+                exc,
+            )
+
+    if stale_subs:
+        async with _event_lock:
+            channel_subs = _event_channels.get(channel)
+            if channel_subs is not None:
+                for sub in stale_subs:
+                    channel_subs.discard(sub)
+                if not channel_subs:
+                    _event_channels.pop(channel, None)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:

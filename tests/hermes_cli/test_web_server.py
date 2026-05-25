@@ -2366,6 +2366,27 @@ class TestPtyWebSocket:
         assert "tool.start" in received
         assert '"tool_id":"t1"' in received
 
+    def test_broadcast_removes_stale_subscriber_without_warning(self, caplog):
+        """Dead dashboard event sockets are benign and must not spam logs."""
+        import asyncio
+        import logging
+        from hermes_cli import web_server as ws_mod
+
+        class DeadSubscriber:
+            async def send_text(self, _payload):
+                raise RuntimeError('Cannot call "send" once a close message has been sent.')
+
+        stale = DeadSubscriber()
+        channel = "stale-broadcast-test"
+        ws_mod._event_channels[channel] = {stale}
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+            asyncio.run(ws_mod._broadcast_event(channel, '{"type":"tool.start"}'))
+            asyncio.run(ws_mod._broadcast_event(channel, '{"type":"tool.progress"}'))
+
+        assert channel not in ws_mod._event_channels
+        assert "broadcast send failed" not in caplog.text
+
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect
 

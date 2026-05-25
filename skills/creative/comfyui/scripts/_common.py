@@ -557,7 +557,7 @@ def _http_once(
                     body = r.content
                 return HTTPResponse(
                     status=r.status_code,
-                    headers={k: v for k, v in r.headers.items()},
+                    headers=dict(r.headers.items()),
                     body=body,
                     url=r.url,
                 )

@@ -371,7 +371,7 @@ class TestPartitionNousModelsByTier:
     def test_all_free_models(self):
         """When all models are free, free-tier users can select all."""
         models = ["xiaomi/mimo-v2-pro", "xiaomi/mimo-v2-omni"]
-        pricing = {m: self._FREE for m in models}
+        pricing = dict.fromkeys(models, self._FREE)
         sel, unav = partition_nous_models_by_tier(models, pricing, free_tier=True)
         assert sel == models
         assert unav == []
@@ -379,7 +379,7 @@ class TestPartitionNousModelsByTier:
     def test_all_paid_models(self):
         """When all models are paid, free-tier users have none selectable."""
         models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]
-        pricing = {m: self._PAID for m in models}
+        pricing = dict.fromkeys(models, self._PAID)
         sel, unav = partition_nous_models_by_tier(models, pricing, free_tier=True)
         assert sel == []
         assert unav == models

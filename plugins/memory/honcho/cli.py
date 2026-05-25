@@ -1192,7 +1192,7 @@ def cmd_migrate(args) -> None:
                     session_key = hcfg.resolve_session_name()
                     mgr.get_or_create(session_key)
                     # Upload from each directory that had user files
-                    dirs_with_files = set(str(f.parent) for f in user_files)
+                    dirs_with_files = {str(f.parent) for f in user_files}
                     any_uploaded = False
                     for d in dirs_with_files:
                         if mgr.migrate_memory_files(session_key, d):

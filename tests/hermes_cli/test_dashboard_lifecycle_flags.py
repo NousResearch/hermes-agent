@@ -20,10 +20,10 @@ from hermes_cli.main import cmd_dashboard, _report_dashboard_status
 
 def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
-    defaults = dict(
-        port=9119, host="127.0.0.1", no_open=False, insecure=False,
-        tui=False, stop=False, status=False,
-    )
+    defaults = {
+        "port": 9119, "host": "127.0.0.1", "no_open": False, "insecure": False,
+        "tui": False, "stop": False, "status": False,
+    }
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 

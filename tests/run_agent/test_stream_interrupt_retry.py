@@ -20,14 +20,14 @@ def _make_agent(**kwargs):
     """Create a minimal AIAgent for streaming tests."""
     from run_agent import AIAgent
 
-    defaults = dict(
-        api_key="test-key",
-        base_url="https://example.com/v1",
-        model="test/model",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
+    defaults = {
+        "api_key": "test-key",
+        "base_url": "https://example.com/v1",
+        "model": "test/model",
+        "quiet_mode": True,
+        "skip_context_files": True,
+        "skip_memory": True,
+    }
     defaults.update(kwargs)
     agent = AIAgent(**defaults)
     agent.api_mode = "chat_completions"

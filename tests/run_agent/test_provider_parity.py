@@ -49,16 +49,16 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
-    kwargs = dict(
-        api_key="test-key",
-        base_url=base_url,
-        provider=provider,
-        api_mode=api_mode,
-        max_iterations=4,
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
+    kwargs = {
+        "api_key": "test-key",
+        "base_url": base_url,
+        "provider": provider,
+        "api_mode": api_mode,
+        "max_iterations": 4,
+        "quiet_mode": True,
+        "skip_context_files": True,
+        "skip_memory": True,
+    }
     if model:
         kwargs["model"] = model
     elif provider == "nous":

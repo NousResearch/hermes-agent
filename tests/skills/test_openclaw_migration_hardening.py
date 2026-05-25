@@ -158,16 +158,16 @@ def _make_minimal_migrator(mod, tmp_path, **overrides):
     (source / "openclaw.json").write_text("{}", encoding="utf-8")
     target = tmp_path / "hermes"
     target.mkdir()
-    defaults = dict(
-        source_root=source,
-        target_root=target,
-        execute=False,
-        workspace_target=None,
-        overwrite=False,
-        migrate_secrets=False,
-        output_dir=None,
-        selected_options=set(),
-    )
+    defaults = {
+        "source_root": source,
+        "target_root": target,
+        "execute": False,
+        "workspace_target": None,
+        "overwrite": False,
+        "migrate_secrets": False,
+        "output_dir": None,
+        "selected_options": set(),
+    }
     defaults.update(overrides)
     return mod.Migrator(**defaults)
 

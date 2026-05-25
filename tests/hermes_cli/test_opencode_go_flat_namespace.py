@@ -111,13 +111,13 @@ def test_openrouter_still_prepends_vendor():
 def _run_switch(raw_input: str, **extra):
     """Call switch_model with opencode-go as current provider, mocking the
     live catalog so the test doesn't hit the network."""
-    defaults = dict(
-        current_provider="opencode-go",
-        current_model="kimi-k2.6",
-        current_base_url="https://opencode.ai/zen/go/v1",
-        current_api_key="sk-test-opencode-go",
-        is_global=False,
-    )
+    defaults = {
+        "current_provider": "opencode-go",
+        "current_model": "kimi-k2.6",
+        "current_base_url": "https://opencode.ai/zen/go/v1",
+        "current_api_key": "sk-test-opencode-go",
+        "is_global": False,
+    }
     defaults.update(extra)
 
     def fake_list_provider_models(provider: str):

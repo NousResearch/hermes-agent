@@ -57,16 +57,16 @@ def _fake_response(text: str, *, prompt: int = 4, completion: int = 6) -> Simple
 
 
 def _trusted_policy(plugin_id: str = "trusted-plugin", **overrides: Any) -> _TrustPolicy:
-    defaults = dict(
-        allow_provider_override=True,
-        allowed_providers=None,
-        allow_any_provider=True,
-        allow_model_override=True,
-        allowed_models=None,
-        allow_any_model=True,
-        allow_agent_id_override=True,
-        allow_profile_override=True,
-    )
+    defaults = {
+        "allow_provider_override": True,
+        "allowed_providers": None,
+        "allow_any_provider": True,
+        "allow_model_override": True,
+        "allowed_models": None,
+        "allow_any_model": True,
+        "allow_agent_id_override": True,
+        "allow_profile_override": True,
+    }
     defaults.update(overrides)
     return _TrustPolicy(plugin_id=plugin_id, **defaults)
 

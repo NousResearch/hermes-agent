@@ -17,25 +17,25 @@ def _register_irc_platform(**overrides):
     Tests run outside the normal plugin-discovery path, so we inject the entry
     directly into the singleton registry and yield its dict shape.
     """
-    defaults = dict(
-        name="irc",
-        label="IRC",
-        adapter_factory=lambda cfg: None,
-        check_fn=lambda: bool(os.getenv("IRC_SERVER", "") and os.getenv("IRC_CHANNEL", "")),
-        validate_config=None,
-        required_env=["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],
-        install_hint="No extra packages needed (stdlib only)",
-        setup_fn=lambda: None,
-        source="plugin",
-        plugin_name="irc_platform",
-        allowed_users_env="IRC_ALLOWED_USERS",
-        allow_all_env="IRC_ALLOW_ALL_USERS",
-        max_message_length=450,
-        pii_safe=False,
-        emoji="💬",
-        allow_update_command=True,
-        platform_hint="You are chatting via IRC.",
-    )
+    defaults = {
+        "name": "irc",
+        "label": "IRC",
+        "adapter_factory": lambda cfg: None,
+        "check_fn": lambda: bool(os.getenv("IRC_SERVER", "") and os.getenv("IRC_CHANNEL", "")),
+        "validate_config": None,
+        "required_env": ["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],
+        "install_hint": "No extra packages needed (stdlib only)",
+        "setup_fn": lambda: None,
+        "source": "plugin",
+        "plugin_name": "irc_platform",
+        "allowed_users_env": "IRC_ALLOWED_USERS",
+        "allow_all_env": "IRC_ALLOW_ALL_USERS",
+        "max_message_length": 450,
+        "pii_safe": False,
+        "emoji": "💬",
+        "allow_update_command": True,
+        "platform_hint": "You are chatting via IRC.",
+    }
     defaults.update(overrides)
     entry = PlatformEntry(**defaults)
     platform_registry.register(entry)

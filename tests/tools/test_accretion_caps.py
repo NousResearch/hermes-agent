@@ -37,7 +37,7 @@ class TestReadTrackerCaps:
         task_data = {
             "last_key": None,
             "consecutive": 0,
-            "read_history": set((f"/p{i}", 0, 500) for i in range(50)),
+            "read_history": {(f"/p{i}", 0, 500) for i in range(50)},
             "dedup": {},
             "read_timestamps": {},
         }

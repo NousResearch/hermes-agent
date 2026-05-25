@@ -21,7 +21,7 @@ def fetch(name):
 def check(p):
     mw,logp,hbd,hba,rot,tpsa = float(p.get("MolecularWeight",0)),float(p.get("XLogP",0)),int(p.get("HBondDonorCount",0)),int(p.get("HBondAcceptorCount",0)),int(p.get("RotatableBondCount",0)),float(p.get("TPSA",0))
     v = sum([mw>500,logp>5,hbd>5,hba>10])
-    return dict(mw=mw,logp=logp,hbd=hbd,hba=hba,rot=rot,tpsa=tpsa,violations=v,ro5=v<=1,veber=tpsa<=140 and rot<=10,ok=v<=1 and tpsa<=140 and rot<=10)
+    return {"mw": mw,"logp": logp,"hbd": hbd,"hba": hba,"rot": rot,"tpsa": tpsa,"violations": v,"ro5": v<=1,"veber": tpsa<=140 and rot<=10,"ok": v<=1 and tpsa<=140 and rot<=10}
 
 def report(name, r):
     if not r: print(f"✗ {name:30s} — not found"); return

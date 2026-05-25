@@ -42,35 +42,8 @@ def _fake_dingtalk_optional_sdks(monkeypatch):
     """Keep DingTalk adapter tests hermetic when optional SDKs are absent."""
     from gateway.platforms import dingtalk as dt
 
-    card_models = SimpleNamespace(**{
-        name: _FakeDingTalkModel
-        for name in (
-            "CreateCardRequest",
-            "CreateCardRequestCardData",
-            "CreateCardRequestImGroupOpenSpaceModel",
-            "CreateCardRequestImRobotOpenSpaceModel",
-            "CreateCardHeaders",
-            "DeliverCardRequest",
-            "DeliverCardRequestImGroupOpenDeliverModel",
-            "DeliverCardRequestImRobotOpenDeliverModel",
-            "DeliverCardHeaders",
-            "StreamingUpdateRequest",
-            "StreamingUpdateHeaders",
-        )
-    })
-    robot_models = SimpleNamespace(**{
-        name: _FakeDingTalkModel
-        for name in (
-            "RobotReplyEmotionRequestTextEmotion",
-            "RobotReplyEmotionRequest",
-            "RobotReplyEmotionHeaders",
-            "RobotRecallEmotionRequestTextEmotion",
-            "RobotRecallEmotionRequest",
-            "RobotRecallEmotionHeaders",
-            "RobotMessageFileDownloadRequest",
-            "RobotMessageFileDownloadHeaders",
-        )
-    })
+    card_models = SimpleNamespace(**dict.fromkeys(("CreateCardRequest", "CreateCardRequestCardData", "CreateCardRequestImGroupOpenSpaceModel", "CreateCardRequestImRobotOpenSpaceModel", "CreateCardHeaders", "DeliverCardRequest", "DeliverCardRequestImGroupOpenDeliverModel", "DeliverCardRequestImRobotOpenDeliverModel", "DeliverCardHeaders", "StreamingUpdateRequest", "StreamingUpdateHeaders"), _FakeDingTalkModel))
+    robot_models = SimpleNamespace(**dict.fromkeys(("RobotReplyEmotionRequestTextEmotion", "RobotReplyEmotionRequest", "RobotReplyEmotionHeaders", "RobotRecallEmotionRequestTextEmotion", "RobotRecallEmotionRequest", "RobotRecallEmotionHeaders", "RobotMessageFileDownloadRequest", "RobotMessageFileDownloadHeaders"), _FakeDingTalkModel))
 
     monkeypatch.setattr(dt, "ChatbotMessage", _FakeChatbotMessage, raising=False)
     monkeypatch.setattr(

@@ -30,13 +30,13 @@ def _assistant_with_tools(*call_ids: str) -> dict:
 
 
 def _make_compressor(**kwargs) -> ContextCompressor:
-    defaults = dict(
-        model="test-model",
-        threshold_percent=0.75,
-        protect_first_n=3,
-        protect_last_n=4,
-        quiet_mode=True,
-    )
+    defaults = {
+        "model": "test-model",
+        "threshold_percent": 0.75,
+        "protect_first_n": 3,
+        "protect_last_n": 4,
+        "quiet_mode": True,
+    }
     defaults.update(kwargs)
     with patch("agent.context_compressor.get_model_context_length", return_value=8000):
         return ContextCompressor(**defaults)

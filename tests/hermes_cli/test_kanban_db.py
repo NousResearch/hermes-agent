@@ -2472,23 +2472,23 @@ def test_resolve_hermes_argv_module_actually_runs():
 
 def _make_task(**overrides) -> "kb.Task":
     """Minimal Task with all required fields filled in. Override anything."""
-    defaults = dict(
-        id="t_age",
-        title="x",
-        body=None,
-        assignee=None,
-        status="ready",
-        priority=0,
-        created_by=None,
-        created_at=0,
-        started_at=None,
-        completed_at=None,
-        workspace_kind="scratch",
-        workspace_path=None,
-        claim_lock=None,
-        claim_expires=None,
-        tenant=None,
-    )
+    defaults = {
+        "id": "t_age",
+        "title": "x",
+        "body": None,
+        "assignee": None,
+        "status": "ready",
+        "priority": 0,
+        "created_by": None,
+        "created_at": 0,
+        "started_at": None,
+        "completed_at": None,
+        "workspace_kind": "scratch",
+        "workspace_path": None,
+        "claim_lock": None,
+        "claim_expires": None,
+        "tenant": None,
+    }
     defaults.update(overrides)
     return kb.Task(**defaults)
 

@@ -80,7 +80,7 @@ class Watermark:
         batch (so save() persists the full new watermark).  On first run,
         records every id but returns an empty list (baseline, no replay).
         """
-        existing = set(str(x) for x in self._data.get("seen_ids", []))
+        existing = {str(x) for x in self._data.get("seen_ids", [])}
         was_first_run = self.is_first_run
 
         new_items: List[Dict[str, Any]] = []

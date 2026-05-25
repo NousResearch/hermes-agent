@@ -201,16 +201,16 @@ def test_same_second_reruns_get_unique_dirs(curator_env):
     curator = curator_env["curator"]
     start = datetime(2026, 4, 29, 5, 33, 34, tzinfo=timezone.utc)
 
-    kwargs = dict(
-        started_at=start,
-        elapsed_seconds=1.0,
-        auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
-        auto_summary="no changes",
-        before_report=[],
-        before_names=set(),
-        after_report=[],
-        llm_meta=_make_llm_meta(),
-    )
+    kwargs = {
+        "started_at": start,
+        "elapsed_seconds": 1.0,
+        "auto_counts": {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        "auto_summary": "no changes",
+        "before_report": [],
+        "before_names": set(),
+        "after_report": [],
+        "llm_meta": _make_llm_meta(),
+    }
     a = curator._write_run_report(**kwargs)
     b = curator._write_run_report(**kwargs)
     assert a != b

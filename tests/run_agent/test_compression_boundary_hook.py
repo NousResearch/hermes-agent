@@ -71,9 +71,7 @@ class TestCompressionBoundaryHook:
                 "compression should rotate session_id when session_db is set"
 
             # Hook fired with boundary_reason="compression" and old_session_id
-            calls = [
-                c for c in compressor.on_session_start.call_args_list
-            ]
+            calls = list(compressor.on_session_start.call_args_list)
             assert calls, "on_session_start was never called on the context engine"
             # Find the compression boundary call (there may be others from init)
             comp_calls = [

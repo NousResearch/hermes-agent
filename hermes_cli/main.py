@@ -3287,7 +3287,7 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 def _model_flow_xai_oauth(_config, current_model="", *, args=None):
-    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
+    """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_xai_oauth_auth_status,
         _prompt_model_selection,
@@ -3302,7 +3302,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
 
     status = get_xai_oauth_auth_status()
     if status.get("logged_in"):
-        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
+        print("  xAI Grok OAuth (SuperGrok / Premium+) credentials: ✓")
         print()
         print("    1. Use existing credentials")
         print("    2. Reauthenticate (new OAuth login)")
@@ -3340,7 +3340,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         elif choice == "3":
             return
     else:
-        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
+        print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
         print()
         try:
             mock_args = argparse.Namespace(
@@ -3374,7 +3374,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
-        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
     else:
         print("No change.")
 
@@ -6182,6 +6182,19 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_security(args):
+    """Dispatch `hermes security <subcmd>`."""
+    sub = getattr(args, "security_command", None)
+    if sub in ("audit", None):
+        from hermes_cli.security_audit import cmd_security_audit
+
+        # Default subcommand is `audit` when no subcmd is given.
+        code = cmd_security_audit(args)
+        sys.exit(int(code or 0))
+    print(f"unknown security subcommand: {sub}", file=sys.stderr)
+    sys.exit(2)
+
+
 def cmd_dump(args):
     """Dump setup summary for support/debugging."""
     from hermes_cli.dump import run_dump
@@ -7652,8 +7665,11 @@ def _detect_concurrent_hermes_instances(
 
     This helper enumerates processes whose ``exe`` matches one of the venv's
     shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
-    process_name)`` pairs. The caller's own PID is excluded so the running
-    ``hermes update`` invocation never reports itself.
+    process_name)`` pairs. The caller's own PID and its entire ancestor
+    chain are excluded so the running ``hermes update`` invocation never
+    reports itself — this matters on Windows where the setuptools .exe
+    launcher (``hermes.exe``) is a separate process from the Python
+    interpreter it loads (``python.exe``).
 
     Returns an empty list off-Windows, on missing psutil, or when no other
     instances exist. Never raises — process enumeration is best-effort.
@@ -7666,8 +7682,38 @@ def _detect_concurrent_hermes_instances(
     except Exception:
         return []
 
-    if exclude_pid is None:
-        exclude_pid = os.getpid()
+    # Build a set of PIDs to exclude: the Python process itself plus its
+    # entire parent chain. On Windows the setuptools-generated hermes.exe
+    # launcher is a separate native process that spawns python.exe (the
+    # interpreter that runs our code).  os.getpid() returns the Python PID,
+    # but the launcher (which holds the file lock) is the parent.  Without
+    # walking the parent chain, every ``hermes update`` reports its own
+    # launcher as a concurrent instance — a false positive.
+    if exclude_pid is not None:
+        exclude_pids: set[int] = {exclude_pid}
+    else:
+        exclude_pids = {os.getpid()}
+    # The parent-walk is best-effort: if psutil rejects a PID (NoSuchProcess /
+    # AccessDenied) we stop walking and use whatever we've collected so far.
+    # Broader Exception catch on the outer block guards against partially-
+    # stubbed psutil in unit tests (e.g. a SimpleNamespace lacking Process /
+    # NoSuchProcess) — the surrounding update flow documents this helper as
+    # "never raises".
+    try:
+        current = psutil.Process(next(iter(exclude_pids)))
+        while True:
+            try:
+                parent = current.parent()
+            except Exception:
+                break
+            if parent is None or parent.pid <= 0:
+                break
+            if parent.pid in exclude_pids:
+                break  # loop detected
+            exclude_pids.add(parent.pid)
+            current = parent
+    except Exception:
+        pass
 
     # Resolve every shim path to its canonical form once for cheap comparison.
     shim_paths: set[str] = set()
@@ -7692,7 +7738,7 @@ def _detect_concurrent_hermes_instances(
             continue
         pid = info.get("pid")
         exe = info.get("exe")
-        if not exe or pid is None or pid == exclude_pid:
+        if not exe or pid is None or pid in exclude_pids:
             continue
         try:
             exe_norm = str(Path(exe).resolve()).lower()
@@ -9842,6 +9888,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "honcho",
         "claw",
         "plugins",
+        "security",
         "acp",
         "webhook",
         "memory",
@@ -10682,7 +10729,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat", "secrets",
+        "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -12001,6 +12048,58 @@ def main():
         ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # security command — on-demand supply-chain audit
+    # =========================================================================
+    security_parser = subparsers.add_parser(
+        "security",
+        help="Supply-chain audit (OSV.dev) for venv, plugins, and MCP servers",
+        description=(
+            "On-demand vulnerability scan against OSV.dev. Covers the Hermes "
+            "venv (installed PyPI dists), Python deps declared by plugins under "
+            "~/.hermes/plugins/, and pinned npx/uvx MCP servers in config.yaml. "
+            "Does NOT scan globally-installed packages or editor/browser extensions."
+        ),
+    )
+    security_subparsers = security_parser.add_subparsers(
+        dest="security_command",
+        metavar="<subcommand>",
+    )
+
+    audit_parser = security_subparsers.add_parser(
+        "audit",
+        help="Run a one-shot supply-chain audit",
+        description="Query OSV.dev for known vulnerabilities in installed components.",
+    )
+    audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of human-readable text",
+    )
+    audit_parser.add_argument(
+        "--fail-on",
+        default="critical",
+        choices=["low", "moderate", "high", "critical"],
+        help="Exit non-zero when any finding meets this severity (default: critical)",
+    )
+    audit_parser.add_argument(
+        "--skip-venv",
+        action="store_true",
+        help="Skip scanning the Hermes Python venv",
+    )
+    audit_parser.add_argument(
+        "--skip-plugins",
+        action="store_true",
+        help="Skip scanning plugin requirements files",
+    )
+    audit_parser.add_argument(
+        "--skip-mcp",
+        action="store_true",
+        help="Skip scanning pinned MCP servers in config.yaml",
+    )
+    audit_parser.set_defaults(func=cmd_security)
+    security_parser.set_defaults(func=cmd_security)
 
     # =========================================================================
     # dump command

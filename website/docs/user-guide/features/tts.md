@@ -297,6 +297,85 @@ Use `{{` and `}}` for literal braces.
 
 Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.
 
+### Python plugin providers
+
+For TTS engines that can't be expressed as a single shell command — Python SDKs without a CLI, streaming engines, voice-listing APIs, OAuth-refreshing auth — register a Python plugin via `ctx.register_tts_provider()`. The plugin **coexists with** (does not replace) the [Custom command providers](#custom-command-providers) registry; pick the surface that fits your engine.
+
+#### When to pick which
+
+| Your backend has… | Use |
+|---|---|
+| A single CLI reading text from a file/stdin and writing audio to a file/stdout | **Command provider** (no Python needed) |
+| Two or three CLIs chained with shell pipes | **Command provider** |
+| A Python SDK only — no CLI | **Plugin** |
+| Streaming bytes you want to deliver chunked (mid-generation voice bubbles) | **Plugin** (override `stream()`) |
+| A voice-listing API used by `hermes setup` | **Plugin** (override `list_voices()`) |
+| OAuth refresh flow (not a static bearer token) | **Plugin** |
+
+Built-ins always win, and command providers win over a same-name plugin — so plugins are safe to register against any non-built-in name without worrying about shadowing your existing config.
+
+#### Minimal plugin
+
+Drop this in `~/.hermes/plugins/my-tts/`:
+
+`plugin.yaml`:
+```yaml
+name: my-tts
+version: 0.1.0
+description: "My custom Python TTS backend"
+```
+
+`__init__.py`:
+```python
+from agent.tts_provider import TTSProvider
+
+
+class MyTTSProvider(TTSProvider):
+    @property
+    def name(self) -> str:
+        return "my-tts"  # what tts.provider matches against
+
+    @property
+    def display_name(self) -> str:
+        return "My Custom TTS"
+
+    def is_available(self) -> bool:
+        # Return False when credentials/deps are missing — picker skips
+        # this row but the dispatcher still routes here on explicit config.
+        import os
+        return bool(os.environ.get("MY_TTS_API_KEY"))
+
+    def synthesize(self, text, output_path, *, voice=None, model=None,
+                   speed=None, format="mp3", **extra) -> str:
+        # Write audio bytes to output_path, return the path.
+        # Raise on failure — the dispatcher converts exceptions to a
+        # standard error envelope.
+        import my_tts_sdk
+        client = my_tts_sdk.Client()
+        audio_bytes = client.synthesize(text=text, voice=voice or "default")
+        with open(output_path, "wb") as f:
+            f.write(audio_bytes)
+        return output_path
+
+
+def register(ctx):
+    ctx.register_tts_provider(MyTTSProvider())
+```
+
+Enable it (`hermes plugins enable my-tts`), point `tts.provider` at it (`tts.provider: my-tts` in `config.yaml`), and the `text_to_speech` tool will route through your plugin.
+
+#### Optional hooks
+
+Override these on your provider class for richer integration:
+
+- `list_voices()` → list of `{id, display, language, gender, preview_url}` dicts shown in `hermes tools`.
+- `list_models()` → list of `{id, display, languages, max_text_length}` dicts.
+- `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power the picker row in `hermes tools` / `hermes setup`. Without this, the plugin still works but its row in the picker is minimal.
+- `stream(text, *, voice, model, format, **extra)` → iterator yielding audio bytes for streaming delivery (default raises `NotImplementedError`).
+- `voice_compatible` property → set `True` if your output is Opus-compatible and the gateway should deliver it as a voice bubble (default `False` = regular audio attachment).
+
+See `agent/tts_provider.py` for the full ABC including docstrings.
+
 ## Voice Message Transcription (STT)
 
 Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.

@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import platform
+import secrets
+import stat
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1040,11 +1042,34 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        _tmp_cred = cred_path.with_suffix(".tmp")
-        _tmp_cred.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-        _tmp_cred.replace(cred_path)
-        # Restrict permissions (credentials file)
-        cred_path.chmod(0o600)
+        # Per-process random suffix avoids collisions between concurrent
+        # writers and stale leftovers from a prior crashed write.
+        _tmp_cred = cred_path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            # Create the temp file atomically at 0o600. The previous
+            # write_text + post-replace chmod opened a TOCTOU window where
+            # both the temp file and the destination briefly inherited the
+            # process umask (commonly 0o644 = world-readable), exposing
+            # Claude Code OAuth tokens to other local users between create
+            # and chmod. Mirrors agent/google_oauth.py (#19673) and
+            # tools/mcp_oauth.py (#21148). Parent dir (~/.claude/) is
+            # owned by Claude Code itself, so we leave its mode alone.
+            fd = os.open(
+                str(_tmp_cred),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(existing, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(_tmp_cred, cred_path)
+        except OSError:
+            try:
+                _tmp_cred.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
     except (OSError, IOError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 
@@ -2122,9 +2147,13 @@ def build_anthropic_kwargs(
                 block["text"] = text
 
         # 3. Prefix tool names with mcp_ (Claude Code convention)
+        #    Skip names that already begin with the marker — native MCP server
+        #    tools (from mcp_servers: in config.yaml) are registered under their
+        #    full mcp_<server>_<tool> name and would double-prefix otherwise,
+        #    breaking round-trip registry lookup in normalize_response. GH-25255.
         if anthropic_tools:
             for tool in anthropic_tools:
-                if "name" in tool:
+                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
                     tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
         # 4. Prefix tool names in message history (tool_use and tool_result blocks)

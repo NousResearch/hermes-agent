@@ -167,6 +167,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_WEBHOOK_HOST": "127.0.0.1",
         "FEISHU_WEBHOOK_PORT": "9001",
         "FEISHU_WEBHOOK_PATH": "/hook",
+        "FEISHU_VERIFICATION_TOKEN": "vtok",
     }, clear=True)
     def test_connect_webhook_mode_starts_local_server(self):
         from gateway.config import PlatformConfig
@@ -1537,6 +1538,34 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         adapter._on_message_event.assert_called_once()
+
+    @patch.dict(os.environ, {"FEISHU_VERIFICATION_TOKEN": "expected-token"}, clear=True)
+    def test_url_verification_requires_configured_verification_token(self):
+        """url_verification must be rejected when token is set but mismatched.
+
+        Regression: previously the challenge was reflected before the token
+        check, so an unauthenticated remote could prove endpoint control by
+        sending an attacker-controlled challenge string.
+        """
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        body = json.dumps({
+            "type": "url_verification",
+            "token": "wrong-token",
+            "challenge": "attacker-controlled-challenge",
+        }).encode("utf-8")
+        request = SimpleNamespace(
+            remote="203.0.113.10",
+            content_length=None,
+            headers={},
+            read=AsyncMock(return_value=body),
+        )
+
+        response = asyncio.run(adapter._handle_webhook_request(request))
+
+        self.assertEqual(response.status, 401)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_uses_event_sender_identity_only(self):

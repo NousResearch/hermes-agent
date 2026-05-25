@@ -814,6 +814,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._handle_message(message)
 
             @self._client.event
+            async def on_thread_create(thread):
+                await adapter_self._join_allowed_thread(thread, reason="created")
+
+            @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
                 # Only track channels where the bot is connected
@@ -1065,6 +1069,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return
         try:
+            await self._join_allowed_active_threads()
+
             sync_policy = self._get_discord_command_sync_policy()
             if sync_policy == "off":
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
@@ -1135,6 +1141,93 @@ class DiscordAdapter(BasePlatformAdapter):
             raise
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+
+    def _discord_channel_ids_permitted(self, channel_ids: set[str]) -> bool:
+        allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+        if allowed_channels_raw:
+            allowed_channels = {
+                ch.strip()
+                for ch in allowed_channels_raw.split(",")
+                if ch.strip()
+            }
+            if "*" not in allowed_channels and not (channel_ids & allowed_channels):
+                return False
+
+        ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+        ignored_channels = {
+            ch.strip()
+            for ch in ignored_channels_raw.split(",")
+            if ch.strip()
+        }
+        return "*" not in ignored_channels and not (channel_ids & ignored_channels)
+
+    async def _join_allowed_active_threads(self) -> None:
+        """Join active threads under allowed channels so role mentions are received."""
+        if not self._client:
+            return
+
+        joined = 0
+        for guild in getattr(self._client, "guilds", []) or []:
+            threads = list(getattr(guild, "threads", []) or [])
+            active_threads = getattr(guild, "active_threads", None)
+            if callable(active_threads):
+                try:
+                    threads.extend(await active_threads())
+                except Exception as e:
+                    logger.debug("[%s] Failed to fetch active threads for guild %s: %s", self.name, guild.id, e)
+
+            seen = set()
+            for thread in threads:
+                thread_id = str(getattr(thread, "id", ""))
+                if not thread_id or thread_id in seen:
+                    continue
+                seen.add(thread_id)
+                if await self._join_allowed_thread(thread, reason="startup"):
+                    joined += 1
+
+        if joined:
+            logger.info("[%s] Joined/tracked %d active Discord thread(s)", self.name, joined)
+
+    async def _join_allowed_thread(self, thread: Any, *, reason: str) -> bool:
+        parent_id = self._get_parent_channel_id(thread)
+        channel_ids = {str(getattr(thread, "id", ""))}
+        if parent_id:
+            channel_ids.add(parent_id)
+        if not self._discord_channel_ids_permitted(channel_ids):
+            return False
+
+        try:
+            if hasattr(thread, "join"):
+                await thread.join()
+        except discord.Forbidden:
+            logger.debug("[%s] Missing permission to join Discord thread %s", self.name, getattr(thread, "id", ""))
+            return False
+        except discord.HTTPException as e:
+            # Discord returns an HTTP error if the bot is already a member.
+            if getattr(e, "code", None) not in {40058}:
+                logger.debug("[%s] Failed to join Discord thread %s: %s", self.name, getattr(thread, "id", ""), e)
+
+        if await self._thread_started_by_this_bot(thread):
+            self._threads.mark(str(thread.id))
+            logger.info(
+                "[%s] Tracking Discord thread %s from bot starter message (%s)",
+                self.name,
+                thread.id,
+                reason,
+            )
+        return True
+
+    async def _thread_started_by_this_bot(self, thread: Any) -> bool:
+        if not self._client or not getattr(self._client, "user", None):
+            return False
+        parent = self._thread_parent_channel(thread)
+        if not parent or not hasattr(parent, "fetch_message"):
+            return False
+        try:
+            starter = await parent.fetch_message(int(thread.id))
+        except Exception:
+            return False
+        return getattr(starter, "author", None) == self._client.user
 
     def _get_discord_command_sync_policy(self) -> str:
         raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
@@ -4494,6 +4587,29 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        trigger_roles_raw = os.getenv("DISCORD_TRIGGER_ROLES", "")
+        if trigger_roles_raw:
+            trigger_role_ids = {
+                role_id.strip()
+                for role_id in trigger_roles_raw.split(",")
+                if role_id.strip()
+            }
+            mentioned_role_ids = {
+                str(getattr(role, "id", ""))
+                for role in (getattr(message, "role_mentions", None) or [])
+                if getattr(role, "id", None) is not None
+            }
+            mentioned_role_ids.update(
+                str(role_id)
+                for role_id in (getattr(message, "raw_role_mentions", None) or [])
+                if role_id is not None
+            )
+            matched_trigger_roles = trigger_role_ids & mentioned_role_ids
+            if matched_trigger_roles:
+                mention_prefix = True
+                for role_id in matched_trigger_roles:
+                    normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
+                message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -6058,6 +6174,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_FREE_RESPONSE_CHANNELS``, ``DISCORD_AUTO_THREAD``,
     ``DISCORD_REACTIONS``, ``DISCORD_IGNORED_CHANNELS``,
     ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_NO_THREAD_CHANNELS``,
+    ``DISCORD_TRIGGER_ROLES``,
     ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
     ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
     ``DISCORD_THREAD_REQUIRE_MENTION``).  Rather than rewrite ~50 call sites
@@ -6095,6 +6212,12 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
+    # trigger_roles: role mentions that should satisfy require_mention.
+    tr = discord_cfg.get("trigger_roles")
+    if tr is not None and not os.getenv("DISCORD_TRIGGER_ROLES"):
+        if isinstance(tr, list):
+            tr = ",".join(str(v) for v in tr)
+        os.environ["DISCORD_TRIGGER_ROLES"] = str(tr)
     # no_thread_channels: channels where bot responds directly without creating thread
     ntc = discord_cfg.get("no_thread_channels")
     if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):

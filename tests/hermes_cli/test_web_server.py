@@ -2341,6 +2341,7 @@ class TestPtyWebSocket:
                 # receive_text().  Without this, under heavy CI load the
                 # receive can race the broadcast and hang until
                 # pytest-timeout kills us.
+                time.sleep(1.0)
                 import queue, threading
                 recv_q: queue.Queue = queue.Queue()
 
@@ -2353,10 +2354,10 @@ class TestPtyWebSocket:
                 t = threading.Thread(target=_recv, daemon=True)
                 t.start()
                 try:
-                    received = recv_q.get(timeout=10.0)
+                    received = recv_q.get(timeout=30.0)
                 except queue.Empty:
                     raise AssertionError(
-                        "broadcast not received within 10s — server likely "
+                        "broadcast not received within 30s — server likely "
                         "dropped the frame silently (see _broadcast_event "
                         "except Exception: pass)"
                     )

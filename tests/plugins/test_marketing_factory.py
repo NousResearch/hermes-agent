@@ -1088,6 +1088,61 @@ def test_edit_draft_via_api_endpoint(isolate_home):
     assert bad_response.status_code == 400
 
 
+def test_resolve_variant_winner_auto_rejects_siblings(isolate_home):
+    """Phase 19: approving one variant auto-rejects the others with a structured reason
+    so the brand memory loop learns the COMPARISON, not just yes/no per draft."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    source = gen["drafts"][0]
+    variants_result = pipe.generate_variants(source["id"], count=3)
+    variant_ids = [v["id"] for v in variants_result["variants"]]
+    assert len(variant_ids) == 3
+
+    chosen = variant_ids[0]
+    result = pipe.resolve_variant_winner(chosen, reviewer="tester", reason="best opener")
+    assert result["approved"]["status"] == "approved"
+    assert result["loser_count"] == 2
+
+    # Other 2 variants must now be rejected
+    state = store.load()
+    for vid in variant_ids[1:]:
+        assert state["drafts"][vid]["status"] == "rejected"
+        reason = state["approvals"][vid]["reason"]
+        assert chosen in reason  # rejection reason references the winner
+
+    # The brand memory captured both the approval and the rejections
+    learnings = state["brand_memories"]["pupular"]["learnings"]
+    kinds = [e.get("kind") for e in learnings]
+    assert kinds.count("draft_approved") >= 1
+    assert kinds.count("draft_rejected") >= 2
+
+    # Audit event recorded
+    actions = [e["action"] for e in store.list_audit(app_slug="pupular", limit=200)]
+    assert "variants.resolved" in actions
+
+
+def test_resolve_variant_winner_with_no_siblings_just_approves(isolate_home):
+    """When there are no siblings to reject, behaves identically to plain approve."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    draft_id = gen["drafts"][0]["id"]
+
+    result = pipe.resolve_variant_winner(draft_id, reviewer="tester")
+    assert result["approved"]["status"] == "approved"
+    assert result["loser_count"] == 0
+    assert result["auto_rejected"] == []
+
+
 def test_generate_variants_produces_n_distinct_drafts(isolate_home):
     """Phase 11: generate_variants(draft_id, count=3) returns 3 distinct drafts all linked to the source."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline

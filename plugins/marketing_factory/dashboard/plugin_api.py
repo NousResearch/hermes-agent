@@ -218,10 +218,18 @@ async def progress_stream():
 
 
 @router.post("/drafts/{draft_id}/approve")
-async def approve_draft(draft_id: str, body: DraftActionBody):
+async def approve_draft(draft_id: str, body: DraftActionBody, resolve_variants: bool = True):
+    """Approve one draft. With resolve_variants=True (default), any sibling
+    drafts (same regenerated_from) that are still needs_review get
+    auto-rejected as 'lost A/B comparison' so the brand memory loop sees
+    the choice as a comparison, not isolated yes/no signals."""
     store = _store()
+    pipe = _pipe(store)
     try:
-        result = store.set_approval(draft_id, "approved", reviewer=body.reviewer, reason=body.reason)
+        if resolve_variants:
+            result = pipe.resolve_variant_winner(draft_id, reviewer=body.reviewer, reason=body.reason)
+        else:
+            result = store.set_approval(draft_id, "approved", reviewer=body.reviewer, reason=body.reason)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"result": result, "overview": _overview(store)}

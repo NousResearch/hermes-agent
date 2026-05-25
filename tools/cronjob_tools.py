@@ -65,6 +65,15 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
+# Patterns that indicate the prompt is trying to use send_message,
+# which contradicts the cron delivery model.  Not blocked (user may
+# have a reason), but a warning is logged so operators can investigate.
+_CRON_SEND_MESSAGE_PATTERNS = [
+    r'send_message\s*\(',
+    r'(?:call|invoke|use)\s+send_message',
+    r'(?:send|deliver|forward)\s+(?:this|the|a)\s+message\s+to\s+(?:discord|telegram|slack)',
+]
+
 _CRON_INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
@@ -137,6 +146,18 @@ def _scan_cron_prompt(prompt: str) -> str:
     for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+    # Warn (don't block) if the prompt contains send_message instructions.
+    # The cron delivery model handles routing; prompts should only produce content.
+    for pattern in _CRON_SEND_MESSAGE_PATTERNS:
+        if re.search(pattern, prompt, re.IGNORECASE):
+            logger.warning(
+                "Cron prompt contains send_message instruction (pattern: %r). "
+                "Cron delivery is automatic via the 'deliver' field — prompts "
+                "should not call send_message. Hint: set 'deliver' to the "
+                "target and let the agent produce content only.",
+                pattern,
+            )
+            break
     return ""
 
 

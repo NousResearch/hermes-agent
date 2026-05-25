@@ -1089,10 +1089,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
-    # Always prepend cron execution guidance so the agent knows how
-    # delivery works and can suppress delivery when appropriate.
+    # Cron delivery guidance — appended (not prepended) so it appears after
+    # user prompt and skill content.  Models are recency-biased; placing
+    # the hint last makes it the final instruction the model sees,
+    # preventing user prompts from overriding the "do NOT use send_message"
+    # directive.
     cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
+        "\n\n[IMPORTANT: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
@@ -1100,9 +1103,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "findings normally, or say [SILENT] and nothing more.]"
     )
-    prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
@@ -1111,7 +1113,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
-        return _scan_assembled_cron_prompt(prompt, job)
+        return _scan_assembled_cron_prompt(prompt + cron_hint, job)
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
@@ -1159,6 +1161,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
+    parts.append(cron_hint)
     return _scan_assembled_cron_prompt("\n".join(parts), job)
 
 
@@ -1949,6 +1952,29 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 if success and not final_response.strip():
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+                # Detect when the model produced a delivery-failure message
+                # instead of actual content.  This happens when the prompt
+                # instructs the agent to call send_message (unavailable in
+                # cron context) and the model retries until it gives up.
+                if success and final_response:
+                    _lower = final_response.lower()
+                    _delivery_failure_markers = (
+                        "tool \"send_message\" does not exist",
+                        "tool 'send_message' does not exist",
+                        "send_message is not available",
+                        "couldn't deliver",
+                        "failed to send",
+                        "max retries (3) for invalid tool calls exceeded",
+                    )
+                    if any(m in _lower for m in _delivery_failure_markers):
+                        success = False
+                        error = (
+                            "Agent produced delivery-failure output instead of content "
+                            "(prompt likely instructs send_message — set 'deliver' field "
+                            "and let the agent produce content only)"
+                        )
+                        logger.warning("Job '%s': %s", job.get("id"), error)
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 return True

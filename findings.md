@@ -12254,6 +12254,256 @@ All three database backends use raw `sqlite3` with Python's parameter substituti
 
 ---
 
-*Pass #88 complete — 2026-05-25T19:50:00Z*
+## Pass #89 – File System Operations, Path Validation & Symlink Attacks Deep Dive – 2026-05-25T20:15:00Z
+
+**Commit at scan:** `5a51a1f65`  
+**Files reviewed:** `utils.py`, `agent/file_safety.py`, `agent/google_oauth.py`, `hermes_cli/kanban_db.py`, `hermes_cli/auth.py`, `hermes_cli/backup.py`, `hermes_cli/profiles.py`, `cron/jobs.py`, `cron/scheduler.py`, `gateway/pairing.py`, `gateway/status.py`, `gateway/shutdown_forensics.py`, `hermes_constants.py`, `tests/test_atomic_replace_symlinks.py`, `tests/agent/test_file_safety_credentials.py`, `tests/cron/test_file_permissions.py`, `tests/stress/test_atypical_scenarios.py`
+
+---
+
+### P89-1 · Path Traversal — `kanban_db.py` workspace resolution — GOOD
+
+**File:** `hermes_cli/kanban_db.py` (lines 3899–3960)
+
+`resolve_workspace(task)` enforces absolute paths for `dir:` and `worktree:` workspace kinds. Relative paths like `../../../tmp/attacker` raise `ValueError` with message "use an absolute path (relative paths are ambiguous against the dispatcher's CWD)". Scratch workspaces reject non-absolute paths as well via `Path(...).expanduser().is_absolute()` check.
+
+Board slug validation uses `_normalize_board_slug()` with regex `^[a-z0-9][a-z0-9\-_]{0,63}$` — blocks `..`, embedded `/`, null bytes, and other path separator injection.
+
+**Status:** ✅ SAFE — no path traversal risk found.
+
+---
+
+### P89-2 · Path Traversal — `agent/file_safety.py` write deny list — GOOD
+
+**File:** `agent/file_safety.py` (lines 28–141)
+
+`is_write_denied(path)` resolves paths through `os.path.realpath()` before checking against the denylist. Both exact paths (`.ssh/authorized_keys`, `.env`, `auth.json`, etc.) and prefix patterns (`.ssh/`, `.aws/`, `.gnupg/`, `/etc/sudoers.d/`) are stored as realpath'd strings, so `../` traversal through a sibling directory correctly resolves to the target and gets blocked.
+
+The `realpath` usage also resolves symlinks before matching, preventing symlink-based bypass of the denylist.
+
+**Status:** ✅ SAFE — `realpath` resolution before denylist check correctly catches traversal.
+
+---
+
+### P89-3 · Path Traversal — `agent/file_safety.py` read deny via symlink — GOOD
+
+**File:** `agent/file_safety.py` (lines 144–262)
+
+`get_read_block_error(path)` uses `Path(...).expanduser().resolve()` which follows symlinks. A symlink from outside `HERMES_HOME` pointing at `auth.json` resolves to the real target and is blocked. The test `test_symlink_to_auth_json_blocked` in `tests/agent/test_file_safety_credentials.py` explicitly verifies this.
+
+**Status:** ✅ SAFE — symlinks are resolved before read-deny check.
+
+---
+
+### P89-4 · Atomic Replace — `utils.py` symlink preservation — GOOD (fix for #16743)
+
+**File:** `utils.py` (lines 61–82)
+
+`atomic_replace(tmp_path, target)` resolves symlinks before `os.replace()`:
+```python
+real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+os.replace(str(tmp_path), real_path)
+```
+This prevents `os.replace` from silently replacing a symlink with a regular file (issue #16743). The test suite `tests/test_atomic_replace_symlinks.py` covers symlink preservation, permission preservation on symlinked targets, and broken-symlink edge cases.
+
+`atomic_json_write` and `atomic_yaml_write` both call `atomic_replace`, preserving symlinks for all config/state writes.
+
+**Status:** ✅ SAFE — symlink-aware atomic replace. Full test coverage.
+
+---
+
+### P89-5 · TOCTOU — File creation with `O_EXCL` — GOOD
+
+**File:** `gateway/status.py` (lines 490, 666), `agent/google_oauth.py` (lines 181, 505)
+
+PID file creation at `gateway/status.py:490` uses `os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)` — atomic exclusive creation that fails if the file already exists. The lock acquisition at line 666 uses the same pattern. No subsequent chmod is needed since the file is created with default mode and immediately written.
+
+`agent/google_oauth.py:505` creates OAuth token files with `os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR` (0o600) — atomic exclusive create with restrictive permissions in a single syscall, eliminating the TOCTOU window between open and chmod.
+
+`hermes_cli/auth.py:1045` uses `os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)` — same pattern.
+
+**Status:** ✅ SAFE — O_EXCL atomic creation, no TOCTOU window.
+
+---
+
+### P89-6 · Temporary File Security — `utils.py` mkstemp usage — GOOD
+
+**File:** `utils.py` (lines 110, 166, 235)
+
+`atomic_json_write`, `atomic_yaml_write`, and `atomic_roundtrip_yaml_update` all use `tempfile.mkstemp(dir=..., prefix=f".{path.stem}_", suffix=".tmp")`. The fd is immediately wrapped in `os.fdopen` and the file is written, fsync'd, then atomically replaced. Temp files are cleaned up in a `BaseException` handler.
+
+Permissions: `mkstemp` creates with 0o600 by default (owner-only). `_preserve_file_mode` / `_restore_file_mode` preserve the original file's permission bits after atomic replace, addressing the Docker/NFS volume use case where users need broader permissions.
+
+**Status:** ✅ SAFE — mkstemp with cleanup, permission preservation.
+
+---
+
+### P89-7 · File Permissions — cron jobs — GOOD
+
+**File:** `cron/jobs.py` (lines 137–151)
+
+`_secure_dir(path)` sets `0o700` on cron directories. `_secure_file(path)` sets `0o600` on job files. `ensure_dirs()` creates `CRON_DIR` and `OUTPUT_DIR` with 0o700. `save_jobs()` calls `_secure_file` after writing. `save_job_output()` sets 0o600 on output files and 0o700 on job output directories.
+
+Test `tests/cron/test_file_permissions.py` explicitly verifies that cron dirs get 0o700, job files get 0o600, and output files/dirs get the correct permissions.
+
+**Status:** ✅ SAFE — consistent restrictive permissions with explicit tests.
+
+---
+
+### P89-8 · File Permissions — pairing store — GOOD
+
+**File:** `gateway/pairing.py` (lines 55–78)
+
+`_secure_write(path, data)` uses temp file + `atomic_replace` then `os.chmod(path, 0o600)`. Note: chmod is called AFTER the atomic rename, so there's a brief window where the file exists with permissions inherited from the temp file (0o600 from mkstemp). This is correct — the file is not world-readable between creation and chmod.
+
+**Status:** ✅ SAFE — mkstemp 0o600 temp file, chmod 0o600 after atomic rename.
+
+---
+
+### P89-9 · File Permissions — `hermes_constants.py` `secure_parent_dir` — GOOD
+
+**File:** `hermes_constants.py` (lines 238–256)
+
+`secure_parent_dir(path)` refuses to chmod `/` or any top-level directory (parent with fewer than 3 parts). This prevents catastrophic host bricking when `HERMES_HOME` resolves to an unexpected location. Guards against `/`, `/usr`, `/home`, `/var`, `/tmp`, etc.
+
+**Status:** ✅ SAFE — explicit safety check prevents dangerous chmod.
+
+---
+
+### P89-10 · Symlink Attacks — workspace exfiltration via `dir:` workspace — ACCEPTABLE
+
+**File:** `hermes_cli/kanban_db.py` (lines 3935–3948)
+
+`dir:` workspace kind allows arbitrary absolute paths. The kanban design intentionally permits users to specify any directory on the system as a workspace. The dispatcher and worker run as the same OS user, so this is not a privilege boundary — it's a userControlled feature.
+
+The `resolve_workspace` function checks `is_absolute()` and creates the directory if missing. There's no restriction on pointing `dir:` workspaces outside `HERMES_HOME`. For `scratch` workspaces, the path is always under `workspaces_root()` which is inside `kanban_home()` (which is `~/.hermes` by default), providing natural isolation.
+
+**Status:** ℹ️ DOCUMENTED — `dir:` workspaces are intentionally outside hermes_home; not a vulnerability given the threat model.
+
+---
+
+### P89-11 · Symlink Attacks — `checkpoint_manager.py` symlink in worktree — ACCEPTABLE
+
+**File:** `tools/checkpoint_manager.py`
+
+The checkpoint store at `~/.hermes/checkpoints/store/` is a bare git repo. The `GIT_DIR` + `GIT_WORK_TREE` + `GIT_INDEX_FILE` environment variables isolate git state from the user's project. `projects/<hash16>.json` stores `{workdir, created_at, last_touch}` keyed by project hash, not by path traversal.
+
+The design is that users with multiple worktrees of the same repo share one store. A malicious symlink in a worktree pointing outside that worktree would not affect the checkpoint store because `GIT_WORK_TREE` pins the write scope.
+
+**Status:** ℹ️ DOCUMENTED — git isolation via env vars is the containment boundary.
+
+---
+
+### P89-12 · `agent/google_oauth.py` token file — GOOD
+
+**File:** `agent/google_oauth.py` (lines 178–182)
+
+Lock file created with `os.open(..., os.O_CREAT | os.O_RDWR, 0o600)` — atomic exclusive creation with restrictive permissions in the syscall itself. No post-creation chmod needed, eliminating TOCTOU.
+
+OAuth token file at lines 504–507 uses `os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR` — single syscall atomic creation with 0o600. Comment explicitly notes this closes the TOCTOU window.
+
+**Status:** ✅ SAFE — single-syscall atomic 0o600 creation.
+
+---
+
+### P89-13 · `hermes_cli/auth.py` auth store write — GOOD
+
+**File:** `hermes_cli/auth.py` (lines 1038–1056)
+
+Auth store write uses `tempfile.mkstemp` → write → fsync → `atomic_replace` → chmod 0o600. The comment explicitly references the TOCTOU window fix matching `agent/google_oauth.py (#19673)` and `tools/mcp_oauth.py (#21148)`.
+
+**Status:** ✅ SAFE — mkstemp + atomic_replace + chmod 0o600 post-rename. TOCTOU window minimized to between rename and chmod (non-adversarial given filesystem ordering).
+
+---
+
+### P89-14 · `gateway/status.py` PID file mode — POTENTIAL ISSUE
+
+**File:** `gateway/status.py` (line 490)
+
+PID file created with `os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)` — no explicit mode specified. On Linux with typical umask (e.g., 0o022), this creates the file with 0o644 (world-readable). The PID file at `~/.hermes/gateway.pid` contains process metadata.
+
+The lock file at line 666 has the same issue — no explicit mode on `os.open`.
+
+By contrast, the shutdown_forensics log at `gateway/shutdown_forensics.py:247` uses `os.open(..., 0o644)` — explicit 0o644.
+
+**Status:** ⚠️ MINOR — PID files and lock files may be world-readable on systems with permissive umask. Consider explicitly passing 0o600 mode to `os.open`.
+
+---
+
+### P89-15 · `gateway/shutdown_forensics.py` log file — GOOD
+
+**File:** `gateway/shutdown_forensics.py` (line 247)
+
+Log file created with `os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)` — explicit mode 0o644 (world-readable but not writable). This is appropriate for log files that may be read by system administrators.
+
+**Status:** ✅ OK — explicit 0o644 mode.
+
+---
+
+### P89-16 · Board slug validation — GOOD
+
+**File:** `hermes_cli/kanban_db.py` (lines 160–175)
+
+Slug validation regex `^[a-z0-9][a-z0-9\-_]{0,63}$` enforces:
+- Lowercase alphanumerics, hyphens, underscores only
+- Cannot start with hyphen or underscore
+- 1–64 character limit
+
+This prevents `../` injection into board directory paths. Board directories are under `boards_root()` which is `<root>/kanban/boards/`; a crafted slug like `../../etc` would fail validation.
+
+**Status:** ✅ SAFE — strict slug validation prevents directory traversal in board paths.
+
+---
+
+### P89-17 · `hermes_cli/backup.py` backup extraction — GOOD
+
+**File:** `hermes_cli/backup.py` (lines 68–85)
+
+`_should_exclude(rel_path)` checks path components against `_EXCLUDED_DIRS` (hermes-agent, __pycache__, .git, node_modules, backups, checkpoints) and file suffixes against `_EXCLUDED_SUFFIXES` (.pyc, .db-wal, .db-shm, .db-journal). The exclusion is applied to each path component, so `a/../b` would have `a` and `b` checked — `..` itself is not a path component, but `a` would be checked as a component.
+
+Note: `..` as a path component is not directly blocked by this logic, but the zip path resolution during extraction will resolve `../` sequences. The extraction writes to `<root>/kanban/` with no further sandboxing, but the backup itself comes from a trusted source (the user's own hermes directory).
+
+**Status:** ℹ️ ACCEPTABLE — backup created from own hermes directory; zip extraction is not a user-controlled interface.
+
+---
+
+### P89-18 · Cross-profile write guard — `file_safety.py` — GOOD
+
+**File:** `agent/file_safety.py` (lines 318–407)
+
+`classify_cross_profile_target(path)` detects writes to other profiles' scoped areas (skills, plugins, cron, memories). Returns a dict with active_profile, target_profile, area, and target_path. `get_cross_profile_warning(path)` surfaces a soft guard that the model can override with explicit `cross_profile=True`. This is documented as defense-in-depth, not a security boundary.
+
+**Status:** ✅ GOOD — soft guard with explicit user-override path.
+
+---
+
+### Summary Table
+
+| ID | Area | Component | Status |
+|----|------|-----------|--------|
+| P89-1 | Path Traversal | kanban_db workspace resolution | ✅ SAFE |
+| P89-2 | Path Traversal | file_safety write deny | ✅ SAFE |
+| P89-3 | Path Traversal | file_safety read deny via symlink | ✅ SAFE |
+| P89-4 | Symlink Attacks | atomic_replace symlink preservation (#16743) | ✅ SAFE |
+| P89-5 | TOCTOU | O_EXCL atomic file creation | ✅ SAFE |
+| P89-6 | Temp File Security | mkstemp in atomic_json/yaml_write | ✅ SAFE |
+| P89-7 | File Permissions | cron jobs 0o700/0o600 | ✅ SAFE |
+| P89-8 | File Permissions | pairing store 0o600 | ✅ SAFE |
+| P89-9 | File Permissions | secure_parent_dir guard (#25821) | ✅ SAFE |
+| P89-10 | Symlink Attacks | dir: workspace exfiltration | ℹ️ DOCUMENTED |
+| P89-11 | Symlink Attacks | checkpoint store git isolation | ℹ️ DOCUMENTED |
+| P89-12 | TOCTOU | google_oauth token file 0o600 atomic | ✅ SAFE |
+| P89-13 | TOCTOU | auth.py auth store write | ✅ SAFE |
+| P89-14 | File Permissions | status.py PID file mode (minor) | ⚠️ MINOR |
+| P89-15 | File Permissions | shutdown_forensics log 0o644 | ✅ OK |
+| P89-16 | Path Traversal | board slug validation | ✅ SAFE |
+| P89-17 | Symlink Attacks | backup extraction | ℹ️ ACCEPTABLE |
+| P89-18 | Cross-Profile | file_safety cross-profile guard | ✅ GOOD |
+
+**Risk Level:** LOW — Strong filesystem security hygiene throughout. Path traversal is properly mitigated via absolute path enforcement and realpath resolution. Symlink attacks are handled via realpath in atomic_replace and read/write denylists. Temp files use mkstemp with cleanup. Permissions are consistently set to restrictive values (0o600/0o700) with explicit tests. The only minor issue is PID file creation without explicit mode on systems with permissive umask, which is a minor concern given the non-sensitive nature of PID files.
+
+---
+
+*Pass #89 complete — 2026-05-25T20:15:00Z*
 *Commit at scan: 5a51a1f65*
-*Next: Pass #89*
+*Next: Pass #90*

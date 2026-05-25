@@ -89,6 +89,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_source` | — | Optional `metadata.source` attached to retained memories |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
+| `retain_autokey_context_tags` | — | Opt-in tags whose tool retains derive a stable `document_id` from tag + `context_id`/source/context when no explicit `document_id` is supplied |
 
 ### Integration
 
@@ -120,6 +121,12 @@ Available in `hybrid` and `tools` memory modes:
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
 | `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
+
+For recurring snapshot memories, pass a stable `document_id` to
+`hindsight_retain` (for example `persona:pouls-current` or
+`persona:inner-state`) and set `replace: true`. Reusing the same
+`document_id` updates the same logical memory instead of growing a new copy on
+every cron tick.
 
 ## Environment Variables
 

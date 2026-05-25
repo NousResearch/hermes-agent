@@ -15,6 +15,8 @@ import pytest
 
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
+    HYGIENE_RECALL_SCHEMA,
+    INVALIDATE_SCHEMA,
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
@@ -151,6 +153,61 @@ def test_normalize_retain_tags_accepts_json_array_string():
     assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
 
 
+def test_retain_kwargs_default_private_visibility(provider):
+    provider.update_gateway_context(platform="telegram", user_id="alice", chat_id="chat-a", identity_key="telegram:user:alice")
+
+    kwargs = provider._build_retain_kwargs("Alice private fact", tags=["custom", "vis:public"])
+
+    assert kwargs["metadata"]["identity_key"] == "telegram:user:alice"
+    assert kwargs["metadata"]["visibility"] == "private"
+    assert "custom" in kwargs["tags"]
+    assert "vis:public" not in kwargs["tags"]
+    assert "vis:private:telegram:user:alice" in kwargs["tags"]
+
+
+def test_manual_retain_can_mark_shared_visibility(provider):
+    provider.update_gateway_context(platform="telegram", user_id="alice", chat_id="chat-a", identity_key="telegram:user:alice")
+
+    kwargs = provider._build_retain_kwargs("Shared fact", visibility="shared")
+
+    assert kwargs["metadata"]["visibility"] == "shared"
+    assert "vis:shared" in kwargs["tags"]
+    assert "vis:private:telegram:user:alice" not in kwargs["tags"]
+
+
+def test_scoped_recall_filters_other_private_and_legacy(provider):
+    provider.update_gateway_context(platform="telegram", user_id="alice", chat_id="chat-a", identity_key="telegram:user:alice")
+    provider._client.arecall.return_value = SimpleNamespace(
+        results=[
+            SimpleNamespace(text="Alice private", metadata={"identity_key": "telegram:user:alice", "visibility": "private"}, tags=["vis:private:telegram:user:alice"]),
+            SimpleNamespace(text="Bob private", metadata={"identity_key": "telegram:user:bob", "visibility": "private"}, tags=["vis:private:telegram:user:bob"]),
+            SimpleNamespace(text="Shared", metadata={"visibility": "shared"}, tags=["vis:shared"]),
+            SimpleNamespace(text="Legacy untagged", metadata={}, tags=[]),
+        ]
+    )
+
+    response = json.loads(provider.handle_tool_call("hindsight_recall", {"query": "private"}))
+
+    assert "Alice private" in response["result"]
+    assert "Shared" in response["result"]
+    assert "Bob private" not in response["result"]
+    assert "Legacy untagged" not in response["result"]
+
+
+def test_scoped_reflect_uses_recall_not_unscoped_reflect(provider):
+    provider.update_gateway_context(platform="telegram", user_id="alice", chat_id="chat-a", identity_key="telegram:user:alice")
+    provider._client.arecall.return_value = SimpleNamespace(
+        results=[
+            SimpleNamespace(text="Alice private", metadata={"identity_key": "telegram:user:alice", "visibility": "private"}, tags=["vis:private:telegram:user:alice"]),
+        ]
+    )
+
+    response = json.loads(provider.handle_tool_call("hindsight_reflect", {"query": "what do you know?"}))
+
+    assert "Alice private" in response["result"]
+    provider._client.areflect.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------
@@ -161,6 +218,10 @@ class TestSchemas:
         assert RETAIN_SCHEMA["name"] == "hindsight_retain"
         assert "content" in RETAIN_SCHEMA["parameters"]["properties"]
         assert "tags" in RETAIN_SCHEMA["parameters"]["properties"]
+        assert "document_id" in RETAIN_SCHEMA["parameters"]["properties"]
+        assert "context_id" in RETAIN_SCHEMA["parameters"]["properties"]
+        assert "replace" in RETAIN_SCHEMA["parameters"]["properties"]
+        assert "update_mode" in RETAIN_SCHEMA["parameters"]["properties"]
         assert "content" in RETAIN_SCHEMA["parameters"]["required"]
 
     def test_recall_schema_has_query(self):
@@ -172,11 +233,27 @@ class TestSchemas:
         assert REFLECT_SCHEMA["name"] == "hindsight_reflect"
         assert "query" in REFLECT_SCHEMA["parameters"]["properties"]
 
-    def test_get_tool_schemas_returns_three(self, provider):
+    def test_invalidate_schema_has_required_fields(self):
+        assert INVALIDATE_SCHEMA["name"] == "hindsight_invalidate"
+        assert "query" in INVALIDATE_SCHEMA["parameters"]["required"]
+        assert "reason" in INVALIDATE_SCHEMA["parameters"]["required"]
+        assert "correction" in INVALIDATE_SCHEMA["parameters"]["required"]
+
+    def test_hygiene_recall_schema_has_query(self):
+        assert HYGIENE_RECALL_SCHEMA["name"] == "hindsight_hygiene_recall"
+        assert "query" in HYGIENE_RECALL_SCHEMA["parameters"]["required"]
+
+    def test_get_tool_schemas_returns_five(self, provider):
         schemas = provider.get_tool_schemas()
-        assert len(schemas) == 3
+        assert len(schemas) == 5
         names = {s["name"] for s in schemas}
-        assert names == {"hindsight_retain", "hindsight_recall", "hindsight_reflect"}
+        assert names == {
+            "hindsight_retain",
+            "hindsight_recall",
+            "hindsight_reflect",
+            "hindsight_invalidate",
+            "hindsight_hygiene_recall",
+        }
 
     def test_context_mode_returns_no_tools(self, provider_with_config):
         p = provider_with_config(memory_mode="context")
@@ -195,6 +272,7 @@ class TestConfig:
         assert provider._retain_every_n_turns == 1
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
+        assert provider._correction_visibility == "suppressive"
         assert provider._tags is None
         assert provider._recall_tags is None
         assert provider._bank_mission == ""
@@ -464,6 +542,48 @@ class TestToolHandlers:
         call_kwargs = p._client.aretain.call_args.kwargs
         assert call_kwargs["tags"] == ["pref", "ui", "client:x"]
 
+    def test_retain_passes_stable_document_id(self, provider):
+        provider.handle_tool_call(
+            "hindsight_retain",
+            {
+                "content": "Pouls courant",
+                "context": "pouls",
+                "document_id": "persona:pouls-current",
+                "replace": True,
+                "tags": ["pouls"],
+            },
+        )
+
+        call_kwargs = provider._client.aretain.call_args.kwargs
+        assert call_kwargs["document_id"] == "persona:pouls-current"
+        assert "update_mode" not in call_kwargs
+
+    def test_retain_passes_append_update_mode(self, provider):
+        provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "append me", "document_id": "doc-1", "update_mode": "append"},
+        )
+
+        call_kwargs = provider._client.aretain.call_args.kwargs
+        assert call_kwargs["document_id"] == "doc-1"
+        assert call_kwargs["update_mode"] == "append"
+
+    def test_retain_autokey_uses_context_id_when_enabled(self, provider_with_config):
+        p = provider_with_config(retain_autokey_context_tags=["pouls"])
+        p.handle_tool_call(
+            "hindsight_retain",
+            {
+                "content": "Pouls courant",
+                "context": "pouls",
+                "context_id": "current",
+                "tags": ["pouls"],
+            },
+        )
+
+        call_kwargs = p._client.aretain.call_args.kwargs
+        assert call_kwargs["document_id"] == "autokey:pouls:current"
+        assert call_kwargs["metadata"]["context_id"] == "current"
+
     def test_retain_without_tags(self, provider):
         provider.handle_tool_call("hindsight_retain", {"content": "hello"})
         call_kwargs = provider._client.aretain.call_args.kwargs
@@ -495,6 +615,35 @@ class TestToolHandlers:
         assert call_kwargs["tags"] == ["tag1"]
         assert call_kwargs["tags_match"] == "all"
 
+    def test_priority_tags_feed_recall_when_recall_tags_unset(self, provider_with_config):
+        p = provider_with_config(priority_tags="persona, pouls")
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["tags"] == ["persona", "pouls"]
+        assert call_kwargs["tags_match"] == "any"
+
+    def test_recall_tags_override_priority_tags(self, provider_with_config):
+        p = provider_with_config(
+            priority_tags=["persona", "pouls"],
+            recall_tags=["explicit"],
+            recall_tags_match="all",
+        )
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["tags"] == ["explicit"]
+        assert call_kwargs["tags_match"] == "all"
+
+    def test_global_priority_tags_feed_recall(self, provider_with_config, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "hindsight:\n  priority_tags: persona,etat-interne,pouls\n",
+            encoding="utf-8",
+        )
+        p = provider_with_config()
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["tags"] == ["persona", "etat-interne", "pouls"]
+        assert call_kwargs["tags_match"] == "any"
+
     def test_recall_passes_types(self, provider_with_config):
         p = provider_with_config(recall_types=["world", "experience"])
         p.handle_tool_call("hindsight_recall", {"query": "test"})
@@ -507,6 +656,29 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
         assert result["result"] == "No relevant memories found."
+
+    def test_local_external_lazy_installs_hindsight_client(self, provider_with_config, monkeypatch):
+        p = provider_with_config(mode="local_external")
+        p._client = None
+
+        lazy_ensure = MagicMock()
+        fake_hindsight = MagicMock(return_value=_make_mock_client())
+
+        import_orig = __import__
+
+        def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "tools.lazy_deps":
+                return SimpleNamespace(ensure=lazy_ensure)
+            if name == "hindsight_client":
+                return SimpleNamespace(Hindsight=fake_hindsight)
+            return import_orig(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr("builtins.__import__", _fake_import)
+
+        p.handle_tool_call("hindsight_recall", {"query": "test"})
+
+        lazy_ensure.assert_called_once_with("memory.hindsight", prompt=False)
+        fake_hindsight.assert_called_once()
 
     def test_recall_missing_query(self, provider):
         result = json.loads(provider.handle_tool_call(
@@ -546,6 +718,109 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
         assert "error" in result
+
+    def test_invalidate_with_memory_id_writes_registry_and_retains_correction(self, provider, tmp_path):
+        provider._memory_hygiene_path = tmp_path / "memory_hygiene.jsonl"
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {
+                "query": "Pouls interne a 18h",
+                "memory_id": "mem-1",
+                "document_id": "doc-1",
+                "reason": "faux souvenir",
+                "correction": "Le Pouls interne tourne avec le cron 0 * * * *.",
+                "tags": ["correction", "hygiene-memoire", "persona", "pouls"],
+            },
+        ))
+
+        assert result["invalidated_count"] == 1
+        assert result["correction_stored"] is True
+        lines = provider._memory_hygiene_path.read_text().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["memory_id"] == "mem-1"
+        assert entry["document_id"] == "doc-1"
+        assert entry["status"] == "superseded"
+        assert entry["correction"] == "Le Pouls interne tourne avec le cron 0 * * * *."
+        provider._client.aretain.assert_called_once()
+        assert provider._client.aretain.call_args.kwargs["tags"] == [
+            "correction",
+            "hygiene-memoire",
+            "persona",
+            "pouls",
+        ]
+
+    def test_invalidate_without_memory_id_recalls_close_candidates(self, provider, tmp_path):
+        provider._memory_hygiene_path = tmp_path / "memory_hygiene.jsonl"
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(id="mem-1", document_id="doc-1", text="Le Pouls interne est a 18h."),
+                SimpleNamespace(id="mem-2", document_id="doc-2", text="Un souvenir sans rapport."),
+            ]
+        )
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {
+                "query": "Pouls interne a 18h",
+                "reason": "faux souvenir",
+                "correction": "Le Pouls interne est horaire.",
+            },
+        ))
+
+        assert result["invalidated_count"] == 1
+        entry = json.loads(provider._memory_hygiene_path.read_text().splitlines()[0])
+        assert entry["memory_id"] == "mem-1"
+        provider._client.arecall.assert_called_once()
+
+    def test_hygiene_recall_filters_invalidated_memory_suppressively_by_default(self, provider, tmp_path):
+        provider._memory_hygiene_path = tmp_path / "memory_hygiene.jsonl"
+        provider._memory_hygiene_path.write_text(json.dumps({
+            "memory_id": "mem-1",
+            "document_id": "doc-1",
+            "query": "Pouls interne a 18h",
+            "reason": "faux souvenir",
+            "status": "superseded",
+            "correction": "Le Pouls interne tourne avec le cron 0 * * * *.",
+            "tags": ["correction"],
+            "created_at": "2026-05-21T17:00:00Z",
+        }) + "\n")
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(id="mem-1", document_id="doc-1", text="Le Pouls interne est a 18h."),
+                SimpleNamespace(id="mem-2", document_id="doc-2", text="Le cron est horaire."),
+            ]
+        )
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_hygiene_recall", {"query": "Pouls interne"}
+        ))
+
+        assert result["filtered_count"] == 1
+        assert "Le cron est horaire." in result["result"]
+        assert "18h" not in result["result"]
+        assert result["corrections"] == []
+
+    def test_hygiene_recall_can_return_visible_correction(self, provider_with_config, tmp_path):
+        p = provider_with_config(correction_visibility="visible")
+        p._memory_hygiene_path = tmp_path / "memory_hygiene.jsonl"
+        p._memory_hygiene_path.write_text(json.dumps({
+            "memory_id": "mem-1",
+            "query": "Pouls interne a 18h",
+            "status": "superseded",
+            "correction": "Le Pouls interne tourne avec le cron 0 * * * *.",
+        }) + "\n")
+        p._client.arecall.return_value = SimpleNamespace(
+            results=[SimpleNamespace(id="mem-1", text="Le Pouls interne est a 18h.")]
+        )
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_hygiene_recall", {"query": "Pouls interne"}
+        ))
+
+        assert result["filtered_count"] == 1
+        assert result["corrections"] == ["Le Pouls interne tourne avec le cron 0 * * * *."]
 
     def test_local_embedded_recall_reconnects_after_idle_shutdown(self, provider, monkeypatch):
         first_client = _make_mock_client()
@@ -641,6 +916,174 @@ class TestPrefetch:
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
 
+    def test_queue_prefetch_applies_memory_hygiene_suppressively_by_default(self, provider, tmp_path):
+        provider._memory_hygiene_path = tmp_path / "memory_hygiene.jsonl"
+        provider._memory_hygiene_path.write_text(json.dumps({
+            "status": "superseded",
+            "memory_id": "false-memory",
+            "query": "pouls configuré à 18 heures",
+            "correction": "Le Pouls interne est configuré en 0 * * * *, donc horaire.",
+        }) + "\n")
+        provider._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(id="false-memory", text="Le pouls est configuré à 18 heures."),
+            SimpleNamespace(id="good-memory", text="inner_state.json est la cible principale du Pouls."),
+        ])
+
+        provider.queue_prefetch("état actuel inner_state traits energy")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert "18 heures" not in provider._prefetch_result
+        assert "inner_state.json" in provider._prefetch_result
+        assert "Correction:" not in provider._prefetch_result
+
+    def test_queue_prefetch_can_put_visible_corrections_first(self, provider_with_config, tmp_path):
+        p = provider_with_config(correction_visibility="visible_first")
+        p._memory_hygiene_path = tmp_path / "memory_hygiene.jsonl"
+        p._memory_hygiene_path.write_text(json.dumps({
+            "status": "superseded",
+            "memory_id": "false-memory",
+            "query": "pouls configuré à 18 heures",
+            "correction": "Le Pouls interne est configuré en 0 * * * *, donc horaire.",
+        }) + "\n")
+        p._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(id="good-memory", text="inner_state.json est la cible principale du Pouls."),
+            SimpleNamespace(id="false-memory", text="Le pouls est configuré à 18 heures."),
+        ])
+
+        p.queue_prefetch("état actuel inner_state traits energy")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert p._prefetch_result.splitlines()[0] == "- Correction: Le Pouls interne est configuré en 0 * * * *, donc horaire."
+        assert "18 heures" not in p._prefetch_result
+
+    def test_hygiene_matches_accents_and_match_all_terms(self, provider, tmp_path):
+        provider._memory_hygiene_path = tmp_path / "memory_hygiene.jsonl"
+        provider._memory_hygiene_path.write_text(json.dumps({
+            "status": "superseded",
+            "query": "terminal absent",
+            "match_all": ["outil terminal", "toujours absent"],
+            "suppress_correction": True,
+            "correction": "Terminal est présent.",
+        }) + "\n")
+        provider._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(id="false-memory", text="L'outil terminal est toujours absent."),
+            SimpleNamespace(id="good-memory", text="Le toolset du cron contient terminal."),
+        ])
+
+        provider.queue_prefetch("outil terminal cron")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert "toujours absent" not in provider._prefetch_result
+        assert "toolset du cron contient terminal" in provider._prefetch_result
+        assert "Correction:" not in provider._prefetch_result
+
+    def test_queue_prefetch_dedupes_newest_persona_state(self, provider_with_config):
+        p = provider_with_config(
+            priority_tags=["persona-state"],
+            prefetch_dedupe_context_tags=["persona-state"],
+            prefetch_max_per_priority_tag=3,
+        )
+        p._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(
+                id="old",
+                text="inner_state energy 0.30",
+                tags=["persona-state"],
+                metadata={"source": "inner_state"},
+                updated_at="2026-01-01T00:00:00Z",
+            ),
+            SimpleNamespace(
+                id="new",
+                text="inner_state energy 0.80",
+                tags=["persona-state"],
+                metadata={"source": "inner_state"},
+                updated_at="2026-01-01T01:00:00Z",
+            ),
+        ])
+
+        p.queue_prefetch("etat interne")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert "energy 0.80" in p._prefetch_result
+        assert "energy 0.30" not in p._prefetch_result
+
+    def test_queue_prefetch_dedupes_by_document_id(self, provider_with_config):
+        p = provider_with_config(
+            priority_tags=["pouls"],
+            prefetch_dedupe_context_tags=["pouls"],
+            prefetch_max_per_priority_tag=3,
+        )
+        p._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(
+                id="old",
+                document_id="persona:pouls-current",
+                text="Pouls 20h",
+                tags=["pouls"],
+                updated_at="2026-01-01T00:00:00Z",
+            ),
+            SimpleNamespace(
+                id="new",
+                document_id="persona:pouls-current",
+                text="Pouls 21h",
+                tags=["pouls"],
+                updated_at="2026-01-01T01:00:00Z",
+            ),
+        ])
+
+        p.queue_prefetch("pouls")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert "Pouls 21h" in p._prefetch_result
+        assert "Pouls 20h" not in p._prefetch_result
+
+    def test_queue_prefetch_caps_per_priority_tag(self, provider_with_config):
+        p = provider_with_config(
+            priority_tags=["persona"],
+            prefetch_max_per_priority_tag=3,
+            prefetch_dedupe_enabled=False,
+        )
+        p._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(id=f"m{i}", text=f"persona memory {i}", tags=["persona"])
+            for i in range(5)
+        ])
+
+        p.queue_prefetch("persona")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert "persona memory 0" in p._prefetch_result
+        assert "persona memory 1" in p._prefetch_result
+        assert "persona memory 2" in p._prefetch_result
+        assert "persona memory 3" not in p._prefetch_result
+        assert "persona memory 4" not in p._prefetch_result
+
+    def test_queue_prefetch_corrections_do_not_count_against_caps(self, provider_with_config, tmp_path):
+        p = provider_with_config(priority_tags=["persona"], prefetch_max_per_priority_tag=1, correction_visibility="visible")
+        p._memory_hygiene_path = tmp_path / "memory_hygiene.jsonl"
+        p._memory_hygiene_path.write_text(json.dumps({
+            "status": "superseded",
+            "memory_id": "false-memory",
+            "query": "ancien etat persona",
+            "correction": "Correction active du Pouls.",
+        }) + "\n")
+        p._client.arecall.return_value = SimpleNamespace(results=[
+            SimpleNamespace(id="false-memory", text="ancien etat persona", tags=["persona"]),
+            SimpleNamespace(id="good-1", text="persona memory kept", tags=["persona"]),
+            SimpleNamespace(id="good-2", text="persona memory capped", tags=["persona"]),
+        ])
+
+        p.queue_prefetch("persona")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5.0)
+
+        assert "Correction: Correction active du Pouls." in p._prefetch_result
+        assert "persona memory kept" in p._prefetch_result
+        assert "persona memory capped" not in p._prefetch_result
+
 
 # ---------------------------------------------------------------------------
 # sync_turn tests
@@ -698,8 +1141,8 @@ class TestSyncTurn:
         assert item["metadata"]["agent_identity"] == "fakeassistantname"
         assert item["metadata"]["turn_index"] == "1"
         assert item["metadata"]["message_count"] == "2"
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00", content[0][0]["timestamp"])
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", item["metadata"]["retained_at"])
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", content[0][0]["timestamp"])
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", item["metadata"]["retained_at"])
 
     def test_sync_turn_skipped_when_auto_retain_off(self, provider_with_config):
         p = provider_with_config(auto_retain=False)
@@ -1216,11 +1659,11 @@ class TestConfigSchema:
             "recall_budget", "memory_mode", "recall_prefetch_method",
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
-            "recall_tags", "recall_tags_match",
+            "recall_tags", "recall_tags_match", "priority_tags",
             "auto_recall", "auto_retain",
             "retain_every_n_turns", "retain_async", "retain_context",
             "recall_max_tokens", "recall_max_input_chars",
-            "recall_prompt_preamble",
+            "recall_prompt_preamble", "retain_autokey_context_tags",
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"
 
@@ -1548,4 +1991,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

@@ -35,12 +35,16 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
+import unicodedata
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from hermes_time import format_utc_z, parse_utc_z, utc_now
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
@@ -59,6 +63,10 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_VALID_CORRECTION_VISIBILITY = {"suppressive", "visible", "visible_first"}
+_VALID_MEMORY_VISIBILITY = {"private", "shared", "consented", "public", "hearsay"}
+_DEFAULT_PREFETCH_MAX_PER_PRIORITY_TAG = 3
+_DEFAULT_PREFETCH_DEDUPE_CONTEXT_TAGS = ["persona-state", "etat-interne"]
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -81,6 +89,20 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _parse_bool_setting(value: Any, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Invalid boolean Hindsight setting %r; using default %s", value, default)
+    return default
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -249,10 +271,33 @@ RETAIN_SCHEMA = {
         "properties": {
             "content": {"type": "string", "description": "The information to store."},
             "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
+            "document_id": {
+                "type": "string",
+                "description": "Stable document identity for replaceable memories; reusing it updates the same logical memory.",
+            },
+            "context_id": {
+                "type": "string",
+                "description": "Stable context identity stored in metadata and used by retain auto-keying when enabled.",
+            },
+            "replace": {
+                "type": "boolean",
+                "description": "When true with document_id, store as a replaceable snapshot rather than an append.",
+                "default": False,
+            },
+            "update_mode": {
+                "type": "string",
+                "enum": ["append", "replace"],
+                "description": "Advanced Hindsight update mode. 'replace' uses the backend default overwrite behavior.",
+            },
             "tags": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional per-call tags to merge with configured default retain tags.",
+                "description": "Optional per-call tags to merge with configured default retain tags. Visibility tags are enforced by Hermes.",
+            },
+            "visibility": {
+                "type": "string",
+                "enum": ["private", "shared", "consented", "public", "hearsay"],
+                "description": "Memory visibility. Defaults to private for the current interlocutor.",
             },
         },
         "required": ["content"],
@@ -284,6 +329,47 @@ REFLECT_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "The question to reflect on."},
+        },
+        "required": ["query"],
+    },
+}
+
+INVALIDATE_SCHEMA = {
+    "name": "hindsight_invalidate",
+    "description": (
+        "Mark a false or superseded Hindsight memory in a local hygiene registry "
+        "and store the correction as fresh memory. This does not physically delete "
+        "the original memory."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Text used to find the false memory."},
+            "memory_id": {"type": "string", "description": "Optional exact memory id to invalidate."},
+            "document_id": {"type": "string", "description": "Optional exact document id to invalidate."},
+            "reason": {"type": "string", "description": "Short reason for invalidation."},
+            "correction": {"type": "string", "description": "Corrected truth to retain."},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Tags for the retained correction.",
+            },
+        },
+        "required": ["query", "reason", "correction"],
+    },
+}
+
+HYGIENE_RECALL_SCHEMA = {
+    "name": "hindsight_hygiene_recall",
+    "description": (
+        "Search Hindsight while applying the local memory hygiene registry. "
+        "Invalidated or superseded memories are filtered and their corrections "
+        "are surfaced."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for."},
         },
         "required": ["query"],
     },
@@ -376,9 +462,226 @@ def _normalize_retain_tags(value: Any) -> List[str]:
     return normalized
 
 
+def _normalize_tags_match(value: Any, *, default: str = "any") -> str:
+    text = str(value or default).strip()
+    return text if text in {"any", "all", "any_strict", "all_strict"} else default
+
+
+def _load_global_priority_tags() -> List[str]:
+    """Load host-level hindsight.priority_tags from Hermes config.yaml."""
+    env_tags = (
+        os.environ.get("HINDSIGHT_PRIORITY_TAGS")
+        or os.environ.get("HERMES_HINDSIGHT_PRIORITY_TAGS")
+        or ""
+    )
+    if env_tags:
+        return _normalize_retain_tags(env_tags)
+
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        import yaml
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+    hindsight_config = config.get("hindsight") if isinstance(config, dict) else None
+    if not isinstance(hindsight_config, dict):
+        return []
+    return _normalize_retain_tags(hindsight_config.get("priority_tags"))
+
+
 def _utc_timestamp() -> str:
-    """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    """Return current UTC timestamp in canonical UTC-Z format."""
+    return format_utc_z(utc_now())
+
+
+def _compact_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^\w*]+", " ", text.lower())
+    return " ".join(text.split())
+
+
+def _match_words(value: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"\w+", value.lower())
+        if len(word) >= 4 or any(char.isdigit() for char in word)
+    }
+
+
+def _memory_result_text(result: Any) -> str:
+    return str(getattr(result, "text", "") or getattr(result, "content", "") or "")
+
+
+def _memory_result_id(result: Any) -> str:
+    for attr in ("memory_id", "id"):
+        value = getattr(result, attr, None)
+        if value:
+            return str(value)
+    return ""
+
+
+def _memory_document_id(result: Any) -> str:
+    value = getattr(result, "document_id", None)
+    if value:
+        return str(value)
+    document = getattr(result, "document", None)
+    value = getattr(document, "id", None) if document is not None else None
+    return str(value) if value else ""
+
+
+def _memory_metadata(result: Any) -> dict[str, Any]:
+    metadata = getattr(result, "metadata", None)
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _memory_result_tags(result: Any) -> list[str]:
+    raw_tags = getattr(result, "tags", None)
+    if raw_tags is None:
+        raw_tags = _memory_metadata(result).get("tags")
+    return _normalize_retain_tags(raw_tags)
+
+
+def _normalize_fingerprint(value: Any) -> str:
+    text = _compact_text(value)
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}z\b", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:512]
+
+
+def _document_id_segment(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", text.strip().lower())
+    text = re.sub(r"-+", "-", text).strip("-")
+    return text[:160]
+
+
+def _identity_key_from_values(
+    *,
+    platform: Any = "",
+    user_id: Any = "",
+    chat_id: Any = "",
+    identity_key: Any = "",
+) -> str:
+    key = str(identity_key or "").strip()
+    if key:
+        return key
+    try:
+        from gateway.relationship_profiles import canonical_identity_key_from_values
+
+        return canonical_identity_key_from_values(platform=platform or "local", user_id=user_id, chat_id=chat_id)
+    except Exception:
+        platform_value = str(platform or "local").strip().lower() or "local"
+        user_value = str(user_id or "").strip()
+        if user_value:
+            return f"{platform_value}:user:{user_value}"
+        chat_value = str(chat_id or "").strip()
+        if chat_value:
+            return f"{platform_value}:chat:{chat_value}"
+        return f"{platform_value}:unknown"
+
+
+def _visibility_from_metadata_and_tags(metadata: dict[str, Any], tags: list[str]) -> str:
+    visibility = str(metadata.get("visibility") or "").strip().lower()
+    if visibility in _VALID_MEMORY_VISIBILITY:
+        return visibility
+    for tag in tags:
+        if tag == "vis:public":
+            return "public"
+        if tag == "vis:shared":
+            return "shared"
+        if tag == "vis:consented":
+            return "consented"
+        if tag.startswith("vis:hearsay"):
+            return "hearsay"
+        if tag.startswith("vis:private:"):
+            return "private"
+    return ""
+
+
+def _memory_context_identifier(result: Any) -> str:
+    metadata = _memory_metadata(result)
+    for attr in ("context_id", "source", "context"):
+        value = getattr(result, attr, None)
+        if value:
+            return _normalize_fingerprint(value)
+    for key in ("context_id", "source", "context"):
+        value = metadata.get(key)
+        if value:
+            return _normalize_fingerprint(value)
+    return ""
+
+
+def _parse_recency(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return parse_utc_z(text)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else None
+
+
+def _memory_recency(result: Any) -> datetime | None:
+    metadata = _memory_metadata(result)
+    for name in ("updated_at", "created_at", "timestamp"):
+        parsed = _parse_recency(getattr(result, name, None))
+        if parsed:
+            return parsed
+        parsed = _parse_recency(metadata.get(name))
+        if parsed:
+            return parsed
+    match = re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", _memory_result_text(result))
+    return _parse_recency(match.group(0)) if match else None
+
+
+def _dedupe_key_for_result(result: Any, context_tags: list[str]) -> str:
+    tags = _memory_result_tags(result)
+    matched_tag = next((tag for tag in context_tags if tag in tags), "")
+    if not matched_tag:
+        return ""
+    document_id = _memory_document_id(result)
+    if document_id:
+        return f"{matched_tag}:document:{_document_id_segment(document_id)}"
+    context_id = _memory_context_identifier(result)
+    if context_id:
+        return f"{matched_tag}:context:{context_id}"
+    return f"{matched_tag}:text:{_normalize_fingerprint(_memory_result_text(result))}"
+
+
+def _is_close_memory_match(query: str, text: str) -> bool:
+    query_norm = _compact_text(query)
+    text_norm = _compact_text(text)
+    if not query_norm or not text_norm:
+        return False
+    if query_norm in text_norm or text_norm in query_norm:
+        return True
+    query_words = _match_words(query_norm)
+    if not query_words:
+        return False
+    text_words = _match_words(text_norm)
+    overlap = len(query_words & text_words) / len(query_words)
+    return overlap >= 0.75
+
+
+def _hygiene_item_correction_visible(item: dict[str, Any], default_visibility: str) -> bool:
+    if bool(item.get("suppress_correction")):
+        return False
+    visibility = str(item.get("correction_visibility") or default_visibility or "suppressive").strip()
+    return visibility in {"visible", "visible_first"}
 
 
 def _embedded_profile_name(config: dict[str, Any]) -> str:
@@ -539,6 +842,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._chat_name = ""
         self._chat_type = ""
         self._thread_id = ""
+        self._identity_key = ""
+        self._scoped_visibility_enabled = False
         self._agent_identity = ""
         self._agent_workspace = ""
         self._turn_index = 0
@@ -567,6 +872,18 @@ class HindsightMemoryProvider(MemoryProvider):
         self._tags: list[str] | None = None
         self._recall_tags: list[str] | None = None
         self._recall_tags_match = "any"
+        self._priority_tags: list[str] = []
+        self._prefetch_max_per_priority_tag = _DEFAULT_PREFETCH_MAX_PER_PRIORITY_TAG
+        self._prefetch_dedupe_context_tags = list(_DEFAULT_PREFETCH_DEDUPE_CONTEXT_TAGS)
+        self._prefetch_dedupe_enabled = True
+        self._retain_autokey_context_tags: list[str] = []
+        self._correction_visibility = "suppressive"
+        self._memory_hygiene_path = Path(
+            os.environ.get(
+                "HERMES_MEMORY_HYGIENE_PATH",
+                "/workspace/projects/persona/memory_hygiene.jsonl",
+            )
+        )
 
         # Retain controls
         self._auto_retain = True
@@ -856,6 +1173,13 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_assistant_prefix", "description": "Label used before assistant turns in retained transcripts", "default": "Assistant"},
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
+            {"key": "priority_tags", "description": "Fallback tags used for auto-recall/search when recall_tags is unset (comma-separated)", "default": ""},
+            {"key": "memory_hygiene_path", "description": "JSONL registry for invalidated or superseded memories", "default": "/workspace/projects/persona/memory_hygiene.jsonl"},
+            {"key": "prefetch_max_per_priority_tag", "description": "Maximum auto-injected memories per priority tag", "default": _DEFAULT_PREFETCH_MAX_PER_PRIORITY_TAG},
+            {"key": "prefetch_dedupe_context_tags", "description": "Context tags whose recurring memories are deduplicated before injection", "default": _DEFAULT_PREFETCH_DEDUPE_CONTEXT_TAGS},
+            {"key": "prefetch_dedupe_enabled", "description": "Deduplicate recurring persona context memories before injection", "default": True},
+            {"key": "retain_autokey_context_tags", "description": "Opt-in tags whose tool retains get a stable document_id derived from tag and context/source/context_id when none is supplied", "default": ""},
+            {"key": "correction_visibility", "description": "How memory hygiene corrections are injected: suppressive, visible, or visible_first", "default": "suppressive"},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
             {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
@@ -871,6 +1195,15 @@ class HindsightMemoryProvider(MemoryProvider):
     def _get_client(self):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
+            def _ensure_client_dependency() -> None:
+                try:
+                    from tools.lazy_deps import ensure as _lazy_ensure
+                    _lazy_ensure("memory.hindsight", prompt=False)
+                except ImportError:
+                    pass
+                except Exception as exc:
+                    raise ImportError(str(exc)) from exc
+
             if self._mode == "local_embedded":
                 available, reason = _check_local_runtime()
                 if not available:
@@ -878,13 +1211,7 @@ class HindsightMemoryProvider(MemoryProvider):
                         "Hindsight local runtime is unavailable"
                         + (f": {reason}" if reason else "")
                     )
-                try:
-                    from tools.lazy_deps import ensure as _lazy_ensure
-                    _lazy_ensure("memory.hindsight", prompt=False)
-                except ImportError:
-                    pass
-                except Exception as _e:
-                    raise ImportError(str(_e))
+                _ensure_client_dependency()
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
@@ -910,6 +1237,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
             else:
+                _ensure_client_dependency()
                 from hindsight_client import Hindsight
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
@@ -1023,6 +1351,245 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = client
             return self._run_sync(operation(client))
 
+    def update_gateway_context(self, **kwargs: Any) -> None:
+        """Refresh per-turn gateway identity on cached gateway agents."""
+        self._platform = str(kwargs.get("platform") or self._platform or "").strip()
+        self._user_id = str(kwargs.get("user_id") or "").strip()
+        self._user_name = str(kwargs.get("user_name") or "").strip()
+        self._chat_id = str(kwargs.get("chat_id") or "").strip()
+        self._chat_name = str(kwargs.get("chat_name") or "").strip()
+        self._chat_type = str(kwargs.get("chat_type") or "").strip()
+        self._thread_id = str(kwargs.get("thread_id") or "").strip()
+        self._identity_key = _identity_key_from_values(
+            platform=self._platform or "local",
+            user_id=self._user_id,
+            chat_id=self._chat_id,
+            identity_key=kwargs.get("identity_key"),
+        )
+        self._scoped_visibility_enabled = True
+
+    def _allowed_visibility_tags(self) -> list[str]:
+        tags = ["vis:public", "vis:shared", "vis:consented"]
+        if self._identity_key:
+            tags.append(f"vis:private:{self._identity_key}")
+            tags.append(f"vis:hearsay:{self._identity_key}")
+        return tags
+
+    def _apply_visibility_to_retain(
+        self,
+        metadata: Dict[str, str],
+        tags: list[str],
+        visibility: str | None,
+    ) -> list[str]:
+        if not getattr(self, "_scoped_visibility_enabled", False):
+            return tags
+        requested = str(visibility or metadata.get("visibility") or "private").strip().lower()
+        if requested not in _VALID_MEMORY_VISIBILITY:
+            requested = "private"
+        identity_key = getattr(self, "_identity_key", "")
+        metadata["identity_key"] = identity_key
+        metadata["visibility"] = requested
+        filtered = [tag for tag in tags if not tag.startswith("vis:")]
+        if requested == "private":
+            filtered.append(f"vis:private:{identity_key}")
+        elif requested in {"public", "shared", "consented"}:
+            filtered.append(f"vis:{requested}")
+        else:
+            filtered.append(f"vis:hearsay:{identity_key}")
+        return list(dict.fromkeys(tag for tag in filtered if tag))
+
+    def _is_result_visible_to_current_identity(self, result: Any) -> bool:
+        metadata = _memory_metadata(result)
+        tags = _memory_result_tags(result)
+        visibility = _visibility_from_metadata_and_tags(metadata, tags)
+        if not visibility:
+            return False
+        if visibility in {"public", "shared", "consented"}:
+            return True
+        identity = str(metadata.get("identity_key") or "").strip()
+        if visibility == "private":
+            identity_key = getattr(self, "_identity_key", "")
+            return bool(identity_key and (identity == identity_key or f"vis:private:{identity_key}" in tags))
+        if visibility == "hearsay":
+            return bool(f"vis:hearsay:{getattr(self, '_identity_key', '')}" in tags)
+        return False
+
+    def _filter_scoped_results(self, results: list[Any]) -> list[Any]:
+        if not getattr(self, "_scoped_visibility_enabled", False):
+            return results
+        return [result for result in results if self._is_result_visible_to_current_identity(result)]
+
+    def _build_recall_kwargs(self, query: str) -> dict:
+        recall_kwargs: dict = {
+            "bank_id": self._bank_id,
+            "query": query,
+            "budget": self._budget,
+            "max_tokens": self._recall_max_tokens,
+        }
+        if not getattr(self, "_scoped_visibility_enabled", False):
+            if self._recall_tags:
+                recall_kwargs["tags"] = self._recall_tags
+                recall_kwargs["tags_match"] = self._recall_tags_match
+            if self._recall_types:
+                recall_kwargs["types"] = self._recall_types
+            return recall_kwargs
+
+        if self._recall_tags:
+            recall_kwargs["tags"] = list(dict.fromkeys([*self._recall_tags, *self._allowed_visibility_tags()]))
+            recall_kwargs["tags_match"] = "any"
+        else:
+            recall_kwargs["tags"] = self._allowed_visibility_tags()
+            recall_kwargs["tags_match"] = "any"
+        if self._recall_types:
+            recall_kwargs["types"] = self._recall_types
+        return recall_kwargs
+
+    def _read_memory_hygiene(self) -> list[dict[str, Any]]:
+        path = self._memory_hygiene_path
+        if not path.exists():
+            return []
+        items: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            if isinstance(item, dict):
+                items.append(item)
+        return items
+
+    def _append_memory_hygiene(self, item: dict[str, Any]) -> None:
+        path = self._memory_hygiene_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        encoded = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        content = "\n".join([*existing, encoded]) + "\n"
+        tmp.write_text(content, encoding="utf-8")
+        for line_no, line in enumerate(tmp.read_text(encoding="utf-8").splitlines(), 1):
+            if line.strip():
+                parsed = json.loads(line)
+                if not isinstance(parsed, dict):
+                    raise ValueError(f"Invalid hygiene entry at line {line_no}")
+        os.replace(tmp, path)
+
+    def _find_invalidation_candidates(self, query: str, memory_id: str, document_id: str) -> list[dict[str, str]]:
+        if memory_id or document_id:
+            return [{"memory_id": memory_id, "document_id": document_id}]
+        recall_kwargs = self._build_recall_kwargs(query)
+        resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+        candidates: list[dict[str, str]] = []
+        for result in self._filter_scoped_results(list(resp.results or [])):
+            text = _memory_result_text(result)
+            if not _is_close_memory_match(query, text):
+                continue
+            candidates.append(
+                {
+                    "memory_id": _memory_result_id(result),
+                    "document_id": _memory_document_id(result),
+                }
+            )
+        return candidates
+
+    def _hygiene_matches_result(self, item: dict[str, Any], result: Any) -> bool:
+        memory_id = str(item.get("memory_id") or "")
+        document_id = str(item.get("document_id") or "")
+        result_memory_id = _memory_result_id(result)
+        result_document_id = _memory_document_id(result)
+        if memory_id and result_memory_id and memory_id == result_memory_id:
+            return True
+        if document_id and result_document_id and document_id == result_document_id:
+            return True
+        result_text = _memory_result_text(result)
+        queries = [str(item.get("query") or "")]
+        extra_queries = item.get("match_queries")
+        if isinstance(extra_queries, str):
+            queries.append(extra_queries)
+        elif isinstance(extra_queries, list):
+            queries.extend(str(query or "") for query in extra_queries)
+        if any(_is_close_memory_match(query, result_text) for query in queries if query):
+            return True
+
+        result_norm = _compact_text(result_text)
+        all_terms = [_compact_text(term) for term in item.get("match_all", []) if _compact_text(term)] if isinstance(item.get("match_all"), list) else []
+        if all_terms and all(term in result_norm for term in all_terms):
+            return True
+        any_terms = [_compact_text(term) for term in item.get("match_any", []) if _compact_text(term)] if isinstance(item.get("match_any"), list) else []
+        return bool(any_terms and any(term in result_norm for term in any_terms))
+
+    def _format_recall_results(self, results: list[Any]) -> str:
+        if not results:
+            return "No relevant memories found."
+        return "\n".join(f"{i}. {_memory_result_text(result)}" for i, result in enumerate(results, 1))
+
+    def _apply_memory_hygiene(self, results: list[Any]) -> tuple[list[Any], list[str], int]:
+        hygiene_items = [
+            item
+            for item in self._read_memory_hygiene()
+            if item.get("status") in {"invalidated", "superseded", "delete_requested", "deleted"}
+        ]
+        if not hygiene_items:
+            return results, [], 0
+
+        filtered = []
+        corrections = []
+        for result in results:
+            matched = [item for item in hygiene_items if self._hygiene_matches_result(item, result)]
+            if matched:
+                corrections.extend(
+                    str(item.get("correction") or "").strip()
+                    for item in matched
+                    if str(item.get("correction") or "").strip()
+                    and _hygiene_item_correction_visible(item, self._correction_visibility)
+                )
+                continue
+            filtered.append(result)
+        return filtered, list(dict.fromkeys(corrections)), len(results) - len(filtered)
+
+    def _dedupe_prefetch_results(self, results: list[Any]) -> list[Any]:
+        if not self._prefetch_dedupe_enabled or not self._prefetch_dedupe_context_tags:
+            return results
+        selected: dict[str, tuple[Any, datetime | None, int]] = {}
+        passthrough: list[tuple[Any, int]] = []
+        for index, result in enumerate(results):
+            key = _dedupe_key_for_result(result, self._prefetch_dedupe_context_tags)
+            if not key:
+                passthrough.append((result, index))
+                continue
+            recency = _memory_recency(result)
+            previous = selected.get(key)
+            if previous is None:
+                selected[key] = (result, recency, index)
+                continue
+            _prev_result, prev_recency, prev_index = previous
+            if recency and (prev_recency is None or recency > prev_recency):
+                selected[key] = (result, recency, index)
+            elif recency == prev_recency and index < prev_index:
+                selected[key] = (result, recency, index)
+
+        ordered = [*passthrough, *[(result, index) for result, _recency, index in selected.values()]]
+        return [result for result, _index in sorted(ordered, key=lambda item: item[1])]
+
+    def _cap_prefetch_results(self, results: list[Any]) -> list[Any]:
+        if not self._priority_tags or self._prefetch_max_per_priority_tag < 0:
+            return results
+        counts = {tag: 0 for tag in self._priority_tags}
+        kept: list[Any] = []
+        for result in results:
+            tags = _memory_result_tags(result)
+            matched = [tag for tag in self._priority_tags if tag in tags]
+            if matched and any(counts[tag] >= self._prefetch_max_per_priority_tag for tag in matched):
+                continue
+            kept.append(result)
+            for tag in matched:
+                counts[tag] += 1
+        return kept
+
+    def _normalize_prefetch_results(self, results: list[Any]) -> tuple[list[Any], list[str], int]:
+        filtered, corrections, filtered_count = self._apply_memory_hygiene(results)
+        deduped = self._dedupe_prefetch_results(filtered)
+        capped = self._cap_prefetch_results(deduped)
+        return capped, corrections, filtered_count
+
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
 
@@ -1105,6 +1672,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._chat_name = str(kwargs.get("chat_name") or "").strip()
         self._chat_type = str(kwargs.get("chat_type") or "").strip()
         self._thread_id = str(kwargs.get("thread_id") or "").strip()
+        explicit_identity_key = str(kwargs.get("identity_key") or "").strip()
+        self._identity_key = _identity_key_from_values(
+            platform=self._platform or "local",
+            user_id=self._user_id,
+            chat_id=self._chat_id,
+            identity_key=explicit_identity_key,
+        )
+        self._scoped_visibility_enabled = bool(explicit_identity_key)
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._turn_index = 0
@@ -1167,8 +1742,27 @@ class HindsightMemoryProvider(MemoryProvider):
             or os.environ.get("HINDSIGHT_RETAIN_TAGS", "")
         )
         self._tags = self._retain_tags or None
-        self._recall_tags = self._config.get("recall_tags") or None
-        self._recall_tags_match = self._config.get("recall_tags_match", "any")
+        configured_recall_tags = _normalize_retain_tags(self._config.get("recall_tags"))
+        priority_tags = _normalize_retain_tags(self._config.get("priority_tags"))
+        if not priority_tags:
+            priority_tags = _load_global_priority_tags()
+        self._priority_tags = priority_tags
+        self._recall_tags = configured_recall_tags or priority_tags or None
+        if configured_recall_tags:
+            self._recall_tags_match = _normalize_tags_match(self._config.get("recall_tags_match"))
+        else:
+            self._recall_tags_match = _normalize_tags_match(
+                self._config.get("priority_tags_match")
+                or self._config.get("recall_tags_match")
+                or "any"
+            )
+        self._memory_hygiene_path = Path(
+            self._config.get("memory_hygiene_path")
+            or os.environ.get(
+                "HERMES_MEMORY_HYGIENE_PATH",
+                "/workspace/projects/persona/memory_hygiene.jsonl",
+            )
+        )
         self._retain_source = str(
             self._config.get("retain_source") or os.environ.get("HINDSIGHT_RETAIN_SOURCE", "")
         ).strip()
@@ -1191,6 +1785,32 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+        self._prefetch_max_per_priority_tag = max(
+            0,
+            _parse_int_setting(
+                self._config.get("prefetch_max_per_priority_tag"),
+                _DEFAULT_PREFETCH_MAX_PER_PRIORITY_TAG,
+            ),
+        )
+        self._prefetch_dedupe_context_tags = (
+            _normalize_retain_tags(self._config.get("prefetch_dedupe_context_tags"))
+            or list(_DEFAULT_PREFETCH_DEDUPE_CONTEXT_TAGS)
+        )
+        self._prefetch_dedupe_enabled = _parse_bool_setting(
+            self._config.get("prefetch_dedupe_enabled"),
+            True,
+        )
+        self._retain_autokey_context_tags = _normalize_retain_tags(
+            self._config.get("retain_autokey_context_tags")
+        )
+        correction_visibility = str(self._config.get("correction_visibility") or "suppressive").strip()
+        if correction_visibility not in _VALID_CORRECTION_VISIBILITY:
+            logger.warning(
+                "Invalid Hindsight correction_visibility %r; using suppressive",
+                correction_visibility,
+            )
+            correction_visibility = "suppressive"
+        self._correction_visibility = correction_visibility
 
         _client_version = "unknown"
         try:
@@ -1268,14 +1888,20 @@ class HindsightMemoryProvider(MemoryProvider):
                 f"# Hindsight Memory\n"
                 f"Active (tools mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
                 f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
-                f"hindsight_retain to store facts."
+                f"hindsight_retain to store facts, hindsight_invalidate to mark false "
+                f"memories, and hindsight_hygiene_recall when corrected memories matter. "
+                f"New memories default to private visibility for the current interlocutor; "
+                f"only choose shared/public/consented/hearsay when the user explicitly permits it."
             )
         return (
             f"# Hindsight Memory\n"
             f"Active. Bank: {self._bank_id}, budget: {self._budget}.\n"
             f"Relevant memories are automatically injected into context. "
             f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
-            f"hindsight_retain to store facts."
+            f"hindsight_retain to store facts, hindsight_invalidate to mark false "
+            f"memories, and hindsight_hygiene_recall when corrected memories matter. "
+            f"New memories default to private visibility for the current interlocutor; "
+            f"only choose shared/public/consented/hearsay when the user explicitly permits it."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -1312,26 +1938,29 @@ class HindsightMemoryProvider(MemoryProvider):
 
         def _run():
             try:
-                if self._prefetch_method == "reflect":
+                if self._prefetch_method == "reflect" and not self._scoped_visibility_enabled:
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
                     resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
                     text = resp.text or ""
                 else:
-                    recall_kwargs: dict = {
-                        "bank_id": self._bank_id, "query": query,
-                        "budget": self._budget, "max_tokens": self._recall_max_tokens,
-                    }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
-                    if self._recall_types:
-                        recall_kwargs["types"] = self._recall_types
-                    logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
+                    recall_kwargs = self._build_recall_kwargs(query)
+                    logger.debug("Prefetch: calling scoped recall (bank=%s, query_len=%d, budget=%s)",
                                  self._bank_id, len(query), self._budget)
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    scoped_results = self._filter_scoped_results(list(resp.results or []))
+                    results, corrections, filtered_count = self._normalize_prefetch_results(scoped_results)
+                    if filtered_count:
+                        logger.info(
+                            "Prefetch: memory hygiene filtered %d invalidated/superseded result(s)",
+                            filtered_count,
+                        )
+                    visible_first = self._correction_visibility == "visible_first"
+                    correction_lines = [f"- Correction: {correction}" for correction in corrections]
+                    memory_lines = [f"- {_memory_result_text(result)}" for result in results if _memory_result_text(result)]
+                    lines = [*correction_lines, *memory_lines] if visible_first else [*memory_lines, *correction_lines]
+                    text = "\n".join(lines)
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1342,7 +1971,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
-        now = datetime.now(timezone.utc).isoformat()
+        now = _utc_timestamp()
         return [
             {
                 "role": "user",
@@ -1380,9 +2009,29 @@ class HindsightMemoryProvider(MemoryProvider):
             metadata["chat_type"] = self._chat_type
         if self._thread_id:
             metadata["thread_id"] = self._thread_id
+        identity_key = getattr(self, "_identity_key", "")
+        if identity_key:
+            metadata["identity_key"] = identity_key
         if self._agent_identity:
             metadata["agent_identity"] = self._agent_identity
         return metadata
+
+    def _derive_retain_document_id(
+        self,
+        *,
+        context: str | None,
+        metadata: Dict[str, str],
+        tags: list[str],
+    ) -> str:
+        matched_tag = next((tag for tag in self._retain_autokey_context_tags if tag in tags), "")
+        if not matched_tag:
+            return ""
+        context_identity = metadata.get("context_id") or metadata.get("source") or context or ""
+        tag_segment = _document_id_segment(matched_tag)
+        context_segment = _document_id_segment(context_identity)
+        if not tag_segment or not context_segment:
+            return ""
+        return f"autokey:{tag_segment}:{context_segment}"
 
     def _build_retain_kwargs(
         self,
@@ -1392,23 +2041,34 @@ class HindsightMemoryProvider(MemoryProvider):
         document_id: str | None = None,
         metadata: Dict[str, str] | None = None,
         tags: List[str] | None = None,
+        visibility: str | None = None,
+        update_mode: str | None = None,
         retain_async: bool | None = None,
     ) -> Dict[str, Any]:
+        metadata = metadata or self._build_metadata(message_count=1, turn_index=self._turn_index)
         kwargs: Dict[str, Any] = {
             "bank_id": self._bank_id,
             "content": content,
-            "metadata": metadata or self._build_metadata(message_count=1, turn_index=self._turn_index),
+            "metadata": metadata,
         }
         if context is not None:
             kwargs["context"] = context
-        if document_id:
-            kwargs["document_id"] = document_id
         if retain_async is not None:
             kwargs["retain_async"] = retain_async
         merged_tags = _normalize_retain_tags(self._retain_tags)
         for tag in _normalize_retain_tags(tags):
             if tag not in merged_tags:
                 merged_tags.append(tag)
+        merged_tags = self._apply_visibility_to_retain(metadata, merged_tags, visibility)
+        document_id = str(document_id or "").strip() or self._derive_retain_document_id(
+            context=context,
+            metadata=metadata,
+            tags=merged_tags,
+        )
+        if document_id:
+            kwargs["document_id"] = document_id
+        if update_mode and update_mode != "replace":
+            kwargs["update_mode"] = update_mode
         if merged_tags:
             kwargs["tags"] = merged_tags
         return kwargs
@@ -1493,7 +2153,13 @@ class HindsightMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
             return []
-        return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
+        return [
+            RETAIN_SCHEMA,
+            RECALL_SCHEMA,
+            REFLECT_SCHEMA,
+            INVALIDATE_SCHEMA,
+            HYGIENE_RECALL_SCHEMA,
+        ]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
@@ -1502,10 +2168,24 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
+                metadata = None
+                context_id = str(args.get("context_id") or "").strip()
+                if context_id:
+                    metadata = self._build_metadata(message_count=1, turn_index=self._turn_index)
+                    metadata["context_id"] = context_id
+                update_mode = str(args.get("update_mode") or "").strip()
+                if _parse_bool_setting(args.get("replace"), False):
+                    update_mode = "replace"
+                if update_mode not in {"", "append", "replace"}:
+                    return tool_error("Invalid update_mode: expected append or replace")
                 retain_kwargs = self._build_retain_kwargs(
                     content,
                     context=context,
+                    document_id=str(args.get("document_id") or "").strip() or None,
+                    metadata=metadata,
                     tags=args.get("tags"),
+                    visibility=args.get("visibility"),
+                    update_mode=update_mode or None,
                 )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
@@ -1521,42 +2201,105 @@ class HindsightMemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
-                recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
-                }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
+                recall_kwargs = self._build_recall_kwargs(query)
                 logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
                              self._bank_id, len(query), self._budget)
                 resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                num_results = len(resp.results) if resp.results else 0
+                results = self._filter_scoped_results(list(resp.results or []))
+                num_results = len(results)
                 logger.debug("Tool hindsight_recall: %d results", num_results)
-                if not resp.results:
-                    return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                return json.dumps({"result": self._format_recall_results(results)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")
+
+        elif tool_name == "hindsight_invalidate":
+            query = str(args.get("query") or "").strip()
+            reason = str(args.get("reason") or "").strip()
+            correction = str(args.get("correction") or "").strip()
+            if not query:
+                return tool_error("Missing required parameter: query")
+            if not reason:
+                return tool_error("Missing required parameter: reason")
+            if not correction:
+                return tool_error("Missing required parameter: correction")
+            memory_id = str(args.get("memory_id") or "").strip()
+            document_id = str(args.get("document_id") or "").strip()
+            tags = _normalize_retain_tags(args.get("tags") or ["correction", "hygiene-memoire"])
+            try:
+                candidates = self._find_invalidation_candidates(query, memory_id, document_id)
+                now = _utc_timestamp()
+                for candidate in candidates:
+                    self._append_memory_hygiene(
+                        {
+                            "memory_id": candidate.get("memory_id") or None,
+                            "document_id": candidate.get("document_id") or None,
+                            "query": query,
+                            "reason": reason,
+                            "status": "superseded",
+                            "correction": correction,
+                            "tags": tags,
+                            "created_at": now,
+                        }
+                    )
+                retain_kwargs = self._build_retain_kwargs(
+                    correction,
+                    context="memory hygiene correction",
+                    tags=tags,
+                )
+                self._run_hindsight_operation(lambda client: client.aretain(**retain_kwargs))
+                return json.dumps(
+                    {
+                        "invalidated_count": len(candidates),
+                        "correction_stored": True,
+                        "registry": str(self._memory_hygiene_path),
+                    }
+                )
+            except Exception as e:
+                logger.warning("hindsight_invalidate failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to invalidate memory: {e}")
+
+        elif tool_name == "hindsight_hygiene_recall":
+            query = args.get("query", "")
+            if not query:
+                return tool_error("Missing required parameter: query")
+            try:
+                recall_kwargs = self._build_recall_kwargs(query)
+                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+                scoped_results = self._filter_scoped_results(list(resp.results or []))
+                filtered, corrections, filtered_count = self._apply_memory_hygiene(scoped_results)
+                return json.dumps(
+                    {
+                        "result": self._format_recall_results(filtered),
+                        "filtered_count": filtered_count,
+                        "corrections": corrections,
+                    }
+                )
+            except Exception as e:
+                logger.warning("hindsight_hygiene_recall failed: %s", e, exc_info=True)
+                return tool_error(f"Failed to search memory with hygiene: {e}")
 
         elif tool_name == "hindsight_reflect":
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
-                logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(
-                    lambda client: client.areflect(
-                        bank_id=self._bank_id, query=query, budget=self._budget
+                if not self._scoped_visibility_enabled:
+                    logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
+                                 self._bank_id, len(query), self._budget)
+                    resp = self._run_hindsight_operation(
+                        lambda client: client.areflect(
+                            bank_id=self._bank_id, query=query, budget=self._budget
+                        )
                     )
-                )
-                logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
-                return json.dumps({"result": resp.text or "No relevant memories found."})
+                    logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
+                    return json.dumps({"result": resp.text or "No relevant memories found."})
+                recall_kwargs = self._build_recall_kwargs(query)
+                logger.debug("Tool hindsight_reflect: using scoped recall bank=%s, query_len=%d, budget=%s",
+                             self._bank_id, len(query), self._budget)
+                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
+                results = self._filter_scoped_results(list(resp.results or []))
+                return json.dumps({"result": self._format_recall_results(results)})
             except Exception as e:
                 logger.warning("hindsight_reflect failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to reflect: {e}")

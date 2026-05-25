@@ -589,6 +589,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-software-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/software-development/software-development-code-wiki',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                   ],
                 },

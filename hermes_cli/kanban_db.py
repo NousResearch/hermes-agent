@@ -100,6 +100,64 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "human_review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+# Keyword fragments in a task's title/body that strongly suggest the worker
+# will be editing the hermes-agent source tree (or an analogous repo) and
+# therefore needs its own git worktree to avoid clobbering other workers'
+# branches in the live checkout. See PR for this feature for the symptom
+# trail (workers stepping on each other's HEAD / staged changes).
+_WORKTREE_KEYWORDS = (
+    "hermes-agent",
+    "git rebase",
+    "gh pr",
+    "hermes_cli/",
+    "tools/",
+    "agent/",
+    "gateway/",
+    "tests/",
+)
+
+
+def _infer_workspace_kind(title: Optional[str], body: Optional[str]) -> str:
+    """Pick a default workspace_kind from task title/body keywords.
+
+    Returns ``'worktree'`` when the text mentions hermes-agent source paths
+    or git/PR verbs, ``'scratch'`` otherwise. Caller is expected to invoke
+    this only when no explicit workspace_kind was passed.
+    """
+    blob = " ".join(filter(None, [title, body])).lower()
+    if not blob:
+        return "scratch"
+    for kw in _WORKTREE_KEYWORDS:
+        if kw in blob:
+            return "worktree"
+    return "scratch"
+
+
+def _live_checkout_path() -> Path:
+    """Resolve the live checkout the dispatcher uses as the worktree base.
+
+    Order of precedence:
+    1. ``HERMES_KANBAN_LIVE_CHECKOUT`` env var (absolute path).
+    2. Default ``~/.hermes/hermes-agent``.
+
+    A future kanban-config knob can override this without changing the
+    public signature.
+    """
+    env = os.environ.get("HERMES_KANBAN_LIVE_CHECKOUT", "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".hermes" / "hermes-agent"
+
+
+def _default_worktree_path(task_id: str) -> Path:
+    """Deterministic worktree path keyed on task id.
+
+    Same path is returned on respawn so workers reuse the committed work
+    from previous attempts (the branch ``kanban/<task_id>`` survives in
+    the live checkout's refs even if the worker process crashed).
+    """
+    return Path.home() / ".hermes" / "worktrees" / task_id
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -2246,7 +2304,7 @@ def create_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     created_by: Optional[str] = None,
-    workspace_kind: str = "scratch",
+    workspace_kind: Optional[str] = None,
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
     tenant: Optional[str] = None,
@@ -2293,6 +2351,8 @@ def create_task(
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
         )
+    if workspace_kind is None:
+        workspace_kind = _infer_workspace_kind(title, body)
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
             f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
@@ -4191,6 +4251,46 @@ def gc_scratch_workspaces(conn: sqlite3.Connection) -> int:
     return reaped
 
 
+def gc_worktree_workspaces(
+    conn: sqlite3.Connection, *, min_age_seconds: int = 24 * 60 * 60
+) -> int:
+    """Remove worktree workspaces for tasks settled more than 24h ago.
+
+    Mirror of :func:`gc_scratch_workspaces` for ``workspace_kind='worktree'``.
+    Calls :func:`remove_worktree` which runs ``git worktree remove`` and
+    drops the auto-generated ``kanban/<task_id>`` branch. Best-effort —
+    individual failures do not abort the sweep. Returns the number of
+    worktrees reaped.
+
+    The 24-hour grace period gives humans time to inspect a completed
+    worker's diff, branch, and commits before the workspace disappears.
+    """
+    now = int(time.time())
+    cutoff = now - max(0, int(min_age_seconds))
+    rows = conn.execute(
+        "SELECT id, workspace_path, completed_at FROM tasks "
+        "WHERE workspace_kind = 'worktree' "
+        "  AND workspace_path IS NOT NULL "
+        "  AND status IN ('done', 'archived') "
+        "  AND claim_lock IS NULL "
+        "  AND (completed_at IS NULL OR completed_at <= ?)",
+        (cutoff,),
+    ).fetchall()
+    reaped = 0
+    for row in rows:
+        path = row["workspace_path"]
+        if not path:
+            continue
+        try:
+            wp = Path(path)
+            remove_worktree(row["id"], wp)
+            reaped += 1
+            _log.debug("gc: removed worktree for %s: %s", row["id"], wp)
+        except Exception:
+            pass  # best-effort
+    return reaped
+
+
 def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
     """Kill the tmux session associated with a task's assignee, if dead."""
     try:
@@ -5560,6 +5660,114 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p, _branch_name = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
+
+
+def ensure_worktree(task: Task, path: Path) -> None:
+    """Create (or reuse) the git worktree at ``path`` for ``task``.
+
+    Anchored at the live checkout resolved by :func:`_live_checkout_path`.
+    Branch is the task-specific ``kanban/<task_id>``, or
+    ``task.branch_name`` when the caller pinned one. Base ref defaults to
+    ``myfork/main`` (override via ``HERMES_KANBAN_WORKTREE_BASE_REF``).
+
+    Idempotent: respawning a task reuses the existing worktree and branch
+    so committed work survives crashes. Raises RuntimeError on
+    unrecoverable git failures so the dispatcher can record a
+    spawn_failure and auto-block the task with a precise diagnostic
+    instead of silently looping.
+    """
+    import subprocess
+
+    branch = task.branch_name or f"kanban/{task.id}"
+    live = _live_checkout_path()
+    if not (live / ".git").exists():
+        raise RuntimeError(
+            f"live checkout {live} is not a git repo; "
+            f"set HERMES_KANBAN_LIVE_CHECKOUT or create the checkout"
+        )
+
+    # Already a worktree at this exact path? Reuse.
+    try:
+        existing = subprocess.run(
+            ["git", "-C", str(live), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        raise RuntimeError(f"git worktree list failed: {exc}") from exc
+
+    target_str = str(path)
+    if existing.returncode == 0:
+        for line in existing.stdout.splitlines():
+            if line.startswith("worktree ") and line[len("worktree "):] == target_str:
+                path.mkdir(parents=True, exist_ok=True)
+                return
+
+    if path.exists() and any(path.iterdir()):
+        raise RuntimeError(
+            f"worktree path {path} exists and is non-empty but not a "
+            f"registered git worktree; remove it manually or pick a "
+            f"different workspace_path"
+        )
+
+    base_ref = os.environ.get("HERMES_KANBAN_WORKTREE_BASE_REF", "").strip() or "myfork/main"
+    branch_exists = subprocess.run(
+        ["git", "-C", str(live), "rev-parse", "--verify", branch],
+        capture_output=True, text=True, check=False, timeout=15,
+    ).returncode == 0
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if branch_exists:
+        cmd = ["git", "-C", str(live), "worktree", "add", str(path), branch]
+    else:
+        cmd = ["git", "-C", str(live), "worktree", "add", str(path), "-b", branch, base_ref]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        raise RuntimeError(f"git worktree add failed: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git worktree add failed (rc={result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def remove_worktree(task_id: str, path: Path) -> None:
+    """Remove a worktree and its task-scoped branch.
+
+    Best-effort: errors are logged and swallowed because cleanup must
+    never block board state transitions. Safe to call when the worktree
+    isn't there.
+    """
+    import subprocess
+
+    live = _live_checkout_path()
+    if not (live / ".git").exists():
+        return
+    try:
+        subprocess.run(
+            ["git", "-C", str(live), "worktree", "remove", str(path), "--force"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except Exception as exc:
+        _log.debug("worktree remove failed for %s: %s", path, exc)
+    # Drop the auto-generated kanban/<task_id> branch. A caller-pinned
+    # branch_name is left in place: the human or follow-up worker may
+    # still need it for the PR.
+    branch = f"kanban/{task_id}"
+    try:
+        subprocess.run(
+            ["git", "-C", str(live), "branch", "-D", branch],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except Exception as exc:
+        _log.debug("branch delete failed for %s: %s", branch, exc)
+    try:
+        subprocess.run(
+            ["git", "-C", str(live), "worktree", "prune"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except Exception:
+        pass
 
 
 def set_workspace_path(
@@ -7051,6 +7259,10 @@ def _dispatch_once_locked(
     # own cwd, causing FileNotFoundError storms.
     try:
         gc_scratch_workspaces(conn)
+    except Exception:
+        pass  # best-effort
+    try:
+        gc_worktree_workspaces(conn)
     except Exception:
         pass  # best-effort
     # detect_crashed_workers stashes protocol-violation auto-blocks on

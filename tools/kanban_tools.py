@@ -758,18 +758,20 @@ def _handle_create(args: dict, **kw) -> str:
     # CLI / dashboard paths and on legacy hosts that don't set the env.
     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
-    # Resolve workspace. If the caller passed one explicitly, honor it.
-    # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
-    # inherits its own running task's workspace, so a worker editing a
-    # dir:/worktree project that spawns a follow-up child keeps the child
-    # in that project instead of a throwaway scratch dir. Orchestrators
-    # (kanban toolset, no HERMES_KANBAN_TASK) and CLI/dashboard callers
-    # fall back to scratch as before. Explicit None path stays None.
+    # Resolve workspace. Precedence: explicit > inherit > infer.
+    #  * An explicit workspace_kind from the caller always wins.
+    #  * Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
+    #    inherits its own running task's workspace, so a worker editing a
+    #    dir:/worktree project that spawns a follow-up child keeps the child
+    #    in that project instead of a throwaway scratch dir (see the
+    #    inherit-from-parent block below).
+    #  * Otherwise workspace_kind stays None so kanban_db.create_task can
+    #    infer it from title/body keywords (hermes-agent edits → 'worktree',
+    #    else 'scratch'). Do NOT default to 'scratch' here — that would
+    #    clobber the keyword-inference path.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
     _inherit_workspace = workspace_kind is None and workspace_path is None
-    if workspace_kind is None:
-        workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)
@@ -820,7 +822,9 @@ def _handle_create(args: dict, **kw) -> str:
                 parents=tuple(parents),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,
-                workspace_kind=str(workspace_kind),
+                workspace_kind=(
+                    str(workspace_kind) if workspace_kind else None
+                ),
                 workspace_path=workspace_path,
                 triage=triage,
                 idempotency_key=idempotency_key,
@@ -1470,9 +1474,13 @@ KANBAN_CREATE_SCHEMA = {
                 "type": "string",
                 "enum": ["scratch", "dir", "worktree"],
                 "description": (
-                    "Workspace flavor: 'scratch' (fresh tmp dir, "
-                    "default), 'dir' (shared directory, requires "
-                    "absolute workspace_path), 'worktree' (git worktree)."
+                    "Workspace flavor: 'scratch' (fresh tmp dir), 'dir' "
+                    "(shared directory, requires absolute workspace_path), "
+                    "'worktree' (git worktree at ~/.hermes/worktrees/<task_id>). "
+                    "When omitted, defaults to 'worktree' if the title/body "
+                    "mentions hermes-agent source paths or git/PR verbs "
+                    "(hermes_cli/, tools/, gateway/, 'git rebase', 'gh pr', "
+                    "etc.), otherwise 'scratch'."
                 ),
             },
             "workspace_path": {

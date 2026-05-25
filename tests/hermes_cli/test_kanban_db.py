@@ -271,6 +271,202 @@ def test_branch_name_requires_worktree_workspace(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Workspace kind inference (auto-default to worktree for hermes-agent edits)
+# ---------------------------------------------------------------------------
+
+def test_workspace_kind_inference_hermes_agent_body_picks_worktree(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="fix bug in hermes_cli/kanban_db.py",
+            body="touches tools/ and tests/",
+        )
+        t = kb.get_task(conn, tid)
+    assert t.workspace_kind == "worktree"
+
+
+def test_workspace_kind_inference_neutral_body_stays_scratch(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="write a research note on rate limiting",
+            body="literature scan only, no code edits",
+        )
+        t = kb.get_task(conn, tid)
+    assert t.workspace_kind == "scratch"
+
+
+def test_workspace_kind_inference_respects_explicit_caller(kanban_home):
+    # Title mentions hermes-agent (would infer worktree) but caller pinned scratch.
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="investigate hermes-agent log noise",
+            workspace_kind="scratch",
+        )
+        t = kb.get_task(conn, tid)
+    assert t.workspace_kind == "scratch"
+
+
+def test_workspace_kind_inference_keyword_git_rebase(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="git rebase staging branch")
+        t = kb.get_task(conn, tid)
+    assert t.workspace_kind == "worktree"
+
+
+# ---------------------------------------------------------------------------
+# Worktree provisioning (ensure_worktree)
+# ---------------------------------------------------------------------------
+
+def _init_bare_live_checkout(tmp_path):
+    """Create a tiny git repo to act as the live checkout for worktree tests.
+
+    Sets HERMES_KANBAN_LIVE_CHECKOUT and HERMES_KANBAN_WORKTREE_BASE_REF so
+    ensure_worktree resolves against this throwaway repo instead of the
+    developer's real hermes-agent checkout.
+    """
+    import subprocess
+    live = tmp_path / "live-checkout"
+    live.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(live)], check=True)
+    subprocess.run(
+        ["git", "-C", str(live), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(live), "config", "user.name", "test"], check=True,
+    )
+    (live / "README.md").write_text("seed\n")
+    subprocess.run(["git", "-C", str(live), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(live), "commit", "-q", "-m", "seed"], check=True,
+    )
+    return live
+
+
+def test_ensure_worktree_creates_branch_and_worktree(kanban_home, tmp_path, monkeypatch):
+    live = _init_bare_live_checkout(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_LIVE_CHECKOUT", str(live))
+    monkeypatch.setenv("HERMES_KANBAN_WORKTREE_BASE_REF", "main")
+
+    wt_path = tmp_path / "wt" / "t_worktree_fresh"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="ship in hermes_cli/", workspace_path=str(wt_path),
+        )
+        task = kb.get_task(conn, tid)
+    assert task.workspace_kind == "worktree"
+
+    kb.ensure_worktree(task, wt_path)
+    assert wt_path.is_dir()
+    assert (wt_path / "README.md").exists()
+
+    # Branch ref exists in the live checkout.
+    import subprocess
+    branches = subprocess.run(
+        ["git", "-C", str(live), "branch", "--list", f"kanban/{tid}"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert f"kanban/{tid}" in branches
+
+
+def test_ensure_worktree_respawn_reuses_existing(kanban_home, tmp_path, monkeypatch):
+    live = _init_bare_live_checkout(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_LIVE_CHECKOUT", str(live))
+    monkeypatch.setenv("HERMES_KANBAN_WORKTREE_BASE_REF", "main")
+
+    wt_path = tmp_path / "wt" / "t_worktree_respawn"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="hermes-agent edit", workspace_path=str(wt_path),
+        )
+        task = kb.get_task(conn, tid)
+
+    kb.ensure_worktree(task, wt_path)
+    # Worker commits some work in the worktree.
+    import subprocess
+    (wt_path / "wip.txt").write_text("in progress\n")
+    subprocess.run(
+        ["git", "-C", str(wt_path), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(wt_path), "config", "user.name", "test"], check=True,
+    )
+    subprocess.run(["git", "-C", str(wt_path), "add", "wip.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(wt_path), "commit", "-q", "-m", "wip"], check=True,
+    )
+
+    # Second call (respawn): same path, no error, prior commit survives.
+    kb.ensure_worktree(task, wt_path)
+    assert (wt_path / "wip.txt").exists()
+    log = subprocess.run(
+        ["git", "-C", str(wt_path), "log", "--oneline"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "wip" in log
+
+
+def test_gc_worktree_workspaces_removes_settled_worktrees(
+    kanban_home, tmp_path, monkeypatch
+):
+    live = _init_bare_live_checkout(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_LIVE_CHECKOUT", str(live))
+    monkeypatch.setenv("HERMES_KANBAN_WORKTREE_BASE_REF", "main")
+
+    wt_path = tmp_path / "wt" / "t_gc_worktree"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="hermes-agent gc test", workspace_path=str(wt_path),
+        )
+        task = kb.get_task(conn, tid)
+        kb.ensure_worktree(task, wt_path)
+        kb.set_workspace_path(conn, tid, str(wt_path))
+        # Complete and age the completion past the 24h cutoff.
+        kb.complete_task(conn, tid, result="ok")
+        old_ts = int(__import__("time").time()) - (25 * 60 * 60)
+        conn.execute(
+            "UPDATE tasks SET completed_at = ? WHERE id = ?", (old_ts, tid),
+        )
+        conn.commit()
+        reaped = kb.gc_worktree_workspaces(conn)
+
+    assert reaped == 1
+    assert not wt_path.exists()
+    # Branch deleted too.
+    import subprocess
+    branches = subprocess.run(
+        ["git", "-C", str(live), "branch", "--list", f"kanban/{tid}"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert branches.strip() == ""
+
+
+def test_gc_worktree_workspaces_skips_recently_completed(
+    kanban_home, tmp_path, monkeypatch
+):
+    live = _init_bare_live_checkout(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_LIVE_CHECKOUT", str(live))
+    monkeypatch.setenv("HERMES_KANBAN_WORKTREE_BASE_REF", "main")
+
+    wt_path = tmp_path / "wt" / "t_gc_recent"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="hermes-agent recent", workspace_path=str(wt_path),
+        )
+        task = kb.get_task(conn, tid)
+        kb.ensure_worktree(task, wt_path)
+        kb.set_workspace_path(conn, tid, str(wt_path))
+        kb.complete_task(conn, tid, result="ok")
+        # completed_at is now() — within the 24h grace window.
+        reaped = kb.gc_worktree_workspaces(conn)
+    assert reaped == 0
+    assert wt_path.exists()
+
+
+# ---------------------------------------------------------------------------
 # Links + dependency resolution
 # ---------------------------------------------------------------------------
 

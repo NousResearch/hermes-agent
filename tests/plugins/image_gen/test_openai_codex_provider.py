@@ -283,6 +283,106 @@ class TestGenerate:
         assert "cloudflare 403" in result["error"]
 
 
+# ── Edit ────────────────────────────────────────────────────────────────────
+
+
+class TestEdit:
+    def test_supports_edit(self, provider):
+        assert provider.supports_edit() is True
+
+    def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        result = provider.edit("restore", image="/tmp/test.png")
+        assert result["success"] is False
+        assert result["error_type"] == "auth_required"
+
+    def test_rejects_missing_image(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.edit("restore", image="")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_rejects_non_string_image(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.edit("restore", image=None)
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_rejects_nonexistent_local_path(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.edit("restore", image=str(tmp_path / "gone.png"))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_edit_uses_codex_stream_with_input_image(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        # Create a tiny valid PNG as reference
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            return _FakeStream([done_event], SimpleNamespace(output=[]))
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.edit("restore", image=str(source), aspect_ratio="landscape")
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-medium"
+        assert result["provider"] == "openai-codex"
+
+        # Verify edit-specific request shape
+        tool = captured["tools"][0]
+        assert tool["action"] == "edit"
+        assert tool["model"] == "gpt-image-2"
+
+        content = captured["input"][0]["content"]
+        assert content[0]["type"] == "input_text"
+        assert "restore" in content[0]["text"]
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+
+    def test_edit_saves_with_edit_prefix(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        output_item = SimpleNamespace(
+            type="image_generation_call",
+            result=_b64_png(),
+        )
+        done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+        fake_client = SimpleNamespace(
+            responses=SimpleNamespace(
+                stream=lambda **kwargs: _FakeStream([done_event], SimpleNamespace(output=[]))
+            )
+        )
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.edit("restore", image=str(source))
+        assert result["success"] is True
+
+        saved = Path(result["image"])
+        assert saved.exists()
+        assert saved.name.startswith("openai_codex_edit_")
+
+    def test_empty_prompt_returns_error(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        result = provider.edit("   ", image="/tmp/test.png")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+
 # ── Plugin entry point ──────────────────────────────────────────────────────
 
 

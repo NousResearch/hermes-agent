@@ -142,6 +142,38 @@ class ImageGenProvider(abc.ABC):
         should ignore unknown keys.
         """
 
+    def supports_edit(self) -> bool:
+        """Return True when this backend supports reference-image editing.
+
+        Providers that support image-to-image editing via :meth:`edit` should
+        override this to return ``True``.  The default returns ``False`` so
+        existing providers stay source-compatible.
+        """
+        return False
+
+    def edit(
+        self,
+        prompt: str,
+        image: str,
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Edit an existing image using a text instruction.
+
+        ``image`` is an HTTP(S) URL, data URL, or absolute local file path.
+        Providers that support image-to-image should override this method.
+        The default returns a uniform unsupported error so callers don't need
+        to probe :meth:`supports_edit` first.
+        """
+        aspect = resolve_aspect_ratio(aspect_ratio)
+        return error_response(
+            error=f"Image editing is not supported by provider '{self.name}'",
+            error_type="unsupported_operation",
+            provider=self.name,
+            prompt=prompt or "",
+            aspect_ratio=aspect,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Helpers

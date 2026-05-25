@@ -1254,6 +1254,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "browser_get_images",
         "browser_vision",
         "image_generate",
+        "image_edit",
         "text_to_speech",
         "terminal",
         "process",

@@ -222,7 +222,7 @@ _LEGACY_TOOLSET_MAP = {
     "terminal_tools": ["terminal"],
     "vision_tools": ["vision_analyze"],
     "moa_tools": ["mixture_of_agents"],
-    "image_tools": ["image_generate"],
+    "image_tools": ["image_generate", "image_edit"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
     "browser_tools": [
         "browser_navigate", "browser_snapshot", "browser_click",

@@ -550,6 +550,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_rerun = sub.add_parser("rerun", help="Reset a completed/blocked task for another attempt")
+    p_rerun.add_argument("task_id")
+    p_rerun.add_argument("--reason", default=None,
+                         help="Optional reason recorded on the rerun event")
+    p_rerun.add_argument("--reassign-to", dest="new_assignee", default=None,
+                         help="Optional assignee profile to use for the rerun")
+
     p_promote = sub.add_parser(
         "promote",
         help="Manually move one or more todo/blocked tasks to ready (recovery path)",
@@ -932,6 +939,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "block":    _cmd_block,
         "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
+        "rerun":    _cmd_rerun,
         "promote":  _cmd_promote,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
@@ -1297,6 +1305,26 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_subscribe_from_args(args: argparse.Namespace) -> Optional[dict]:
+    """Build a ``subscribe`` dict from env vars for CLI create.
+
+    Reads HERMES_NOTIFY_PLATFORM and HERMES_NOTIFY_CHAT_ID from the
+    environment. Returns None when neither is set."""
+    import os
+    platform = os.environ.get("HERMES_NOTIFY_PLATFORM", "").strip()
+    chat_id = os.environ.get("HERMES_NOTIFY_CHAT_ID", "").strip()
+    if not platform or not chat_id:
+        return None
+    sub: dict = {"platform": platform, "chat_id": chat_id}
+    thread_id = os.environ.get("HERMES_NOTIFY_THREAD_ID", "").strip()
+    if thread_id:
+        sub["thread_id"] = thread_id
+    user_id = os.environ.get("HERMES_NOTIFY_USER_ID", "").strip()
+    if user_id:
+        sub["user_id"] = user_id
+    return sub
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
@@ -1339,6 +1367,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             initial_status=getattr(args, "initial_status", "running"),
+            subscribe=_build_subscribe_from_args(args),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1986,7 +2015,30 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}")
+        # Auto-dispatch after unblock if any task moved to ready.
+        if not failed:
+            kb.dispatch_once(conn, max_spawn=1)
     return 0 if not failed else 1
+
+
+def _cmd_rerun(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        ok = kb.rerun_task(
+            conn,
+            args.task_id,
+            reason=getattr(args, "reason", None),
+            new_assignee=getattr(args, "new_assignee", None),
+        )
+        if not ok:
+            print(
+                f"cannot rerun {args.task_id} (not completed/blocked/archived?)",
+                file=sys.stderr,
+            )
+            return 1
+        task = kb.get_task(conn, args.task_id)
+    status = task.status if task else "?"
+    print(f"Rerun {args.task_id} ({status})")
+    return 0
 
 
 def _cmd_promote(args: argparse.Namespace) -> int:

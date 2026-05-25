@@ -636,6 +636,20 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _agent_subscribe_from_env() -> Optional[dict]:
+    """Build subscribe dict from env vars for agent kanban_create tool."""
+    platform = os.environ.get("HERMES_NOTIFY_PLATFORM", "").strip()
+    chat_id = os.environ.get("HERMES_NOTIFY_CHAT_ID", "").strip()
+    if not platform or not chat_id:
+        return None
+    sub = {"platform": platform, "chat_id": chat_id}
+    for key in ("HERMES_NOTIFY_THREAD_ID", "HERMES_NOTIFY_USER_ID"):
+        val = os.environ.get(key, "").strip()
+        if val:
+            sub[key.replace("HERMES_NOTIFY_", "").lower()] = val
+    return sub
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -705,6 +719,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                subscribe=_agent_subscribe_from_env(),
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(

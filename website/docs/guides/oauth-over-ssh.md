@@ -50,7 +50,7 @@ Hermes uses the **same PKCE verifier, state and nonce** for both paths, so the u
 |----------|---------------|----------------|
 | `xai-oauth` (Grok SuperGrok) | `56121` | Yes, when Hermes is remote |
 | Spotify | `43827` | Yes, when Hermes is remote |
-| `anthropic` (Claude Pro/Max) | n/a | No — paste-the-code flow |
+| `anthropic` (Claude OAuth/setup-token) | n/a | No — paste-the-code flow; policy-sensitive for third-party clients, prefer API keys unless Anthropic explicitly permits your use case |
 | `openai-codex` (ChatGPT Plus/Pro) | n/a | No — device code flow |
 | `minimax`, `nous-portal` | n/a | No — device code flow |
 

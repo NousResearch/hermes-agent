@@ -104,7 +104,7 @@ Good defaults:
 |----------|-----------|---------------|
 | **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
 | **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
-| **Anthropic** | Claude models directly — Max plan + extra usage credits (OAuth), or API key for pay-per-token | `hermes model` → OAuth login (requires Max + extra credits), or an Anthropic API key |
+| **Anthropic** | Claude models directly through Anthropic's API | `ANTHROPIC_API_KEY` recommended; Claude/claude.ai OAuth is policy-sensitive for third-party clients and should be used only when Anthropic explicitly permits your use case |
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
 | **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
 | **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` (or the Kimi-Coding-specific `KIMI_CODING_API_KEY`) |

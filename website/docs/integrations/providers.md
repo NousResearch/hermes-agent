@@ -18,7 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
-| **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
+| **Anthropic** | `ANTHROPIC_API_KEY` in `~/.hermes/.env` (recommended). Claude/claude.ai OAuth is experimental and should only be used when Anthropic explicitly permits your use case — see policy note below. |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -95,32 +95,49 @@ If you're trying to switch to a provider you haven't set up yet (e.g. you only h
 
 ### Anthropic (Native)
 
-Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
+Use Claude models directly through the Anthropic API — no OpenRouter proxy needed.
+For most users, the safest and clearest setup is an Anthropic Console API key:
 
-:::caution Requires Claude Max "extra usage" credits
-When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes as Claude Code against your Anthropic account. **It only works if you're on a Claude Max plan and have purchased extra usage credits.** The base Max plan allowance (the usage included in Claude Code by default) is not consumed by Hermes — only the extra/overage credits you've added on top are. Claude Pro subscribers cannot use this path.
+```bash
+export ANTHROPIC_API_KEY=***
+hermes chat --provider anthropic --model claude-sonnet-4-6
+```
 
-If you don't have Max + extra credits, use an `ANTHROPIC_API_KEY` instead — requests are billed pay-per-token against that key's organization (standard API pricing, independent of any Claude subscription).
+:::warning Claude/claude.ai OAuth policy risk
+Hermes has experimental support for Claude OAuth/setup-token credentials (`hermes model` → Anthropic OAuth, `hermes auth add anthropic --type oauth`, `ANTHROPIC_TOKEN`, and auto-detected Claude Code credentials). Only use this path if Anthropic explicitly permits your use case.
+
+Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) restrict automated/non-human access except through an Anthropic API key or where otherwise explicitly permitted. Anthropic's [Claude Agent SDK docs](https://code.claude.com/docs/en/agent-sdk/overview) also state that, unless previously approved, third-party developers may not offer claude.ai login or rate limits for their products and should use API-key authentication instead.
+
+That means a working OAuth prompt or token exchange is not, by itself, permission to route Hermes through Claude subscription limits. If you are unsure, use `ANTHROPIC_API_KEY` instead.
+
+If you already have Claude Code or Hermes Anthropic OAuth credentials, check the active source before assuming your API key is being used:
+
+```bash
+hermes auth list anthropic
+# If an OAuth credential is selected, remove/suppress it before relying on API-key auth:
+hermes auth remove anthropic <index-or-label>
+hermes auth add anthropic --type api-key
+```
 :::
 
 ```bash
-# With an API key (pay-per-token)
+# Recommended: API key (pay-per-token, governed by Anthropic's API terms)
 export ANTHROPIC_API_KEY=***
 hermes chat --provider anthropic --model claude-sonnet-4-6
 
-# Preferred: authenticate through `hermes model`
-# Hermes will use Claude Code's credential store directly when available
-hermes model
-
-# Manual override with a setup-token (fallback / legacy)
-export ANTHROPIC_TOKEN=***  # setup-token or manual OAuth token
+# Experimental / policy-sensitive: Claude OAuth credentials
+hermes auth add anthropic --type oauth
 hermes chat --provider anthropic
 
-# Auto-detect Claude Code credentials (if you already use Claude Code)
-hermes chat --provider anthropic  # reads Claude Code credential files automatically
+# Experimental / policy-sensitive: manual setup-token override
+export ANTHROPIC_TOKEN=***
+hermes chat --provider anthropic
+
+# Also experimental / policy-sensitive: auto-detect Claude Code credentials
+hermes chat --provider anthropic  # reads Claude Code credential files when available
 ```
 
-When you choose Anthropic OAuth through `hermes model`, Hermes prefers Claude Code's own credential store over copying the token into `~/.hermes/.env`. That keeps refreshable Claude credentials refreshable.
+When Anthropic OAuth is used, Hermes prefers Claude Code's own credential store over copying the token into `~/.hermes/.env`. That keeps refreshable Claude credentials refreshable, but does not change the policy considerations above.
 
 Or set it permanently:
 ```yaml

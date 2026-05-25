@@ -69,7 +69,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_GEMINI_CLIENT_SECRET` | OAuth client secret for `google-gemini-cli` (optional) |
 | `HERMES_GEMINI_PROJECT_ID` | GCP project ID for paid Gemini tiers (free tier auto-provisions) |
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
-| `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
+| `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override. Policy-sensitive: prefer `ANTHROPIC_API_KEY` unless Anthropic explicitly permits your OAuth use case. |
 | `DASHSCOPE_API_KEY` | Qwen Cloud (Alibaba DashScope) API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
 | `DASHSCOPE_BASE_URL` | Custom DashScope base URL (default: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`; use `https://dashscope.aliyuncs.com/compatible-mode/v1` for mainland-China region) |
 | `DEEPSEEK_API_KEY` | DeepSeek API key for direct DeepSeek access ([platform.deepseek.com](https://platform.deepseek.com/api_keys)) |
@@ -109,7 +109,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 
 ## Provider Auth (OAuth)
 
-For native Anthropic auth, Hermes prefers Claude Code's own credential files when they exist because those credentials can refresh automatically. **OAuth against Anthropic requires a Claude Max plan with purchased extra usage credits** — Hermes routes as Claude Code, which only draws from the Max plan's extra/overage credits, not the base Max allowance, and does not work on Claude Pro. Without Max + extra credits, use an API key instead. Environment variables such as `ANTHROPIC_TOKEN` remain useful as manual overrides, but they are no longer the preferred path for Claude Max login.
+For native Anthropic auth, `ANTHROPIC_API_KEY` is the recommended path. Hermes can also read Claude Code credential files and `ANTHROPIC_TOKEN`/`CLAUDE_CODE_OAUTH_TOKEN` overrides, but Claude/claude.ai OAuth is policy-sensitive for third-party clients. Anthropic's published guidance says third-party developers should use API-key authentication unless they have prior approval to offer claude.ai login or rate limits. Use OAuth only if Anthropic explicitly permits your use case. If `hermes auth list anthropic` shows an OAuth credential selected, remove/suppress it with `hermes auth remove anthropic <index-or-label>` before relying on API-key auth. See [AI Providers](../integrations/providers.md#anthropic-native) for the full policy note.
 
 | Variable | Description |
 |----------|-------------|

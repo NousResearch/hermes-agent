@@ -40,7 +40,8 @@ hermes auth add openrouter --api-key sk-or-v1-your-second-key
 # Add a second Anthropic key
 hermes auth add anthropic --type api-key --api-key sk-ant-api03-your-second-key
 
-# Add an Anthropic OAuth credential (requires Claude Max plan + extra usage credits)
+# Add an Anthropic OAuth credential only if Anthropic explicitly permits your use case
+# (third-party claude.ai OAuth/rate-limit use is policy-sensitive; API keys are safer)
 hermes auth add anthropic --type oauth
 # Opens browser for OAuth login
 ```

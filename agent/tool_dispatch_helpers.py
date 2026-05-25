@@ -326,10 +326,27 @@ def _coerce_tool_result_content(content: Any) -> Any:
     otherwise get persisted as a raw dict, which strict upstreams reject with
     HTTP 400 (e.g. Z.ai 1210, Manifest fallback_exhausted). Strings and
     multimodal results pass through unchanged; any other non-string value is
-    JSON-encoded with the same idiom already used elsewhere in this module."""
+    JSON-encoded with the same idiom already used elsewhere in this module.
+
+    ``None`` (a handler returning no output / silent success) maps to an empty
+    string rather than the literal ``"null"`` — strict providers reject a null
+    content field the same way they reject a dict, and ``"null"`` would be a
+    misleading tool result."""
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
     if _is_multimodal_tool_result(content):
+        return content
+    # An OpenAI-style content-part list (e.g. ``[{"type": "text", ...},
+    # {"type": "image_url", ...}]``) is already a wire-valid shape for
+    # multimodal-capable providers — pass it through unchanged rather than
+    # JSON-encoding it into a string. A list that is NOT a content-part array
+    # (e.g. a plugin returning ``[1, 2, 3]``) is not wire-valid and still gets
+    # stringified for #31435.
+    if isinstance(content, list) and content and all(
+        isinstance(p, dict) and "type" in p for p in content
+    ):
         return content
     try:
         return json.dumps(content, default=str)

@@ -51,7 +51,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -413,6 +413,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        kanban_auto_close: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -482,7 +483,9 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            kanban_auto_close=kanban_auto_close,
         )
+        self._kanban_auto_close = kanban_auto_close
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
@@ -4162,7 +4165,20 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+        result = run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+
+        # ── Kanban auto-close hook ──────────────────────────────────────
+        # After the conversation loop exits, if a kanban_auto_close callback
+        # is registered, call it with the result dict. The callback checks
+        # whether the worker called kanban_complete/kanban_block and
+        # auto-completes the task if not.
+        if self._kanban_auto_close is not None:
+            try:
+                self._kanban_auto_close(result)
+            except Exception as exc:
+                logger.warning("kanban_auto_close callback failed: %s", exc)
+
+        return result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

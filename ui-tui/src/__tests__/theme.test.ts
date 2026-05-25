@@ -155,6 +155,43 @@ describe('detectLightMode', () => {
     expect(detectLightMode({ HERMES_TUI_BACKGROUND: 'not-a-colour' })).toBe(false)
   })
 
+  it('checks iTerm live background before stale COLORFGBG', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+    const noDefaultLightPrograms = new Set<string>()
+
+    expect(
+      detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, () => 0.95)
+    ).toBe(true)
+    expect(
+      detectLightMode({ COLORFGBG: '0;15', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, () => 0.1)
+    ).toBe(false)
+  })
+
+  it('falls back to COLORFGBG when iTerm live background is unavailable', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+    const noDefaultLightPrograms = new Set<string>()
+    const unavailable = () => null
+
+    expect(detectLightMode({ COLORFGBG: '0;15', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, unavailable)).toBe(true)
+    expect(detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, unavailable)).toBe(false)
+  })
+
+  it('lets explicit overrides beat iTerm live background', async () => {
+    const { detectLightMode } = await importThemeWithCleanEnv()
+    const noDefaultLightPrograms = new Set<string>()
+    const brightIterm = () => 0.95
+
+    expect(
+      detectLightMode({ HERMES_TUI_LIGHT: '0', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, brightIterm)
+    ).toBe(false)
+    expect(
+      detectLightMode({ HERMES_TUI_THEME: 'dark', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, brightIterm)
+    ).toBe(false)
+    expect(
+      detectLightMode({ HERMES_TUI_BACKGROUND: '#000000', TERM_PROGRAM: 'iTerm.app' }, noDefaultLightPrograms, brightIterm)
+    ).toBe(false)
+  })
+
   it('rejects partially-invalid hex instead of silently truncating', async () => {
     const { detectLightMode } = await importThemeWithCleanEnv()
     // `parseInt('fffgff'.slice(2,4), 16)` would return 15 — the strict

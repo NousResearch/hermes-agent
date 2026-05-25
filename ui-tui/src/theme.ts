@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process'
+
 export interface ThemeColors {
   primary: string
   accent: string
@@ -361,6 +363,7 @@ const LIGHT_DEFAULT_TERM_PROGRAMS = new Set<string>(['Apple_Terminal'])
 // query helper can cache its answer there too, but additional formats
 // (rgb()/hsl()/named colours) would need explicit parsing here first.
 const LUMA_LIGHT_THRESHOLD = 0.6
+const RGB_16BIT_MAX = 65535
 
 // Strict allow-list: parseInt(..., 16) silently truncates at the first
 // non-hex character (e.g. `fffgff` would parse as `fff` and yield a
@@ -392,6 +395,45 @@ function backgroundLuminance(raw: string): null | number {
   return (0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!) / 255
 }
 
+type TerminalBackgroundReader = (env: NodeJS.ProcessEnv) => null | number
+
+function parseItermBackgroundLuminance(raw: string): null | number {
+  const parts = raw
+    .trim()
+    .split(',')
+    .map(part => part.trim())
+
+  if (parts.length !== 3 || parts.some(part => !/^\d+$/.test(part))) {
+    return null
+  }
+
+  const rgb = parts.map(part => Number(part))
+
+  if (rgb.some(value => !Number.isFinite(value) || value < 0 || value > RGB_16BIT_MAX)) {
+    return null
+  }
+
+  return (0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!) / RGB_16BIT_MAX
+}
+
+function readItermBackgroundLuminance(env: NodeJS.ProcessEnv = process.env): null | number {
+  if ((env.TERM_PROGRAM ?? '').trim() !== 'iTerm.app') {
+    return null
+  }
+
+  try {
+    const raw = execFileSync(
+      'osascript',
+      ['-e', 'tell application "iTerm" to get background color of current session of current window'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 500 }
+    )
+
+    return parseItermBackgroundLuminance(raw)
+  } catch {
+    return null
+  }
+}
+
 // Pick light vs dark with ordered, explainable signals (#11300):
 //
 //   1. `HERMES_TUI_LIGHT` boolean — `1`/`true`/`yes`/`on` → light;
@@ -401,11 +443,14 @@ function backgroundLuminance(raw: string): null | number {
 //      every signal below.
 //   3. `HERMES_TUI_BACKGROUND` hex hint (3- or 6-digit) — luminance
 //      ≥ LUMA_LIGHT_THRESHOLD → light.
-//   4. `COLORFGBG` last field — XFCE / rxvt / Terminal.app emit
+//   4. iTerm current session background via AppleScript — iTerm's inherited
+//      COLORFGBG can be stale after profile/appearance switches, while the
+//      live session colour reflects what is actually on screen.
+//   5. `COLORFGBG` last field — XFCE / rxvt / Terminal.app emit
 //      slot 7 or 15 on light profiles; 0–15 ranges are otherwise
 //      treated as authoritatively dark so the TERM_PROGRAM
 //      allow-list below cannot override an explicit dark profile.
-//   5. `TERM_PROGRAM` light-default allow-list.
+//   6. `TERM_PROGRAM` light-default allow-list.
 //
 // Anything we can't decide stays dark — the default Hermes palette
 // is the dark one.
@@ -413,7 +458,8 @@ export function detectLightMode(
   env: NodeJS.ProcessEnv = process.env,
   // Injectable so tests can prove the COLORFGBG-over-TERM_PROGRAM
   // precedence rule even though the production allow-list is empty.
-  lightDefaultTermPrograms: ReadonlySet<string> = LIGHT_DEFAULT_TERM_PROGRAMS
+  lightDefaultTermPrograms: ReadonlySet<string> = LIGHT_DEFAULT_TERM_PROGRAMS,
+  terminalBackgroundReader: TerminalBackgroundReader = readItermBackgroundLuminance
 ): boolean {
   const lightFlag = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
 
@@ -439,6 +485,12 @@ export function detectLightMode(
 
   if (bgHint !== null) {
     return bgHint >= LUMA_LIGHT_THRESHOLD
+  }
+
+  const terminalBgHint = terminalBackgroundReader(env)
+
+  if (terminalBgHint !== null) {
+    return terminalBgHint >= LUMA_LIGHT_THRESHOLD
   }
 
   const colorfgbg = (env.COLORFGBG ?? '').trim()

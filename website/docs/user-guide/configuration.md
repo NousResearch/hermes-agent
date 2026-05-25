@@ -1270,6 +1270,17 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
+## Paste Collapse
+
+When you paste multi-line text into the CLI or TUI, Hermes can collapse it into a short file reference instead of flooding the prompt with the full content. Two top-level keys tune this:
+
+```yaml
+paste_collapse_threshold: 5            # Collapse a bracketed paste into a file reference once it spans at least this many lines (0 = never). Safe: the reference is appended to whatever you have already typed.
+paste_collapse_threshold_fallback: 0   # Same threshold for terminals without bracketed-paste support. That path replaces the entire input buffer (destructive), so it is disabled by default. 0 = disabled.
+```
+
+Both thresholds count the lines in the pasted block and trigger when the count is at or above the threshold. Pasted text whose first non-whitespace character is `/` (a slash command) is never collapsed, so commands always reach the parser intact.
+
 ## Privacy
 
 ```yaml

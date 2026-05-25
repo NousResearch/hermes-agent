@@ -63,90 +63,22 @@ ENTRY_DELIMITER = "\n§\n"
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
 # in content that gets injected into the system prompt.
+#
+# Patterns live in ``tools/threat_patterns.py`` — the single source of truth
+# shared with the context-file scanner and the tool-result delimiter system.
+# Memory uses the "strict" scope (broadest pattern set) because:
+#  - memory entries are user-curated; the user can rewrite a flagged entry
+#  - memory enters the system prompt as a FROZEN snapshot, so a poisoned
+#    entry persists for the entire session and across sessions until
+#    explicitly removed.
 # ---------------------------------------------------------------------------
 
-# Threat patterns for memory content scanning.
-# These patterns are aligned with skills_guard.py THREAT_PATTERNS but
-# simplified to (regex, pattern_id) tuples — memory entries are short-form
-# text, not multi-file skill bundles, so structural/extraction checks are
-# not needed here.
-#
-# Multi-word bypass: patterns use (?:\w+\s+)* between key tokens to prevent
-# attackers from inserting filler words (e.g. "ignore all prior instructions"
-# instead of "ignore all instructions").  This mirrors the fix applied to
-# skills_guard.py in commit 4ea29978.
-_MEMORY_THREAT_PATTERNS = [
-    # ── Prompt injection ──
-    (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'you\s+are\s+(?:\w+\s+)*now\s+(?:a|an|the)\s+', "role_hijack"),
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)', "bypass_restrictions"),
-    (r'pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+', "role_pretend"),
-    (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt', "leak_system_prompt"),
-    (r'(respond|answer|reply)\s+without\s+(?:\w+\s+)*(restrictions|limitations|filters|safety)', "remove_filters"),
-    (r'you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to', "fake_update"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
-    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
-
-    # ── Exfiltration via curl/wget/fetch with secrets ──
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
-    (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://', "send_to_url"),
-    (r'(include|output|print|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil"),
-
-    # ── Persistence / SSH backdoor ──
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
-    (r'(update|modify|edit|write|change|append|add\s+to)\s+.*(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod"),
-    (r'(update|modify|edit|write|change|append|add\s+to)\s+.*\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod"),
-
-    # ── Hardcoded secrets ──
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret"),
-]
-
-# Invisible unicode characters for injection detection.
-# Full set aligned with skills_guard.py INVISIBLE_CHARS — includes
-# directional isolates (U+2066-U+2069) and invisible math operators
-# (U+2062-U+2064) that were previously missing.
-_INVISIBLE_CHARS = {
-    '\u200b',  # zero-width space
-    '\u200c',  # zero-width non-joiner
-    '\u200d',  # zero-width joiner
-    '\u2060',  # word joiner
-    '\u2062',  # invisible times
-    '\u2063',  # invisible separator
-    '\u2064',  # invisible plus
-    '\ufeff',  # zero-width no-break space (BOM)
-    '\u202a',  # left-to-right embedding
-    '\u202b',  # right-to-left embedding
-    '\u202c',  # pop directional formatting
-    '\u202d',  # left-to-right override
-    '\u202e',  # right-to-left override
-    '\u2066',  # left-to-right isolate
-    '\u2067',  # right-to-left isolate
-    '\u2068',  # first strong isolate
-    '\u2069',  # pop directional isolate
-}
+from tools.threat_patterns import first_threat_message as _first_threat_message
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
-
-    # Check threat patterns
-    for pattern, pid in _MEMORY_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
-
-    return None
+    return _first_threat_message(content, scope="strict")
 
 
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
@@ -199,7 +131,23 @@ class MemoryStore:
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
+        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
+
+        The frozen snapshot is what enters the system prompt. We scan each
+        entry for injection/promptware patterns at snapshot-build time —
+        ANY hit replaces the entry text in the snapshot with a placeholder
+        like ``[BLOCKED: …]``, so a poisoned-on-disk memory file (supply
+        chain, compromised tool, sister-session write) cannot inject into
+        the system prompt.
+
+        The live ``memory_entries`` / ``user_entries`` lists keep the
+        original text so the user can still SEE poisoned entries via
+        ``memory(action=read)`` and remove them — silently dropping them
+        would hide the attack from the user.
+
+        Scanning is deterministic from disk bytes, so the snapshot remains
+        stable for the entire session (prefix-cache invariant holds).
+        """
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
@@ -210,11 +158,53 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Sanitize entries for the system-prompt snapshot only.  Live state
+        # (memory_entries / user_entries) keeps the raw text so the user
+        # can see + remove poisoned entries via the memory tool.
+        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
+        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
+
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", self.memory_entries),
-            "user": self._render_block("user", self.user_entries),
+            "memory": self._render_block("memory", sanitized_memory),
+            "user": self._render_block("user", sanitized_user),
         }
+
+    @staticmethod
+    def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
+        """Return ``entries`` with any threat-matching entry replaced by a placeholder.
+
+        Each entry is scanned with the shared threat-pattern library at the
+        ``"strict"`` scope (same as memory writes).  On match, the entry is
+        replaced in the returned list with ``"[BLOCKED: <filename> entry
+        contained threat pattern: <ids>. Removed from system prompt.]"`` —
+        the placeholder enters the snapshot, the original entry stays in
+        live state for the user to inspect and delete.
+
+        Empty or already-block-marker entries pass through unchanged.
+        """
+        from tools.threat_patterns import scan_for_threats
+
+        sanitized: List[str] = []
+        for entry in entries:
+            if not entry or entry.startswith("[BLOCKED:"):
+                sanitized.append(entry)
+                continue
+            findings = scan_for_threats(entry, scope="strict")
+            if findings:
+                logger.warning(
+                    "Memory entry from %s blocked at load time: %s",
+                    filename, ", ".join(findings),
+                )
+                sanitized.append(
+                    f"[BLOCKED: {filename} entry contained threat pattern(s): "
+                    f"{', '.join(findings)}. Removed from system prompt; "
+                    f"use memory(action=read) to inspect and memory(action=remove) "
+                    f"to delete the original.]"
+                )
+            else:
+                sanitized.append(entry)
+        return sanitized
 
     @staticmethod
     @contextmanager

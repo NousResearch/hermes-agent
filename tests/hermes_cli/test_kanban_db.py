@@ -3339,3 +3339,51 @@ def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog
             ).fetchall()
             assert "tip_scratch_workspace" not in [e["kind"] for e in events]
 
+
+
+# ---------------------------------------------------------------------------
+# Atomic complete_task + recompute_ready (idx_tasks_status drift fix)
+# ---------------------------------------------------------------------------
+
+def test_complete_task_recompute_idempotent(kanban_home):
+    """Calling complete_task twice on the same task does not duplicate promotions or events."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="p", assignee="setup")
+        child = kb.create_task(conn, title="c", parents=[parent], assignee="setup")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+        assert kb.complete_task(conn, parent, summary="first")
+        # Second call: parent is already 'done', complete_task returns False.
+        assert kb.complete_task(conn, parent, summary="second") is False
+        promoted_events = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='promoted'",
+            (child,),
+        ).fetchone()[0]
+        assert promoted_events == 1
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_complete_task_index_integrity_no_drift(kanban_home):
+    """Immediately after complete_task, all indices are coherent with the table."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="p", assignee="setup")
+        for i in range(5):
+            kb.create_task(conn, title=f"c{i}", parents=[parent], assignee="setup")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+        assert kb.complete_task(conn, parent, summary="ok")
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_recompute_ready_within_txn_skips_outer_begin(kanban_home):
+    """recompute_ready(_within_txn=True) must NOT open its own write_txn."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="p", assignee="setup")
+        kb.create_task(conn, title="c", parents=[parent], assignee="setup")
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            n = kb.recompute_ready(conn, _within_txn=True)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        assert n == 1

@@ -2233,11 +2233,16 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
-def recompute_ready(conn: sqlite3.Connection) -> int:
+def recompute_ready(conn: sqlite3.Connection, *, _within_txn: bool = False) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
-    an existing transaction; it opens its own IMMEDIATE txn.
+    an existing transaction.  When ``_within_txn=True`` the caller already
+    holds an IMMEDIATE ``write_txn`` and this function executes its statements
+    inline so the parent's ``status='done'`` update, the ``completed`` event,
+    and any child ``status='ready'`` updates land in a single COMMIT — closing
+    the checkpoint window where ``idx_tasks_status`` could lag the ``tasks``
+    table.  When False (default) the function opens its own write_txn.
 
     ``blocked`` tasks are also considered for promotion (so a task
     blocked purely by a parent dependency unblocks itself when the
@@ -2248,8 +2253,8 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
     would find nothing to do, exit cleanly, get recorded as a protocol
     violation, and the cycle would repeat indefinitely.
     """
-    promoted = 0
-    with write_txn(conn):
+    def _body() -> int:
+        promoted_local = 0
         todo_rows = conn.execute(
             "SELECT id, status FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
@@ -2285,8 +2290,13 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                         (task_id,),
                     )
                 _append_event(conn, task_id, "promoted", None)
-                promoted += 1
-    return promoted
+                promoted_local += 1
+        return promoted_local
+
+    if _within_txn:
+        return _body()
+    with write_txn(conn):
+        return _body()
 
 
 # ---------------------------------------------------------------------------
@@ -3007,6 +3017,14 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+        # Successful completion — wipe the consecutive-failures counter
+        # and promote dependents inside the same write_txn so the
+        # parent's status='done' UPDATE, the ``completed`` event, and any
+        # child status='ready' UPDATEs land in a single COMMIT. Closes
+        # the checkpoint window where idx_tasks_status could lag the
+        # tasks table.
+        _clear_failure_counter(conn, task_id, _within_txn=True)
+        recompute_ready(conn, _within_txn=True)
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -3028,13 +3046,6 @@ def complete_task(
                     },
                     run_id=run_id,
                 )
-    # Successful completion — wipe the consecutive-failures counter.
-    # Failure history stays on the event log for audit; the counter
-    # just tracks "is there a current pathology the breaker should
-    # care about", and a success resets that question.
-    _clear_failure_counter(conn, task_id)
-    # Recompute ready status for dependents (separate txn so children see done).
-    recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
     return True
@@ -4937,7 +4948,9 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 
 
-def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
+def _clear_failure_counter(
+    conn: sqlite3.Connection, task_id: str, *, _within_txn: bool = False
+) -> None:
     """Reset the unified consecutive-failures counter.
 
     Called from ``complete_task`` on successful completion — a fresh
@@ -4946,13 +4959,20 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     a successful spawn proves the worker could start but says nothing
     about whether the run will succeed, so we need to let timeouts and
     crashes accumulate across spawn boundaries.
+
+    When ``_within_txn=True`` the caller already holds a write_txn and
+    this function executes the UPDATE inline so it can land in the same
+    COMMIT as the surrounding work.
     """
+    sql = (
+        "UPDATE tasks SET consecutive_failures = 0, "
+        "last_failure_error = NULL WHERE id = ?"
+    )
+    if _within_txn:
+        conn.execute(sql, (task_id,))
+        return
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET consecutive_failures = 0, "
-            "last_failure_error = NULL WHERE id = ?",
-            (task_id,),
-        )
+        conn.execute(sql, (task_id,))
 
 
 # Legacy alias for test-code and anything else that still imports it.

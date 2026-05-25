@@ -411,8 +411,11 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
+| `recall_types` | `observation` | Fact types surfaced by recall. Set to `observation,world,experience` to include raw facts |
 
-See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
+Hindsight now defaults recall to observations only. To restore broad recall, set `"recall_types": "observation,world,experience"` in `$HERMES_HOME/hindsight/config.json`; this applies to both automatic recall and the `hindsight_recall` tool.
+
+See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference and trade-offs.
 
 ---
 

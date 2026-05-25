@@ -1129,6 +1129,26 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+# Pre-compiled at module load to keep the per-turn post-response path off the
+# ``re`` slow path: ``re.compile`` itself is cheap, but Python's internal
+# ``re._cache`` is shared and bounded (~512 entries) — under heavy gateway
+# load the cache can evict this pattern between turns, forcing a recompile
+# on every response delivery.  Issue #32079 sampled a stalled gateway whose
+# active stack was inside ``_sre`` after a Codex turn completed; pinning
+# the compiled object at module scope removes recompile overhead from
+# the post-response hot path and keeps the regex out of the eviction
+# pool.  Pattern semantics are unchanged from the previous in-function
+# ``re.compile`` site.
+_MEDIA_TAG_RE: re.Pattern[str] = re.compile(
+    r'''[`"']?MEDIA:\s*(?P<path>'''
+    r'''`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
+    r'''(?:~/|/)\S+(?:[^\S\n]+\S+)*?'''
+    r'''\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|'''
+    r'''epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)'''
+    r'''(?=[\s`"',;:)\]}]|$))[`"']?'''
+)
+
+
 def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
     """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
 
@@ -2296,11 +2316,9 @@ class BasePlatformAdapter(ABC):
         cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
-        )
-        for match in media_pattern.finditer(content):
+        # and quoted/backticked paths for LLM-formatted outputs.  Uses the
+        # module-level compiled pattern (#32079) — see ``_MEDIA_TAG_RE``.
+        for match in _MEDIA_TAG_RE.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
@@ -2310,7 +2328,7 @@ class BasePlatformAdapter(ABC):
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
-            cleaned = media_pattern.sub('', cleaned)
+            cleaned = _MEDIA_TAG_RE.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned

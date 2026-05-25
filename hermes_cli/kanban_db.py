@@ -100,6 +100,27 @@ VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", 
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+
+# Execution policy values for tasks.
+#
+# * ``auto``            — default; dispatcher spawns normally via the
+#                          assigned Hermes profile.
+# * ``fallback_local``  — if the assigned profile is not locally available
+#                          (non-spawnable lane), fall back to the profile
+#                          named in ``kanban.fallback_local_profile`` config
+#                          before giving up with ``skipped_nonspawnable``.
+# * ``operator_needed`` — human gate; the dispatcher NEVER auto-spawns
+#                          this task.  A ``human_gate`` event is emitted
+#                          once per hour so the board surfaces the gate
+#                          explicitly.  Workers create tasks with this
+#                          policy when they hit a decision that requires
+#                          human judgment before proceeding.
+VALID_EXEC_POLICIES = {"auto", "fallback_local", "operator_needed"}
+DEFAULT_EXEC_POLICY = "auto"
+
+# Minimum seconds between repeated ``human_gate`` events for the same task,
+# so the dispatcher doesn't flood the event log on every tick.
+_HUMAN_GATE_EVENT_MIN_INTERVAL = 3600
 _IS_WINDOWS = sys.platform == "win32"
 
 # A running task's claim is valid for 15 minutes by default; after that the
@@ -831,6 +852,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Execution policy controlling how the dispatcher handles this task.
+    # See ``VALID_EXEC_POLICIES`` for the three values; defaults to "auto"
+    # (standard dispatcher-managed spawn).
+    exec_policy: str = DEFAULT_EXEC_POLICY
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -899,6 +924,10 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            exec_policy=(
+                (row["exec_policy"] if "exec_policy" in keys and row["exec_policy"] else None)
+                or DEFAULT_EXEC_POLICY
             ),
         )
 
@@ -1527,6 +1556,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "exec_policy" not in cols:
+        # Execution policy — controls whether the dispatcher auto-spawns,
+        # falls back to a local profile, or gates on human action. Existing
+        # rows get the default "auto" so they keep working unchanged.
+        _add_column_if_missing(
+            conn, "tasks", "exec_policy",
+            "exec_policy TEXT NOT NULL DEFAULT 'auto'"
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -1717,6 +1755,7 @@ def create_task(
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    exec_policy: str = DEFAULT_EXEC_POLICY,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -1749,6 +1788,11 @@ def create_task(
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
+        )
+    if exec_policy not in VALID_EXEC_POLICIES:
+        raise ValueError(
+            f"exec_policy must be one of {sorted(VALID_EXEC_POLICIES)}, "
+            f"got {exec_policy!r}"
         )
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
@@ -1882,8 +1926,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, session_id, exec_policy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1903,6 +1947,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
+                        exec_policy,
                     ),
                 )
                 for pid in parents:
@@ -1921,6 +1966,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "exec_policy": exec_policy,
                     },
                 )
             return task_id
@@ -4338,6 +4384,13 @@ class DispatchResult:
     completion from the liveness signal and closes the task automatically.
     The completed run carries ``metadata.auto_reconcile=True`` for
     auditability."""
+    operator_needed: list[str] = field(default_factory=list)
+    """Ready tasks with ``exec_policy='operator_needed'`` that were NOT
+    dispatched because they require human action.  A ``human_gate`` event
+    is emitted (rate-limited) so the board surfaces the gate explicitly."""
+    fallback_spawned: list[tuple[str, str, str]] = field(default_factory=list)
+    """Tasks spawned via local fallback (exec_policy='fallback_local').
+    Same triple as ``spawned``: ``(task_id, fallback_assignee, workspace_path)``."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5397,6 +5450,72 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _get_task_exec_policy(conn: sqlite3.Connection, task_id: str) -> str:
+    """Return the effective exec_policy for a task.
+
+    Reads ``tasks.exec_policy`` directly. Falls back to ``DEFAULT_EXEC_POLICY``
+    for legacy rows and malformed values so the caller never has to branch on
+    None or unknown strings.
+    """
+    row = conn.execute(
+        "SELECT exec_policy FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return DEFAULT_EXEC_POLICY
+    raw = row["exec_policy"] if "exec_policy" in row.keys() else None
+    if raw and raw in VALID_EXEC_POLICIES:
+        return raw
+    return DEFAULT_EXEC_POLICY
+
+
+def _maybe_emit_human_gate_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> bool:
+    """Emit a ``human_gate`` event for ``task_id`` at most once per hour.
+
+    Returns True if an event was written; False when throttled (one
+    already appeared within ``_HUMAN_GATE_EVENT_MIN_INTERVAL`` seconds).
+
+    Rate-limiting prevents the dispatcher from flooding the event log
+    with a new ``human_gate`` entry on every 60-second tick for tasks
+    that sit in ``ready`` with ``exec_policy='operator_needed'`` for
+    hours or days.
+    """
+    now = int(time.time())
+    cutoff = now - _HUMAN_GATE_EVENT_MIN_INTERVAL
+    existing = conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND kind = 'human_gate' AND created_at >= ? "
+        "LIMIT 1",
+        (task_id, cutoff),
+    ).fetchone()
+    if existing:
+        return False
+    with write_txn(conn):
+        _append_event(conn, task_id, "human_gate", {"policy": "operator_needed"})
+    return True
+
+
+def _get_fallback_local_profile() -> Optional[str]:
+    """Return the configured ``kanban.fallback_local_profile`` value, or None.
+
+    Used by dispatch_once when a task with ``exec_policy='fallback_local'``
+    has an assignee whose profile is not locally available. The fallback
+    profile name is read from the kanban config section each time so live
+    config reloads take effect without restarting the dispatcher.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        profile = (cfg.get("kanban") or {}).get("fallback_local_profile")
+        if profile and str(profile).strip():
+            return str(profile).strip()
+    except Exception:
+        pass
+    return None
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -5539,6 +5658,19 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+
+        # Read execution policy early — it overrides the normal dispatch path.
+        task_exec_policy = _get_task_exec_policy(conn, row["id"])
+
+        # operator_needed: human gate — never auto-spawn regardless of
+        # whether the assignee profile exists. Emit a rate-limited event
+        # so the board surface can highlight the gate explicitly.
+        if task_exec_policy == "operator_needed":
+            result.operator_needed.append(row["id"])
+            if not dry_run:
+                _maybe_emit_human_gate_event(conn, row["id"])
+            continue
+
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -5554,14 +5686,30 @@ def dispatch_once(
         except Exception:
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
-            # Bucket separately from skipped_unassigned: the operator
-            # cannot fix this by assigning a profile (the assignee IS the
-            # intended owner — a terminal lane). Health telemetry uses
-            # this distinction to suppress spurious "stuck" warnings on
-            # multi-lane setups where the ready queue is steadily full
-            # of human-pulled work.
-            result.skipped_nonspawnable.append(row["id"])
-            continue
+            if task_exec_policy == "fallback_local":
+                # fallback_local: the primary assignee isn't a spawnable
+                # Hermes profile. Attempt to dispatch with the configured
+                # fallback profile so the task can still run locally
+                # instead of silently piling up in skipped_nonspawnable.
+                fallback_profile = _get_fallback_local_profile()
+                if fallback_profile and profile_exists(fallback_profile):
+                    # Proceed — spawn_assignee is overridden below.
+                    _fallback_assignee: Optional[str] = fallback_profile
+                else:
+                    # No usable fallback configured: treat like auto.
+                    result.skipped_nonspawnable.append(row["id"])
+                    continue
+            else:
+                # Bucket separately from skipped_unassigned: the operator
+                # cannot fix this by assigning a profile (the assignee IS the
+                # intended owner — a terminal lane). Health telemetry uses
+                # this distinction to suppress spurious "stuck" warnings on
+                # multi-lane setups where the ready queue is steadily full
+                # of human-pulled work.
+                result.skipped_nonspawnable.append(row["id"])
+                continue
+        else:
+            _fallback_assignee = None
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -5589,6 +5737,13 @@ def dispatch_once(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # For fallback_local: spawn with the fallback profile instead of
+        # the task's original assignee. We use dataclasses.replace to keep
+        # all other task fields intact (workspace_kind, skills, etc.) while
+        # substituting the spawned profile name.
+        if _fallback_assignee is not None:
+            import dataclasses
+            claimed = dataclasses.replace(claimed, assignee=_fallback_assignee)
         try:
             workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
@@ -5625,7 +5780,12 @@ def dispatch_once(
             # that keeps timing out after spawn loop forever. The
             # counter is cleared only on successful completion (see
             # complete_task).
-            result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            if _fallback_assignee is not None:
+                result.fallback_spawned.append(
+                    (claimed.id, _fallback_assignee, str(workspace))
+                )
+            else:
+                result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
             auto = _record_spawn_failure(

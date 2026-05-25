@@ -286,6 +286,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "exec_policy": getattr(t, "exec_policy", "auto"),
                 }
 
             def _run_dict(r):
@@ -681,6 +682,7 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    exec_policy = args.get("exec_policy") or "auto"
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -719,6 +721,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                exec_policy=str(exec_policy),
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -1165,6 +1168,24 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "exec_policy": {
+                "type": "string",
+                "enum": ["auto", "fallback_local", "operator_needed"],
+                "description": (
+                    "Execution policy that controls how the dispatcher "
+                    "handles this task:\n"
+                    "• 'auto' (default) — dispatcher spawns the assigned "
+                    "profile normally.\n"
+                    "• 'fallback_local' — if the assigned profile is not "
+                    "locally available, fall back to the profile configured "
+                    "in kanban.fallback_local_profile before giving up.\n"
+                    "• 'operator_needed' — human gate: the dispatcher never "
+                    "auto-spawns this task. A human_gate event surfaces on "
+                    "the board so the operator knows action is required. Use "
+                    "this for decisions that require human judgment before "
+                    "any automation proceeds."
                 ),
             },
             "skills": {

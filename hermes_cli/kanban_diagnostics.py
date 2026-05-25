@@ -791,6 +791,70 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_operator_needed_gate(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Task has ``exec_policy='operator_needed'`` and is waiting in ready.
+
+    This is NOT an error — it's an intentional human gate.  The
+    diagnostic surfaces it as a ``warning`` so the board makes it visible
+    without alarming operators who are still triaging.
+
+    Auto-clears when the task leaves ``ready`` (human unblocks, assigns a
+    different policy, or dispatches manually).
+    """
+    exec_policy = _task_field(task, "exec_policy", "auto") or "auto"
+    if exec_policy != "operator_needed":
+        return []
+    status = _task_field(task, "status")
+    if status != "ready":
+        return []
+
+    # Find the most recent human_gate event so we can report when it was flagged.
+    gate_ts = 0
+    for ev in events:
+        if _event_kind(ev) == "human_gate":
+            t = _event_ts(ev)
+            gate_ts = max(gate_ts, t)
+    if gate_ts == 0:
+        gate_ts = now
+
+    task_id = _task_field(task, "id") or "<task_id>"
+    assignee = _task_field(task, "assignee") or ""
+    actions = [
+        DiagnosticAction(
+            kind="cli_hint",
+            label=f"Review and unblock: hermes kanban unblock {task_id}",
+            payload={"command": f"hermes kanban unblock {task_id}"},
+            suggested=True,
+        ),
+        DiagnosticAction(
+            kind="comment",
+            label="Add a decision comment before unblocking",
+            suggested=False,
+        ),
+    ]
+    return [Diagnostic(
+        kind="operator_needed_gate",
+        severity="warning",
+        title="Human action required before dispatch",
+        detail=(
+            f"This task has exec_policy='operator_needed' and is waiting in "
+            f"ready. The dispatcher will not auto-spawn it — a human must "
+            f"review the task and either update the policy, provide input as "
+            f"a comment, and then unblock it manually."
+        ),
+        actions=actions,
+        first_seen_at=gate_ts,
+        last_seen_at=now,
+        count=1,
+        data={
+            "task_id": task_id,
+            "assignee": assignee,
+            "exec_policy": exec_policy,
+            "gate_ts": gate_ts,
+        },
+    )]
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Task has been in ``ready`` status for too long without any worker
     claiming it.
@@ -1066,6 +1130,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
+    _rule_operator_needed_gate,
     _rule_stranded_in_ready,
     _rule_stuck_pid_liveness,
     _rule_ttl_extensions_without_heartbeat,
@@ -1081,6 +1146,7 @@ DIAGNOSTIC_KINDS = (
     "repeated_failures",
     "repeated_crashes",
     "stuck_in_blocked",
+    "operator_needed_gate",
     "stranded_in_ready",
     "stuck_pid_liveness",
     "ttl_extensions_without_heartbeat",

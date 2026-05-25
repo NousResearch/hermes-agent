@@ -339,20 +339,21 @@ export default function ApprovalInboxPage() {
       .finally(() => setActioningId(null));
   }, [decisionNote]);
 
-  const copyCommand = useCallback((command: string) => {
-    navigator.clipboard?.writeText(command).then(
-      () => setMessage("Copied generated Jenny command."),
-      () => setError("Could not copy command from this browser session."),
+  const copyText = useCallback((value: string, label: string) => {
+    navigator.clipboard?.writeText(value).then(
+      () => setMessage(`Copied ${label}.`),
+      () => setError(`Could not copy ${label} from this browser session.`),
     );
   }, []);
 
+  const copyCommand = useCallback((command: string) => {
+    copyText(command, "generated Jenny command");
+  }, [copyText]);
+
   const copySummary = useCallback(() => {
     if (!approvalSummary?.review_text) return;
-    navigator.clipboard?.writeText(approvalSummary.review_text).then(
-      () => setMessage("Copied pending-approval summary."),
-      () => setError("Could not copy summary from this browser session."),
-    );
-  }, [approvalSummary]);
+    copyText(approvalSummary.review_text, "pending-approval summary");
+  }, [approvalSummary, copyText]);
 
   return (
     <main className="h-full overflow-auto px-4 py-5 lg:px-8">
@@ -521,14 +522,22 @@ export default function ApprovalInboxPage() {
                       <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-cyan-200">Proposal source</div>
                       <div>Kind: {item.proposal_kind || "manual"}</div>
                       {item.source_surface && <div>Surface: {item.source_surface}</div>}
-                      {item.source_ref && <div className="break-all">Reference: {item.source_ref}</div>}
+                      {item.source_ref && (
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <span className="break-all">Reference: {item.source_ref}</span>
+                          <Button ghost onClick={() => copyText(item.source_ref || "", "source reference")} className="h-7 gap-1 px-2 py-1 text-xs"><Clipboard className="h-3 w-3" /> Copy ref</Button>
+                        </div>
+                      )}
                       {item.conversation_excerpt && <div className="mt-2 text-cyan-50">“{item.conversation_excerpt}”</div>}
                       {(item.related_paths || []).length > 0 && (
                         <div className="mt-2">
                           <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-cyan-200">Related paths</div>
                           <div className="flex flex-wrap gap-1.5">
                             {(item.related_paths || []).map((path) => (
-                              <span key={path} className="max-w-full break-all rounded-lg border border-cyan-300/20 bg-black/25 px-2 py-1 text-xs text-cyan-100/85">{path}</span>
+                              <span key={path} className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-cyan-300/20 bg-black/25 px-2 py-1 text-xs text-cyan-100/85">
+                                <span className="break-all">{path}</span>
+                                <button type="button" onClick={() => copyText(path, "related path")} className="shrink-0 rounded border border-cyan-300/20 px-1 text-[0.6rem] uppercase tracking-wide text-cyan-100 hover:border-cyan-200/60">copy</button>
+                              </span>
                             ))}
                           </div>
                         </div>

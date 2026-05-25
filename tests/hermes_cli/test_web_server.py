@@ -2375,3 +2375,34 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+class TestEnvVarUpdateValidation:
+    """PUT /api/env must reject empty values to prevent .env key destruction."""
+
+    def test_rejects_empty_value(self):
+        from hermes_cli.web_server import EnvVarUpdate
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            EnvVarUpdate(key="SOME_KEY", value="")
+
+    def test_rejects_whitespace_only_value(self):
+        from hermes_cli.web_server import EnvVarUpdate
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            EnvVarUpdate(key="SOME_KEY", value="   ")
+
+    def test_accepts_nonempty_value(self):
+        from hermes_cli.web_server import EnvVarUpdate
+
+        update = EnvVarUpdate(key="SOME_KEY", value="sk-abc123")
+        assert update.value == "sk-abc123"
+
+    def test_rejects_empty_key(self):
+        from hermes_cli.web_server import EnvVarUpdate
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            EnvVarUpdate(key="", value="some-value")

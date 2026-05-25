@@ -10,6 +10,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import html
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
+from urllib.parse import parse_qs, urlsplit
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -189,6 +191,49 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
     return "\n".join(parts)
 
 
+_SLACK_PERMALINK_RE = re.compile(
+    r"https?://[^\s<>|)]+/archives/([A-Z0-9]+)/p(\d{16})(?:\?[^\s<>|)]*)?"
+)
+
+
+def _slack_permalink_message_ts(packed_ts: str) -> str:
+    """Convert Slack permalink ``p`` timestamps into API timestamps.
+
+    Slack permalinks encode ``1777979593.412619`` as
+    ``p1777979593412619``. The first 10 digits are Unix seconds; the
+    remaining 6 digits are microseconds.
+    """
+    return f"{packed_ts[:10]}.{packed_ts[10:]}"
+
+
+def _extract_slack_permalink_refs(text: str, max_links: int = 3) -> List[Tuple[str, str]]:
+    """Extract ``(channel_id, thread_ts)`` pairs from Slack permalinks.
+
+    If the permalink points to a reply, Slack includes ``thread_ts=...`` in
+    the query string. Use that parent timestamp so ``conversations.replies``
+    fetches the full thread; otherwise use the permalink message timestamp.
+    """
+    if not text:
+        return []
+
+    refs: List[Tuple[str, str]] = []
+    seen: set[Tuple[str, str]] = set()
+    for match in _SLACK_PERMALINK_RE.finditer(html.unescape(text)):
+        channel_id = match.group(1)
+        message_ts = _slack_permalink_message_ts(match.group(2))
+        url = match.group(0)
+        query = parse_qs(urlsplit(url).query)
+        thread_ts = (query.get("thread_ts") or [message_ts])[0] or message_ts
+        ref = (channel_id, thread_ts)
+        if ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+        if len(refs) >= max_links:
+            break
+    return refs
+
+
 def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
     """Return a compact, redacted JSON view of the current message's Block Kit payload."""
     if not blocks:
@@ -338,8 +383,17 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
-        # Track message IDs that should get reaction lifecycle (DMs / @mentions).
+        # Track message IDs that should get reaction lifecycle.
         self._reacting_message_ids: set = set()
+        # Map incoming message ts -> reaction target (channel_id, message_ts).
+        # In threads this points to the thread parent/main post; for top-level
+        # messages it points to the message itself.
+        self._reaction_targets: Dict[str, Tuple[str, str]] = {}
+        # Keep exactly one Hermes status emoji on each target message.
+        self._status_reaction_by_target: Dict[Tuple[str, str], str] = {}
+        # Pending explicit-acceptance state keyed by reaction target.
+        # Value includes lightweight metadata for routing follow-up pings/replies.
+        self._pending_acceptance_targets: Dict[Tuple[str, str], Dict[str, str]] = {}
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
@@ -1323,33 +1377,89 @@ class SlackAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
+    async def _set_status_reaction(self, channel_id: str, timestamp: str, emoji: str) -> None:
+        """Ensure exactly one Hermes status emoji exists on the target message."""
+        target = (channel_id, timestamp)
+        prev = self._status_reaction_by_target.get(target)
+        if prev and prev != emoji:
+            await self._remove_reaction(channel_id, timestamp, prev)
+        if prev != emoji:
+            ok = await self._add_reaction(channel_id, timestamp, emoji)
+            if ok:
+                self._status_reaction_by_target[target] = emoji
+
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Add working status reaction when message processing begins."""
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
-        channel_id = getattr(event.source, "chat_id", None)
-        if channel_id:
-            await self._add_reaction(channel_id, ts, "eyes")
+        target = self._reaction_targets.get(ts)
+        if target:
+            channel_id, target_ts = target
+            await self._set_status_reaction(channel_id, target_ts, "arrows_counterclockwise")
+
+    async def _post_status_reply(self, channel_id: str, thread_ts: str, text: str) -> None:
+        """Post a small status note in the thread linked to the main post."""
+        if not self._app or not text:
+            return
+        try:
+            await self._get_client(channel_id).chat_postMessage(
+                channel=channel_id,
+                thread_ts=thread_ts,
+                text=text,
+                mrkdwn=True,
+            )
+        except Exception as e:
+            logger.debug("[Slack] status reply failed: %s", e)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+        """Set final status reaction on the main post target."""
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
         self._reacting_message_ids.discard(ts)
-        channel_id = getattr(event.source, "chat_id", None)
-        if not channel_id:
+        target = self._reaction_targets.pop(ts, None)
+        if not target:
             return
-        await self._remove_reaction(channel_id, ts, "eyes")
+        channel_id, target_ts = target
         if outcome == ProcessingOutcome.SUCCESS:
-            await self._add_reaction(channel_id, ts, "white_check_mark")
+            # Explicit acceptance required: successful work transitions to
+            # question/waiting state until a user confirms.
+            await self._set_status_reaction(channel_id, target_ts, "question")
+            self._pending_acceptance_targets[target] = {
+                "channel_id": channel_id,
+                "target_ts": target_ts,
+                "trigger_message_ts": ts,
+            }
+            await self._post_status_reply(
+                channel_id,
+                target_ts,
+                "Marked ❓ action needed — please confirm with a clear yes/ok/done to mark this done.",
+            )
         elif outcome == ProcessingOutcome.FAILURE:
-            await self._add_reaction(channel_id, ts, "x")
+            self._pending_acceptance_targets.pop(target, None)
+            await self._set_status_reaction(channel_id, target_ts, "warning")
+            await self._post_status_reply(
+                channel_id,
+                target_ts,
+                "Marked ⚠️ blocked/failed.",
+            )
+        elif outcome == ProcessingOutcome.CANCELLED:
+            self._pending_acceptance_targets[target] = {
+                "channel_id": channel_id,
+                "target_ts": target_ts,
+                "trigger_message_ts": ts,
+            }
+            await self._set_status_reaction(channel_id, target_ts, "question")
+            await self._post_status_reply(
+                channel_id,
+                target_ts,
+                "Marked ❓ action needed — waiting for user follow-up.",
+            )
 
     # ----- User identity resolution -----
 
@@ -2008,6 +2118,13 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
+        linked_thread_context = await self._fetch_linked_slack_thread_contexts(
+            text,
+            team_id=team_id,
+        )
+        if linked_thread_context:
+            text = linked_thread_context + text
+
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
         if is_thread_reply and not self._has_active_session_for_thread(
@@ -2228,12 +2345,32 @@ class SlackAdapter(BasePlatformAdapter):
             auto_skill=_auto_skill,
         )
 
-        # Only react when bot is directly addressed (DM or @mention).
-        # In listen-all channels (require_mention=false), reacting to every
-        # casual message would be noisy.
-        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
-        if _should_react:
+        # Apply reaction lifecycle to all handled Slack messages. For thread
+        # replies, target the thread parent/main post; for top-level messages,
+        # target the original message.
+        target_ts = event_thread_ts or ts
+        target = (channel_id, target_ts) if channel_id and target_ts else None
+        if self._reactions_enabled() and ts and channel_id:
+            # If this message is a clear acceptance on a pending target, mark
+            # done immediately and skip full agent processing.
+            normalized_text = re.sub(r"[^a-z0-9+ ]+", " ", (text or "").strip().lower())
+            acceptance_tokens = {
+                "yes", "y", "yep", "yeah", "ok", "okay", "looks good", "lgtm", "done", "+1", "agree",
+            }
+            is_acceptance = (
+                normalized_text in acceptance_tokens
+                or normalized_text.startswith("yes ")
+                or normalized_text.startswith("ok ")
+                or normalized_text.startswith("done ")
+            )
+            if target and target in self._pending_acceptance_targets and is_acceptance:
+                await self._set_status_reaction(channel_id, target_ts, "white_check_mark")
+                self._pending_acceptance_targets.pop(target, None)
+                await self._post_status_reply(channel_id, target_ts, "Marked ✅ done.")
+                return
+
             self._reacting_message_ids.add(ts)
+            self._reaction_targets[ts] = target
 
         await self.handle_message(msg_event)
 
@@ -2575,6 +2712,52 @@ class SlackAdapter(BasePlatformAdapter):
         # (approval state already consumed by atomic pop above)
 
     # ----- Thread context fetching -----
+
+    async def _fetch_linked_slack_thread_contexts(
+        self, text: str, team_id: str = "", max_links: int = 3,
+    ) -> str:
+        """Fetch context for Slack thread permalinks pasted into a message.
+
+        Gateway sessions only include the current Slack thread. When a user
+        pastes a permalink to another Slack thread, explicitly hydrate that
+        referenced thread through ``conversations.replies`` so the agent can
+        answer questions about it without requiring the user to copy/paste the
+        whole discussion.
+        """
+        refs = _extract_slack_permalink_refs(text, max_links=max_links)
+        if not refs:
+            return ""
+
+        parts: List[str] = []
+        for channel_id, thread_ts in refs:
+            try:
+                content = await self._fetch_thread_context(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    current_ts="",
+                    team_id=team_id,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[Slack] Failed to fetch linked thread %s/%s: %s",
+                    channel_id,
+                    thread_ts,
+                    exc,
+                )
+                continue
+
+            if not content:
+                continue
+            content = content.replace(
+                "[Thread context — prior messages in this thread (not yet in conversation history):]",
+                f"[Linked Slack thread context from {channel_id}/{thread_ts}:]",
+                1,
+            )
+            parts.append(content.rstrip())
+
+        if not parts:
+            return ""
+        return "\n".join(parts) + "\n\n"
 
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str,

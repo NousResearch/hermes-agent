@@ -1830,8 +1830,9 @@ class TestReactions:
         }
         await adapter._handle_slack_message(event)
 
-        # _handle_slack_message should register the message for reactions
+        # _handle_slack_message should register the message and target
         assert "1234567890.000001" in adapter._reacting_message_ids
+        assert adapter._reaction_targets["1234567890.000001"] == ("C123", "1234567890.000001")
 
         # Simulate the base class calling on_processing_start
         from gateway.platforms.base import MessageEvent, MessageType, SessionSource
@@ -1852,7 +1853,7 @@ class TestReactions:
 
         add_calls = adapter._app.client.reactions_add.call_args_list
         assert len(add_calls) == 1
-        assert add_calls[0].kwargs["name"] == "eyes"
+        assert add_calls[0].kwargs["name"] == "arrows_counterclockwise"
 
         # Simulate the base class calling on_processing_complete
         from gateway.platforms.base import ProcessingOutcome
@@ -1860,13 +1861,16 @@ class TestReactions:
 
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
+        # success now transitions to explicit-acceptance pending state (question)
         assert len(add_calls) == 2
-        assert add_calls[1].kwargs["name"] == "white_check_mark"
+        assert add_calls[1].kwargs["name"] == "question"
         assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert remove_calls[0].kwargs["name"] == "arrows_counterclockwise"
 
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
+        assert "1234567890.000001" not in adapter._reaction_targets
+        assert ("C123", "1234567890.000001") in adapter._pending_acceptance_targets
 
     @pytest.mark.asyncio
     async def test_reactions_failure_outcome(self, adapter):
@@ -1883,6 +1887,8 @@ class TestReactions:
             user_id="U_USER",
         )
         adapter._reacting_message_ids.add("1234567890.000002")
+        adapter._reaction_targets["1234567890.000002"] = ("C123", "1234567890.000002")
+        adapter._status_reaction_by_target[("C123", "1234567890.000002")] = "arrows_counterclockwise"
         msg_event = MessageEvent(
             text="hello",
             message_type=MessageType.TEXT,
@@ -1894,13 +1900,14 @@ class TestReactions:
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
         assert len(add_calls) == 1
-        assert add_calls[0].kwargs["name"] == "x"
+        assert add_calls[0].kwargs["name"] == "warning"
         assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert remove_calls[0].kwargs["name"] == "arrows_counterclockwise"
 
     @pytest.mark.asyncio
-    async def test_reactions_skipped_for_non_dm_non_mention(self, adapter):
-        """Non-DM, non-mention messages should not get reactions."""
+    async def test_reactions_apply_to_channel_messages_without_mentions(self, adapter, monkeypatch):
+        """Handled channel messages should still get status reactions."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
         adapter._app.client.users_info = AsyncMock(return_value={
@@ -1916,10 +1923,70 @@ class TestReactions:
         }
         await adapter._handle_slack_message(event)
 
-        # Should NOT register for reactions when not mentioned in a channel
-        assert "1234567890.000003" not in adapter._reacting_message_ids
-        adapter._app.client.reactions_add.assert_not_called()
-        adapter._app.client.reactions_remove.assert_not_called()
+        # Should register reactions even when not explicitly mentioned
+        assert "1234567890.000003" in adapter._reacting_message_ids
+        assert adapter._reaction_targets["1234567890.000003"] == ("C123", "1234567890.000003")
+
+    @pytest.mark.asyncio
+    async def test_reactions_target_thread_parent_main_post(self, adapter, monkeypatch):
+        """Thread replies should update status emoji on the thread parent/main post."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+
+        event = {
+            "text": "hello in thread",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "ts": "1234567890.000010",
+            "thread_ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        assert adapter._reaction_targets["1234567890.000010"] == ("C123", "1234567890.000001")
+
+    @pytest.mark.asyncio
+    async def test_acceptance_message_marks_pending_target_done(self, adapter, monkeypatch):
+        """A clear yes/ok/done reply should flip pending question status to done."""
+        monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        target = ("C123", "1234567890.000020")
+        adapter._pending_acceptance_targets[target] = {
+            "channel_id": "C123",
+            "target_ts": "1234567890.000020",
+            "trigger_message_ts": "1234567890.000019",
+        }
+        adapter._status_reaction_by_target[target] = "question"
+
+        event = {
+            "text": "yes",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000021",
+            "thread_ts": "1234567890.000020",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should not dispatch to agent for acceptance-only confirmation
+        adapter.handle_message.assert_not_awaited()
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        assert add_calls[-1].kwargs["name"] == "white_check_mark"
+        assert remove_calls[-1].kwargs["name"] == "question"
+        assert target not in adapter._pending_acceptance_targets
 
     @pytest.mark.asyncio
     async def test_reactions_disabled_via_env(self, adapter, monkeypatch):
@@ -2896,6 +2963,61 @@ class TestSlackReplyToText:
         assert msg_event.reply_to_text is None
         # Top-level message: reply_to_message_id must be falsy (None or empty).
         assert not msg_event.reply_to_message_id
+
+
+class TestSlackPermalinkThreadContext:
+    """Slack permalinks in a prompt should be expanded into thread context.
+
+    This lets users paste a Slack thread URL from another channel and ask the
+    bot to inspect it, instead of requiring them to manually paste the thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_slack_thread_permalink_is_fetched_and_injected(self, adapter):
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1777973339.367899",
+                    "user": "U_PM",
+                    "text": "Need leave calendar adoption on web and app",
+                },
+                {
+                    "ts": "1777979593.412619",
+                    "user": "U_PM",
+                    "text": "Please suggest metrics for web vs mobile adoption",
+                },
+            ]
+        })
+
+        event = {
+            "channel": "C_CURRENT",
+            "channel_type": "channel",
+            "user": "U_USER",
+            "text": (
+                "<@U_BOT> please read "
+                "https://staffany.slack.com/archives/C01D9TLLLAJ/"
+                "p1777979593412619?thread_ts=1777973339.367899&amp;cid=C01D9TLLLAJ"
+            ),
+            "ts": "2000000000.000001",
+            "team": "T123",
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Kai Yi")
+        ):
+            await adapter._handle_slack_message(event)
+
+        adapter._app.client.conversations_replies.assert_awaited_once_with(
+            channel="C01D9TLLLAJ",
+            ts="1777973339.367899",
+            limit=31,
+            inclusive=True,
+        )
+        assert adapter.handle_message.call_args is not None
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Linked Slack thread context" in msg_event.text
+        assert "Need leave calendar adoption on web and app" in msg_event.text
+        assert "Please suggest metrics for web vs mobile adoption" in msg_event.text
 
 
 # ---------------------------------------------------------------------------

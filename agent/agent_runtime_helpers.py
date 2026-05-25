@@ -1517,6 +1517,46 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     )
 
 
+# ---------------------------------------------------------------------------
+# Ephemeral session tool-block helper
+# ---------------------------------------------------------------------------
+# Tools whose write-side actions are blocked in /temp (ephemeral) sessions.
+# Read-only operations (memory view, skill list, cron list/poll/etc.) are fine.
+_TEMP_BLOCKED_TOOLS = {
+    # tool_name -> set of blocked actions, or None to block all actions
+    "memory": None,          # view is fine; add/replace/remove blocked
+    "skill_manage": None,    # view/skill_view fine; create/edit/delete/write_file/remove_file blocked
+    "cronjob": {"create"},  # only create blocked; list/poll/run/etc. are fine
+}
+
+
+def _check_temp_session_block(function_name: str, function_args: dict) -> Optional[str]:
+    """Return an error message string if the tool call is blocked in temp session mode.
+
+    Returns None if the call is allowed.
+    """
+    if function_name not in _TEMP_BLOCKED_TOOLS:
+        return None
+
+    blocked_actions = _TEMP_BLOCKED_TOOLS[function_name]
+    # If None, all actions for this tool are blocked.
+    if blocked_actions is None:
+        return (
+            f"Tool '{function_name}' is blocked in ephemeral session mode. "
+            "Memory writes and skill edits are disabled. "
+            "Use /new or /reset to exit ephemeral mode."
+        )
+
+    # Otherwise, check the specific action parameter.
+    action = function_args.get("action", "")
+    if action in blocked_actions:
+        return (
+            f"Tool '{function_name}' action '{action}' is blocked in ephemeral session mode. "
+            "Use /new or /reset to exit ephemeral mode."
+        )
+
+    return None
+
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list = None,
@@ -1539,6 +1579,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
     if block_message is not None:
         return json.dumps({"error": block_message}, ensure_ascii=False)
+
+    # Ephemeral session guard: block write-side tools in /temp mode.
+    if getattr(agent, "temp_session", False):
+        _blocked = _check_temp_session_block(function_name, function_args)
+        if _blocked:
+            return json.dumps({"error": _blocked}, ensure_ascii=False)
 
     if function_name == "todo":
         from tools.todo_tool import todo_tool as _todo_tool

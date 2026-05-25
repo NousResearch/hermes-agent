@@ -311,6 +311,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         timestamp_line += f"\nProvider: {agent.provider}"
     volatile_parts.append(timestamp_line)
 
+    # Ephemeral session notice — tell the model it can't write to memory/skills/cron
+    if getattr(agent, "temp_session", False):
+        volatile_parts.append(
+            "EPHEMERAL SESSION: This session is ephemeral (/temp mode). "
+            "The memory, skill_manage, and cronjob (create) tools are BLOCKED — "
+            "do not attempt memory writes, skill edits, or cron creates. "
+            "All other tools work normally. Inform the user if they ask about "
+            "persisting information."
+        )
+
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
         "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),

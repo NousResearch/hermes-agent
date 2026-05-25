@@ -7350,6 +7350,21 @@ class GatewayRunner:
                 execute=_do_reset,
             )
 
+        if canonical == "temp":
+            async def _do_temp():
+                return await self._handle_temp_command(event)
+            return await self._maybe_confirm_destructive_slash(
+                event=event,
+                command="temp",
+                title="/temp",
+                detail=(
+                    "Start an ephemeral session? Memory writes, skill edits, "
+                    "and cron creates will be blocked. The session is "
+                    "auto-deleted on /new, /reset, or exit."
+                ),
+                execute=_do_temp,
+            )
+
         if canonical == "topic":
             return await self._handle_topic_command(event)
         
@@ -9175,6 +9190,18 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
 
+        # If the current session is ephemeral (/temp), purge it from DB+disk.
+        _pre_entry = self.session_store._entries.get(session_key)
+        if _pre_entry and getattr(_pre_entry, 'temp_session', False):
+            try:
+                if self._session_db:
+                    self._session_db.delete_session(
+                        _pre_entry.session_id,
+                        sessions_dir=self.config.sessions_dir,
+                    )
+            except Exception:
+                logger.debug("Could not purge ephemeral session %s on reset", getattr(_pre_entry, 'session_id', '?'))
+
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
@@ -9314,6 +9341,48 @@ class GatewayRunner:
         if session_info:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
+
+    async def _handle_temp_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /temp command — start an ephemeral session.
+
+        Memory writes, skill edits, and cron creates are blocked. The session
+        is auto-deleted on /new, /reset, or exit.
+        """
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Purge any prior temp session for this key
+        old_entry = self.session_store._entries.get(session_key)
+        if old_entry and getattr(old_entry, 'temp_session', False):
+            try:
+                if self._session_db:
+                    self._session_db.delete_session(
+                        old_entry.session_id,
+                        sessions_dir=self.config.sessions_dir,
+                    )
+            except Exception:
+                logger.debug("Could not purge previous temp session %s", getattr(old_entry, 'session_id', '?'))
+
+        # Create a new session, marking it as temp
+        new_entry = self.session_store.reset_session(session_key)
+        if new_entry is None:
+            new_entry = self.session_store.get_or_create_session(source, force_new=True)
+
+        # Mark the session entry as ephemeral
+        if new_entry is not None:
+            new_entry.temp_session = True  # type: ignore[attr-defined]
+
+        # Mark cached agent as temp too
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                cached = _cache.get(session_key)
+                if cached and isinstance(cached, tuple) and cached[0] is not None:
+                    cached[0].temp_session = True
+
+        header = "🔒 Ephemeral session started — memory writes, skill edits, and cron creates are blocked."
+        return EphemeralReply(f"{header}\nSession will be deleted on /new, /reset, or exit.")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
@@ -16539,6 +16608,10 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+
+            # Propagate ephemeral session flag from session entry
+            _cur_entry = self.session_store._entries.get(session_key)
+            agent.temp_session = getattr(_cur_entry, 'temp_session', False) if _cur_entry else False
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

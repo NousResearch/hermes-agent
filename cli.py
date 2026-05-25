@@ -3098,6 +3098,10 @@ class HermesCLI:
 
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
+
+        # Ephemeral session flag — /temp mode disables memory writes, skill
+        # edits, and cron creates; session is purged on /new, /reset, or exit.
+        self._temp_session: bool = False
         
         # Session ID: reuse existing one when resuming, otherwise generate fresh
         if resume:
@@ -4896,6 +4900,7 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            self.agent.temp_session = self._temp_session
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -6399,6 +6404,32 @@ class HermesCLI:
             else:
                 print("(^_^)v New session started!")
 
+    def _cleanup_temp_session_if_active(self) -> None:
+        """Purge the current ephemeral session from DB and disk if active.
+
+        Called before /new, /reset, or on exit when ``_temp_session`` is True.
+        Deletes the session row, messages, and any transcript files so no
+        trace remains.
+        """
+        if not self._temp_session:
+            return
+        old_id = self.session_id
+        if old_id and self._session_db:
+            try:
+                from hermes_constants import get_hermes_home
+                _sessions_dir = get_hermes_home() / "sessions"
+                deleted = self._session_db.delete_session(
+                    old_id,
+                    sessions_dir=_sessions_dir,
+                )
+                if deleted:
+                    logger.info("Ephemeral session %s purged from DB", old_id)
+                    _cprint(f"  🔒 Ephemeral session purged: {old_id}")
+            except Exception as exc:
+                logger.warning("Failed to purge ephemeral session %s: %s", old_id, exc)
+        # Reset the flag — the new session is regular unless /temp is used again.
+        self._temp_session = False
+
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
 
@@ -6812,6 +6843,7 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
+            self.agent.temp_session = self._temp_session
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
@@ -8171,6 +8203,7 @@ class HermesCLI:
                 cmd_original=cmd_original,
             ) is None:
                 return
+            self._cleanup_temp_session_if_active()
             self.new_session(silent=True)
             _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -8295,7 +8328,7 @@ class HermesCLI:
         elif canonical == "new":
             # Strip inline-skip tokens (now/--yes/-y) before deriving the title
             # so "/new now My Session" yields title="My Session" instead of
-            # title="now My Session". See _split_destructive_skip.
+            # title="now My Session".  See _split_destructive_skip.
             _new_args, _ = self._split_destructive_skip(cmd_original)
             title = _new_args.strip() or None
             if self._confirm_destructive_slash(
@@ -8305,7 +8338,24 @@ class HermesCLI:
                 cmd_original=cmd_original,
             ) is None:
                 return
+            # If the current session is ephemeral, purge it before resetting.
+            self._cleanup_temp_session_if_active()
             self.new_session(title=title)
+        elif canonical == "temp":
+            if self._confirm_destructive_slash(
+                "temp",
+                "Start an ephemeral session?\n"
+                "Memory writes, skill edits, and cron creates will be blocked.\n"
+                "The session is auto-deleted when you /new, /reset, or exit.",
+                cmd_original=cmd_original,
+            ) is None:
+                return
+            # Purge any prior temp session first.
+            self._cleanup_temp_session_if_active()
+            self._temp_session = True
+            self.new_session(title="🔒 Ephemeral")
+            _cprint("  🔒 Ephemeral session — memory writes, skill edits, and cron creates are blocked.")
+            _cprint("  Session will be deleted on /new, /reset, or exit.")
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
         elif canonical == "sessions":
@@ -14532,6 +14582,12 @@ class HermesCLI:
                             _cprint(f"  {_DIM}✗ Session {_escape(_sid)} not found for deletion{_RST}")
                     except (Exception, KeyboardInterrupt) as e:
                         logger.debug("Could not delete session on exit: %s", e)
+                # Ephemeral session cleanup — purges temp traces on exit.
+                if getattr(self, '_temp_session', False):
+                    try:
+                        self._cleanup_temp_session_if_active()
+                    except (Exception, KeyboardInterrupt) as e:
+                        logger.debug("Could not purge ephemeral session on exit: %s", e)
             # Plugin hook: on_session_end — safety net for interrupted exits.
             # run_conversation() already fires this per-turn on normal completion,
             # so only fire here if the agent was mid-turn (_agent_running) when

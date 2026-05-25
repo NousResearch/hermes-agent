@@ -468,6 +468,10 @@ class SessionEntry:
     # See issue #6508.
     is_fresh_reset: bool = False
     
+    # Set when the session is ephemeral (/temp) — memory writes, skill edits,
+    # and cron creates are blocked; session is purged on /new, /reset, or exit.
+    temp_session: bool = False
+    
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
     # agent).  Persisted to sessions.json so the flag survives gateway

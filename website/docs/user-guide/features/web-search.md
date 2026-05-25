@@ -67,7 +67,7 @@ auxiliary:
 
 Or pick interactively: `hermes model` → **Configure auxiliary models** → `web_extract`.
 
-See [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models) for the full reference and per-task override patterns.
+See [Auxiliary Models](/user-guide/configuration#auxiliary-models) for the full reference and per-task override patterns.
 
 ### When summarization gets in the way
 

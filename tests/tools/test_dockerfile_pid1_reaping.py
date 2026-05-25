@@ -5,11 +5,17 @@ they deliberately avoid snapshotting specific package versions, line numbers,
 or exact flag choices.  What they DO assert is that the Dockerfile maintains
 the properties required for correct production behaviour:
 
-- A PID-1 init (tini) is installed and wraps the entrypoint, so that orphaned
+- A PID-1 init is installed and wraps the entrypoint, so that orphaned
   subprocesses (MCP stdio servers, git, bun, browser daemons) get reaped
   instead of accumulating as zombies (#15012).
 - Signal forwarding runs through the init so ``docker stop`` triggers
   hermes's own graceful-shutdown path.
+
+The init can be any reaper-capable PID-1: the historical lineage was
+``tini``; the current image uses s6-overlay's ``/init`` (which execs
+``s6-svscan`` as PID 1, with the same SIGCHLD-reaping property). The
+checks below accept either family — the contract is behavioural, not
+nominal.
 """
 
 from __future__ import annotations
@@ -22,6 +28,21 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
+
+
+# Init-process families this repo accepts as PID 1. ``tini`` /
+# ``dumb-init`` / ``catatonit`` are classic minimal reapers; s6-overlay
+# ships ``/init`` which execs ``s6-svscan`` as PID 1 (same reaper
+# contract, plus supervision of declared services). Either family
+# satisfies the zombie-reaping invariant — see issue #15012.
+_KNOWN_INIT_TOKENS: tuple[str, ...] = (
+    "tini",
+    "dumb-init",
+    "catatonit",
+    "s6-overlay",
+    "s6-svscan",
+    "/init",
+)
 
 
 @pytest.fixture(scope="module")
@@ -57,6 +78,15 @@ def _run_steps(dockerfile_text: str) -> list[str]:
     ]
 
 
+def _instruction_text(dockerfile_text: str) -> str:
+    """Join every non-comment Dockerfile instruction into one searchable
+    string. Crucially excludes comments — otherwise the historical
+    explanation of "we used to use tini" would silently satisfy a
+    substring check long after tini was removed from the build.
+    """
+    return "\n".join(_dockerfile_instructions(dockerfile_text))
+
+
 def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
     """Some init (tini, dumb-init, catatonit, s6-overlay) must be installed.
 
@@ -66,15 +96,18 @@ def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
     exhausts the PID table.
     """
     # Accept any of the common reapers.  The contract is behavioural:
-    # something must be installed that reaps orphans. s6-overlay was
-    # added in PR #30136 — its PID 1 is s6-svscan, which reaps zombies
-    # non-blockingly on SIGCHLD just like tini.
-    known_inits = ("tini", "dumb-init", "catatonit", "s6-overlay")
-    installed = any(name in dockerfile_text for name in known_inits)
+    # something must be installed that reaps orphans.
+    #
+    # Scan instructions only (no comments) so a stale historical mention
+    # in a comment can't masquerade as a current install. Without this,
+    # removing tini from the actual build but leaving the word in a
+    # comment would silently keep the test green.
+    instructions = _instruction_text(dockerfile_text)
+    installed = any(name in instructions for name in _KNOWN_INIT_TOKENS)
     assert installed, (
-        "No PID-1 init detected in Dockerfile (looked for: "
-        f"{', '.join(known_inits)}). Without an init process to reap "
-        "orphaned subprocesses, hermes accumulates zombies in Docker "
+        "No PID-1 init detected in Dockerfile instructions (looked for: "
+        f"{', '.join(_KNOWN_INIT_TOKENS)}). Without an init process to "
+        "reap orphaned subprocesses, hermes accumulates zombies in Docker "
         "deployments. See issue #15012."
     )
 
@@ -82,8 +115,8 @@ def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
 def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
     """The ENTRYPOINT must invoke the init, not the entrypoint script directly.
 
-    Installing an init is only half the fix — the container must actually run
-    with it as PID 1.  If the ENTRYPOINT executes the shell script
+    Installing the init is only half the fix — the container must actually
+    run with it as PID 1.  If the ENTRYPOINT executes the shell script
     directly, the shell becomes PID 1 and will ``exec`` into hermes,
     which then runs as PID 1 without any zombie reaping.
     """
@@ -98,16 +131,12 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
     assert entrypoint_line is not None, "Dockerfile is missing an ENTRYPOINT directive"
 
-    # Accept any of the common inits as the first element of ENTRYPOINT.
-    # s6-overlay installs its PID-1 binary at ``/init`` (no path prefix
-    # — it's a hard-coded location for the overlay). PR #30136 swapped
-    # tini for s6-overlay, so ``/init`` is the canonical marker now.
-    known_inits = ("tini", "dumb-init", "catatonit", "/init")
-    routes_through_init = any(name in entrypoint_line for name in known_inits)
+    routes_through_init = any(name in entrypoint_line for name in _KNOWN_INIT_TOKENS)
     assert routes_through_init, (
-        f"ENTRYPOINT does not route through an init: {entrypoint_line!r}. "
-        "If an init is only installed but not wired into ENTRYPOINT, hermes "
-        "still runs as PID 1 and zombies will accumulate (#15012)."
+        f"ENTRYPOINT does not route through a PID-1 init: {entrypoint_line!r}. "
+        f"Expected one of {_KNOWN_INIT_TOKENS}. If the init is installed but "
+        "not wired into ENTRYPOINT, hermes still runs as PID 1 and zombies "
+        "will accumulate (#15012)."
     )
 
 

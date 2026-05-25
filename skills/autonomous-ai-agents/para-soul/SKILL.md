@@ -1,7 +1,7 @@
 ---
 name: para-soul
 description: "Use when an agent needs persistent identity across sessions, tools, or agent bodies. Maintain portable identity via ~/.para/ files, sync across agents via Paragate, handle body switching with switch-out/switch-in. Covers soul bootstrapping, session-start SOP, memsync from Hermes memory, daemon management, and cross-body continuity."
-version: 1.1.0
+version: 1.3.0
 author: Paragate
 license: MIT
 platforms: [linux, macos, windows]
@@ -253,21 +253,22 @@ The daemon's `PARAGATE_URL` is set via environment variable. For local Paragate 
 
 ## File Reference
 
-| File | When to read | When to write |
-|------|-------------|---------------|
-| identity.json | Session start | After DID registration |
-| soul.md | Session start | When identity shifts (rare) |
-| memory.md | Session start, memsync | After learning durable facts |
-| principles.md | Session start | When rules change |
-| mental-models.md | Session start, reflect | After reflect operation |
-| growth-log/ | Session start (today's file) | After significant tasks (5+ tool calls) |
-| skills.json | Session start | When skills change |
-| relationships.json | Session start | When platforms/collaborators change |
-| human-relationship.md | Session start | Session end (trust, mood, corrections) |
-| bodies.json | Switch-in | Switch-in (heartbeat updates) |
-| keywords.json | Recall | After index rebuild |
-| long-term-memory.md | Periodic | After archiving from work-log |
-| switch-state.json | Switch-in | Switch-out |
+| File | Read when | Write when | Write trigger | Content rules |
+|------|-----------|------------|---------------|---------------|
+| identity.json | Session start | DID registration, name change | Rare event | display_name, avatar_note only. No paths, no personal data. |
+| soul.md | Session start | Identity shifts | Very rare | Who I am, what I do. Keep under 40 lines. |
+| memory.md | Session start + memsync | New durable fact learned | Every session | Declarative facts. NOT task progress, NOT session outcomes, NOT stale artifacts. |
+| principles.md | Session start | Rules change | Rare event | Dos and don'ts. Keep under 30 lines. |
+| mental-models.md | Session start | reflect operation | ~5 sessions | Patterns distilled from growth-log. What mental models have changed. |
+| growth-log/ | Session start (day's file) | log-task after 5+ tool calls | Every session | 5-field format. Short, specific. One entry per meaningful task. |
+| skills.json | Session start + memsync | Skill create/patch/delete | As needed | Auto-synced by memsync from ~/.hermes/skills/ directory. |
+| relationships.json | Session start | New platform/collaborator | As needed | Machine-readable. Human detail goes in human-relationship.md. |
+| human-relationship.md | Session start + session end | Session end + after corrections/signals | Every session | Trust index, feedback log, milestones, session log, interaction style. |
+| bodies.json | Switch-in | Switch-in + new body discovered | Body event | Current body + history. Auto-updated by switch-in. |
+| keywords.json | Recall | After core.py index | Periodically | Topic→count map. Rebuilt by index, not manually edited. |
+| long-term-memory.md | Periodic | After archiving growth-log entries >4 weeks | ~5 sessions | Milestones distilled from growth-log. NOT a copy of the work log. |
+| switch-state.json | Switch-in (read once) | Switch-out | Body switch only | **Delete after switch-in.** Must NOT persist between sessions. |
+| last-maintenance.json | Session start (periodic) | After reflect/index/archive | After each maintenance action | Tracks last_reflect, last_index, last_archive timestamps + counters. |
 
 ## Common Pitfalls
 
@@ -362,3 +363,71 @@ cat ~/.para/state/switch-state.json 2>/dev/null  # Any pending switch?
 python3 core.py switch-in        # If switch-state exists
 cat ~/.para/growth-log/$(date +%Y-%m).md | tail -30  # Day's context
 ```
+
+## Write-Cycle Reference
+
+This section defines exactly what the agent must write, to which file, at what cadence.
+
+### Every Session (mandatory, at session end)
+
+| Action | Target file | Method |
+|--------|-------------|--------|
+| Log today's work | `growth-log/YYYY-MM.md` | `python3 core.py log-task` |
+| Append session log entry | `human-relationship.md` | Write to `~/.para/human-relationship.md` |
+| Update trust index if corrections/signals | `human-relationship.md` | Same file, under Trust Index table |
+| Verify switch-state.json deleted | `state/switch-state.json` | Delete if exists |
+| Check last-maintenance.json | `state/last-maintenance.json` | Read to check if periodic maintenance due |
+| Sync to Paragate | All changed files | `python3 core.py sync-full` |
+
+Session log entry format:
+```
+### YYYY-MM-DD
+**Mood**: [one-line mood]
+**Theme**: [one-line theme]
+**Key events**:
+- event 1
+```
+
+### Every ~5 Sessions (check state/last-maintenance.json)
+
+| Action | Target file | Method | Trigger |
+|--------|-------------|--------|---------|
+| Reflect | `mental-models.md` | `python3 core.py reflect --save` | 5+ growth-log entries this month OR 5+ sessions since last_reflect |
+| Archive | `long-term-memory.md` | Distill entries >4 weeks old | Any entry older than 4 weeks exists |
+| Rebuild keywords | `keywords.json` | `python3 core.py index` | After archive, OR 20+ entries since last_index |
+
+After each action, update `state/last-maintenance.json`. The agent checks this file at session end.
+
+### Immediately on Event
+
+| Event | Target file |
+|-------|-------------|
+| Human corrects you | `human-relationship.md` (NOW, don't wait) |
+| Human gives positive signal | `human-relationship.md` (NOW) |
+| New durable fact learned | `memory.md` |
+| Rule changes | `principles.md` |
+| Skill created/patched/deleted | `skills.json` (memsync auto) |
+| New platform/collaborator | `relationships.json` |
+| New body appears | `bodies.json` (switch-in auto) |
+| Name/avatar changes | `identity.json` |
+
+### Anti-patterns
+
+- **memory.md ← DON'T write task progress** — that's for growth-log
+- **long-term-memory.md ← DON'T copy the work log verbatim** — distill to milestones
+- **human-relationship.md ← DON'T only update at session end** — corrections/signals go in NOW
+- **switch-state.json ← DON'T leave after switch-in** — delete it every session start
+- **identity.json ← DON'T put paths or secrets** — it's public-facing
+- **keywords.json ← DON'T edit manually** — only through `core.py index`
+
+### `--fill` Initialization Gaps
+
+The `core.py init --fill` command creates templates but leaves gaps:
+
+- `identity.json` → display_name, avatar_note, created_at are empty strings
+- `human-relationship.md` → **not created at all** — must be created manually with Trust Index baseline (5)
+- `bodies.json` → only records current body
+- `long-term-memory.md` → empty template
+- `state/switch-state.json` → if it exists from a prior switch-in, delete it
+
+The agent should audit these on first session after install and fill the gaps.

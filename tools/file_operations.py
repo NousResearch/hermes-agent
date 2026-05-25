@@ -25,6 +25,7 @@ Usage:
     result = file_ops.search("TODO", path=".", file_glob="*.py")
 """
 
+import logging
 import os
 import re
 import difflib
@@ -33,6 +34,23 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
+
+logger = logging.getLogger(__name__)
+
+
+# Truthy spellings for ``HERMES_DISABLE_FSYNC`` (#29786). Kept in sync
+# with the project-wide truthy table in ``utils.is_truthy_value`` but
+# inlined here so ``tools.file_operations`` stays import-cheap.
+_FSYNC_DISABLE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _is_fsync_disabled() -> bool:
+    """Return True iff ``HERMES_DISABLE_FSYNC`` is set to a truthy value.
+
+    See ``ShellFileOperations._sync_path`` for the contract this gates.
+    """
+    raw = os.getenv("HERMES_DISABLE_FSYNC", "")
+    return raw.strip().lower() in _FSYNC_DISABLE_TRUTHY
 
 from agent.file_safety import (
     build_write_denied_paths,
@@ -697,6 +715,58 @@ class ShellFileOperations(FileOperations):
         """Escape a string for safe use in shell commands."""
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _sync_path(self, path: str) -> None:
+        """Force kernel write buffers for ``path`` out to physical
+        storage (#29786).
+
+        Run after every successful write so an interactive Hermes
+        session that crashes (network drop, parent SIGKILL, terminal
+        closed, SSL ``[record layer failure]``) between the agent's
+        ``write_file`` tool returning success and the OS actually
+        persisting the bytes doesn't silently roll the file back.
+
+        Matters most on:
+
+        * WSL2 ``/mnt/<drive>`` 9P mounts (Windows drive in Linux) —
+          the page cache can hold modifications for tens of seconds
+          before they're forwarded to the underlying Windows VHD.
+        * NFS / SMB network mounts.
+        * Container-mounted host volumes (Docker bind mounts).
+
+        Strategy: try per-file ``sync -f <path>`` first (Linux-only,
+        cheaper than a global flush); fall back to global ``sync`` if
+        it fails (macOS BSD ``sync(8)``, WSL distros with non-GNU
+        coreutils, environments where the file isn't on a
+        ``sync -f``-capable fs). On shells with no ``sync`` at all
+        (rare Windows-shell backends) the chain just returns
+        non-zero — the underlying write has already completed.
+
+        Opt-out: ``HERMES_DISABLE_FSYNC=1`` (or ``true``/``yes``/``on``)
+        skips this call entirely — useful for bulk-write workloads on
+        enterprise storage with battery-backed cache, or for the rare
+        environment where every file write is followed by an explicit
+        sync up the stack.
+
+        Best-effort: any exception from the backend is logged at DEBUG
+        and swallowed. The write itself has already returned success;
+        a flaky sync must not turn that into a failure.
+        """
+        if _is_fsync_disabled():
+            return
+        try:
+            cmd = (
+                f"sync -f {self._escape_shell_arg(path)} 2>/dev/null "
+                f"|| sync"
+            )
+            # Bound the sync at 5s so a hung NFS / 9P round-trip can't
+            # stall the whole agent on a single write_file call.
+            self._exec(cmd, timeout=5)
+        except Exception as exc:
+            logger.debug(
+                "fsync best-effort failed for %s: %s: %s",
+                path, type(exc).__name__, exc,
+            )
     
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         """Generate unified diff between old and new content."""
@@ -999,6 +1069,13 @@ class ShellFileOperations(FileOperations):
 
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
+
+        # Force buffer flush to physical storage (#29786). Run before
+        # the lint / LSP / bytes-written probes so the bytes are durable
+        # even if a downstream probe crashes or the agent process is
+        # killed mid-callback. Best-effort, opt-out via
+        # HERMES_DISABLE_FSYNC=1.
+        self._sync_path(path)
 
         # Get bytes written (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"

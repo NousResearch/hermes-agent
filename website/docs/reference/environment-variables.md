@@ -568,6 +568,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_REDACT_SECRETS` | `true`/`false` — control secret redaction in tool output, logs, and chat responses (default: `true`). |
 | `HERMES_WRITE_SAFE_ROOT` | Optional directory prefix that restricts `write_file`/`patch` writes; paths outside require approval. |
 | `HERMES_DISABLE_FILE_STATE_GUARD` | Set to `1` to turn off the "file changed since you read it" guard on `patch`/`write_file`. |
+| `HERMES_DISABLE_FSYNC` | Set to `1`/`true`/`yes`/`on` to skip the post-write `sync` that flushes kernel buffers to disk after every `write_file`/`patch` call (see [#29786](https://github.com/NousResearch/hermes-agent/issues/29786)). The sync exists to prevent silent rollback of recent edits when an interactive session is interrupted (network drop, SIGKILL, terminal closed) before WSL2 `/mnt/<drive>` 9P mounts, NFS, SMB, or Docker bind-mount page caches reach physical storage. Disable only for bulk-write workloads on enterprise storage with battery-backed cache. |
 | `HERMES_CORE_TOOLS` | Comma-separated override for the canonical core tool list (advanced; rarely needed). |
 | `HERMES_BUNDLED_SKILLS` | Comma-separated override for the list of bundled skills loaded at startup. |
 | `HERMES_OPTIONAL_SKILLS` | Comma-separated list of optional-skill names to auto-install on first run. |

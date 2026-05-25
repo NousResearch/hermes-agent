@@ -543,6 +543,40 @@ class TestPreflightCompression:
 
         mock_compress.assert_not_called()
 
+    def test_preflight_respects_anti_thrash(self, agent):
+        """Preflight must call ``should_compress()`` so anti-thrash applies.
+
+        Regression for #29335 — preflight used to bypass ``should_compress()``
+        and re-trigger every turn even when the prior two passes each saved
+        <10% (the canonical infinite-compression-loop signal).
+        """
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 200
+
+        big_history = []
+        for i in range(20):
+            big_history.append({"role": "user", "content": f"Message {i} padded"})
+            big_history.append({"role": "assistant", "content": f"Response {i} padded"})
+
+        ok_resp = _mock_response(content="No preflight", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [ok_resp]
+
+        with (
+            patch.object(agent.context_compressor, "should_compress", return_value=False) as mock_should,
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=big_history)
+
+        # The gate consulted should_compress — anti-thrash had a chance to vote.
+        mock_should.assert_called()
+        # And vetoed: even though tokens >= threshold, no compression ran.
+        mock_compress.assert_not_called()
+        assert result["completed"] is True
+
 
 class TestToolResultPreflightCompression:
     """Compression should trigger when tool results push context past the threshold."""

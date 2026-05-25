@@ -484,8 +484,7 @@ def run_conversation(
             tools=agent.tools or None,
         )
 
-        if _preflight_tokens >= agent.context_compressor.threshold_tokens \
-           and agent.context_compressor.should_compress(_preflight_tokens):
+        if agent.context_compressor.should_compress(_preflight_tokens):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",

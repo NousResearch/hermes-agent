@@ -65,7 +65,7 @@ def test_agents_os_sprint1_schema_routing_next_and_dashboard(tmp_path, monkeypat
 
     assert agents_os.main(["--vault-root", str(vault), "doctor", "--json"]) == 0
     doctor_payload = json.loads(capsys.readouterr().out)
-    assert doctor_payload["checks"]["schema_version"] == "2"
+    assert doctor_payload["checks"]["schema_version"] == "3"
     assert doctor_payload["checks"]["required_tables_present"] is True
     assert {"events", "runs", "agents", "workflows", "routing_rules", "reviews"}.issubset(
         set(doctor_payload["checks"]["tables"])

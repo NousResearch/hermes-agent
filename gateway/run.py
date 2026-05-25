@@ -16317,6 +16317,16 @@ class GatewayRunner:
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
             
+            # Re-read .env and config for fresh credentials (gateway is long-lived,
+            # keys may change without restart). Keep config.yaml authoritative for
+            # runtime budget settings bridged into env vars.
+            _reload_runtime_env_preserving_config_authority()
+            # ``agent.system_prompt`` is also runtime-editable (dashboard,
+            # config set, direct YAML edit). Refresh it here so the next
+            # message sees the new prompt and the cached-agent signature
+            # naturally changes with the rebuilt combined prompt.
+            self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
+
             # Combine platform context, per-channel context, and the user-configured
             # ephemeral system prompt.
             combined_ephemeral = context_prompt or ""
@@ -16325,11 +16335,6 @@ class GatewayRunner:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-
-            # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart). Keep config.yaml authoritative for
-            # runtime budget settings bridged into env vars.
-            _reload_runtime_env_preserving_config_authority()
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(

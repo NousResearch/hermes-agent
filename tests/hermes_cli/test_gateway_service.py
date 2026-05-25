@@ -17,6 +17,34 @@ from gateway.restart import (
 )
 
 
+class TestSystemdUnitPath:
+    def test_user_unit_path_uses_login_home_when_profile_home_remaps_home(self, monkeypatch, tmp_path):
+        login_home = tmp_path / "login-home"
+        profile_home = tmp_path / "profile-home"
+        login_home.mkdir()
+        profile_home.mkdir()
+
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway-kagura-vps")
+        monkeypatch.setattr(
+            pwd,
+            "getpwuid",
+            lambda uid: SimpleNamespace(pw_dir=str(login_home)),
+        )
+
+        assert gateway_cli.get_systemd_unit_path(system=False) == (
+            login_home / ".config" / "systemd" / "user" / "hermes-gateway-kagura-vps.service"
+        )
+
+    def test_system_unit_path_remains_global(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path / "profile-home"))
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway-kagura-vps")
+
+        assert gateway_cli.get_systemd_unit_path(system=True) == Path(
+            "/etc/systemd/system/hermes-gateway-kagura-vps.service"
+        )
+
+
 class TestUserSystemdPrivateSocketPreflight:
     def test_preflight_accepts_private_socket_without_dbus_bus(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)
@@ -54,12 +82,30 @@ class TestSystemdServiceRefresh:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         gateway_cli.systemd_install()
-
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", gateway_cli.get_service_name()],
         ]
+
+    def test_systemd_current_ignores_path_payload_drift(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        installed = """[Unit]
+Description=Hermes
+
+[Service]
+ExecStart=/opt/hermes/venv/bin/python -m hermes_cli.main gateway run --replace
+Environment=\"PATH=/opt/hermes/venv/bin:/root/.local/bin:/usr/bin\"
+Environment=\"HERMES_HOME=/root/.hermes/profiles/kagura-vps\"
+"""
+        expected = installed.replace(":/root/.local/bin", "")
+        unit_path.write_text(installed, encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: expected)
+
+        assert gateway_cli.systemd_unit_is_current(system=False) is True
+
 
     def test_systemd_start_refreshes_outdated_unit(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"

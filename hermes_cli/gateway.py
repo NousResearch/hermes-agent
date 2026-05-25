@@ -1349,11 +1349,29 @@ def get_service_name() -> str:
 
 
 
+def _login_home() -> Path:
+    """Return the login account's home directory, independent of ``$HOME``.
+
+    Named Hermes profiles can remap ``HOME`` to the profile home so profile-aware
+    paths resolve correctly. User-scope systemd units, however, still live under
+    the login account's real home directory (for example ``/root/.config/...``),
+    not under the profile home. ``pwd`` gives us that account home even when
+    ``$HOME`` is overridden; fall back to ``Path.home()`` on platforms without a
+    valid passwd entry.
+    """
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, OSError):
+        return Path.home()
+
+
 def get_systemd_unit_path(system: bool = False) -> Path:
     name = get_service_name()
     if system:
         return Path("/etc/systemd/system") / f"{name}.service"
-    return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
+    return _login_home() / ".config" / "systemd" / "user" / f"{name}.service"
 
 
 class UserSystemdUnavailableError(RuntimeError):
@@ -2269,7 +2287,23 @@ WantedBy=default.target
 """
 
 def _normalize_service_definition(text: str) -> str:
-    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+    """Normalize generated service definitions for staleness checks.
+
+    PATH entries can differ between the shell that installed/restarted the
+    service and the shell checking status (for example profile or rc-file
+    changes adding ``~/.local/bin``).  Treat the PATH payload as operational
+    environment, not as a service-definition drift signal.
+    """
+    import re
+
+    normalized = "\n".join(line.rstrip() for line in text.strip().splitlines())
+    normalized = re.sub(
+        r'(^Environment="PATH=)(.*?)("$)',
+        r'\1__HERMES_PATH__\3',
+        normalized,
+        flags=re.M,
+    )
+    return normalized
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:

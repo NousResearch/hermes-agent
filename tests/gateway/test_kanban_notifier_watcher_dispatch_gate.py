@@ -9,15 +9,17 @@ Acceptance criteria covered:
 import asyncio
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from gateway.config import Platform
 from gateway.run import GatewayRunner
 
 
-def _make_runner():
+def _make_runner(with_adapter=False):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {}
+    if with_adapter:
+        runner.adapters = {Platform.TELEGRAM: MagicMock()}
+    else:
+        runner.adapters = {}
     runner._kanban_sub_fail_counts = {}
     return runner
 
@@ -77,20 +79,20 @@ def test_notifier_watcher_runs_when_dispatch_enabled(monkeypatch, tmp_path):
     We verify it doesn't return early by checking that kanban_db.list_boards
     is called (the watcher fan-outs over boards after passing the gate).
     """
-    runner = _make_runner()
+    # Use a runner with an adapter so active_platforms is non-empty and
+    # _collect proceeds to the list_boards call.
+    runner = _make_runner(with_adapter=True)
     past_gate = []
     sleep_calls = []
 
     async def fake_sleep(delay):
         sleep_calls.append(delay)
-        # First sleep is the 5s initial delay; stop running so the loop exits cleanly
-        # without needing a second sleep, but we need to let _collect run first.
-        # We stop after the second sleep (the per-interval sleep inside the loop).
+        # Stop after the second sleep (initial delay + first per-interval sleep)
+        # so the loop body executes once then terminates.
         if len(sleep_calls) >= 2:
             runner._running = False
 
     async def fake_to_thread(fn, *args, **kwargs):
-        # Run sync function directly in-thread
         return fn(*args, **kwargs)
 
     import hermes_cli.kanban_db as _kb

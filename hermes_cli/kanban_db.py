@@ -1498,7 +1498,7 @@ def write_txn(conn: sqlite3.Connection):
                 lock_fd = open(lock_path, "w", encoding="utf-8")
                 _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
             except OSError:
-                logger.debug(
+                _log.debug(
                     "write_txn: could not acquire board write lock at %s; proceeding",
                     lock_path,
                 )

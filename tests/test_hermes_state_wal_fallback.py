@@ -359,25 +359,30 @@ class TestWalInitFlock:
     @pytest.mark.skipif(
         sys.platform == "win32", reason="chmod read-only unreliable on Windows"
     )
-    def test_wal_init_flock_graceful_on_readonly_dir(self, tmp_path):
-        """apply_wal_with_fallback doesn't raise when lock file dir is read-only."""
+    def test_wal_init_flock_graceful_on_readonly_lock_dir(self, tmp_path):
+        """apply_wal_with_fallback degrades gracefully when the lock file dir is read-only.
+
+        The DB itself is writable so WAL succeeds; the lock file path is inside
+        a read-only directory so open() raises OSError. The flock path must be
+        skipped without propagating the error.
+        """
+        db_file = tmp_path / "ok.db"
         ro_dir = tmp_path / "readonly"
         ro_dir.mkdir()
-        db_file = ro_dir / "test.db"
-
-        conn = sqlite3.connect(str(db_file), isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.close()
 
         original_mode = ro_dir.stat().st_mode
         try:
             ro_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
 
+            # db_path points into the read-only dir so lock file creation fails,
+            # but the connection is on a writable db_file.
+            fake_db_path = str(ro_dir / "kanban.db")
             conn = sqlite3.connect(str(db_file), isolation_level=None)
             try:
-                apply_wal_with_fallback(
-                    conn, db_label="readonly.db", db_path=str(db_file)
+                mode = apply_wal_with_fallback(
+                    conn, db_label="readonly-lock.db", db_path=fake_db_path
                 )
+                assert mode == "wal"
             finally:
                 conn.close()
         finally:

@@ -3493,26 +3493,42 @@ def test_write_txn_flock_disabled_on_memory_db(tmp_path):
 @pytest.mark.skipif(
     sys.platform == "win32", reason="chmod read-only unreliable on Windows"
 )
-def test_write_txn_flock_graceful_on_readonly_dir(tmp_path, monkeypatch):
-    """write_txn doesn't raise when the board dir is read-only (flock degrades gracefully)."""
-    ro_dir = tmp_path / "readonly_board"
-    ro_dir.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(ro_dir / "kanban.db"))
+def test_write_txn_flock_graceful_on_readonly_lock_dir(tmp_path, monkeypatch):
+    """write_txn degrades gracefully when the lock file directory is read-only.
 
-    conn = sqlite3.connect(str(ro_dir / "kanban.db"), isolation_level=None)
-    conn.execute("CREATE TABLE t (x INTEGER)")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.close()
+    The DB itself is writable; only the directory where kanban.write.lock
+    would be created is read-only.  The flock is skipped and the transaction
+    still succeeds.
+    """
+    ro_dir = tmp_path / "readonly_lock_dir"
+    ro_dir.mkdir()
+
+    # DB lives in a writable location; we trick PRAGMA database_list into
+    # returning a path inside the read-only dir so write_txn tries to create
+    # the lock there, gets OSError, and gracefully degrades.
+    db_file = tmp_path / "writable.db"
+    conn_setup = sqlite3.connect(str(db_file), isolation_level=None)
+    conn_setup.execute("CREATE TABLE t (x INTEGER)")
+    conn_setup.execute("PRAGMA journal_mode=WAL")
+    conn_setup.close()
 
     original_mode = ro_dir.stat().st_mode
     try:
         ro_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
 
-        conn = sqlite3.connect(str(ro_dir / "kanban.db"), isolation_level=None)
+        class _RoDirConn(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):
+                if sql.strip().upper() == "PRAGMA database_list":
+                    class _Cursor:
+                        def fetchone(self_):
+                            return (0, "main", str(ro_dir / "kanban.db"))
+                    return _Cursor()
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(str(db_file), factory=_RoDirConn, isolation_level=None)
         try:
             with kb.write_txn(conn):
-                pass
+                conn.execute("INSERT INTO t VALUES (42)")
         finally:
             conn.close()
     finally:

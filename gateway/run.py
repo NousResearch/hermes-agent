@@ -4711,7 +4711,7 @@ class GatewayRunner:
         # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
         # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
         # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
-        # TODO: gate per-board when t_e077d4ee (per-board dispatcher_owner) lands.
+        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:

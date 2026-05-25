@@ -319,6 +319,32 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+def _bounded_proxy_limits():
+    """httpx connection limits for the proxy request path (#31599).
+
+    When Telegram traffic is routed through a local HTTP proxy, half-closed
+    connections accumulate in the general request pool faster than httpx
+    evicts them — httpcore's tunnel-proxy path does not always release the
+    underlying socket on ConnectError. Over days of flaky-proxy operation the
+    unbounded ``connection_pool_size`` default lets these dead sockets pile up
+    until the process hits its fd limit and every send fails. Bounding the
+    pool caps the leak and surfaces it immediately instead of after ~2 days.
+    Override the caps via env if a deployment legitimately needs more.
+    """
+    import httpx
+
+    def _cap(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    return httpx.Limits(
+        max_connections=_cap("HERMES_TELEGRAM_PROXY_MAX_CONNECTIONS", 20),
+        max_keepalive_connections=_cap("HERMES_TELEGRAM_PROXY_MAX_KEEPALIVE", 10),
+    )
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -1430,8 +1456,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                # Bound the pool on the proxy path so leaked half-closed sockets
+                # can't exhaust the fd limit over days of flaky-proxy operation (#31599).
+                proxy_limits = _bounded_proxy_limits()
+                request = HTTPXRequest(**request_kwargs, proxy=proxy_url, httpx_kwargs={"limits": proxy_limits})
+                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url, httpx_kwargs={"limits": proxy_limits})
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)

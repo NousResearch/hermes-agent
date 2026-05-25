@@ -2170,6 +2170,20 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
+## Paste Collapse
+
+Large text pastes can be displayed as a compact reference instead of filling the input. Configure these top-level keys:
+
+```yaml
+paste_collapse_threshold: 5          # Bracketed-paste size threshold; also used by the TUI
+paste_collapse_threshold_fallback: 5 # Classic CLI fallback for terminals without bracketed paste
+paste_collapse_char_threshold: 2000  # Character threshold for both paths and the TUI
+```
+
+Collapse triggers when either enabled size threshold is reached. The classic CLI counts newline characters for the first two keys; the TUI counts lines for `paste_collapse_threshold`. Setting a threshold to `0` disables only that check. Set all three keys to `0` to disable size-based paste collapse across these paths.
+
+In the classic CLI, bracketed paste inserts a file reference at the cursor and preserves existing input. It skips collapse when the **existing buffer**, after trimming whitespace, begins with `/`; a pasted slash command is not universally exempt. The fallback detects paste-like input changes, evaluates the whole buffer, and replaces it with a file reference. It skips buffers that start directly with `/`.
+
 ## Privacy
 
 ```yaml

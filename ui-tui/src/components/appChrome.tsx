@@ -25,6 +25,9 @@ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
 export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
 
+const COMPOSER_DIVIDER_INSET = 2
+export const composerDividerLine = (cols: number) => '─'.repeat(Math.max(1, Math.floor(cols) - COMPOSER_DIVIDER_INSET))
+
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
 const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
@@ -376,6 +379,14 @@ const shortModelLabel = (model: string) =>
 
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+
+export function ComposerDivider({ cols, t }: { cols: number; t: Theme }) {
+  return (
+    <Text color={t.color.border} wrap="truncate-end">
+      {composerDividerLine(cols)}
+    </Text>
+  )
+}
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)

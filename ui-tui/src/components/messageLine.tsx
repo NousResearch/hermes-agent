@@ -19,6 +19,7 @@ import {
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
+import { ComposerDivider } from './appChrome.js'
 import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
@@ -36,6 +37,7 @@ export const MessageLine = memo(function MessageLine({
   msg,
   prev,
   sections,
+  showUserInputDividers = false,
   t,
   tools = []
 }: MessageLineProps) {
@@ -193,6 +195,7 @@ export const MessageLine = memo(function MessageLine({
   // segments) keep a blank line on both sides so the patch doesn't butt up
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
+  const showHistoryInputDividers = showUserInputDividers && msg.role === 'user' && !isStreaming && !isDiffSegment
 
   return (
     <Box
@@ -200,6 +203,8 @@ export const MessageLine = memo(function MessageLine({
       marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment || leadGap ? 1 : 0}
     >
+      {showHistoryInputDividers && <ComposerDivider cols={cols} t={t} />}
+
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>
           <ToolTrail
@@ -235,6 +240,8 @@ export const MessageLine = memo(function MessageLine({
 
         <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
+
+      {showHistoryInputDividers && <ComposerDivider cols={cols} t={t} />}
     </Box>
   )
 })
@@ -254,6 +261,7 @@ interface MessageLineProps {
   // the transcript or when spacing is irrelevant.
   prev?: Msg
   sections?: SectionVisibility
+  showUserInputDividers?: boolean
   t: Theme
   tools?: ActiveTool[]
 }

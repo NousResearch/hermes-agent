@@ -292,6 +292,26 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "… [truncated]"
 
 
+def parse_goal_budget_arg(arg: str) -> tuple[Optional[int], str]:
+    """Parse optional leading turn budget from a /goal argument string.
+
+    Forms:
+    - ``/goal 50`` -> ``(50, "")`` (update active goal budget)
+    - ``/goal 50 ship it`` -> ``(50, "ship it")`` (set goal with budget)
+    - ``/goal ship it`` -> ``(None, "ship it")``
+    """
+    raw = (arg or "").strip()
+    if not raw:
+        return None, ""
+    first, sep, rest = raw.partition(" ")
+    if re.fullmatch(r"\d+", first):
+        budget = int(first)
+        if budget < 1:
+            raise ValueError("max turns must be at least 1")
+        return budget, rest.strip() if sep else ""
+    return None, raw
+
+
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
@@ -523,17 +543,40 @@ class GoalManager:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        budget = int(max_turns) if max_turns else self.default_max_turns
+        if budget < 1:
+            raise ValueError("max turns must be at least 1")
         state = GoalState(
             goal=goal,
             status="active",
             turns_used=0,
-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            max_turns=budget,
             created_at=time.time(),
             last_turn_at=0.0,
         )
         self._state = state
         save_goal(self.session_id, state)
         return state
+
+    def set_max_turns(self, max_turns: int) -> GoalState:
+        """Update the active/paused goal turn budget in-place."""
+        if not self._state or self._state.status in {"cleared", "done"}:
+            raise RuntimeError("no active goal")
+        budget = int(max_turns)
+        if budget < 1:
+            raise ValueError("max turns must be at least 1")
+        self._state.max_turns = budget
+        # If the old budget was already exhausted, let the newly requested
+        # budget resume progress when it is now above turns_used.
+        if (
+            self._state.status == "paused"
+            and self._state.paused_reason == "budget-exhausted"
+            and self._state.turns_used < budget
+        ):
+            self._state.status = "active"
+            self._state.paused_reason = None
+        save_goal(self.session_id, self._state)
+        return self._state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:

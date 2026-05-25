@@ -8652,9 +8652,33 @@ class HermesCLI:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return
 
+        # Optional leading budget: /goal 50 <text> sets a 50-turn goal;
+        # /goal 50 updates the active goal's budget in-place.
+        try:
+            from hermes_cli.goals import parse_goal_budget_arg
+            budget, goal_text = parse_goal_budget_arg(arg)
+        except ValueError as exc:
+            _cprint(f"  Invalid goal budget: {exc}")
+            return
+
+        if budget is not None and not goal_text:
+            try:
+                state = mgr.set_max_turns(budget)
+            except RuntimeError:
+                _cprint("  Usage: /goal <turns> <text> — or set a goal first, then /goal <turns>.")
+                return
+            except ValueError as exc:
+                _cprint(f"  Invalid goal budget: {exc}")
+                return
+            _cprint(f"  ⊙ Goal budget set to {state.max_turns} turns: {state.goal}")
+            return
+
+        if budget is not None:
+            arg = goal_text
+
         # Otherwise treat the arg as the goal text.
         try:
-            state = mgr.set(arg)
+            state = mgr.set(arg, max_turns=budget)
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return

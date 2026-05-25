@@ -10115,9 +10115,29 @@ class GatewayRunner:
                 logger.debug("goal clear: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
 
+        # Optional leading budget: /goal 50 <text> sets a 50-turn goal;
+        # /goal 50 updates the active goal's budget in-place.
+        try:
+            from hermes_cli.goals import parse_goal_budget_arg
+            budget, goal_text = parse_goal_budget_arg(args)
+        except ValueError as exc:
+            return t("gateway.goal.invalid", error=str(exc))
+
+        if budget is not None and not goal_text:
+            try:
+                state = mgr.set_max_turns(budget)
+            except RuntimeError:
+                return "Usage: /goal <turns> <text> — or set a goal first, then /goal <turns>."
+            except ValueError as exc:
+                return t("gateway.goal.invalid", error=str(exc))
+            return f"⊙ Goal budget set to {state.max_turns} turns: {state.goal}"
+
+        if budget is not None:
+            args = goal_text
+
         # Otherwise — treat the remaining text as the new goal.
         try:
-            state = mgr.set(args)
+            state = mgr.set(args, max_turns=budget)
         except ValueError as exc:
             return t("gateway.goal.invalid", error=str(exc))
 

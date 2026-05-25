@@ -116,6 +116,36 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state.status == "active"
 
 
+def test_goal_set_accepts_leading_budget(server, session):
+    sid, session_key, _ = session
+    r = _call(server, "command.dispatch", name="goal", arg="50 build a rocket", session_id=sid)
+    result = r["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "build a rocket"
+    assert "50-turn budget" in result["notice"]
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    assert mgr.state is not None
+    assert mgr.state.goal == "build a rocket"
+    assert mgr.state.max_turns == 50
+
+
+def test_goal_number_updates_active_budget(server, session):
+    sid, session_key, _ = session
+    _call(server, "command.dispatch", name="goal", arg="build a rocket", session_id=sid)
+    r = _call(server, "command.dispatch", name="goal", arg="50", session_id=sid)
+    assert r["result"]["type"] == "exec"
+    assert "budget set to 50 turns" in r["result"]["output"]
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    assert mgr.state is not None
+    assert mgr.state.max_turns == 50
+
+
 def test_goal_pause_after_set(server, session):
     sid, session_key, _ = session
     _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)

@@ -4838,9 +4838,41 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
-        # Otherwise — treat the remaining text as the new goal.
+        # Otherwise — treat the remaining text as the new goal, with an
+        # optional leading turn budget: /goal 50 <text>. If only /goal 50 is
+        # provided, update the active goal's budget.
         try:
-            state = mgr.set(arg)
+            from hermes_cli.goals import parse_goal_budget_arg
+            budget, goal_text = parse_goal_budget_arg(arg)
+        except ValueError as exc:
+            return _err(rid, 4004, f"invalid goal budget: {exc}")
+
+        if budget is not None and not goal_text:
+            try:
+                state = mgr.set_max_turns(budget)
+            except RuntimeError:
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "output": "Usage: /goal <turns> <text> — or set a goal first, then /goal <turns>.",
+                    },
+                )
+            except ValueError as exc:
+                return _err(rid, 4004, f"invalid goal budget: {exc}")
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": f"⊙ Goal budget set to {state.max_turns} turns: {state.goal}",
+                },
+            )
+
+        if budget is not None:
+            arg = goal_text
+
+        try:
+            state = mgr.set(arg, max_turns=budget)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 

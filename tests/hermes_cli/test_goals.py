@@ -204,6 +204,30 @@ class TestGoalManager:
         assert "active" in mgr.status_line().lower()
         assert "port the thing" in mgr.status_line()
 
+    def test_set_accepts_per_command_budget(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="budget-sid", default_max_turns=200)
+        state = mgr.set("port the thing", max_turns=50)
+        assert state.max_turns == 50
+        assert "0/50 turns" in mgr.status_line()
+
+    def test_update_active_goal_budget(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="budget-update-sid", default_max_turns=200)
+        mgr.set("port the thing")
+        state = mgr.set_max_turns(50)
+        assert state.max_turns == 50
+        assert state.goal == "port the thing"
+
+    def test_parse_goal_budget_arg(self):
+        from hermes_cli.goals import parse_goal_budget_arg
+
+        assert parse_goal_budget_arg("50") == (50, "")
+        assert parse_goal_budget_arg("50 ship it") == (50, "ship it")
+        assert parse_goal_budget_arg("ship it") == (None, "ship it")
+
     def test_set_rejects_empty(self, hermes_home):
         from hermes_cli.goals import GoalManager
 

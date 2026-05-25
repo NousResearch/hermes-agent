@@ -3948,8 +3948,11 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         return p
     if kind == "worktree":
         if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
+            # Default: worktree dir under the board's workspaces root.
+            # This mirrors the scratch pattern above and ensures the path
+            # resolves to the board-managed workspace directory rather than
+            # cwd/.worktrees/<id> when the dispatcher runs from another root.
+            return workspaces_root(board=board) / task.id
         p = Path(task.workspace_path).expanduser()
         if not p.is_absolute():
             raise ValueError(

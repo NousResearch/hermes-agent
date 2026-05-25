@@ -7034,7 +7034,28 @@ class HermesCLI:
         could be interpreted as EOF/exit.  A first-class modal state keeps the
         choices visible and lets the normal Enter key binding submit the typed
         or highlighted choice.
+
+        **Platform note (Windows dead-lock — issue #30768):**
+        The queue-based modal relies on prompt_toolkit key bindings receiving
+        keyboard events and calling ``_submit_slash_confirm_response``.  On
+        Windows (PowerShell / Windows Terminal) the prompt_toolkit input
+        channel can become unresponsive when the modal is entered from the
+        ``process_loop`` daemon thread, causing a dead-lock: the user sees the
+        confirmation panel but keystrokes never reach the key bindings and the
+        ``response_queue.get()`` blocks until the 120-second timeout expires.
+
+        To avoid this, we fall back to ``_prompt_text_input`` (a simple
+        ``input()``-based prompt) when any of these conditions hold:
+
+        * ``sys.platform == "win32"`` — native Windows console (ConPTY /
+          win32_input) does not support the modal reliably.
+        * Called from a non-main thread — the prompt_toolkit event loop only
+          runs on the main thread; key bindings can't fire from a daemon
+          thread (same rationale as the ``_prompt_text_input`` thread guard
+          in PR #23454).
+        * ``self._app`` is not set — unit tests / non-interactive contexts.
         """
+        import threading
         import time as _time
 
         if not choices:
@@ -7043,6 +7064,20 @@ class HermesCLI:
         # If prompt_toolkit is not running (unit tests / non-interactive calls),
         # keep the simple stdin fallback.
         if not getattr(self, "_app", None):
+            return self._prompt_text_input("Choice [1/2/3]: ")
+
+        # On Windows the prompt_toolkit input channel can deadlock when the
+        # modal is entered from the process_loop daemon thread — keystrokes
+        # never reach the key bindings, so response_queue.get() blocks for
+        # the full timeout (issue #30768).  Fall back to the simpler
+        # stdin-based prompt which works reliably on Windows.
+        if sys.platform == "win32":
+            return self._prompt_text_input("Choice [1/2/3]: ")
+
+        # Mirror the thread-aware guard from _prompt_text_input (PR #23454):
+        # run_in_terminal and the modal queue both depend on the main-thread
+        # event loop.  From a daemon thread the modal key bindings never fire.
+        if threading.current_thread() is not threading.main_thread():
             return self._prompt_text_input("Choice [1/2/3]: ")
 
         response_queue = queue.Queue()

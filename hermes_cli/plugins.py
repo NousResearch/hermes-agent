@@ -142,6 +142,7 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "on_status_bar_render",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent

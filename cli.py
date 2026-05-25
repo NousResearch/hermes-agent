@@ -3766,6 +3766,16 @@ class HermesCLI:
                 if bg_proc_count:
                     parts.append(f"⚙ {bg_proc_count}")
                 parts.append(duration_label)
+                # Let plugins contribute extra fragments (e.g. quota status)
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    extra_results = _invoke_hook("on_status_bar_render", snapshot=snapshot)
+                    if extra_results and isinstance(extra_results, list):
+                        extra = " · ".join(str(x) for x in extra_results if x)
+                        if extra:
+                            parts.append(extra)
+                except Exception:
+                    pass
                 if yolo_active:
                     parts.append("⚠ YOLO")
                 return self._trim_status_bar_text(" · ".join(parts), width)
@@ -3788,6 +3798,16 @@ class HermesCLI:
             if bg_proc_count:
                 parts.append(f"⚙ {bg_proc_count}")
             parts.append(duration_label)
+            # Let plugins contribute extra fragments (e.g. quota status)
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                extra_results = _invoke_hook("on_status_bar_render", snapshot=snapshot)
+                if extra_results and isinstance(extra_results, list):
+                    extra = " │ ".join(str(x) for x in extra_results if x)
+                    if extra:
+                        parts.insert(-1, extra)  # before duration
+            except Exception:
+                pass
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)

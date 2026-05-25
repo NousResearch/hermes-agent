@@ -1164,13 +1164,19 @@ class HonchoSessionManager:
         if not session:
             return None
         try:
-            peer_id = self._resolve_peer_id(session, peer)
-            if peer_id is None:
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
+            if observer_peer_id is None:
                 logger.warning("Could not resolve peer '%s' for set_peer_card in session '%s'", peer, session_key)
                 return None
-            peer_obj = self._get_or_create_peer(peer_id)
-            result = peer_obj.set_card(card)
-            logger.info("Updated peer card for %s (%d facts)", peer_id, len(card))
+            peer_obj = self._get_or_create_peer(observer_peer_id)
+            result = peer_obj.set_card(card, target=target_peer_id)
+            target_label = target_peer_id or observer_peer_id
+            logger.info(
+                "Updated peer card for observer=%s target=%s (%d facts)",
+                observer_peer_id,
+                target_label,
+                len(card),
+            )
             return result
         except Exception as e:
             logger.error("Failed to set peer card: %s", e)

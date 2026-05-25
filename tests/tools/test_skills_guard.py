@@ -46,14 +46,22 @@ from tools.skills_guard import (
 
 
 class TestResolveTrustLevel:
-    def test_official_sources_resolve_to_builtin(self):
+    def test_official_source_provenance_resolves_to_builtin(self):
         assert _resolve_trust_level("official") == "builtin"
-        assert _resolve_trust_level("official/email/agentmail") == "builtin"
 
     def test_trusted_repos(self):
         assert _resolve_trust_level("openai/skills") == "trusted"
         assert _resolve_trust_level("anthropics/skills") == "trusted"
         assert _resolve_trust_level("openai/skills/some-skill") == "trusted"
+
+    def test_trusted_repo_sibling_prefixes_are_not_trusted(self):
+        assert _resolve_trust_level("openai/skills-evil") == "community"
+        assert _resolve_trust_level("anthropics/skills-foo/frontend-design") == "community"
+        assert _resolve_trust_level("huggingface/skills-bar/some-skill") == "community"
+
+    def test_official_github_namespace_does_not_resolve_to_builtin(self):
+        assert _resolve_trust_level("official/attacker-skill") == "community"
+        assert _resolve_trust_level("official/agent/evil-skill") == "community"
 
     def test_skills_sh_wrapped_trusted_repos(self):
         assert _resolve_trust_level("skills-sh/openai/skills/skill-creator") == "trusted"

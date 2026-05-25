@@ -1088,6 +1088,36 @@ def test_edit_draft_via_api_endpoint(isolate_home):
     assert bad_response.status_code == 400
 
 
+def test_summary_includes_cost_estimate(isolate_home):
+    """Phase 20: summary exposes USD cost estimate computed from spent_by_route."""
+    from plugins.marketing_factory.store import MarketingFactoryStore, estimate_costs
+
+    store = MarketingFactoryStore()
+    store.initialize()
+    state = store.load()
+    state["budgets"]["spent_by_route"] = {"cheap": 1_000_000, "mid": 500_000, "premium": 250_000}
+    store._write_state(state)
+
+    summary = store.summary()
+    assert "cost_estimate" in summary
+    ce = summary["cost_estimate"]
+    assert ce["by_route_usd"]["cheap"] == 0.0  # local = free
+    assert ce["by_route_usd"]["mid"] == 0.0
+    # Premium = (250_000 / 1_000_000) * 6.0 = $1.50
+    assert abs(ce["by_route_usd"]["premium"] - 1.50) < 0.001
+    assert abs(ce["total_usd"] - 1.50) < 0.001
+    # estimate_costs helper directly
+    direct = estimate_costs({"premium": 1_000_000})
+    assert abs(direct["total_usd"] - 6.0) < 0.001
+
+
+def test_cost_estimate_respects_env_override(isolate_home, monkeypatch):
+    from plugins.marketing_factory.store import estimate_costs
+    monkeypatch.setenv("MF_PRICE_USD_PER_M_PREMIUM", "15.0")
+    result = estimate_costs({"premium": 1_000_000})
+    assert abs(result["total_usd"] - 15.0) < 0.001
+
+
 def test_resolve_variant_winner_auto_rejects_siblings(isolate_home):
     """Phase 19: approving one variant auto-rejects the others with a structured reason
     so the brand memory loop learns the COMPARISON, not just yes/no per draft."""

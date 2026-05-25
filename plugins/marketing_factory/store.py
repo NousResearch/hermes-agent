@@ -29,6 +29,48 @@ def default_store_path() -> Path:
     return Path(get_hermes_home()) / "marketing_factory"
 
 
+# Rough USD per 1M tokens for cost estimates. Local models (cheap/mid) are
+# zero — electricity only. Premium routes through Claude CLI (the user's
+# Code subscription) so the *marginal* cost is $0; we surface an
+# API-equivalent estimate (blended Sonnet input/output) so the user can
+# gauge how much they're "saving" by running through the subscription.
+# Overridable per route via env: MF_PRICE_USD_PER_M_<ROUTE>.
+DEFAULT_PRICES_USD_PER_M = {
+    "cheap": 0.0,
+    "mid": 0.0,
+    "premium": 6.0,  # Sonnet 4.6 blended input+output ish
+}
+
+
+def _price_for(route: str) -> float:
+    env_key = f"MF_PRICE_USD_PER_M_{route.upper()}"
+    import os as _os
+    raw = _os.environ.get(env_key)
+    if raw is not None:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return DEFAULT_PRICES_USD_PER_M.get(route, 0.0)
+
+
+def estimate_costs(spent_by_route: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert per-route token counts to estimated USD."""
+    breakdown: Dict[str, float] = {}
+    total = 0.0
+    for route, tokens in (spent_by_route or {}).items():
+        rate = _price_for(route)
+        usd = (int(tokens or 0) / 1_000_000.0) * rate
+        breakdown[route] = round(usd, 4)
+        total += usd
+    return {
+        "by_route_usd": breakdown,
+        "total_usd": round(total, 4),
+        "rates_usd_per_m": {r: _price_for(r) for r in ("cheap", "mid", "premium")},
+        "note": "premium tokens flow through Claude Code subscription (marginal cost $0); shown rate is API-equivalent for budgeting only",
+    }
+
+
 DEFAULT_STATE: Dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "apps": {},
@@ -725,6 +767,7 @@ class MarketingFactoryStore:
             "budgets": state["budgets"],
             "model_routing_policy": state["model_routing_policy"],
             "poll": state.get("poll", {}),
+            "cost_estimate": estimate_costs(state["budgets"].get("spent_by_route") or {}),
         }
 
 

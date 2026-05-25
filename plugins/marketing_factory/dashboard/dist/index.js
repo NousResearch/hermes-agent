@@ -322,7 +322,26 @@
           h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60 mb-2" }, "Cost"),
           h("div", { className: "text-sm text-midground/80" },
             `${(budgets.spent_tokens_today || 0).toLocaleString()} tokens used today (${budgets.daily_tokens ? Math.round(100 * (budgets.spent_tokens_today || 0) / budgets.daily_tokens) : 0}% of cap)`
-          )
+          ),
+          (() => {
+            const cost = summary.cost_estimate;
+            if (!cost) return null;
+            const total = cost.total_usd || 0;
+            return h("div", { className: "mt-2 rounded-lg border border-midground/15 bg-background/40 p-2" },
+              h("div", { className: "flex items-baseline gap-2" },
+                h("span", { className: "text-base font-semibold" }, `$${total.toFixed(2)}`),
+                h("span", { className: "text-[10px] text-midground/60" }, "API-equivalent today")
+              ),
+              h("div", { className: "mt-1 text-[10px] text-midground/60" }, cost.note),
+              h("div", { className: "mt-2 grid grid-cols-3 gap-2 text-[10px]" },
+                ["cheap", "mid", "premium"].map((r) => h("div", { key: r, className: "rounded border border-midground/15 p-1.5" },
+                  h("div", { className: "uppercase tracking-[0.14em] text-midground/60" }, r),
+                  h("div", { className: "mt-0.5 font-medium" }, `$${(cost.by_route_usd?.[r] || 0).toFixed(4)}`),
+                  h("div", { className: "text-midground/50" }, `$${(cost.rates_usd_per_m?.[r] || 0).toFixed(2)}/M`)
+                ))
+              )
+            );
+          })()
         ),
 
         h("section", null,

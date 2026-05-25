@@ -128,6 +128,17 @@ def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
     return parsed
 
 
+def _normalize_cli_args(raw_args: Optional[List[Any]]) -> List[str]:
+    """Normalize CLI-provided stdio args, dropping empty placeholders."""
+    normalized: List[str] = []
+    for item in raw_args or []:
+        text = str(item or "")
+        if not text.strip():
+            continue
+        normalized.append(text)
+    return normalized
+
+
 def _apply_mcp_preset(
     name: str,
     *,
@@ -231,7 +242,7 @@ def cmd_mcp_add(args):
     # mcp_add_p.add_argument("--command", dest="mcp_command", ...) in
     # hermes_cli/main.py for why the dest is renamed.
     command = getattr(args, "mcp_command", None)
-    cmd_args = getattr(args, "args", None) or []
+    cmd_args = _normalize_cli_args(getattr(args, "args", None))
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
     raw_env = getattr(args, "env", None)

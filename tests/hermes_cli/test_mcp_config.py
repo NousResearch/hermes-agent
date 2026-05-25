@@ -246,6 +246,37 @@ class TestMcpAdd:
         assert srv["command"] == "npx"
         assert srv["args"] == ["@mcp/github"]
 
+    def test_add_stdio_server_ignores_empty_args_placeholder(self, tmp_path, capsys, monkeypatch):
+        """Regression for #26886: empty CLI arg placeholders must not persist as ['']."""
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["command"] == "npx"
+            assert "args" not in config
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=[""],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        srv = config["mcp_servers"]["github"]
+        assert srv["command"] == "npx"
+        assert "args" not in srv
+
     def test_add_connection_failure_save_disabled(
         self, tmp_path, capsys, monkeypatch
     ):
@@ -599,4 +630,3 @@ class TestMcpLogin:
         cmd_mcp_login(_make_args(name="srv"))
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
-

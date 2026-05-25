@@ -240,6 +240,11 @@ class TestCronModeInteractions:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
 
+        # _YOLO_MODE_FROZEN is frozen at import time — monkeypatch.setenv
+        # cannot override it (security hardening in b1adb95).
+        import tools.approval as approval_module
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
             # Use a dangerous-but-not-hardline command — `rm -rf /` is now

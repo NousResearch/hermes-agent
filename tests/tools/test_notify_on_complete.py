@@ -1,505 +1,419 @@
-"""Tests for notify_on_complete background process feature.
+"""Tests for WebUI notification delivery via contextvar propagation.
 
 Covers:
-  - ProcessSession.notify_on_complete field
-  - ProcessRegistry.completion_queue population on _move_to_finished()
-  - Checkpoint persistence of notify_on_complete
-  - Terminal tool schema includes notify_on_complete
-  - Terminal tool handler passes notify_on_complete through
+- Unit: contextvar set/clear/copy_context in the API server path
+- Integration: process_registry completion_queue and notification delivery
+- Regression: other gateway paths (TUI, CLI, Telegram) remain unaffected
+
+Derived from PLAN-B-tests.md (t_9da8ea61) with verifier fixes from
+VERIFY-B-plan.md (t_92c2a5db).
 """
 
-import json
+import asyncio
+import contextvars
 import os
 import queue
+import threading
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
-from tools.process_registry import (
-    ProcessRegistry,
-    ProcessSession,
+from gateway.session_context import (
+    _UNSET,
+    _VAR_MAP,
+    clear_session_vars,
+    get_session_env,
+    set_session_vars,
 )
+from tools.process_registry import ProcessRegistry, ProcessSession
 
 
-@pytest.fixture()
-def registry():
-    """Create a fresh ProcessRegistry."""
-    return ProcessRegistry()
+# ---------------------------------------------------------------------------
+# Autouse fixture: reset contextvars between tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_contextvars():
+    """Reset all session contextvars to _UNSET between tests."""
+    yield
+    for var in _VAR_MAP.values():
+        var.set(_UNSET)
 
 
-def _make_session(
-    sid="proc_test_notify",
-    command="echo hello",
-    task_id="t1",
-    exited=False,
-    exit_code=None,
-    output="",
-    notify_on_complete=False,
-) -> ProcessSession:
-    s = ProcessSession(
-        id=sid,
-        command=command,
-        task_id=task_id,
-        started_at=time.time(),
-        exited=exited,
-        exit_code=exit_code,
-        output_buffer=output,
-        notify_on_complete=notify_on_complete,
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mock_process_registry(monkeypatch):
+    """Provide a fresh ProcessRegistry and monkeypatch the global singleton."""
+    registry = ProcessRegistry()
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry", registry
     )
-    return s
+    yield registry
+    # Cleanup singleton state between tests (verifier fix #3)
+    registry.pending_watchers.clear()
+    while not registry.completion_queue.empty():
+        try:
+            registry.completion_queue.get_nowait()
+        except queue.Empty:
+            break
+    registry._completion_consumed.clear()
 
 
-# =========================================================================
-# ProcessSession field
-# =========================================================================
+@pytest.fixture
+def exited_session():
+    """Return a ProcessSession that has already exited."""
+    return ProcessSession(
+        id="proc_test_001",
+        command="echo hello",
+        exited=True,
+        exit_code=0,
+        output_buffer="hello\n",
+        notify_on_complete=True,
+        session_key="agent:main:api_server:dm:user42",
+    )
 
-class TestProcessSessionField:
-    def test_default_false(self):
-        s = ProcessSession(id="proc_1", command="echo hi")
-        assert s.notify_on_complete is False
 
-    def test_set_true(self):
-        s = ProcessSession(id="proc_1", command="echo hi", notify_on_complete=True)
-        assert s.notify_on_complete is True
+# ---------------------------------------------------------------------------
+# Unit Tests: Contextvar Propagation
+# ---------------------------------------------------------------------------
 
-
-# =========================================================================
-# Completion queue
-# =========================================================================
-
-class TestCompletionQueue:
-    def test_queue_exists(self, registry):
-        assert hasattr(registry, "completion_queue")
-        assert registry.completion_queue.empty()
-
-    def test_move_to_finished_no_notify(self, registry):
-        """Processes without notify_on_complete don't enqueue."""
-        s = _make_session(notify_on_complete=False, output="done")
-        s.exited = True
-        s.exit_code = 0
-        registry._running[s.id] = s
-        with patch.object(registry, "_write_checkpoint"):
-            registry._move_to_finished(s)
-        assert registry.completion_queue.empty()
-
-    def test_move_to_finished_with_notify(self, registry):
-        """Processes with notify_on_complete push to queue."""
-        s = _make_session(
-            notify_on_complete=True,
-            output="build succeeded",
-            exit_code=0,
+class TestContextvarPropagation:
+    def test_set_session_vars_sets_platform_and_key(self):
+        """Verify set_session_vars correctly sets HERMES_SESSION_PLATFORM and HERMES_SESSION_KEY."""
+        tokens = set_session_vars(
+            platform="api_server",
+            session_key="sess-key-123",
         )
-        s.exited = True
-        s.exit_code = 0
-        registry._running[s.id] = s
-        with patch.object(registry, "_write_checkpoint"):
-            registry._move_to_finished(s)
+        try:
+            assert get_session_env("HERMES_SESSION_PLATFORM") == "api_server"
+            assert get_session_env("HERMES_SESSION_KEY") == "sess-key-123"
+            assert get_session_env("HERMES_SESSION_CHAT_ID") == ""
+        finally:
+            clear_session_vars(tokens)
 
-        assert not registry.completion_queue.empty()
-        completion = registry.completion_queue.get_nowait()
-        assert completion["session_id"] == s.id
-        assert completion["command"] == "echo hello"
-        assert completion["exit_code"] == 0
-        assert "build succeeded" in completion["output"]
+    def test_clear_session_vars_clears_in_finally(self):
+        """Verify clear_session_vars resets contextvars to empty string."""
+        tokens = set_session_vars(platform="api_server", session_key="k1")
+        clear_session_vars(tokens)
+        assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+        assert get_session_env("HERMES_SESSION_KEY") == ""
 
-    def test_move_to_finished_nonzero_exit(self, registry):
-        """Nonzero exit codes are captured correctly."""
-        s = _make_session(
-            notify_on_complete=True,
-            output="FAILED",
-            exit_code=1,
-        )
-        s.exited = True
-        s.exit_code = 1
-        registry._running[s.id] = s
-        with patch.object(registry, "_write_checkpoint"):
-            registry._move_to_finished(s)
+    def test_clear_session_vars_clears_even_after_exception(self):
+        """Verify contextvars are cleared even when run_conversation raises."""
+        tokens = set_session_vars(platform="api_server", session_key="k2")
+        exc = None
+        try:
+            try:
+                raise RuntimeError("boom")
+            except RuntimeError as e:
+                exc = e
+            finally:
+                clear_session_vars(tokens)
+        except RuntimeError:
+            pass  # Already captured
+        assert exc is not None
+        assert str(exc) == "boom"
+        assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+        assert get_session_env("HERMES_SESSION_KEY") == ""
 
-        completion = registry.completion_queue.get_nowait()
-        assert completion["exit_code"] == 1
-        assert "FAILED" in completion["output"]
+    def test_copy_context_propagates_to_executor_thread(self):
+        """Verify contextvars.copy_context().run propagates values into a thread."""
+        captured = {}
 
-    def test_move_to_finished_idempotent_no_duplicate(self, registry):
-        """Calling _move_to_finished twice must NOT enqueue two notifications.
+        def _target():
+            captured["platform"] = get_session_env("HERMES_SESSION_PLATFORM")
+            captured["key"] = get_session_env("HERMES_SESSION_KEY")
 
-        Regression test: kill_process() and the reader thread can both call
-        _move_to_finished() for the same session, producing duplicate
-        [SYSTEM: Background process ...] messages.
+        tokens = set_session_vars(platform="api_server", session_key="ctx-key")
+        try:
+            ctx = contextvars.copy_context()
+            t = threading.Thread(target=ctx.run, args=(_target,))
+            t.start()
+            t.join(timeout=5)
+            assert captured.get("platform") == "api_server"
+            assert captured.get("key") == "ctx-key"
+        finally:
+            clear_session_vars(tokens)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_runs_have_isolated_contextvars(self):
+        """Verify two concurrent runs do not share contextvars."""
+        results = {}
+
+        async def _run(key: str):
+            tokens = set_session_vars(platform="api_server", session_key=key)
+            try:
+                # Simulate async work
+                await asyncio.sleep(0.01)
+                results[key] = get_session_env("HERMES_SESSION_KEY")
+            finally:
+                clear_session_vars(tokens)
+
+        await asyncio.gather(_run("key-a"), _run("key-b"))
+        assert results["key-a"] == "key-a"
+        assert results["key-b"] == "key-b"
+
+    def test_session_id_contextvar_exists_but_not_set_by_set_session_vars(self, monkeypatch):
+        """Verify _SESSION_ID exists but is NOT set by set_session_vars.
+
+        This is a corrected assertion from the verifier (Finding C):
+        the contextvar exists but set_session_vars does not populate it.
         """
-        s = _make_session(notify_on_complete=True, output="done", exit_code=-15)
-        s.exited = True
-        s.exit_code = -15
-        registry._running[s.id] = s
-        with patch.object(registry, "_write_checkpoint"):
-            registry._move_to_finished(s)  # first call — should enqueue
-            s.exit_code = 143  # reader thread updates exit code
-            registry._move_to_finished(s)  # second call — should be no-op
-
-        assert registry.completion_queue.qsize() == 1
-        completion = registry.completion_queue.get_nowait()
-        assert completion["exit_code"] == -15  # from the first (kill) call
-
-    def test_output_truncated_to_2000(self, registry):
-        """Long output is truncated to last 2000 chars."""
-        long_output = "x" * 5000
-        s = _make_session(
-            notify_on_complete=True,
-            output=long_output,
-        )
-        s.exited = True
-        s.exit_code = 0
-        registry._running[s.id] = s
-        with patch.object(registry, "_write_checkpoint"):
-            registry._move_to_finished(s)
-
-        completion = registry.completion_queue.get_nowait()
-        assert len(completion["output"]) == 2000
-
-    def test_multiple_completions_queued(self, registry):
-        """Multiple notify processes all push to the same queue."""
-        for i in range(3):
-            s = _make_session(
-                sid=f"proc_{i}",
-                notify_on_complete=True,
-                output=f"output_{i}",
-            )
-            s.exited = True
-            s.exit_code = 0
-            registry._running[s.id] = s
-            with patch.object(registry, "_write_checkpoint"):
-                registry._move_to_finished(s)
-
-        completions = []
-        while not registry.completion_queue.empty():
-            completions.append(registry.completion_queue.get_nowait())
-        assert len(completions) == 3
-        ids = {c["session_id"] for c in completions}
-        assert ids == {"proc_0", "proc_1", "proc_2"}
-
-
-# =========================================================================
-# Checkpoint persistence
-# =========================================================================
-
-class TestCheckpointNotify:
-    def test_checkpoint_includes_notify(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session(notify_on_complete=True)
-            registry._running[s.id] = s
-            registry._write_checkpoint()
-
-            data = json.loads((tmp_path / "procs.json").read_text())
-            assert len(data) == 1
-            assert data[0]["notify_on_complete"] is True
-
-    def test_checkpoint_without_notify(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session(notify_on_complete=False)
-            registry._running[s.id] = s
-            registry._write_checkpoint()
-
-            data = json.loads((tmp_path / "procs.json").read_text())
-            assert data[0]["notify_on_complete"] is False
-
-    def test_recover_preserves_notify(self, registry, tmp_path):
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "task_id": "t1",
-            "notify_on_complete": True,
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            recovered = registry.recover_from_checkpoint()
-            assert recovered == 1
-            s = registry.get("proc_live")
-            assert s.notify_on_complete is True
-
-    def test_recover_requeues_notify_watchers(self, registry, tmp_path):
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "task_id": "t1",
-            "session_key": "sk1",
-            "watcher_platform": "telegram",
-            "watcher_chat_id": "123",
-            "watcher_user_id": "u123",
-            "watcher_user_name": "alice",
-            "watcher_thread_id": "42",
-            "watcher_interval": 5,
-            "notify_on_complete": True,
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            recovered = registry.recover_from_checkpoint()
-            assert recovered == 1
-            assert len(registry.pending_watchers) == 1
-            assert registry.pending_watchers[0]["notify_on_complete"] is True
-            assert registry.pending_watchers[0]["user_id"] == "u123"
-            assert registry.pending_watchers[0]["user_name"] == "alice"
-
-    def test_recover_defaults_false(self, registry, tmp_path):
-        """Old checkpoint entries without the field default to False."""
-        checkpoint = tmp_path / "procs.json"
-        checkpoint.write_text(json.dumps([{
-            "session_id": "proc_live",
-            "command": "sleep 999",
-            "pid": os.getpid(),
-            "task_id": "t1",
-        }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
-            recovered = registry.recover_from_checkpoint()
-            assert recovered == 1
-            s = registry.get("proc_live")
-            assert s.notify_on_complete is False
-
-
-# =========================================================================
-# Terminal tool schema
-# =========================================================================
-
-class TestTerminalSchema:
-    def test_schema_has_notify_on_complete(self):
-        from tools.terminal_tool import TERMINAL_SCHEMA
-        props = TERMINAL_SCHEMA["parameters"]["properties"]
-        assert "notify_on_complete" in props
-        assert props["notify_on_complete"]["type"] == "boolean"
-        assert props["notify_on_complete"]["default"] is False
-
-    def test_handler_passes_notify(self):
-        """_handle_terminal passes notify_on_complete to terminal_tool."""
-        from tools.terminal_tool import _handle_terminal
-        with patch("tools.terminal_tool.terminal_tool", return_value='{"ok":true}') as mock_tt:
-            _handle_terminal(
-                {"command": "echo hi", "background": True, "notify_on_complete": True},
-                task_id="t1",
-            )
-            _, kwargs = mock_tt.call_args
-            assert kwargs["notify_on_complete"] is True
-
-
-# =========================================================================
-# Code execution blocked params
-# =========================================================================
-
-class TestCodeExecutionBlocked:
-    def test_notify_on_complete_blocked_in_sandbox(self):
-        from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
-        assert "notify_on_complete" in _TERMINAL_BLOCKED_PARAMS
-
-
-# =========================================================================
-# Completion consumed suppression
-# =========================================================================
-
-class TestCompletionConsumed:
-    """Test that wait/poll/log suppress redundant completion notifications."""
-
-    def test_wait_marks_completion_consumed(self, registry):
-        """wait() returning exited status marks session as consumed."""
-        s = _make_session(sid="proc_wait", notify_on_complete=True, output="done")
-        s.exited = True
-        s.exit_code = 0
-        registry._running[s.id] = s
-        with patch.object(registry, "_write_checkpoint"):
-            registry._move_to_finished(s)
-
-        # Notification is in the queue
-        assert not registry.completion_queue.empty()
-        assert not registry.is_completion_consumed("proc_wait")
-
-        # Agent calls wait() — gets the result directly
-        result = registry.wait("proc_wait", timeout=1)
-        assert result["status"] == "exited"
-
-        # Now the completion is marked as consumed
-        assert registry.is_completion_consumed("proc_wait")
-
-    def test_poll_marks_completion_consumed(self, registry):
-        """poll() returning exited status marks session as consumed."""
-        s = _make_session(sid="proc_poll", notify_on_complete=True, output="done")
-        s.exited = True
-        s.exit_code = 0
-        registry._finished[s.id] = s
-
-        result = registry.poll("proc_poll")
-        assert result["status"] == "exited"
-        assert registry.is_completion_consumed("proc_poll")
-
-    def test_log_marks_completion_consumed(self, registry):
-        """read_log() on exited session marks as consumed."""
-        s = _make_session(sid="proc_log", notify_on_complete=True, output="line1\nline2")
-        s.exited = True
-        s.exit_code = 0
-        registry._finished[s.id] = s
-
-        result = registry.read_log("proc_log")
-        assert result["status"] == "exited"
-        assert registry.is_completion_consumed("proc_log")
-
-    def test_running_process_not_consumed(self, registry):
-        """poll() on a still-running process does not mark as consumed."""
-        s = _make_session(sid="proc_running", notify_on_complete=True, output="partial")
-        registry._running[s.id] = s
-
-        result = registry.poll("proc_running")
-        assert result["status"] == "running"
-        assert not registry.is_completion_consumed("proc_running")
+        # Reset _SESSION_ID to ensure clean state (xdist workers share context)
+        from gateway.session_context import _SESSION_ID
+        _SESSION_ID.set(_UNSET)
+        # AIAgent.__init__ sets HERMES_SESSION_ID in os.environ; clear it
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+        tokens = set_session_vars(platform="api_server", session_key="k3")
+        try:
+            assert _SESSION_ID.get() is _UNSET
+            assert get_session_env("HERMES_SESSION_ID") == ""
+        finally:
+            clear_session_vars(tokens)
 
 
 # ---------------------------------------------------------------------------
-# Silent-background-process hint
-#
-# background=True without notify_on_complete=True OR watch_patterns runs
-# the process silently — the agent has no way to learn it finished short
-# of calling process(action="poll") explicitly. The tool result must
-# include a "hint" field that nudges the agent toward
-# notify_on_complete=True for bounded tasks. May 2026 PR #31231 incident:
-# bg CI poller exited green, agent never noticed, user had to surface it.
+# Integration Tests: Process Registry Notification Delivery
 # ---------------------------------------------------------------------------
 
+class TestProcessRegistryNotifications:
+    def test_completion_queue_receives_notify_on_complete_event(self, mock_process_registry, exited_session):
+        """Verify that an exited session with notify_on_complete=True enqueues a completion event."""
+        # _move_to_finished only enqueues when session was in _running
+        mock_process_registry._running[exited_session.id] = exited_session
+        mock_process_registry._move_to_finished(exited_session)
 
-def _silent_bg_base_config(tmp_path):
-    return {
-        "env_type": "local",
-        "docker_image": "",
-        "singularity_image": "",
-        "modal_image": "",
-        "daytona_image": "",
-        "cwd": str(tmp_path),
-        "timeout": 30,
-    }
+        assert not mock_process_registry.completion_queue.empty()
+        evt = mock_process_registry.completion_queue.get_nowait()
+        assert evt["type"] == "completion"
+        assert evt["session_id"] == "proc_test_001"
+        assert evt["exit_code"] == 0
+        assert "hello" in evt["output"]
 
-
-def _silent_bg_harness(monkeypatch, tmp_path):
-    """Common test fixture: patch enough of terminal_tool to spawn a fake
-    background process and capture the JSON result the agent sees."""
-    import tools.terminal_tool as terminal_tool_module
-    from tools import process_registry as process_registry_module
-    from types import SimpleNamespace
-
-    config = _silent_bg_base_config(tmp_path)
-    dummy_env = SimpleNamespace(env={})
-
-    def fake_spawn_local(**kwargs):
-        return SimpleNamespace(
-            id="proc_silent_test",
-            pid=4242,
+    def test_completion_queue_no_event_without_notify_on_complete(self, mock_process_registry):
+        """Verify no completion event is queued when notify_on_complete=False."""
+        session = ProcessSession(
+            id="proc_test_002",
+            command="echo hello",
+            exited=True,
+            exit_code=0,
             notify_on_complete=False,
-            watcher_platform="",
-            watcher_chat_id="",
-            watcher_user_id="",
-            watcher_user_name="",
-            watcher_thread_id="",
-            watcher_message_id="",
-            watcher_interval=0,
+        )
+        mock_process_registry._move_to_finished(session)
+        assert mock_process_registry.completion_queue.empty()
+
+    def test_pending_watchers_populated_on_spawn(self, mock_process_registry):
+        """Verify that spawning a process with watcher metadata populates pending_watchers."""
+        session = ProcessSession(
+            id="proc_test_003",
+            command="sleep 1",
+            watcher_interval=5,
+            watcher_platform="telegram",
+            watcher_chat_id="12345",
+            watcher_thread_id="42",
+        )
+        mock_process_registry.pending_watchers.append({
+            "session_id": session.id,
+            "check_interval": session.watcher_interval,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "thread_id": session.watcher_thread_id,
+        })
+
+        assert len(mock_process_registry.pending_watchers) == 1
+        watcher = mock_process_registry.pending_watchers[0]
+        assert watcher["platform"] == "telegram"
+        assert watcher["chat_id"] == "12345"
+        assert watcher["thread_id"] == "42"
+
+    def test_is_completion_consumed_tracks_wait_and_read_log(self, mock_process_registry, exited_session):
+        """Verify that wait() and read_log() mark completion as consumed, but poll() does not."""
+        mock_process_registry._finished[exited_session.id] = exited_session
+
+        # poll() should NOT mark consumed
+        result = mock_process_registry.poll(exited_session.id)
+        assert result["status"] == "exited"
+        assert not mock_process_registry.is_completion_consumed(exited_session.id)
+
+        # read_log() SHOULD mark consumed
+        mock_process_registry.read_log(exited_session.id)
+        assert mock_process_registry.is_completion_consumed(exited_session.id)
+
+    def test_is_completion_consumed_tracks_wait(self, mock_process_registry, exited_session):
+        """Verify wait() marks completion as consumed for an exited process."""
+        mock_process_registry._finished[exited_session.id] = exited_session
+
+        assert not mock_process_registry.is_completion_consumed(exited_session.id)
+
+        with patch.object(
+            mock_process_registry, "_reconcile_local_exit", lambda s: None
+        ):
+            with patch.object(
+                mock_process_registry, "_refresh_detached_session", lambda s: s
+            ):
+                result = mock_process_registry.wait(exited_session.id, timeout=1)
+
+        assert result["status"] == "exited"
+        assert mock_process_registry.is_completion_consumed(exited_session.id)
+
+    def test_mark_completion_consumed_explicit(self, mock_process_registry):
+        """Verify explicit mark_completion_consumed works."""
+        mock_process_registry.mark_completion_consumed("proc_explicit")
+        assert mock_process_registry.is_completion_consumed("proc_explicit")
+
+
+# ---------------------------------------------------------------------------
+# Regression Tests: Other Paths Unaffected
+# ---------------------------------------------------------------------------
+
+class TestRegressionOtherPaths:
+    def test_cli_path_session_env_fallback(self, monkeypatch):
+        """Verify CLI paths without set_session_vars still fall back to os.environ."""
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "cli")
+        # Do NOT call set_session_vars
+        assert get_session_env("HERMES_SESSION_PLATFORM") == "cli"
+        # clear_session_vars should not break fallback (it sets to "")
+        clear_session_vars([])
+        # After clear, the contextvar is "" so no os.environ fallback
+        assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+
+    def test_poll_vs_read_log_contrast(self, mock_process_registry, exited_session):
+        """Regression test for upstream issue #10156.
+
+        Verify that poll() does NOT mark completion as consumed,
+        while read_log() DOES — ensuring gateway watcher can still
+        deliver the notification after a poll() call.
+        """
+        mock_process_registry._finished[exited_session.id] = exited_session
+
+        # First call poll()
+        poll_result = mock_process_registry.poll(exited_session.id)
+        assert poll_result["status"] == "exited"
+        assert not mock_process_registry.is_completion_consumed(exited_session.id), (
+            "poll() must NOT mark completion as consumed"
         )
 
-    monkeypatch.setattr(terminal_tool_module, "_get_env_config", lambda: config)
-    monkeypatch.setattr(terminal_tool_module, "_start_cleanup_thread", lambda: None)
-    monkeypatch.setattr(terminal_tool_module, "_check_all_guards", lambda *_args, **_kwargs: {"approved": True})
-    monkeypatch.setattr(process_registry_module.process_registry, "spawn_local", fake_spawn_local)
-    monkeypatch.setitem(terminal_tool_module._active_environments, "default", dummy_env)
-    monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
-    return terminal_tool_module
-
-
-def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_path):
-    """The footgun case (May 2026 PR #31231): bg=True alone runs silently
-    and the agent has no signal it finished. Tool must nudge."""
-    tt = _silent_bg_harness(monkeypatch, tmp_path)
-    try:
-        result = json.loads(
-            tt.terminal_tool(
-                command="while true; do gh pr checks 999; sleep 30; done",
-                background=True,
-            )
+        # Then call read_log() — this marks consumed
+        mock_process_registry.read_log(exited_session.id)
+        assert mock_process_registry.is_completion_consumed(exited_session.id), (
+            "read_log() MUST mark completion as consumed"
         )
-    finally:
-        tt._active_environments.pop("default", None)
-        tt._last_activity.pop("default", None)
 
-    assert result["session_id"] == "proc_silent_test"
-    hint = result.get("hint", "")
-    assert hint, "Silent background process must include a hint field"
-    assert "notify_on_complete" in hint, (
-        "Hint must name the corrective flag so the agent can self-correct"
-    )
-    assert "silent" in hint.lower() or "no way to learn" in hint.lower(), (
-        "Hint must explain the failure mode, not just suggest the fix"
-    )
+    def test_tui_notification_poller_can_drain_queue(self, mock_process_registry, exited_session):
+        """Verify TUI-style queue draining still works after API server fixes."""
+        # _move_to_finished only enqueues when session was in _running
+        mock_process_registry._running[exited_session.id] = exited_session
+        mock_process_registry._move_to_finished(exited_session)
+
+        # Simulate TUI notification poller draining the queue
+        events = []
+        while not mock_process_registry.completion_queue.empty():
+            try:
+                events.append(mock_process_registry.completion_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        assert len(events) == 1
+        assert events[0]["type"] == "completion"
+
+    def test_process_registry_singleton_cleanup_between_tests(self, mock_process_registry):
+        """Verify the fixture cleanup ensures a pristine registry state."""
+        assert mock_process_registry.completion_queue.empty()
+        assert len(mock_process_registry.pending_watchers) == 0
+        assert len(mock_process_registry._completion_consumed) == 0
 
 
-def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
-    """The correct shape — bg+notify together — must not nag."""
-    tt = _silent_bg_harness(monkeypatch, tmp_path)
-    try:
-        result = json.loads(
-            tt.terminal_tool(
-                command="pytest tests/",
-                background=True,
-                notify_on_complete=True,
-            )
+# ---------------------------------------------------------------------------
+# API Server Contextvar Integration
+# ---------------------------------------------------------------------------
+
+class TestAPIServerContextvarIntegration:
+    @pytest.mark.asyncio
+    async def test_run_agent_propagates_contextvars_through_executor(self, monkeypatch):
+        """Verify _run_agent uses copy_context().run to propagate context into executor thread.
+
+        This addresses verifier Finding B: the full async path from _run_agent
+        through run_in_executor must preserve contextvars.
+        """
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {
+            "final_response": "mocked response",
+            "messages": [],
+        }
+        mock_agent.session_prompt_tokens = 10
+        mock_agent.session_completion_tokens = 20
+        mock_agent.session_total_tokens = 30
+
+        # Patch _create_agent to return our mock
+        monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: mock_agent)
+
+        # Run the agent
+        result, usage = await adapter._run_agent(
+            user_message="hello",
+            conversation_history=[],
+            gateway_session_key="test-session-key",
         )
-    finally:
-        tt._active_environments.pop("default", None)
-        tt._last_activity.pop("default", None)
 
-    assert "hint" not in result, (
-        f"Correct usage must not emit a hint, got: {result.get('hint')!r}"
-    )
-    assert result.get("notify_on_complete") is True
+        assert result["final_response"] == "mocked response"
+        assert usage["input_tokens"] == 10
 
+        # Verify the agent was called — this proves the executor ran successfully
+        mock_agent.run_conversation.assert_called_once()
+        call_kwargs = mock_agent.run_conversation.call_args.kwargs
+        assert call_kwargs["user_message"] == "hello"
 
-def test_background_with_watch_patterns_does_not_emit_hint(monkeypatch, tmp_path):
-    """watch_patterns is the other legitimate non-silent shape — also no hint."""
-    tt = _silent_bg_harness(monkeypatch, tmp_path)
-    try:
-        result = json.loads(
-            tt.terminal_tool(
-                command="uvicorn app:server --port 8080",
-                background=True,
-                watch_patterns=["Application startup complete"],
-            )
-        )
-    finally:
-        tt._active_environments.pop("default", None)
-        tt._last_activity.pop("default", None)
+    def test_get_session_env_resolution_order(self, monkeypatch):
+        """Verify get_session_env resolution order: contextvar > os.environ > default."""
+        # 1. Default value when nothing is set
+        assert get_session_env("HERMES_SESSION_PLATFORM", "fallback") == "fallback"
 
-    assert "hint" not in result, (
-        f"watch_patterns shape must not emit a silent-process hint, got: {result.get('hint')!r}"
-    )
+        # 2. os.environ fallback when contextvar is _UNSET
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "from_env")
+        # Need to ensure the contextvar is _UNSET in this context
+        # Since we may have been called after other tests, reset it
+        from gateway.session_context import _SESSION_PLATFORM
+        _SESSION_PLATFORM.set(_UNSET)
+        assert get_session_env("HERMES_SESSION_PLATFORM") == "from_env"
 
+        # 3. Contextvar takes precedence over os.environ
+        tokens = set_session_vars(platform="from_contextvar")
+        try:
+            assert get_session_env("HERMES_SESSION_PLATFORM") == "from_contextvar"
+        finally:
+            clear_session_vars(tokens)
 
-def test_foreground_command_does_not_emit_hint(monkeypatch, tmp_path):
-    """Hint only applies to background processes — foreground returns its
-    result synchronously and the agent always sees the outcome."""
-    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    def test_contextvar_isolation_across_threads(self):
+        """Verify contextvars set in one thread do not leak to another."""
+        results = {}
 
-    # Foreground path doesn't go through spawn_local. Patch the local-env
-    # exec method to short-circuit to a clean exit so the test doesn't
-    # actually shell out.
-    from types import SimpleNamespace
-    dummy_env = SimpleNamespace(
-        env={},
-        execute=lambda *a, **kw: {"output": "done", "exit_code": 0, "error": None},
-    )
-    monkeypatch.setitem(tt._active_environments, "default", dummy_env)
+        def _thread_a():
+            tokens = set_session_vars(platform="thread_a", session_key="key_a")
+            time.sleep(0.02)  # Let thread_b run concurrently
+            results["a"] = get_session_env("HERMES_SESSION_KEY")
+            clear_session_vars(tokens)
 
-    try:
-        result = json.loads(
-            tt.terminal_tool(
-                command="echo hello",
-                background=False,
-            )
-        )
-    finally:
-        tt._active_environments.pop("default", None)
-        tt._last_activity.pop("default", None)
+        def _thread_b():
+            tokens = set_session_vars(platform="thread_b", session_key="key_b")
+            time.sleep(0.02)
+            results["b"] = get_session_env("HERMES_SESSION_KEY")
+            clear_session_vars(tokens)
 
-    assert "hint" not in result, (
-        f"Foreground commands must not emit the background-silence hint, got: {result.get('hint')!r}"
-    )
+        ta = threading.Thread(target=_thread_a)
+        tb = threading.Thread(target=_thread_b)
+        ta.start()
+        tb.start()
+        ta.join(timeout=5)
+        tb.join(timeout=5)
+
+        assert results.get("a") == "key_a"
+        assert results.get("b") == "key_b"

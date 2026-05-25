@@ -46,6 +46,12 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_status_classes_do_not_advertise_unemitted_config_missing():
+    from tools.mcp_runtime_probe import STATUS_CLASSES
+
+    assert "config_missing" not in STATUS_CLASSES
+
+
 def test_normalizes_hermes_codex_and_claude_configs_without_secret_values():
     from tools.mcp_runtime_probe import normalize_mcp_servers
 

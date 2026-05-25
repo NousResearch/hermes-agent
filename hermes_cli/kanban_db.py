@@ -1143,6 +1143,34 @@ def _path_is_under_system_temp(path_value: str | Path) -> bool:
         return False
 
 
+def _ensure_pytest_kanban_path_isolated(db_path: Optional[Path]) -> None:
+    """Fail closed before pytest can resolve default Kanban paths to live state."""
+    if db_path is not None:
+        return
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    if os.environ.get("HERMES_KANBAN_HOME", "").strip():
+        return
+    if os.environ.get("HERMES_KANBAN_DB", "").strip():
+        return
+
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    effective_root: str | Path = hermes_home if hermes_home else Path.home()
+    if _path_is_under_system_temp(effective_root):
+        return
+
+    raise RuntimeError(
+        "kanban DB opened from a pytest session without "
+        "HERMES_KANBAN_HOME or HERMES_KANBAN_DB set. "
+        "HERMES_KANBAN_BOARD and board= only select a board name; neither "
+        "is a path-isolation override. This would write test data to the "
+        "real ~/.hermes/kanban/ board. "
+        "Fix: ensure _hermetic_environment conftest fixture is active, "
+        "set HERMES_KANBAN_HOME/HERMES_KANBAN_DB, or pass db_path "
+        "explicitly to this call."
+    )
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1166,27 +1194,7 @@ def connect(
     prevents tests from silently writing to a live ~/.hermes/kanban board
     while preserving explicit test fixtures.
     """
-    if (
-        db_path is None
-        and os.environ.get("PYTEST_CURRENT_TEST")
-        and not os.environ.get("HERMES_KANBAN_HOME", "").strip()
-        and not os.environ.get("HERMES_KANBAN_DB", "").strip()
-    ):
-        real_home = Path.home()
-        hermes_home = os.environ.get("HERMES_HOME", "").strip()
-        effective_root: str | Path = hermes_home if hermes_home else real_home
-        is_isolated = _path_is_under_system_temp(effective_root)
-        if not is_isolated:
-            raise RuntimeError(
-                "kanban.connect() called from a pytest session without "
-                "HERMES_KANBAN_HOME or HERMES_KANBAN_DB set. "
-                "HERMES_KANBAN_BOARD only selects a board name and is not "
-                "a path-isolation override. This would write test data to "
-                "the real ~/.hermes/kanban/ board. "
-                "Fix: ensure _hermetic_environment conftest fixture is active, "
-                "set HERMES_KANBAN_HOME/HERMES_KANBAN_DB, or pass db_path "
-                "explicitly to this call."
-            )
+    _ensure_pytest_kanban_path_isolated(db_path)
 
     if db_path is not None:
         path = db_path
@@ -1247,6 +1255,8 @@ def init_db(
     external tools that upgrade an old DB file — can call this to
     force re-migration.
     """
+    _ensure_pytest_kanban_path_isolated(db_path)
+
     if db_path is not None:
         path = db_path
     else:

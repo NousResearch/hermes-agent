@@ -56,8 +56,20 @@ def test_checker_proves_soul_md_independent(monkeypatch, tmp_path) -> None:
     from scripts import check_prompt_policy
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
-
     assert check_prompt_policy.check_soul_independence() == []
+
+    def broken_prompt(*, cwd: str | None = None, skip_soul: bool = False) -> str:
+        if skip_soul:
+            return "PROJECT_POLICY_MARKER HERMES_HOME_SOUL_MARKER"
+        return "PROJECT_POLICY_MARKER CWD_SOUL_SHOULD_NOT_LOAD"
+
+    monkeypatch.setattr(check_prompt_policy, "build_context_files_prompt", broken_prompt)
+
+    failures = check_prompt_policy.check_soul_independence()
+
+    assert "HERMES_HOME SOUL.md was not loaded independently" in failures
+    assert "cwd SOUL.md was loaded instead of HERMES_HOME SOUL.md" in failures
+    assert "skip_soul=True still loaded SOUL.md" in failures
 
 
 def test_checker_reports_truncation_regression(monkeypatch) -> None:

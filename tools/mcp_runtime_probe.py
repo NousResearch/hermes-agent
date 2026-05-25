@@ -24,7 +24,6 @@ except ImportError:  # pragma: no cover - yaml is optional; _load_yaml handles a
 STATUS_CLASSES = (
     "ok",
     "disabled",
-    "config_missing",
     "auth_needed",
     "offline",
     "unsupported",

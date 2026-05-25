@@ -172,6 +172,40 @@ def test_connect_rejects_explicit_board_as_pytest_isolation_override(monkeypatch
         kb.connect(board="test-board")
 
 
+def test_init_db_rejects_unisolated_pytest_default_before_creating_directories(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    def fail_if_init_tries_to_create(_self, *args, **kwargs):
+        raise AssertionError("init_db() should fail before creating directories")
+
+    monkeypatch.setattr(Path, "mkdir", fail_if_init_tries_to_create)
+
+    with pytest.raises(RuntimeError, match="without HERMES_KANBAN_HOME or HERMES_KANBAN_DB"):
+        kb.init_db()
+
+
+def test_init_db_rejects_explicit_board_as_pytest_isolation_override(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    def fail_if_init_tries_to_create(_self, *args, **kwargs):
+        raise AssertionError("init_db(board=...) should fail before creating directories")
+
+    monkeypatch.setattr(Path, "mkdir", fail_if_init_tries_to_create)
+
+    with pytest.raises(RuntimeError, match="without HERMES_KANBAN_HOME or HERMES_KANBAN_DB"):
+        kb.init_db(board="test-board")
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

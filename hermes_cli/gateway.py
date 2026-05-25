@@ -69,13 +69,17 @@ class ProfileGatewayProcess:
     path: Path
     pid: int
 
-def _get_service_pids() -> set:
+def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
     Used to avoid killing freshly-restarted service processes when sweeping
     for stale manual gateway processes after a service restart.  Relies on the
     service manager having committed the new PID before the restart command
     returns (true for both systemd and launchd in practice).
+
+    Args:
+        all_profiles: When true, include every ``hermes-gateway*`` service.
+            Otherwise only include the service for the current HERMES_HOME.
     """
     pids: set = set()
 
@@ -83,8 +87,9 @@ def _get_service_pids() -> set:
     if supports_systemd_services():
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
+                unit_pattern = "hermes-gateway*" if all_profiles else f"{get_service_name()}.service"
                 result = subprocess.run(
-                    scope_args + ["list-units", "hermes-gateway*",
+                    scope_args + ["list-units", unit_pattern,
                                   "--plain", "--no-legend", "--no-pager"],
                     capture_output=True, text=True, timeout=5,
                 )
@@ -93,6 +98,8 @@ def _get_service_pids() -> set:
                     if not parts or not parts[0].endswith(".service"):
                         continue
                     svc = parts[0]
+                    if not all_profiles and svc != f"{get_service_name()}.service":
+                        continue
                     try:
                         show = subprocess.run(
                             scope_args + ["show", svc,
@@ -129,6 +136,26 @@ def _get_service_pids() -> set:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
+    return pids
+
+
+def _other_profile_gateway_pids(exclude_pids: set[int]) -> set[int]:
+    """Return live gateway PIDs recorded by profiles other than this one."""
+    try:
+        current_home = get_hermes_home().resolve()
+        processes = find_profile_gateway_processes(exclude_pids=exclude_pids)
+    except Exception:
+        return set()
+
+    pids: set[int] = set()
+    for process in processes:
+        try:
+            if process.path.resolve() == current_home:
+                continue
+        except OSError:
+            continue
+        if process.pid > 0:
+            pids.add(process.pid)
     return pids
 
 
@@ -529,7 +556,10 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids():
+    if not all_profiles:
+        _exclude.update(_other_profile_gateway_pids(_exclude))
+    service_pids = _get_service_pids(all_profiles=True) if all_profiles else _get_service_pids()
+    for pid in service_pids:
         _append_unique_pid(pids, pid, _exclude)
     for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)

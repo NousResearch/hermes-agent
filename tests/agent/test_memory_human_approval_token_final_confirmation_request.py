@@ -206,6 +206,18 @@ def test_final_confirmation_checklist_is_deterministic():
     ]
 
 
+def test_valid_final_confirmation_request_id_matches_v0_1_baseline():
+    request = create_human_approval_token_final_confirmation_request(
+        _gate(),
+        requester="final-confirmer",
+    )
+
+    assert (
+        request["request_id"]
+        == "memory-human-approval-token-final-confirmation-request:v0.1:441f7bd7f749c43c"
+    )
+
+
 def test_input_token_write_lock_gate_is_not_mutated():
     gate = _gate()
     before = deepcopy(gate)

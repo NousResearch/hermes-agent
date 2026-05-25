@@ -430,6 +430,9 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     return meta
 
 
+_UNSET = object()
+
+
 def write_board_metadata(
     board: Optional[str],
     *,
@@ -439,7 +442,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
-    dispatcher_owner: Optional[str] = None,
+    dispatcher_owner: object = _UNSET,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -463,7 +466,7 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
-    if dispatcher_owner is not None:
+    if dispatcher_owner is not _UNSET:
         meta["dispatcher_owner"] = str(dispatcher_owner) if dispatcher_owner else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
@@ -507,7 +510,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
-        dispatcher_owner=dispatcher_owner,
+        dispatcher_owner=dispatcher_owner if dispatcher_owner is not None else _UNSET,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)

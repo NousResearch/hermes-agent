@@ -5309,10 +5309,24 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             # Skip boards whose dispatcher_owner doesn't match this gateway's
             # profile. None means "any gateway" for backwards compatibility.
+            all_boards = boards
             boards = [
-                b for b in boards
+                b for b in all_boards
                 if b.get("dispatcher_owner") is None or b.get("dispatcher_owner") == _own_profile
             ]
+            skipped = [
+                b for b in all_boards
+                if b.get("dispatcher_owner") is not None and b.get("dispatcher_owner") != _own_profile
+            ]
+            if skipped:
+                logger.warning(  # dispatcher_owner mismatch: boards skipped this tick
+                    "Skipping %d board(s) owned by another dispatcher profile: %s",
+                    len(skipped),
+                    ", ".join(
+                        f"{b.get('slug') or _kb.DEFAULT_BOARD}(dispatcher_owner={b.get('dispatcher_owner')!r})"
+                        for b in skipped
+                    ),
+                )
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
@@ -5337,10 +5351,24 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             # Skip boards whose dispatcher_owner doesn't match this gateway's
             # profile. None means "any gateway" for backwards compatibility.
+            all_boards = boards
             boards = [
-                b for b in boards
+                b for b in all_boards
                 if b.get("dispatcher_owner") is None or b.get("dispatcher_owner") == _own_profile
             ]
+            skipped = [
+                b for b in all_boards
+                if b.get("dispatcher_owner") is not None and b.get("dispatcher_owner") != _own_profile
+            ]
+            if skipped:
+                logger.warning(  # dispatcher_owner mismatch: boards skipped this tick
+                    "Skipping %d board(s) owned by another dispatcher profile: %s",
+                    len(skipped),
+                    ", ".join(
+                        f"{b.get('slug') or _kb.DEFAULT_BOARD}(dispatcher_owner={b.get('dispatcher_owner')!r})"
+                        for b in skipped
+                    ),
+                )
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None

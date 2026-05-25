@@ -224,3 +224,36 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+def test_deepseek_v4_flash_pricing_entry_exists():
+    """Regression test: deepseek-v4-flash must have a pricing entry.
+
+    Same pricing as deepseek-chat ($0.14/M input, $0.28/M output)
+    plus cache-read pricing ($0.0028/M).
+    """
+    entry = get_pricing_entry(
+        "deepseek-v4-flash",
+        provider="deepseek",
+    )
+
+    assert entry is not None
+    assert entry.input_cost_per_million is not None
+    assert entry.output_cost_per_million is not None
+    assert float(entry.input_cost_per_million) == 0.14
+    assert float(entry.output_cost_per_million) == 0.28
+    assert float(entry.cache_read_cost_per_million) == 0.0028
+
+
+def test_deepseek_v4_flash_estimate_usage_cost():
+    """Ensure deepseek-v4-flash sessions get a dollar estimate, not unknown."""
+    result = estimate_usage_cost(
+        "deepseek-v4-flash",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+        provider="deepseek",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.14/M + 500K output × $0.28/M = $0.14 + $0.14 = $0.28
+    assert float(result.amount_usd) == 0.28

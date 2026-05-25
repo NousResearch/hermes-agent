@@ -1590,6 +1590,22 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            else:
+                # Issue #32239: when the cron job doesn't pin a base_url,
+                # mirror cli.py's behaviour and propagate `model.base_url`
+                # + `model.api_key` from config.yaml. Without this a job
+                # that inherits `provider: custom` falls through every
+                # branch of resolve_runtime_provider and errors with
+                # "API key required" even though config.yaml has a
+                # working endpoint.
+                _model_cfg_for_runtime = _cfg.get("model") if isinstance(_cfg, dict) else None
+                if isinstance(_model_cfg_for_runtime, dict):
+                    _cfg_base_url = str(_model_cfg_for_runtime.get("base_url") or "").strip()
+                    if _cfg_base_url:
+                        runtime_kwargs["explicit_base_url"] = _cfg_base_url
+                    _cfg_api_key = str(_model_cfg_for_runtime.get("api_key") or "").strip()
+                    if _cfg_api_key:
+                        runtime_kwargs["explicit_api_key"] = _cfg_api_key
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.

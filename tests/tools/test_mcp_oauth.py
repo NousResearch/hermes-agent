@@ -23,6 +23,7 @@ from tools.mcp_oauth import (
     _wait_for_callback,
     _make_callback_handler,
     _redirect_handler,
+    _paste_callback_reader,
 )
 
 
@@ -621,3 +622,135 @@ def test_build_oauth_auth_preserves_server_url_path():
     assert captured["server_url"] == "https://mcp.notion.com/mcp"
 
 
+
+class TestPasteCallbackReader:
+    """_paste_callback_reader parses redirect URLs / query strings from stdin."""
+
+    def _empty_result(self):
+        return {"auth_code": None, "state": None, "error": None}
+
+    def test_parses_full_local_redirect_url(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "http://127.0.0.1:37949/callback?code=abc&state=xyz\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "abc"
+        assert result["state"] == "xyz"
+        assert result["error"] is None
+
+    def test_parses_remote_provider_url(self, monkeypatch):
+        """User pastes the URL their browser ended up on, including a real host."""
+        result = self._empty_result()
+        url = "https://mcp.linear.app/callback?code=deadbeef&state=eyJ0ZXN0Ijoi"
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: url + "\n"))
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "deadbeef"
+        assert result["state"] == "eyJ0ZXN0Ijoi"
+
+    def test_parses_bare_query_string(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "code=token123&state=st1\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "token123"
+        assert result["state"] == "st1"
+
+    def test_parses_leading_question_mark(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "?code=tok&state=stA\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "tok"
+        assert result["state"] == "stA"
+
+    def test_captures_error_param(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "https://example/cb?error=access_denied\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] == "access_denied"
+
+    def test_empty_input_noop(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] is None
+
+    def test_garbage_input_noop(self, monkeypatch, capsys):
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "not a url at all\n")
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] is None
+        err = capsys.readouterr().err
+        assert "did not contain" in err or "Could not parse" in err
+
+    def test_skips_when_http_listener_already_won(self, monkeypatch):
+        """If HTTP listener filled the result first, paste must not overwrite."""
+        result = {"auth_code": "from_http", "state": "http_state", "error": None}
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(readline=lambda: "code=from_paste&state=paste_state\n"),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "from_http"
+        assert result["state"] == "http_state"
+
+    def test_swallows_stdin_errors(self, monkeypatch):
+        """OSError / interrupt on readline must not propagate."""
+        result = self._empty_result()
+        def raise_oserror():
+            raise OSError("stdin closed")
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=raise_oserror))
+        _paste_callback_reader(result)  # must not raise
+        assert result["auth_code"] is None
+
+
+class TestWaitForCallbackPasteIntegration:
+    """_wait_for_callback offers the paste prompt only when interactive."""
+
+    def test_paste_prompt_shown_on_tty(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mod
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        # Make stdin readline block forever so HTTP listener path drives the test;
+        # we just want to verify the prompt was printed and the thread spawned.
+        def block_forever():
+            import threading
+            threading.Event().wait()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=block_forever))
+
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback())
+        err = capsys.readouterr().err
+        assert "paste the redirect URL" in err
+
+    def test_paste_prompt_NOT_shown_when_noninteractive(self, monkeypatch, capsys):
+        """Preserves existing invariant: no input() / paste prompt in headless runs."""
+        import tools.mcp_oauth as mod
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
+                with pytest.raises(OAuthNonInteractiveError):
+                    asyncio.run(_wait_for_callback())
+        err = capsys.readouterr().err
+        assert "paste the redirect URL" not in err

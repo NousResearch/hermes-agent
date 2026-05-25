@@ -6,6 +6,7 @@ import concurrent.futures
 import os
 import sqlite3
 import time
+import unittest.mock
 from pathlib import Path
 
 import pytest
@@ -3548,3 +3549,106 @@ def test_write_txn_preserves_original_exception_when_rollback_fails(kanban_home)
         f"write_txn surfaced the rollback failure instead of the original "
         f"OperationalError; got {msg!r}"
     )
+def test_write_txn_healthy_commit_no_exception(tmp_path):
+    """Normal commit does not trigger the torn-extend check."""
+    from hermes_cli.kanban_db import connect, write_txn, create_task
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    # Should not raise
+    with write_txn(conn) as c:
+        c.execute(
+            "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
+            "VALUES ('t_test01', 'test task', 'tester', 'todo', 0, 1234567890)"
+        )
+    row = conn.execute("SELECT title FROM tasks WHERE id='t_test01'").fetchone()
+    assert row["title"] == "test task"
+    conn.close()
+
+
+def test_write_txn_raises_on_truncated_file(tmp_path):
+    """A mocked smaller file size triggers the torn-extend check."""
+    from hermes_cli.kanban_db import connect, write_txn
+    import hermes_cli.kanban_db as kanban_db_module
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    # Get actual page size so we can fake a smaller file
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    original_getsize = os.path.getsize
+
+    def fake_getsize(path):
+        # Return a size that implies at least 1 fewer page than header claims
+        real_size = original_getsize(path)
+        return max(0, real_size - page_size)
+
+    with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
+        with unittest.mock.patch("hermes_cli.kanban_db.os.path.getsize", side_effect=fake_getsize):
+            with write_txn(conn) as c:
+                c.execute(
+                    "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
+                    "VALUES ('t_test02', 'test task 2', 'tester', 'todo', 0, 1234567890)"
+                )
+    conn.close()
+
+
+def test_write_txn_post_commit_check_fires_every_call(tmp_path):
+    """The invariant check runs on every write_txn call."""
+    from hermes_cli.kanban_db import connect, write_txn
+    import hermes_cli.kanban_db as kanban_db_module
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    call_count = 0
+    real_check = kanban_db_module._check_file_length_invariant
+
+    def counting_check(c):
+        nonlocal call_count
+        call_count += 1
+        real_check(c)
+
+    with unittest.mock.patch.object(kanban_db_module, "_check_file_length_invariant", counting_check):
+        for i in range(3):
+            with write_txn(conn) as c:
+                c.execute(
+                    f"INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
+                    f"VALUES ('t_fire{i:02d}', 'task {i}', 'tester', 'todo', 0, 1234567890)"
+                )
+    assert call_count == 3
+    conn.close()
+
+
+def test_connect_sets_wal_autocheckpoint_100(tmp_path):
+    """connect() sets wal_autocheckpoint to 100."""
+    from hermes_cli.kanban_db import connect
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    val = conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
+    assert val == 100
+    conn.close()
+
+
+def test_write_txn_check_reads_correct_header_fields(tmp_path):
+    """Synthetic DB file with mismatched header page_count triggers the check."""
+    import struct
+    from hermes_cli.kanban_db import connect, write_txn, _check_file_length_invariant
+    db = tmp_path / "synthetic.db"
+    conn = connect(db_path=db)
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    conn.close()
+    # Now corrupt the file: claim N pages but truncate to N-1 pages
+    with open(db, "rb") as f:
+        data = bytearray(f.read())
+    # Read current page_count from header bytes 28-31
+    real_page_count = struct.unpack(">I", data[28:32])[0]
+    if real_page_count < 2:
+        # Need at least 2 pages to fake a truncation
+        pytest.skip("DB too small for synthetic truncation test")
+    # Truncate to N-1 pages
+    truncated = bytes(data[: (real_page_count - 1) * page_size])
+    with open(db, "wb") as f:
+        f.write(truncated)
+    # Now open and check — should raise
+    # We can't use connect() because _validate_sqlite_header may block; use a raw connection
+    raw_conn = sqlite3.connect(str(db), isolation_level=None)
+    with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
+        _check_file_length_invariant(raw_conn)
+    raw_conn.close()
+

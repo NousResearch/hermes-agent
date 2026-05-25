@@ -180,7 +180,7 @@ class GatewayKanbanWatchersMixin:
 
         TERMINAL_KINDS = (
             "completed", "blocked", "gave_up", "crashed", "timed_out",
-            "human_review_requested", "approved", "rejected",
+            "human_review_requested", "approved", "rejected", "quarantined",
         )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
@@ -478,6 +478,22 @@ class GatewayKanbanWatchersMixin:
                             msg = (
                                 f"↩ {tag}Kanban {sub['task_id']} rejected "
                                 f"— back to ready{note}"
+                            )
+                        elif kind == "quarantined":
+                            payload = ev.payload or {}
+                            who_q = payload.get("assignee") or who or "?"
+                            crashes = payload.get("crashes", "?")
+                            window = payload.get("window_seconds", "?")
+                            cooldown = payload.get("cooldown_seconds", "?")
+                            reason = (
+                                str(payload.get("last_reason"))[:200]
+                                if payload.get("last_reason") else ""
+                            )
+                            tail = f" — last: {reason}" if reason else ""
+                            msg = (
+                                f"🚨 @{who_q} quarantined: {crashes} crashes "
+                                f"in {window}s on {sub['task_id']}{tail}. "
+                                f"Cooling {cooldown}s."
                             )
                         else:
                             continue
@@ -933,6 +949,55 @@ class GatewayKanbanWatchersMixin:
                         max_in_progress_per_profile,
                     )
 
+        # Crash-loop circuit breaker: trip on N crashes per assignee in
+        # M seconds, quarantine for a cooldown with exponential backoff
+        # on repeat trips. Defaults match the May 2026 incident that
+        # motivated this (3 crashes in 90s on a broken venv).
+        def _positive_int_with_default(key: str, default: int) -> int:
+            raw = kanban_cfg.get(key, default)
+            try:
+                v = int(raw)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.%s=%r; using default %d",
+                    key, raw, default,
+                )
+                return default
+            if v < 1:
+                logger.warning(
+                    "kanban dispatcher: kanban.%s=%r below 1; using default %d",
+                    key, raw, default,
+                )
+                return default
+            return v
+
+        crash_breaker_enabled = bool(
+            kanban_cfg.get("crash_breaker_enabled", True)
+        )
+        crash_breaker_max_crashes = _positive_int_with_default(
+            "crash_breaker_max_crashes",
+            _kb.DEFAULT_CRASH_BREAKER_MAX_CRASHES,
+        )
+        crash_breaker_window_seconds = _positive_int_with_default(
+            "crash_breaker_window_seconds",
+            _kb.DEFAULT_CRASH_BREAKER_WINDOW_SECONDS,
+        )
+        crash_breaker_cooldown_seconds = _positive_int_with_default(
+            "crash_breaker_cooldown_seconds",
+            _kb.DEFAULT_CRASH_BREAKER_COOLDOWN_SECONDS,
+        )
+        crash_breaker_max_cooldown_seconds = _positive_int_with_default(
+            "crash_breaker_max_cooldown_seconds",
+            _kb.DEFAULT_CRASH_BREAKER_MAX_COOLDOWN_SECONDS,
+        )
+        if crash_breaker_enabled:
+            logger.info(
+                "kanban dispatcher: crash breaker enabled "
+                "(max=%d/window=%ds, cooldown=%ds, max_cooldown=%ds)",
+                crash_breaker_max_crashes, crash_breaker_window_seconds,
+                crash_breaker_cooldown_seconds, crash_breaker_max_cooldown_seconds,
+            )
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -1026,6 +1091,11 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    crash_breaker_enabled=crash_breaker_enabled,
+                    crash_breaker_max_crashes=crash_breaker_max_crashes,
+                    crash_breaker_window_seconds=crash_breaker_window_seconds,
+                    crash_breaker_cooldown_seconds=crash_breaker_cooldown_seconds,
+                    crash_breaker_max_cooldown_seconds=crash_breaker_max_cooldown_seconds,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

@@ -871,6 +871,40 @@ class TestChatCompletionsEndpoint:
                 assert "Hello!" in body
 
     @pytest.mark.asyncio
+    async def test_stream_failed_agent_result_emits_error_finish(self, adapter):
+        """A failed agent task must not look like a normal stop to SSE clients."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {
+                        "final_response": None,
+                        "messages": [],
+                        "api_calls": 2,
+                        "completed": False,
+                        "failed": True,
+                        "error": "messages.8.content: Invalid input",
+                    },
+                    {"input_tokens": 12, "output_tokens": 0, "total_tokens": 12},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "messages.8.content: Invalid input" in body
+                assert '"finish_reason": "error"' in body
+                assert '"finish_reason": "stop"' not in body
+                assert "[DONE]" in body
+
+    @pytest.mark.asyncio
     async def test_stream_string_false_returns_json_completion(self, adapter):
         """Quoted false must not route chat completions into SSE mode."""
         mock_result = {

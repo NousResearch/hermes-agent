@@ -177,6 +177,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
     _sanitize_structure_surrogates,
     _sanitize_messages_surrogates,
+    _sanitize_messages_control_chars,
     _escape_invalid_chars_in_json_strings,
     _repair_tool_call_arguments,
     _strip_non_ascii,
@@ -3456,7 +3457,7 @@ class AIAgent:
 
         content = result.get("content") or []
         if not self._content_has_image_parts(content):
-            return content
+            return _multimodal_text_summary(result)
 
         if self._model_supports_vision():
             # Vision-capable on paper — but if we've already learned in this

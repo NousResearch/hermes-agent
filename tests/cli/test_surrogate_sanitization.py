@@ -12,9 +12,11 @@ from unittest.mock import MagicMock, patch
 from run_agent import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
+    _sanitize_messages_control_chars,
     _sanitize_structure_surrogates,
     _SURROGATE_RE,
 )
+from agent.tool_dispatch_helpers import make_tool_result_message
 
 
 class TestSanitizeSurrogates:
@@ -109,6 +111,35 @@ class TestSanitizeMessagesSurrogates:
         ]
         assert _sanitize_messages_surrogates(msgs) is True
         assert "\ufffd" in msgs[0]["content"]
+
+
+class TestSanitizeMessagesControlChars:
+    """Provider-facing messages must not contain raw control characters."""
+
+    def test_tool_result_nul_prefix_is_removed(self):
+        msgs = [
+            {"role": "tool", "content": "\x00json:{\"ok\": true}", "tool_call_id": "x"},
+        ]
+
+        assert _sanitize_messages_control_chars(msgs) is True
+        assert msgs[0]["content"] == "json:{\"ok\": true}"
+
+    def test_newlines_tabs_and_carriage_returns_are_preserved(self):
+        msgs = [
+            {"role": "tool", "content": "line 1\n\tline 2\r\n", "tool_call_id": "x"},
+        ]
+
+        assert _sanitize_messages_control_chars(msgs) is False
+        assert msgs[0]["content"] == "line 1\n\tline 2\r\n"
+
+    def test_tool_result_messages_are_persisted_without_nul_prefix(self):
+        msg = make_tool_result_message(
+            "vault_search",
+            "\x00json:{\"ok\": true}",
+            "call_1",
+        )
+
+        assert msg["content"] == "json:{\"ok\": true}"
 
 
 class TestReasoningFieldSurrogates:

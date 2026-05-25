@@ -2629,16 +2629,35 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            finish_reason = "stop"
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
                 if isinstance(result, dict) and result.get("failed"):
+                    finish_reason = "error"
+                    err_msg = result.get("error") or "agent run failed"
                     self._set_run_status(
                         completion_id,
                         "failed",
-                        error=result.get("error") or "agent run failed",
+                        error=err_msg,
                         last_event="run.failed",
                     )
+                    error_chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "content": f"\n\nHermes run failed: {err_msg}"
+                                },
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
                 else:
                     self._set_run_status(
                         completion_id,
@@ -2649,18 +2668,36 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+                finish_reason = "error"
+                err_msg = str(exc)
                 self._set_run_status(
                     completion_id,
                     "failed",
-                    error=str(exc),
+                    error=err_msg,
                     last_event="run.failed",
                 )
+                error_chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "content": f"\n\nHermes run failed: {err_msg}"
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
 
             # Finish chunk
             finish_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
                 "usage": {
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),

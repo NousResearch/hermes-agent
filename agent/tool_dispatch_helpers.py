@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
+from agent.message_sanitization import _strip_disallowed_control_chars
 
 logger = logging.getLogger(__name__)
 
@@ -197,16 +198,16 @@ def _multimodal_text_summary(value: Any) -> str:
     """
     if _is_multimodal_tool_result(value):
         if value.get("text_summary"):
-            return str(value["text_summary"])
+            return _strip_disallowed_control_chars(str(value["text_summary"]))
         parts = []
         for p in value.get("content") or []:
             if isinstance(p, dict) and p.get("type") == "text":
-                parts.append(str(p.get("text", "")))
+                parts.append(_strip_disallowed_control_chars(str(p.get("text", ""))))
         if parts:
             return "\n".join(parts)
         return "[multimodal tool result]"
     if isinstance(value, str):
-        return value
+        return _strip_disallowed_control_chars(value)
     try:
         return json.dumps(value, default=str)
     except Exception:
@@ -321,6 +322,8 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table)."""
+    if isinstance(content, str):
+        content = _strip_disallowed_control_chars(content)
     return {
         "role": "tool",
         "name": name,

@@ -124,6 +124,86 @@ class TestChatCompletionsBuildKwargs:
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
         assert kw["tools"] == tools
 
+    def test_tool_text_part_content_is_flattened_and_control_sanitized(self, transport):
+        msgs = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "vault_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "tool_name": "vault_search",
+                "content": [{"type": "text", "text": "\x00json:{\"ok\": true}"}],
+            },
+        ]
+
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs)
+
+        assert kw["messages"][2]["content"] == "json:{\"ok\": true}"
+        assert "tool_name" not in kw["messages"][2]
+
+    def test_profile_path_preserves_final_wire_message_sanitization(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("openrouter")
+        msgs = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "tool_name": "vault_search",
+                "content": "\x00json:{\"ok\": true}",
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="google/gemini-3.5-flash",
+            messages=msgs,
+            provider_profile=profile,
+        )
+
+        assert kw["messages"][1]["content"] == "json:{\"ok\": true}"
+        assert "tool_name" not in kw["messages"][1]
+
+    def test_profile_path_serializes_structured_tool_content(self, transport):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("openrouter")
+        msgs = [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "tool_name": "vault_search",
+                "content": {
+                    "ok": False,
+                    "error": "missing_argument",
+                    "detail": "query is required and must be non-empty",
+                },
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="google/gemini-3.5-flash",
+            messages=msgs,
+            provider_profile=profile,
+        )
+
+        assert kw["messages"][1]["content"] == (
+            '{"ok": false, "error": "missing_argument", '
+            '"detail": "query is required and must be non-empty"}'
+        )
+        assert "tool_name" not in kw["messages"][1]
+
     def test_openrouter_provider_prefs(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("openrouter")

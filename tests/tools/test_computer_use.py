@@ -958,6 +958,24 @@ class TestRunAgentMultimodalHelpers:
 
         assert content == "analysis summary"
 
+    def test_text_only_multimodal_tool_result_uses_plain_string_content(self):
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "\x00json:{\"ok\": true}"},
+            ],
+            "text_summary": "\x00json:{\"ok\": true}",
+        }
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model("vault_search", result)
+
+        assert content == "json:{\"ok\": true}"
+        assert isinstance(content, str)
+
 
 # ---------------------------------------------------------------------------
 # Universality: does the schema work without Anthropic?

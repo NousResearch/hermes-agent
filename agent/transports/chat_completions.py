@@ -10,8 +10,10 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import json
 from typing import Any, Dict, List, Optional
 
+from agent.message_sanitization import _strip_disallowed_control_chars
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -141,6 +143,16 @@ class ChatCompletionsTransport(ProviderTransport):
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
+            content = msg.get("content")
+            if isinstance(content, str) and _strip_disallowed_control_chars(content) != content:
+                needs_sanitize = True
+                break
+            if isinstance(content, list):
+                needs_sanitize = True
+                break
+            if isinstance(content, dict):
+                needs_sanitize = True
+                break
             if (
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
@@ -177,6 +189,27 @@ class ChatCompletionsTransport(ProviderTransport):
             # is safe and future-proofs against new markers being added.
             for key in [k for k in msg if isinstance(k, str) and k.startswith("_")]:
                 msg.pop(key, None)
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = _strip_disallowed_control_chars(content)
+            elif isinstance(content, list):
+                text_parts = []
+                can_flatten = True
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
+                        text_parts.append(
+                            _strip_disallowed_control_chars(str(part.get("text", "")))
+                        )
+                    else:
+                        can_flatten = False
+                        break
+                if msg.get("role") == "tool" and can_flatten:
+                    msg["content"] = "\n".join(text_parts)
+            elif isinstance(content, dict):
+                try:
+                    msg["content"] = json.dumps(content, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    msg["content"] = str(content)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:

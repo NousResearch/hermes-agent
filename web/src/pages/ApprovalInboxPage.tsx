@@ -198,6 +198,9 @@ export default function ApprovalInboxPage() {
   const [auditEvents, setAuditEvents] = useState<OpsApprovalAuditEvent[]>([]);
   const [approvalSummary, setApprovalSummary] = useState<OpsApprovalSummary | null>(null);
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>("all");
+  const [approvalQuery, setApprovalQuery] = useState("");
+  const [approvalRiskFilter, setApprovalRiskFilter] = useState("all");
+  const [approvalProjectFilter, setApprovalProjectFilter] = useState("all");
   const [proposalForm, setProposalForm] = useState<OpsApprovalCreate>(EMPTY_PROPOSAL_FORM);
   const [decisionNote, setDecisionNote] = useState("Approved in dashboard; Jenny must still execute through normal chat/tool flow only.");
   const [actioningId, setActioningId] = useState<string | null>(null);
@@ -236,7 +239,18 @@ export default function ApprovalInboxPage() {
 
   const problems = useMemo(() => problemJobs(jobs), [jobs]);
   const pendingApprovals = useMemo(() => approvals.filter((item) => item.status === "pending"), [approvals]);
-  const visibleApprovals = useMemo(() => approvals.filter((item) => approvalMatchesFilter(item, approvalFilter)), [approvals, approvalFilter]);
+  const approvalRiskOptions = useMemo(() => Array.from(new Set(approvals.map((item) => item.risk_label).filter(Boolean))).sort(), [approvals]);
+  const approvalProjectOptions = useMemo(() => Array.from(new Set(approvals.map((item) => item.project).filter(Boolean))).sort(), [approvals]);
+  const visibleApprovals = useMemo(() => {
+    const q = approvalQuery.trim().toLowerCase();
+    return approvals.filter((item) => {
+      if (!approvalMatchesFilter(item, approvalFilter)) return false;
+      if (approvalRiskFilter !== "all" && item.risk_label !== approvalRiskFilter) return false;
+      if (approvalProjectFilter !== "all" && item.project !== approvalProjectFilter) return false;
+      if (!q) return true;
+      return `${item.title} ${item.project} ${item.profile} ${item.risk_label} ${item.status} ${item.target} ${item.preview} ${item.reason} ${item.proposed_action} ${item.source_surface || ""} ${item.source_ref || ""} ${item.conversation_excerpt || ""} ${(item.related_paths || []).join(" ")}`.toLowerCase().includes(q);
+    });
+  }, [approvals, approvalFilter, approvalProjectFilter, approvalQuery, approvalRiskFilter]);
   const auditByApproval = useMemo(() => {
     const map = new Map<string, OpsApprovalAuditEvent[]>();
     for (const event of auditEvents) {
@@ -442,13 +456,41 @@ export default function ApprovalInboxPage() {
         </section>
 
         <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm text-text-secondary">Approval records:</span>
-            {(["all", "pending", "decided"] as ApprovalFilter[]).map((filter) => (
-              <Button key={filter} ghost={approvalFilter !== filter} onClick={() => setApprovalFilter(filter)}>{filter}</Button>
-            ))}
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-text-secondary">Approval records:</span>
+              {(["all", "pending", "decided"] as ApprovalFilter[]).map((filter) => (
+                <Button key={filter} ghost={approvalFilter !== filter} onClick={() => setApprovalFilter(filter)}>{filter}</Button>
+              ))}
+              <span className="text-xs text-text-secondary">Showing {visibleApprovals.length} of {approvals.length}</span>
+            </div>
+            <div className="grid gap-2 lg:grid-cols-[1fr_220px_220px]">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-text-secondary" />
+                <input
+                  value={approvalQuery}
+                  onChange={(event) => setApprovalQuery(event.target.value)}
+                  placeholder="Search approval records by title, target, project, source, path..."
+                  className="w-full rounded-xl border border-white/10 bg-black/30 py-2 pl-9 pr-3 text-sm text-text-primary outline-none focus:border-midground/60"
+                />
+              </div>
+              <select value={approvalRiskFilter} onChange={(event) => setApprovalRiskFilter(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 p-2 text-sm text-text-primary outline-none focus:border-midground/60">
+                <option value="all">All risks</option>
+                {approvalRiskOptions.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
+              </select>
+              <select value={approvalProjectFilter} onChange={(event) => setApprovalProjectFilter(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 p-2 text-sm text-text-primary outline-none focus:border-midground/60">
+                <option value="all">All projects</option>
+                {approvalProjectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
+              </select>
+            </div>
           </div>
         </section>
+
+        {approvals.length > 0 && visibleApprovals.length === 0 && (
+          <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-text-secondary">
+            No approval records match the current search/filter. Clear the search or switch back to all records.
+          </section>
+        )}
 
         {visibleApprovals.length > 0 && (
           <section className="space-y-3">
@@ -482,7 +524,14 @@ export default function ApprovalInboxPage() {
                       {item.source_ref && <div className="break-all">Reference: {item.source_ref}</div>}
                       {item.conversation_excerpt && <div className="mt-2 text-cyan-50">“{item.conversation_excerpt}”</div>}
                       {(item.related_paths || []).length > 0 && (
-                        <div className="mt-2 break-all text-xs text-cyan-100/80">Paths: {(item.related_paths || []).join(", ")}</div>
+                        <div className="mt-2">
+                          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-cyan-200">Related paths</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {(item.related_paths || []).map((path) => (
+                              <span key={path} className="max-w-full break-all rounded-lg border border-cyan-300/20 bg-black/25 px-2 py-1 text-xs text-cyan-100/85">{path}</span>
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </div>
                   )}

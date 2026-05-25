@@ -756,6 +756,10 @@ _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
 
+_RELOAD_LAST_DOTENV_MTIME: float = 0.0
+_RELOAD_LAST_CONFIG_MTIME: float = 0.0
+
+
 def _reload_runtime_env_preserving_config_authority() -> None:
     """Reload .env for fresh credentials without letting stale .env override config.
 
@@ -763,14 +767,35 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     pick up rotated API keys. config.yaml remains authoritative for agent budget
     settings such as agent.max_turns; otherwise a stale HERMES_MAX_ITERATIONS in
     .env can replace the startup bridge on later turns.
+
+    Mtime-cached: skips disk I/O when neither .env nor config.yaml has changed
+    since the last successful reload.  On Windows this saves 10-50ms of filesystem
+    overhead per gateway turn.
     """
+    global _RELOAD_LAST_DOTENV_MTIME, _RELOAD_LAST_CONFIG_MTIME
+
+    dotenv_path = _hermes_home / '.env'
+    config_path = _hermes_home / 'config.yaml'
+
+    dotenv_mtime = dotenv_path.stat().st_mtime if dotenv_path.exists() else 0.0
+    config_mtime = config_path.stat().st_mtime if config_path.exists() else 0.0
+
+    # If neither file has changed since last reload, skip entirely.
+    if (
+        dotenv_mtime == _RELOAD_LAST_DOTENV_MTIME
+        and config_mtime == _RELOAD_LAST_CONFIG_MTIME
+        and _RELOAD_LAST_CONFIG_MTIME > 0  # initial load always runs
+    ):
+        return
+
     load_hermes_dotenv(
         hermes_home=_hermes_home,
         project_env=Path(__file__).resolve().parents[1] / '.env',
     )
 
-    config_path = _hermes_home / 'config.yaml'
     if not config_path.exists():
+        _RELOAD_LAST_DOTENV_MTIME = dotenv_mtime
+        _RELOAD_LAST_CONFIG_MTIME = config_mtime
         return
     try:
         import yaml as _yaml
@@ -784,6 +809,9 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     agent_cfg = cfg.get("agent", {})
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+
+    _RELOAD_LAST_DOTENV_MTIME = dotenv_mtime
+    _RELOAD_LAST_CONFIG_MTIME = config_mtime
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
@@ -15013,6 +15041,7 @@ class GatewayRunner:
         enabled_toolsets: list,
         ephemeral_prompt: str,
         cache_keys: dict | None = None,
+        skip_context_files: bool = False,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -15049,6 +15078,7 @@ class GatewayRunner:
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
+                skip_context_files,
                 _cache_keys_sorted,
             ],
             sort_keys=True,
@@ -15779,6 +15809,15 @@ class GatewayRunner:
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+
+        # Per-platform skip_context_files — messaging platforms can opt out of
+        # filesystem-heavy context file discovery (SOUL.md, AGENTS.md, .cursorrules)
+        # to reduce AIAgent construction latency.  Especially impactful on Windows
+        # where stat() and filesystem walks are 10-100x slower than Linux.
+        _platforms_gw_cfg = (user_config.get("gateway") or {}).get("platforms") or {}
+        _plat_gw_cfg = _platforms_gw_cfg.get(platform_key) or {}
+        _skip_context = _plat_gw_cfg.get("skip_context_files")
+        skip_context_files = bool(_skip_context) if _skip_context is not None else False
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -16587,6 +16626,7 @@ class GatewayRunner:
                 enabled_toolsets,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
+                skip_context_files=skip_context_files,
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -16614,6 +16654,8 @@ class GatewayRunner:
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
+                    skip_context_files=skip_context_files,
+                    load_soul_identity=skip_context_files,  # keep persona even with minimal context
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,

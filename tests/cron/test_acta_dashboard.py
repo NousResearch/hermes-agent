@@ -617,8 +617,50 @@ def test_today_dashboard_requires_signed_acta_artifact_urls_for_open_overlays():
         excerpt="Root-relative signed detail remains allowed.",
         artifact_url="/r/root/detail.html?exp=1&sig=root",
     )
+    dotdot_path = item_cls(
+        job_id="dotdot-path",
+        name="Dotdot Path Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_06-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 6, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Dot-dot path segment must not become a row overlay.",
+        artifact_url="/r/../file.html?exp=1&sig=abc",
+    )
+    dot_path = item_cls(
+        job_id="dot-path",
+        name="Dot Path Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_05-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 5, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Dot-only path segment must not become a row overlay.",
+        artifact_url="/r/./file.html?exp=1&sig=abc",
+    )
+    userinfo_url = item_cls(
+        job_id="userinfo-url",
+        name="Userinfo URL Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_04-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 4, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Signed-looking URL with userinfo must not become a row overlay.",
+        artifact_url="https://evil.com@acta.imperatr.com/r/job/file.html?exp=1&sig=abc",
+    )
 
-    html = render_dashboard([signed, unsigned, unsafe, signed_root], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+    html = render_dashboard(
+        [signed, unsigned, unsafe, signed_root, dotdot_path, dot_path, userinfo_url],
+        generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc),
+    )
 
     assert 'data-open-url="https://acta.imperatr.com/r/signed/detail.html?exp=1&amp;sig=abc"' in html
     assert 'href="https://acta.imperatr.com/r/signed/detail.html?exp=1&amp;sig=abc"' in html
@@ -626,13 +668,22 @@ def test_today_dashboard_requires_signed_acta_artifact_urls_for_open_overlays():
     assert 'href="/r/root/detail.html?exp=1&amp;sig=root"' in html
     assert "Unsigned Brief" in html
     assert "Unsafe Brief" in html
+    assert "Dotdot Path Brief" in html
+    assert "Dot Path Brief" in html
+    assert "Userinfo URL Brief" in html
     assert "https://acta.imperatr.com/r/unsigned/detail.html?exp=1" not in html
     assert "evil.example" not in html
+    assert "/r/../file.html" not in html
+    assert "/r/./file.html" not in html
+    assert "evil.com@acta.imperatr.com" not in html
     assert "javascript:alert" not in html
     assert "ASK TELEGRAM" not in html
     unsigned_row = next(row for row in re.findall(r'<section class="brief-row[^>]*>.*?</section>', html, re.S) if "Unsigned Brief" in row)
     unsafe_row = next(row for row in re.findall(r'<section class="brief-row[^>]*>.*?</section>', html, re.S) if "Unsafe Brief" in row)
-    for disabled_row in (unsigned_row, unsafe_row):
+    dotdot_row = next(row for row in re.findall(r'<section class="brief-row[^>]*>.*?</section>', html, re.S) if "Dotdot Path Brief" in row)
+    dot_row = next(row for row in re.findall(r'<section class="brief-row[^>]*>.*?</section>', html, re.S) if "Dot Path Brief" in row)
+    userinfo_row = next(row for row in re.findall(r'<section class="brief-row[^>]*>.*?</section>', html, re.S) if "Userinfo URL Brief" in row)
+    for disabled_row in (unsigned_row, unsafe_row, dotdot_row, dot_row, userinfo_row):
         assert 'aria-disabled="true"' in disabled_row
         assert "readable" not in disabled_row
         assert "data-read-key" not in disabled_row
@@ -1372,7 +1423,15 @@ def test_outputs_page_gates_unsafe_links_and_read_state_to_signed_rows():
 
 def test_outputs_page_rejects_protocol_relative_and_suspicious_artifact_urls():
     item_cls = collect_situation_items.__globals__["CronSituationItem"]
-    for url in ("//evil.example/path?sig=abc", "///evil.example/path?sig=abc", "/\\evil?sig=abc", "/ok\npath?sig=abc"):
+    for url in (
+        "//evil.example/path?sig=abc",
+        "///evil.example/path?sig=abc",
+        "/\\evil?sig=abc",
+        "/ok\npath?sig=abc",
+        "/r/job/file.txt?exp=1&sig=abc",
+        "/r/../../public/index.html?exp=1&sig=abc",
+        "/r/job/file.html?sig=abc",
+    ):
         item = item_cls(
             job_id="unsafe",
             name="Unsafe Brief",
@@ -1394,6 +1453,9 @@ def test_outputs_page_rejects_protocol_relative_and_suspicious_artifact_urls():
         assert '<span class="read-state">UNREAD</span>' not in html
         assert '<span class="muted">No signed link</span>' in html
         assert "evil.example" not in html
+        assert "file.txt" not in html
+        assert "../../public" not in html
+        assert "file.html?sig=abc" not in html
 
 
 def test_outputs_page_requires_signed_acta_artifact_url_for_read_state():
@@ -1783,7 +1845,7 @@ def test_outputs_and_detail_do_not_leak_prompt_when_response_heading_missing(tmp
 
     def fake_publish(path, job, settings):
         uploaded["html"] = Path(path).read_text(encoding="utf-8")
-        return "https://acta.imperatr.com/r/daily/detail.html?sig=abc"
+        return "https://acta.imperatr.com/r/daily/detail.html?exp=1&sig=abc"
 
     monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
 
@@ -1799,7 +1861,7 @@ def test_outputs_and_detail_do_not_leak_prompt_when_response_heading_missing(tmp
         assert "No visible response was produced for this run." in rendered
     assert items[0].status == "silent"
     assert items[0].excerpt == "No visible response was produced for this run."
-    assert 'href="https://acta.imperatr.com/r/daily/detail.html?sig=abc"' in outputs_html
+    assert 'href="https://acta.imperatr.com/r/daily/detail.html?exp=1&amp;sig=abc"' in outputs_html
     assert '<article class="report-body">' in detail_html
     assert 'name="viewport"' in detail_html
 
@@ -1818,16 +1880,19 @@ def test_run_history_published_rows_open_signed_detail_without_prompt_or_path_le
     uploaded: dict[str, str] = {}
 
     def fake_publish(path, job, settings):
-        uploaded[str(settings.get("object_key"))] = Path(path).read_text(encoding="utf-8")
-        return "https://acta.imperatr.com/run-details/daily.html?exp=1&sig=abc"
+        object_key = str(settings.get("object_key"))
+        assert object_key == "r/run-details/daily-2026-05-20_08-00-00.html"
+        uploaded[object_key] = Path(path).read_text(encoding="utf-8")
+        return f"https://acta.imperatr.com/{object_key}?exp=1&sig=abc"
 
     monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
 
     runs = attach_run_artifact_urls(collect_run_history(tmp_path), {"enabled": True}, tmp_path / "details")
     html = render_runs_page(runs, generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc))
-    detail_html = next(value for key, value in uploaded.items() if key.startswith("public/run-details/"))
+    detail_html = uploaded["r/run-details/daily-2026-05-20_08-00-00.html"]
 
-    assert 'data-open-url="https://acta.imperatr.com/run-details/daily.html?exp=1&amp;sig=abc"' in html
+    assert 'data-open-url="https://acta.imperatr.com/r/run-details/daily-2026-05-20_08-00-00.html?exp=1&amp;sig=abc"' in html
+    assert 'href="https://acta.imperatr.com/r/run-details/daily-2026-05-20_08-00-00.html?exp=1&amp;sig=abc"' in html
     assert '<span class="open">SIGNED</span>' in html
     assert 'class="output-open-overlay"' in html
     assert "Visible response body only." in detail_html
@@ -1858,15 +1923,17 @@ def test_run_history_unsafe_or_missing_artifact_url_remains_disabled():
     html = render_runs_page(
         [
             item_cls(**base, artifact_url="https://evil.example/run.html?sig=abc"),
+            item_cls(**{**base, "job_id": "public", "artifact_url": "https://acta.imperatr.com/public/run-details/daily.html?exp=1&sig=abc"}),
             item_cls(**{**base, "job_id": "missing", "artifact_url": None}),
         ],
         generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc),
     )
 
     assert "https://evil.example" not in html
+    assert "https://acta.imperatr.com/public/run-details/daily.html" not in html
     assert 'data-open-url=' not in html
-    assert html.count('aria-disabled="true"') == 2
-    assert html.count('<span class="muted">HISTORY</span>') == 2
+    assert html.count('aria-disabled="true"') == 3
+    assert html.count('<span class="muted">HISTORY</span>') == 3
     assert '<span class="open">SIGNED</span>' not in html
 
 
@@ -1925,7 +1992,7 @@ def test_outputs_page_rejects_root_relative_telegram_urls():
         latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
         status="fresh",
         excerpt="Root-relative Telegram should not become clickable.",
-        artifact_url="/r/lead/detail.html?sig=abc",
+        artifact_url="/r/lead/detail.html?exp=1&sig=abc",
         telegram_url="/c/3566991387/86",
     )
 
@@ -1933,7 +2000,7 @@ def test_outputs_page_rejects_root_relative_telegram_urls():
 
     assert 'href="/c/3566991387/86"' not in html
     assert "NO FOLLOW-UP" in html
-    assert 'data-open-url="/r/lead/detail.html?sig=abc"' in html
+    assert 'data-open-url="/r/lead/detail.html?exp=1&amp;sig=abc"' in html
 
 
 def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):

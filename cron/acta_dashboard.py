@@ -48,8 +48,15 @@ def _is_safe_http_or_root_url(value: str | None, *, host_suffix: str | None = No
     return not parsed.scheme and not parsed.netloc and value.startswith("/") and not value.startswith("//")
 
 
-def _has_sig_query(value: str) -> bool:
-    return bool(parse_qs(urlparse(value).query).get("sig"))
+_SIGNED_ACTA_ARTIFACT_SEGMENT_RE = r"(?=[A-Za-z0-9._-]*[A-Za-z0-9])[A-Za-z0-9._-]+"
+_SIGNED_ACTA_ARTIFACT_PATH_RE = re.compile(
+    rf"^/r/{_SIGNED_ACTA_ARTIFACT_SEGMENT_RE}/{_SIGNED_ACTA_ARTIFACT_SEGMENT_RE}\.html$"
+)
+
+
+def _has_signed_artifact_query(value: str) -> bool:
+    query = parse_qs(urlparse(value).query)
+    return bool(query.get("exp")) and bool(query.get("sig"))
 
 
 def _is_safe_signed_acta_artifact_url(value: str | None) -> bool:
@@ -58,9 +65,13 @@ def _is_safe_signed_acta_artifact_url(value: str | None) -> bool:
         return False
     assert value is not None
     parsed = urlparse(value)
+    if parsed.username is not None or parsed.password is not None:
+        return False
     if parsed.scheme == "https" and parsed.hostname != "acta.imperatr.com":
         return False
-    return _has_sig_query(value)
+    if not _SIGNED_ACTA_ARTIFACT_PATH_RE.fullmatch(parsed.path):
+        return False
+    return _has_signed_artifact_query(value)
 
 
 def _is_safe_telegram_url(value: str | None) -> bool:
@@ -1853,7 +1864,7 @@ def attach_run_artifact_urls(
                 url = publish_html_artifact(
                     temp_html,
                     {"id": item.job_id},
-                    {**publish_settings, "object_key": f"public/run-details/{safe_stem}.html"},
+                    {**publish_settings, "object_key": f"r/run-details/{safe_stem}.html"},
                 )
             except (OSError, HtmlArtifactPublishError):
                 url = None

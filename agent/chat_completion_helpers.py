@@ -581,6 +581,17 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
 
+    # Defence-in-depth: redact credentials (PATs, API keys, Bearer tokens)
+    # from assistant content BEFORE the message enters conversation history.
+    # If the model accidentally inlines a secret in its natural-language
+    # response, catch it here at the persistence boundary so it never
+    # reaches state.db, session_*.json, gateway delivery, or compression.
+    # Respects HERMES_REDACT_SECRETS via redact_sensitive_text — no-op
+    # when disabled. (#19798)
+    if isinstance(_san_content, str) and _san_content:
+        from agent.redact import redact_sensitive_text
+        _san_content = redact_sensitive_text(_san_content)
+
     msg = {
         "role": "assistant",
         "content": _san_content,
@@ -702,6 +713,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     "arguments": tool_call.function.arguments
                 },
             }
+            # Defence-in-depth: redact credentials from tool call arguments
+            # before they enter conversation history. Tool execution uses the
+            # raw API response object, not this dict, so redacting the
+            # persisted shape is safe and only affects storage. Catches the
+            # case where a model accidentally inlines a secret into a tool
+            # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
+            # sk-...'")`). (#19798)
+            if isinstance(tc_dict["function"]["arguments"], str):
+                from agent.redact import redact_sensitive_text
+                tc_dict["function"]["arguments"] = redact_sensitive_text(
+                    tc_dict["function"]["arguments"]
+                )
             # Preserve extra_content (e.g. Gemini thought_signature) so it
             # is sent back on subsequent API calls.  Without this, Gemini 3
             # thinking models reject the request with a 400 error.

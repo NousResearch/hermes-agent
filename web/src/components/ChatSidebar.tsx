@@ -33,7 +33,7 @@ import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { HERMES_BASE_PATH } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
-import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
+import { AlertCircle, ChevronDown, RefreshCw, ShieldAlert } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 interface SessionInfo {
@@ -45,7 +45,12 @@ interface SessionInfo {
 
 interface RpcEnvelope {
   method?: string;
-  params?: { type?: string; payload?: unknown };
+  params?: { type?: string; payload?: unknown; session_id?: string };
+}
+
+interface ApprovalRequest {
+  command: string;
+  description: string;
 }
 
 const TOOL_LIMIT = 20;
@@ -72,9 +77,10 @@ const STATE_TONE: Record<
 interface ChatSidebarProps {
   channel: string;
   className?: string;
+  sendTerminalInput?: (text: string) => boolean;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+export function ChatSidebar({ channel, className, sendTerminalInput }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -87,6 +93,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [info, setInfo] = useState<SessionInfo>({});
   const [tools, setTools] = useState<ToolEntry[]>([]);
+  const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -197,6 +204,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       const { type, payload } = frame.params;
 
       if (type === "tool.start") {
+        setApproval(null);
         const p = payload as
           | { tool_id?: string; name?: string; context?: string }
           | undefined;
@@ -264,6 +272,15 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
               : t,
           ),
         );
+      } else if (type === "approval.request") {
+        const p = payload as
+          | { command?: string; description?: string }
+          | undefined;
+
+        setApproval({
+          command: String(p?.command ?? ""),
+          description: String(p?.description ?? "dangerous command"),
+        });
       }
     });
 
@@ -295,6 +312,21 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       setModelOpen(false);
     },
     [gw, sessionId],
+  );
+
+  const answerApproval = useCallback(
+    (choice: "once" | "session" | "always" | "deny") => {
+      const quickPick = { once: "1", session: "2", always: "3", deny: "4" }[choice];
+
+      if (!sendTerminalInput?.(quickPick)) {
+        setError("approval response failed — terminal is not connected");
+
+        return;
+      }
+
+      setApproval(null);
+    },
+    [sendTerminalInput],
   );
 
   const canPickModel = state === "open" && !!sessionId;
@@ -352,6 +384,39 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
                 reconnect
               </Button>
             )}
+          </div>
+        </Card>
+      )}
+
+      {approval && (
+        <Card className="flex flex-col gap-2 border-warning/60 bg-warning/10 px-3 py-2 text-xs">
+          <div className="flex items-start gap-2">
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-warning">approval needed</div>
+              <div className="mt-1 text-muted-foreground">{approval.description}</div>
+              {approval.command && (
+                <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded border border-current/15 bg-black/20 p-2 font-mono text-[0.68rem] leading-snug text-foreground">
+                  {approval.command}
+                </pre>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5">
+            <Button size="sm" outlined onClick={() => answerApproval("once")}>
+              allow once
+            </Button>
+            <Button size="sm" outlined onClick={() => answerApproval("session")}>
+              session
+            </Button>
+            <Button size="sm" outlined onClick={() => answerApproval("always")}>
+              always
+            </Button>
+            <Button size="sm" outlined onClick={() => answerApproval("deny")}>
+              deny
+            </Button>
           </div>
         </Card>
       )}

@@ -36,13 +36,57 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertTrue(payload)
         return json.loads(payload)
 
-    def test_request_permission_is_not_auto_allowed(self) -> None:
+    def test_request_permission_denies_unsafe_requests(self) -> None:
         response = self._dispatch(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/request_permission",
-                "params": {},
+                "params": {
+                    "toolCall": {
+                        "kind": "execute",
+                        "rawInput": {"command": "rm -rf /tmp/nope"},
+                    }
+                },
+            },
+            cwd="/tmp",
+        )
+
+        outcome = (((response.get("result") or {}).get("outcome") or {}).get("outcome"))
+        self.assertEqual(outcome, "cancelled")
+
+    def test_request_permission_auto_allows_safe_cwd_file_commands(self) -> None:
+        response = self._dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "session/request_permission",
+                "params": {
+                    "toolCall": {
+                        "kind": "execute",
+                        "rawInput": {"command": "mkdir -p .hermes/coderacp-receipts"},
+                    }
+                },
+            },
+            cwd="/tmp",
+        )
+
+        outcome = ((response.get("result") or {}).get("outcome") or {})
+        self.assertEqual(outcome.get("outcome"), "selected")
+        self.assertEqual(outcome.get("optionId"), "allow_once")
+
+    def test_request_permission_denies_unsafe_prefix_smuggling(self) -> None:
+        response = self._dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "session/request_permission",
+                "params": {
+                    "toolCall": {
+                        "kind": "execute",
+                        "rawInput": {"command": "ls; rm -rf /tmp/nope"},
+                    }
+                },
             },
             cwd="/tmp",
         )

@@ -16,6 +16,10 @@ import sys
 import threading
 import time
 import unicodedata
+import contextlib
+import hashlib
+import json
+from pathlib import Path
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -574,6 +578,63 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def _approval_ipc_paths() -> tuple[str | None, str | None]:
+    """Return optional file-based approval IPC paths for subprocess runners."""
+    event_path = os.getenv("HERMES_APPROVAL_EVENT_PATH") or None
+    decision_path = os.getenv("HERMES_APPROVAL_DECISION_PATH") or None
+    if event_path and decision_path:
+        return event_path, decision_path
+    return None, None
+
+
+def _write_approval_ipc_event(session_key: str, approval_data: dict) -> bool:
+    event_path, _decision_path = _approval_ipc_paths()
+    if not event_path:
+        return False
+    payload = {
+        "type": "approval_required",
+        "session_key": session_key,
+        "approval_id": f"appr-{hashlib.sha256((session_key + ':' + approval_data.get('command', '')).encode('utf-8')).hexdigest()[:16]}",
+        "created_at": time.time(),
+        **approval_data,
+    }
+    try:
+        path = Path(event_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+        return True
+    except Exception as exc:
+        logger.warning("Approval IPC event write failed: %s", exc)
+        return False
+
+
+def _wait_approval_ipc_decision() -> str | None:
+    _event_path, decision_path = _approval_ipc_paths()
+    if not decision_path:
+        return None
+    try:
+        timeout = int(os.getenv("HERMES_APPROVAL_IPC_TIMEOUT", "300"))
+    except (TypeError, ValueError):
+        timeout = 300
+    deadline = time.monotonic() + max(timeout, 0)
+    path = Path(decision_path)
+    while time.monotonic() <= deadline:
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8") or "{}")
+                choice = str(data.get("choice") or data.get("decision") or "").strip().lower()
+                if choice in {"once", "session", "always", "deny"}:
+                    with contextlib.suppress(OSError):
+                        path.unlink()
+                    return choice
+            except Exception as exc:
+                logger.warning("Approval IPC decision read failed: %s", exc)
+                return "deny"
+        time.sleep(0.1)
+    return None
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:
@@ -1107,13 +1168,15 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 1: Gather findings from both checks ---
 
     # Tirith check — wrapper guarantees no raise for expected failures.
-    # Only catch ImportError (module not installed).
+    # Only catch ImportError (module not installed). Tests may disable the
+    # external scanner to keep approval unit tests deterministic/offline.
     tirith_result = {"action": "allow", "findings": [], "summary": ""}
-    try:
-        from tools.tirith_security import check_command_security
-        tirith_result = check_command_security(command)
-    except ImportError:
-        pass  # tirith module not installed — allow
+    if not env_var_enabled("HERMES_APPROVAL_SKIP_TIRITH"):
+        try:
+            from tools.tirith_security import check_command_security
+            tirith_result = check_command_security(command)
+        except ImportError:
+            pass  # tirith module not installed — allow
 
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -1343,14 +1406,56 @@ def check_all_command_guards(command: str, env_type: str,
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
 
-        # Fallback: no gateway callback registered (e.g. cron, batch).
-        # Return approval_required for backward compat.
-        submit_pending(session_key, {
+        # Fallback: no gateway callback registered (e.g. subprocess runner).
+        # If file-based approval IPC is configured, write a structured event
+        # and block until the runner/dashboard writes a decision.
+        approval_data = {
             "command": command,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": combined_desc,
-        })
+        }
+        if _write_approval_ipc_event(session_key, approval_data):
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="ipc",
+            )
+            choice = _wait_approval_ipc_decision()
+            _fire_approval_hook(
+                "post_approval_response",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="ipc",
+                choice=choice or "timeout",
+            )
+            if choice in {"once", "session", "always"}:
+                for key, _, is_tirith in warnings:
+                    if choice == "session" or (choice == "always" and is_tirith):
+                        approve_session(session_key, key)
+                    elif choice == "always":
+                        approve_session(session_key, key)
+                        approve_permanent(key)
+                        save_permanent_allowlist(_permanent_approved)
+                return {"approved": True, "message": None,
+                        "user_approved": True, "description": combined_desc}
+            reason = "timed out" if choice is None else "denied by user"
+            return {
+                "approved": False,
+                "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                "pattern_key": primary_key,
+                "description": combined_desc,
+            }
+
+        # Backward-compatible non-IPC fallback.
+        submit_pending(session_key, approval_data)
         return {
             "approved": False,
             "pattern_key": primary_key,

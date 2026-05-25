@@ -132,6 +132,92 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
     }
 
 
+def _permission_allowed(message_id: Any, option_id: str = "allow_once") -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "result": {
+            "outcome": {
+                "outcome": "selected",
+                "optionId": option_id,
+                "option_id": option_id,
+            }
+        },
+    }
+
+
+def _is_safe_permission_request(params: dict[str, Any], cwd: str) -> bool:
+    """Return True for cwd-scoped, non-destructive ACP requests Hermes can auto-allow.
+
+    Copilot ACP asks for permission before it sends execute/write tool updates.
+    In non-interactive Hermes runs, denying every request makes the worker think
+    but never act. Keep this deliberately narrow: only allow simple file writes,
+    mkdir, and read/list commands that stay under the ACP cwd.
+    """
+
+    tool_call = params.get("toolCall") or {}
+    if not isinstance(tool_call, dict):
+        return False
+    raw = tool_call.get("rawInput") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    command = str(raw.get("command") or "").strip()
+    kind = str(tool_call.get("kind") or raw.get("kind") or "").strip().lower()
+    if not command:
+        return False
+    lowered = command.lower()
+    dangerous = (
+        "rm ",
+        "rm -",
+        "sudo",
+        "chmod ",
+        "chown ",
+        "curl ",
+        "wget ",
+        "git push",
+        "git reset",
+        "git clean",
+        "docker ",
+        "brew ",
+        "npm ",
+        "pip ",
+        "python ",
+        "python3 ",
+    )
+    if any(token in lowered for token in dangerous):
+        return False
+
+    allowed = False
+    if kind in {"read", "edit", "write"}:
+        allowed = True
+    elif kind == "execute":
+        parts = shlex.split(command)
+        if not parts:
+            return False
+        verb = parts[0]
+        allowed = verb in {"mkdir", "touch", "ls", "find", "pwd", "test", "sed", "cat", "printf", "tee"}
+        if verb == "mkdir" and "-p" not in parts[1:]:
+            allowed = False
+        if verb == "cat" and ">" not in parts:
+            allowed = False
+        if verb == "sed" and (len(parts) < 2 or parts[1] != "-n"):
+            allowed = False
+    if not allowed:
+        return False
+
+    # Reject commands that explicitly address paths outside cwd. This is a
+    # conservative token check; filesystem handlers still enforce cwd boundaries.
+    root = Path(cwd).resolve()
+    for token in shlex.split(command):
+        if not token.startswith("/"):
+            continue
+        try:
+            Path(token).resolve().relative_to(root)
+        except Exception:
+            return False
+    return True
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -629,7 +715,10 @@ class CopilotACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
-            response = _permission_denied(message_id)
+            if _is_safe_permission_request(params, cwd):
+                response = _permission_allowed(message_id)
+            else:
+                response = _permission_denied(message_id)
         elif method == "fs/read_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)

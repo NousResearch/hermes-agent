@@ -279,3 +279,54 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+@pytest.fixture
+def raw_api_module(monkeypatch, tmp_path):
+    """google_api loaded WITHOUT the auth/binary stubs, for testing auth-mode logic."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    spec = importlib.util.spec_from_file_location("gws_api_raw_test", API_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestGwsNativeMode:
+    """Auth-mode resolution and credential routing for gws-native mode."""
+
+    def test_ensure_authenticated_hermes_mode(self, raw_api_module):
+        raw_api_module.TOKEN_PATH.write_text("{}")
+        assert raw_api_module._ensure_authenticated() == "hermes"
+
+    def test_ensure_authenticated_gws_native_mode(self, raw_api_module, monkeypatch):
+        assert not raw_api_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: True)
+        assert raw_api_module._ensure_authenticated() == "gws-native"
+
+    def test_ensure_authenticated_exits_when_unauthed(self, raw_api_module, monkeypatch):
+        assert not raw_api_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: False)
+        with pytest.raises(SystemExit):
+            raw_api_module._ensure_authenticated()
+
+    def test_gws_env_pins_token_in_hermes_mode(self, raw_api_module):
+        raw_api_module.TOKEN_PATH.write_text("{}")
+        env = raw_api_module._gws_env()
+        assert env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] == str(raw_api_module.TOKEN_PATH)
+
+    def test_gws_env_omits_token_in_native_mode(self, raw_api_module):
+        assert not raw_api_module.TOKEN_PATH.exists()
+        env = raw_api_module._gws_env()
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in env
+
+    def test_get_credentials_exits_in_gws_native_mode(self, raw_api_module, monkeypatch, capsys):
+        """Python-only ops (drive upload/download) must fail clearly, not crash, in gws-native mode."""
+        assert not raw_api_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: True)
+        with pytest.raises(SystemExit):
+            raw_api_module.get_credentials()
+        assert "gws-native mode" in capsys.readouterr().err

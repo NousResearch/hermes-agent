@@ -24,7 +24,6 @@ import argparse
 import base64
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -37,6 +36,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+from _gws_auth import gws_binary as _gws_binary, gws_native_authed
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -61,11 +61,20 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
     return normalized
 
 
-def _ensure_authenticated():
-    if not TOKEN_PATH.exists():
-        print("Not authenticated. Run the setup script first:", file=sys.stderr)
-        print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
-        sys.exit(1)
+def _ensure_authenticated() -> str:
+    """Ensure usable credentials exist; return the active auth mode.
+
+    Returns ``"hermes"`` when the Hermes-managed token is present, or
+    ``"gws-native"`` when there's no Hermes token but the standalone gws CLI is
+    independently authenticated. Exits if neither is available.
+    """
+    if TOKEN_PATH.exists():
+        return "hermes"
+    if gws_native_authed():
+        return "gws-native"
+    print("Not authenticated. Run the setup script first:", file=sys.stderr)
+    print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
+    sys.exit(1)
 
 
 def _stored_token_scopes() -> list[str]:
@@ -79,16 +88,12 @@ def _stored_token_scopes() -> list[str]:
     return list(SCOPES)
 
 
-def _gws_binary() -> str | None:
-    override = os.getenv("HERMES_GWS_BIN")
-    if override:
-        return override
-    return shutil.which("gws")
-
-
 def _gws_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
+    if TOKEN_PATH.exists():
+        # Hermes-managed token: pin gws to it so both backends share creds.
+        env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
+    # gws-native mode (no Hermes token): leave gws to use its own credentials.
     return env
 
 
@@ -175,8 +180,20 @@ def _datetime_with_timezone(value: str) -> str:
 
 
 def get_credentials():
-    """Load and refresh credentials from token file."""
-    _ensure_authenticated()
+    """Load and refresh credentials from the Hermes-managed token file.
+
+    This is the Python-client backend. It requires the Hermes token; it cannot
+    use gws-native credentials. Operations without a gws route (e.g. drive
+    upload/download) reach here and fail clearly in gws-native mode.
+    """
+    if _ensure_authenticated() == "gws-native":
+        print(
+            "This operation needs Hermes-managed OAuth (google_token.json), which "
+            "isn't available in gws-native mode. Run setup.py to authorize Hermes "
+            "directly, or use an operation that routes through the gws CLI.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request

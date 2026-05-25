@@ -324,72 +324,44 @@ class TestHermesConstantsFallback:
         assert module.display_hermes_home is hermes_constants.display_hermes_home
 
 
-class TestGwsAuthFallback:
-    """Tests for gws CLI credential detection when no Hermes token exists."""
+class TestGwsNativeAuth:
+    """setup.py --check / --check-live behavior in gws-native mode.
 
-    def test_check_auth_returns_true_when_gws_is_valid(self, setup_module, monkeypatch, capsys):
-        """When no token exists but gws auth status is valid, check_auth returns True."""
+    (Low-level parsing of `gws auth status` lives in test_gws_native_auth.py.)
+    """
+
+    def test_check_auth_returns_true_when_gws_native(self, setup_module, monkeypatch, capsys):
+        """No Hermes token but gws authed on its own → AUTHENTICATED via gws."""
         assert not setup_module.TOKEN_PATH.exists()
-        monkeypatch.setattr(
-            setup_module, "_gws_auth_valid", lambda: True
-        )
+        monkeypatch.setattr(setup_module, "gws_native_authed", lambda: True)
         assert setup_module.check_auth() is True
         out = capsys.readouterr().out
         assert "AUTHENTICATED: via gws CLI" in out
 
-    def test_check_auth_falls_through_when_gws_invalid(self, setup_module, monkeypatch, capsys):
-        """When no token and gws is not valid, check_auth returns False."""
+    def test_check_auth_false_when_no_token_and_no_gws(self, setup_module, monkeypatch, capsys):
+        """No token and gws not authed → NOT_AUTHENTICATED."""
         assert not setup_module.TOKEN_PATH.exists()
-        monkeypatch.setattr(
-            setup_module, "_gws_auth_valid", lambda: False
-        )
+        monkeypatch.setattr(setup_module, "gws_native_authed", lambda: False)
         assert setup_module.check_auth() is False
         out = capsys.readouterr().out
         assert "NOT_AUTHENTICATED" in out
 
-    def test_gws_auth_valid_returns_false_when_binary_missing(self, setup_module, monkeypatch):
-        """_gws_auth_valid returns False when gws is not installed."""
-        monkeypatch.setattr("shutil.which", lambda _name: None)
-        assert setup_module._gws_auth_valid() is False
+    def test_check_live_uses_gws_when_native(self, setup_module, monkeypatch, capsys):
+        """In gws-native mode, --check-live validates via a real gws call, not the token client."""
+        assert not setup_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(setup_module, "gws_native_authed", lambda: True)
+        monkeypatch.setattr(setup_module, "gws_live_check", lambda: (True, "ok"))
+        assert setup_module.check_auth_live() is True
+        assert "LIVE_CHECK_OK" in capsys.readouterr().out
 
-    def test_gws_auth_valid_returns_false_on_nonzero_exit(self, setup_module, monkeypatch):
-        """_gws_auth_valid returns False when gws auth status fails."""
-        monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/gws")
-
-        class FakeResult:
-            returncode = 1
-            stdout = ""
-            stderr = ""
-
+    def test_check_live_reports_disabled_client_from_gws(self, setup_module, monkeypatch, capsys):
+        """A disabled_client error surfaced by gws is reported, not swallowed."""
+        assert not setup_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(setup_module, "gws_native_authed", lambda: True)
         monkeypatch.setattr(
-            "subprocess.run", lambda *a, **kw: FakeResult()
+            setup_module, "gws_live_check", lambda: (False, "disabled_client: the client is disabled")
         )
-        assert setup_module._gws_auth_valid() is False
-
-    def test_gws_auth_valid_returns_true_on_valid_output(self, setup_module, monkeypatch):
-        """_gws_auth_valid returns True when gws reports valid tokens."""
-        monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/gws")
-
-        class FakeResult:
-            returncode = 0
-            stdout = json.dumps({"token_valid": True, "has_refresh_token": True})
-            stderr = ""
-
-        monkeypatch.setattr(
-            "subprocess.run", lambda *a, **kw: FakeResult()
-        )
-        assert setup_module._gws_auth_valid() is True
-
-    def test_gws_auth_valid_returns_false_on_expired_token(self, setup_module, monkeypatch):
-        """_gws_auth_valid returns False when gws token is expired."""
-        monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/gws")
-
-        class FakeResult:
-            returncode = 0
-            stdout = json.dumps({"token_valid": False, "has_refresh_token": True})
-            stderr = ""
-
-        monkeypatch.setattr(
-            "subprocess.run", lambda *a, **kw: FakeResult()
-        )
-        assert setup_module._gws_auth_valid() is False
+        assert setup_module.check_auth_live() is False
+        out = capsys.readouterr().out
+        assert "LIVE_CHECK_FAILED" in out
+        assert "disabled" in out.lower()

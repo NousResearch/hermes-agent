@@ -3,11 +3,13 @@
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.channel_directory import (
+    _build_discord,
     build_channel_directory,
     lookup_channel_type,
     resolve_channel_name,
@@ -357,11 +359,52 @@ def _make_slack_adapter(team_clients):
     return SimpleNamespace(_team_clients=team_clients)
 
 
+def _make_discord_adapter(guilds=None):
+    """Build a stand-in for DiscordAdapter exposing only ``_client``."""
+    return SimpleNamespace(_client=SimpleNamespace(guilds=guilds or []))
+
+
 def _make_slack_client(pages):
     """Build an AsyncWebClient mock whose ``users_conversations`` returns pages."""
     client = MagicMock()
     client.users_conversations = AsyncMock(side_effect=pages)
     return client
+
+
+class TestBuildDiscord:
+    def test_no_client_falls_back_to_sessions(self, tmp_path):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps({
+            "s1": {"origin": {"platform": "discord", "chat_id": "D123", "chat_name": "Alice"}},
+        }))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_discord(SimpleNamespace(_client=None))
+
+        assert len(entries) == 1
+        assert entries[0]["id"] == "D123"
+
+    def test_session_entries_dedup_api_channels_by_id(self, tmp_path):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps({
+            "dup": {"origin": {"platform": "discord", "chat_id": "123", "chat_name": "general"}},
+            "dm": {"origin": {"platform": "discord", "chat_id": "D456", "chat_name": "Alice"}},
+        }))
+        guild = SimpleNamespace(
+            name="MyServer",
+            text_channels=[SimpleNamespace(id=123, name="general")],
+            forum_channels=[],
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
+             patch.dict(sys.modules, {"discord": SimpleNamespace()}):
+            entries = _build_discord(_make_discord_adapter([guild]))
+
+        ids = [entry["id"] for entry in entries]
+        assert ids.count("123") == 1
+        assert "D456" in ids
 
 
 class TestBuildSlack:

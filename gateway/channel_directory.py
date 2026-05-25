@@ -112,19 +112,25 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 def _build_discord(adapter) -> List[Dict[str, str]]:
     """Enumerate all text channels and forum channels the Discord bot can see."""
     channels = []
+    seen_ids: set[str] = set()
+    session_entries = _build_from_sessions("discord")
     client = getattr(adapter, "_client", None)
     if not client:
-        return channels
+        return session_entries
 
     try:
         import discord as _discord  # noqa: F401 — SDK presence check
     except ImportError:
-        return channels
+        return session_entries
 
     for guild in client.guilds:
         for ch in guild.text_channels:
+            channel_id = str(ch.id)
+            if channel_id in seen_ids:
+                continue
+            seen_ids.add(channel_id)
             channels.append({
-                "id": str(ch.id),
+                "id": channel_id,
                 "name": ch.name,
                 "guild": guild.name,
                 "type": "channel",
@@ -132,8 +138,12 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         # Forum channels (type 15) — creating a message auto-spawns a thread post.
         forums = getattr(guild, "forum_channels", None) or []
         for ch in forums:
+            channel_id = str(ch.id)
+            if channel_id in seen_ids:
+                continue
+            seen_ids.add(channel_id)
             channels.append({
-                "id": str(ch.id),
+                "id": channel_id,
                 "name": ch.name,
                 "guild": guild.name,
                 "type": "forum",
@@ -141,8 +151,12 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         # Also include DM-capable users we've interacted with is not
         # feasible via guild enumeration; those come from sessions.
 
-    # Merge any DMs from session history
-    channels.extend(_build_from_sessions("discord"))
+    # Merge in DM/session-discovered entries without duplicating guild channels.
+    for entry in session_entries:
+        entry_id = entry.get("id")
+        if entry_id and entry_id not in seen_ids:
+            channels.append(entry)
+            seen_ids.add(entry_id)
     return channels
 
 

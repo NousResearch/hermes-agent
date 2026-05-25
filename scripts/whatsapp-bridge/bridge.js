@@ -694,6 +694,30 @@ app.get('/chat/:id', async (req, res) => {
   });
 });
 
+// Mark messages as read (send read receipts)
+app.post('/read', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  const { chatId, messageId } = req.body;
+  if (!chatId || !messageId) {
+    return res.status(400).json({ error: 'chatId and messageId are required' });
+  }
+
+  try {
+    await sock.readMessages([{
+      remoteJid: chatId,
+      id: messageId,
+      fromMe: false,
+    }]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[bridge] Failed to mark message as read:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({

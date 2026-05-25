@@ -1140,6 +1140,18 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             event = await self._build_message_event(msg_data)
                             if event:
                                 await self.handle_message(event)
+                                # Mark message as read (send read receipt / blue ticks)
+                                try:
+                                    async with self._http_session.post(
+                                        f"http://127.0.0.1:{self._bridge_port}/read",
+                                        json={"chatId": msg_data.get("chatId"), "messageId": msg_data.get("messageId")},
+                                        timeout=aiohttp.ClientTimeout(total=5)
+                                    ) as resp:
+                                        if resp.status != 200:
+                                            err_body = await resp.text()
+                                            print(f"[{self.name}] Failed to mark as read (HTTP {resp.status}): {err_body}", flush=True)
+                                except Exception as read_err:
+                                    print(f"[{self.name}] Read receipt failed: {read_err}", flush=True)
             except asyncio.CancelledError:
                 break
             except Exception as e:

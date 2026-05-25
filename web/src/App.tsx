@@ -18,6 +18,7 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  ClipboardCheck,
   Clock,
   Code,
   Cpu,
@@ -70,6 +71,7 @@ import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
 import MissionControlPage from "@/pages/MissionControlPage";
 import OpsRunsPage from "@/pages/OpsRunsPage";
+import ApprovalInboxPage from "@/pages/ApprovalInboxPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -111,6 +113,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/mission-control": MissionControlPage,
+  "/approvals": ApprovalInboxPage,
   "/ops-runs": OpsRunsPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
@@ -139,6 +142,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "missionControl",
     label: "Mission Control",
     icon: Rocket,
+  },
+  {
+    path: "/approvals",
+    labelKey: "approvals",
+    label: "Approvals",
+    icon: ClipboardCheck,
   },
   {
     path: "/ops-runs",
@@ -183,6 +192,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Activity,
   BarChart3,
   Clock,
+  ClipboardCheck,
   Cpu,
   FileText,
   KeyRound,

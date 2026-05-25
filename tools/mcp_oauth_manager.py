@@ -35,6 +35,7 @@ Design reference:
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -69,6 +70,13 @@ class _ProviderEntry:
     """
 
     server_url: str
+    # Defensive deep-copy snapshot of the caller's oauth_config dict.
+    # Storing the caller's reference would alias state: a later in-place
+    # mutation (e.g. config.yaml hot-reload mutating the same dict) would
+    # also retroactively change ``entry.oauth_config``, causing the
+    # change-detection branch in :meth:`MCPOAuthManager.get_or_build_provider`
+    # to compare equal and silently skip rebuild. Always snapshot via
+    # :func:`_snapshot_oauth_config` before assigning here.
     oauth_config: Optional[dict]
     provider: Optional[Any] = None
     last_mtime_ns: int = 0
@@ -284,6 +292,97 @@ def _make_hermes_provider_class() -> Optional[type]:
             ):
                 storage.save_oauth_metadata(meta)
 
+        async def _handle_refresh_response(self, response):  # type: ignore[override]
+            """Clear stale OAuth state on disk when token refresh fails.
+
+            The MCP SDK's base implementation only nulls ``current_tokens``
+            in memory when the authorization server rejects a refresh
+            (oauth2.py ~line 445). It leaves both the tokens file AND the
+            cached dynamic ``client_info`` on disk untouched, and does not
+            null ``context.client_info`` in memory. The subsequent 401
+            branch then takes the ``if not self.context.client_info``
+            check at line 561, sees the stale client_info, and SKIPS
+            dynamic client re-registration — reusing a ``client_id`` that
+            the authorization server has already invalidated alongside
+            the rejected refresh token. The new browser flow then comes
+            back with ``invalid_client`` / ``unknown_token`` style errors
+            without ever giving the user a chance to log in fresh.
+
+            Restarting the process doesn't help because the stale state
+            reloads from disk. The only known workaround is manually
+            wiping ``~/.hermes/mcp-tokens/<server>.*`` and restarting.
+
+            Fix: when the parent reports refresh failure, wipe both the
+            tokens file and (for dynamic clients) the client_info file
+            from disk, and null ``context.client_info`` in memory. The
+            SDK's 401 branch on the same flow then takes the dynamic
+            registration path, the user gets a clean browser login, and
+            recovery happens inline without a process restart or manual
+            file deletion.
+
+            Pre-registered clients (``hermes_preregistered_client: True``
+            in the stored info) are PRESERVED — those ``client_id`` /
+            ``client_secret`` pairs are configured in ``config.yaml`` and
+            must not be deleted by the runtime.
+
+            ``oauth_metadata`` is intentionally KEPT: the token_endpoint
+            URL etc. are still valid post-revocation and skipping
+            rediscovery makes recovery faster.
+
+            Reference: Claude Code's auth.ts ``handleRefreshFailure``
+            does the same thing (clears all OAuth state on refresh
+            failure so the next flow re-registers and re-authorizes).
+            """
+            ok = await super()._handle_refresh_response(response)
+            if ok:
+                return True
+            # Parent already cleared in-memory tokens. Now reach further
+            # and wipe disk + in-memory client_info so the SDK's 401
+            # branch re-registers cleanly.
+            try:
+                from tools.mcp_oauth import HermesTokenStorage, _read_json
+                storage = self.context.storage
+                if isinstance(storage, HermesTokenStorage):
+                    tokens_path = storage._tokens_path()  # noqa: SLF001
+                    tokens_path.unlink(missing_ok=True)
+
+                    client_info_path = storage._client_info_path()  # noqa: SLF001
+                    existing = _read_json(client_info_path)
+                    is_dynamic = (
+                        isinstance(existing, dict)
+                        and existing.get("hermes_dynamic_client") is True
+                    )
+                    is_preregistered = (
+                        isinstance(existing, dict)
+                        and existing.get("hermes_preregistered_client") is True
+                    )
+                    if is_dynamic and not is_preregistered:
+                        client_info_path.unlink(missing_ok=True)
+                        # Also null in-memory so the SDK's 401 branch
+                        # takes the dynamic-registration path on the
+                        # same async_auth_flow generator.
+                        self.context.client_info = None
+                        logger.info(
+                            "MCP OAuth '%s': refresh rejected, cleared stale "
+                            "tokens + dynamic client_info; next request will "
+                            "trigger fresh DCR and browser auth",
+                            self._hermes_server_name,
+                        )
+                    else:
+                        logger.info(
+                            "MCP OAuth '%s': refresh rejected, cleared stale "
+                            "tokens (preserved pre-registered client_info); "
+                            "next request will trigger browser auth",
+                            self._hermes_server_name,
+                        )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "MCP OAuth '%s': cleanup after refresh failure raised "
+                    "(non-fatal, SDK will still attempt re-auth): %s",
+                    self._hermes_server_name, exc,
+                )
+            return False
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with
@@ -331,6 +430,20 @@ def _make_hermes_provider_class() -> Optional[type]:
 _HERMES_PROVIDER_CLS: Optional[type] = _make_hermes_provider_class()
 
 
+def _snapshot_oauth_config(cfg: Optional[dict]) -> Optional[dict]:
+    """Return a deep-copy snapshot of an ``oauth_config`` dict.
+
+    The manager caches a per-server snapshot so subsequent change-detection
+    compares against a frozen baseline rather than the caller's live
+    reference. ``None`` is preserved (distinct from an empty dict) so the
+    "no oauth block configured" state stays distinguishable from an
+    explicit empty mapping.
+    """
+    if cfg is None:
+        return None
+    return copy.deepcopy(cfg)
+
+
 # ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
@@ -359,11 +472,18 @@ class MCPOAuthManager:
         """Return a cached OAuth provider for ``server_name`` or build one.
 
         Idempotent: repeat calls with the same name return the same instance.
-        If ``server_url`` changes for a given name, the cached entry is
-        discarded and a fresh provider is built.
+        If ``server_url`` or ``oauth_config`` changes for a given name, the
+        cached entry is discarded and a fresh provider is built so changes
+        to ``redirect_host``/``redirect_port``/``client_id`` etc. take
+        effect in-process without restart.
 
         Returns None if the MCP SDK's OAuth support is unavailable.
         """
+        # Snapshot up front: subsequent comparisons and the cache entry
+        # both store an isolated copy, so a caller mutating the same dict
+        # in place between calls is still detected as a change.
+        config_snapshot = _snapshot_oauth_config(oauth_config)
+
         with self._entries_lock:
             entry = self._entries.get(server_name)
             if entry is not None and entry.server_url != server_url:
@@ -372,11 +492,17 @@ class MCPOAuthManager:
                     server_name, entry.server_url, server_url,
                 )
                 entry = None
+            elif entry is not None and entry.oauth_config != config_snapshot:
+                logger.info(
+                    "MCP OAuth '%s': oauth_config changed, discarding cache",
+                    server_name,
+                )
+                entry = None
 
             if entry is None:
                 entry = _ProviderEntry(
                     server_url=server_url,
-                    oauth_config=oauth_config,
+                    oauth_config=config_snapshot,
                 )
                 self._entries[server_name] = entry
 
@@ -411,10 +537,11 @@ class MCPOAuthManager:
             _OAUTH_AVAILABLE,
             _build_client_metadata,
             _configure_callback_port,
+            _invalidate_stale_dynamic_client_info,
             _is_interactive,
+            _make_redirect_handler,
+            _make_wait_for_callback,
             _maybe_preregister_client,
-            _redirect_handler,
-            _wait_for_callback,
         )
 
         if not _OAUTH_AVAILABLE:
@@ -431,17 +558,30 @@ class MCPOAuthManager:
                 server_name,
             )
 
-        _configure_callback_port(cfg)
+        port = _configure_callback_port(cfg)
         client_metadata = _build_client_metadata(cfg)
+        _invalidate_stale_dynamic_client_info(storage, cfg, client_metadata)
         _maybe_preregister_client(storage, cfg, client_metadata)
+
+        # Bind the callback + redirect handlers to the host/port resolved for
+        # THIS provider. Building a second provider for a different server
+        # would otherwise overwrite the module-level ``_oauth_port`` /
+        # ``_oauth_bind_host`` / ``_oauth_uri_host`` and silently retarget
+        # this listener, or print an SSH hint for the wrong host/port.
+        callback_handler = _make_wait_for_callback(
+            cfg["_resolved_bind_host"], port
+        )
+        redirect_handler = _make_redirect_handler(
+            cfg["_resolved_uri_host"], port
+        )
 
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
-            redirect_handler=_redirect_handler,
-            callback_handler=_wait_for_callback,
+            redirect_handler=redirect_handler,
+            callback_handler=callback_handler,
             timeout=float(cfg.get("timeout", 300)),
         )
 

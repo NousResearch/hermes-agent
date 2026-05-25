@@ -457,6 +457,7 @@ async def probe_servers(
             entry["checks"] = {"sdk": "unsupported"}
             entry["tools_count"] = 0
             entry["resources_count"] = 0
+            entry["prompts_count"] = 0
             entries.append(entry)
             continue
         entries.append(await _probe_one(server, connector))

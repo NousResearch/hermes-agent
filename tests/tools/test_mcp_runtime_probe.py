@@ -327,7 +327,11 @@ def test_sdk_unavailable_reports_unsupported_without_connecting():
 
     report = _run(probe_servers([server], connector=connector, sdk_available=False))
 
-    assert report["servers"][0]["status"] == "unsupported"
+    entry = report["servers"][0]
+    assert entry["status"] == "unsupported"
+    assert entry["tools_count"] == 0
+    assert entry["resources_count"] == 0
+    assert entry["prompts_count"] == 0
     assert calls == []
 
 

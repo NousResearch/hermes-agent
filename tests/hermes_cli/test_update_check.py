@@ -17,45 +17,95 @@ def test_version_string_no_v_prefix():
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
-    from hermes_cli.banner import check_for_updates
+    """Fresh git cache keyed by HEAD should avoid fetch/rev-list."""
+    import hermes_cli.banner as banner
 
-    # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "rev": "git:abc123"}))
 
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
-        result = check_for_updates()
+        mock_run.return_value = MagicMock(returncode=0, stdout="abc123\n")
+        result = banner.check_for_updates()
 
     assert result == 3
-    mock_run.assert_not_called()
+    assert mock_run.call_count == 1
+    assert mock_run.call_args.args[0][:3] == ["git", "rev-parse", "HEAD"]
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     """When cache is expired, check_for_updates should call git fetch."""
-    from hermes_cli.banner import check_for_updates
+    import hermes_cli.banner as banner
 
     repo_dir = tmp_path / "hermes-agent"
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
 
     # Write an expired cache (timestamp far in the past)
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
+    cache_file.write_text(json.dumps({"ts": 0, "behind": 1, "rev": "git:old"}))
 
-    mock_result = MagicMock(returncode=0, stdout="5\n")
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="newhead\n")
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return MagicMock(returncode=0, stdout="5\n")
+        raise AssertionError(f"unexpected command: {cmd}")
 
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
-        result = check_for_updates()
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run) as mock_run:
+        result = banner.check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    assert mock_run.call_count == 3  # git rev-parse HEAD + fetch + rev-list
+    assert json.loads(cache_file.read_text())["rev"] == "git:newhead"
+
+
+def test_check_for_updates_legacy_null_rev_git_cache_misses(tmp_path, monkeypatch):
+    """Fresh legacy git caches with rev=null must not survive a changed HEAD."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+    fake_banner = repo_dir / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 83, "rev": None}))
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="currenthead\n")
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return MagicMock(returncode=0, stdout="0\n")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        result = banner.check_for_updates()
+
+    assert result == 0
+    rewritten = json.loads(cache_file.read_text())
+    assert rewritten["behind"] == 0
+    assert rewritten["rev"] == "git:currenthead"
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
@@ -90,7 +140,7 @@ def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
         mock_run.return_value = MagicMock(returncode=0, stdout="0\n")
         result = banner.check_for_updates()
     # Should have fallen back to project root and run git commands
-    assert mock_run.call_count >= 1
+    assert mock_run.call_count >= 2
 
 
 def test_prefetch_non_blocking():

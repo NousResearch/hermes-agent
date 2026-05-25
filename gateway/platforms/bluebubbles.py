@@ -122,12 +122,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
+        self.webhook_public_url = (
+            extra.get("webhook_public_url")
+            or os.getenv("BLUEBUBBLES_WEBHOOK_PUBLIC_URL", "")
+        ).strip()
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        allowed_chats_raw = extra.get("allowed_chats") or os.getenv("BLUEBUBBLES_ALLOWED_CHATS", "")
+        self.allowed_chats = {item.strip() for item in str(allowed_chats_raw).split(",") if item.strip()}
+        allow_from_me_chats_raw = extra.get("allow_from_me_chats") or os.getenv("BLUEBUBBLES_ALLOW_FROM_ME_CHATS", "")
+        self.allow_from_me_chats = {item.strip() for item in str(allow_from_me_chats_raw).split(",") if item.strip()}
+        from_me_prefixes_raw = extra.get("from_me_prefixes") or os.getenv("BLUEBUBBLES_FROM_ME_PREFIXES", "")
+        self.from_me_prefixes = tuple(item.strip().lower() for item in str(from_me_prefixes_raw).split(",") if item.strip())
 
     # ------------------------------------------------------------------
     # API helpers
@@ -219,6 +229,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     @property
     def _webhook_url(self) -> str:
         """Compute the external webhook URL for BlueBubbles registration."""
+        if self.webhook_public_url:
+            return self.webhook_public_url.rstrip("/")
         host = self.webhook_host
         if host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
             host = "localhost"
@@ -789,8 +801,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or record.get("fromMe")
             or record.get("is_from_me")
         )
-        if is_from_me:
-            return web.Response(text="ok")
 
         # Skip tapback reactions delivered as messages
         assoc_type = record.get("associatedMessageType")
@@ -806,6 +816,43 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
             or ""
         )
+
+        chat_guid = self._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            payload.get("guid"),
+        )
+        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
+        # the chat GUID is nested under data.chats[0].guid instead.
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        chat_identifier = self._value(
+            record.get("chatIdentifier"),
+            record.get("identifier"),
+            payload.get("chatIdentifier"),
+            payload.get("identifier"),
+        )
+        session_chat_id = chat_guid or chat_identifier
+
+        if is_from_me:
+            from_me_chat_allowed = bool(
+                self.allow_from_me_chats
+                and (
+                    session_chat_id in self.allow_from_me_chats
+                    or chat_identifier in self.allow_from_me_chats
+                )
+            )
+            normalized_text = text.strip().lower()
+            prefix_allowed = bool(
+                self.from_me_prefixes
+                and any(normalized_text.startswith(prefix) for prefix in self.from_me_prefixes)
+            )
+            if not (from_me_chat_allowed and prefix_allowed):
+                return web.Response(text="ok")
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
@@ -843,25 +890,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             text = "(attachment)"
         # --- End attachment handling ---
 
-        chat_guid = self._value(
-            record.get("chatGuid"),
-            payload.get("chatGuid"),
-            record.get("chat_guid"),
-            payload.get("chat_guid"),
-            payload.get("guid"),
-        )
-        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
-        # the chat GUID is nested under data.chats[0].guid instead.
-        if not chat_guid:
-            _chats = record.get("chats") or []
-            if _chats and isinstance(_chats[0], dict):
-                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
-        chat_identifier = self._value(
-            record.get("chatIdentifier"),
-            record.get("identifier"),
-            payload.get("chatIdentifier"),
-            payload.get("identifier"),
-        )
         sender = (
             self._value(
                 record.get("handle", {}).get("address")
@@ -879,7 +907,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
-        session_chat_id = chat_guid or chat_identifier
+        if self.allowed_chats and session_chat_id not in self.allowed_chats and chat_identifier not in self.allowed_chats:
+            logger.info("[bluebubbles] ignoring message from non-allowed chat: %s", _redact(session_chat_id or chat_identifier or ""))
+            return web.Response(text="ok")
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         source = self.build_source(
             chat_id=session_chat_id,

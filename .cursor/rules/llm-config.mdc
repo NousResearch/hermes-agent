@@ -24,9 +24,10 @@ Secrets belong in `.env`; non-secret routing/settings belong in config.
 
 ### Model routing logic
 
-- `llama*` patterns -> Together AI (OpenAI-compatible endpoint)
+- `deepseek/*` patterns -> OpenRouter (primary as of 2026-05-25 gateway fix)
+- `llama*` patterns -> Together AI (fallback; 402 credit errors hit 2026-05-20, check balance before Monday)
 - `claude*` patterns -> Anthropic SDK
-- HOT memory currently records fleet model: **deepseek/deepseek-v4-flash:free** (migrated 2026-05-20). Verify before editing.
+- HOT memory currently records fleet model: **deepseek/deepseek-v4-flash:free** via OpenRouter (migrated 2026-05-20; gateway primary fixed 2026-05-25 — was falling back to meta-llama/llama-3.3-70b due to Nous Research warmup timeout). Verify before editing.
 
 ## Inference parameters (production)
 

@@ -48,7 +48,8 @@ Timeout: 6000s (raised from 4500s for Monday AACT batch)
 ### GitHub Actions budget exhaustion (current blocker)
 
 - CI is blocked by budget, not code failures
-- Recovery expected ~June 1 (monthly quota reset)
+- `paths-ignore` added 2026-05-25 to `tests.yml`, `container-smoke.yml`, `replay-regression.yml` — doc/skill/cursor/artifact-only pushes no longer trigger CI
+- Recovery: raise spending limit at GitHub Settings → Billing → Spending limits (monthly quota reset ~June 1 as fallback)
 - Local test results remain canonical until CI recovers
 - OPS-CI-001 lint branch waiting on quota
 

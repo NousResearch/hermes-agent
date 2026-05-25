@@ -7,6 +7,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.request
@@ -2078,6 +2079,25 @@ def _resolve_copilot_catalog_api_key() -> str:
                 continue
             if api_token:
                 return api_token
+
+    except Exception:
+        pass
+
+    # Final fallback: resolve_copilot_token() knows how to call `gh auth token`
+    # directly. Keep this outside the auth.py-backed pool path so a lightweight
+    # /model catalog probe still works if auth.py or its optional dependencies
+    # are unavailable. Some GitHub CLI OAuth tokens can query /models as-is even
+    # when the internal Copilot token-exchange endpoint rejects them, so preserve
+    # get_copilot_api_token's raw-token fallback.
+    try:
+        from hermes_cli.copilot_auth import get_copilot_api_token, resolve_copilot_token
+
+        raw_token, _source = resolve_copilot_token()
+        raw_token = str(raw_token or "").strip()
+        if raw_token:
+            api_token = str(get_copilot_api_token(raw_token) or "").strip()
+            if api_token:
+                return api_token
     except Exception:
         pass
 
@@ -2477,6 +2497,63 @@ def fetch_github_model_catalog(
 
 # ─── Copilot catalog context-window helpers ─────────────────────────────────
 
+_copilot_catalog_cache: dict[str, tuple[float, Optional[list[dict[str, Any]]]]] = {}
+_COPILOT_CATALOG_CACHE_TTL = 3600  # 1 hour
+_COPILOT_CATALOG_FAILURE_CACHE_TTL = 60  # avoid repeated auth/network stalls
+
+
+def _copilot_catalog_cache_key(api_key: Optional[str], *, resolve_auto_key: bool = False) -> str:
+    if api_key:
+        digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+        return f"key:{digest}"
+    if resolve_auto_key:
+        return "auto-unresolved"
+    return "anonymous"
+
+
+def _fresh_cached_github_model_catalog(
+    cache_key: str,
+    now: float,
+) -> tuple[bool, Optional[list[dict[str, Any]]]]:
+    cached = _copilot_catalog_cache.get(cache_key)
+    if not cached:
+        return False, None
+    cached_at, cached_catalog = cached
+    ttl = _COPILOT_CATALOG_CACHE_TTL if cached_catalog else _COPILOT_CATALOG_FAILURE_CACHE_TTL
+    if now - cached_at < ttl:
+        return True, cached_catalog
+    return False, None
+
+
+def get_cached_github_model_catalog(
+    api_key: Optional[str] = None,
+    timeout: float = 5.0,
+    *,
+    resolve_auto_key: bool = False,
+) -> Optional[list[dict[str, Any]]]:
+    """Return the Copilot model catalog, cached per process and credential."""
+    now = time.time()
+
+    resolved_key = api_key
+    if resolve_auto_key and resolved_key is None:
+        unresolved_cache_key = _copilot_catalog_cache_key(None, resolve_auto_key=True)
+        hit, cached_catalog = _fresh_cached_github_model_catalog(unresolved_cache_key, now)
+        if hit:
+            return cached_catalog
+        resolved_key = _resolve_copilot_catalog_api_key()
+        if not resolved_key:
+            _copilot_catalog_cache[unresolved_cache_key] = (now, None)
+            return None
+
+    cache_key = _copilot_catalog_cache_key(resolved_key)
+    hit, cached_catalog = _fresh_cached_github_model_catalog(cache_key, now)
+    if hit:
+        return cached_catalog
+
+    catalog = fetch_github_model_catalog(api_key=resolved_key, timeout=timeout)
+    _copilot_catalog_cache[cache_key] = (now, catalog)
+    return catalog
+
 # Module-level cache: {model_id: max_prompt_tokens}
 _copilot_context_cache: dict[str, int] = {}
 _copilot_context_cache_time: float = 0.0
@@ -2499,7 +2576,7 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
         return None
 
     # Fetch and populate cache
-    catalog = fetch_github_model_catalog(api_key=api_key)
+    catalog = get_cached_github_model_catalog(api_key=api_key)
     if not catalog:
         return None
 
@@ -2802,7 +2879,7 @@ def _copilot_catalog_ids(
     api_key: Optional[str] = None,
 ) -> set[str]:
     if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
+        catalog = get_cached_github_model_catalog(api_key=api_key)
     if not catalog:
         return set()
     return {
@@ -2863,6 +2940,31 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     return []
 
 
+def clamp_github_reasoning_effort(
+    requested_effort: Optional[str],
+    supported_efforts: list[str],
+) -> Optional[str]:
+    """Return the nearest GitHub Models reasoning effort supported by a model."""
+    normalized_supported = [
+        str(effort).strip().lower()
+        for effort in supported_efforts
+        if str(effort).strip()
+    ]
+    if not normalized_supported:
+        return None
+
+    requested = str(requested_effort or "medium").strip().lower() or "medium"
+    if requested in normalized_supported:
+        return requested
+    if requested == "xhigh" and "high" in normalized_supported:
+        return "high"
+    if requested == "minimal" and "low" in normalized_supported:
+        return "low"
+    if "medium" in normalized_supported:
+        return "medium"
+    return normalized_supported[0]
+
+
 def _should_use_copilot_responses_api(model_id: str) -> bool:
     """Decide whether a Copilot model should use the Responses API.
 
@@ -2895,7 +2997,7 @@ def copilot_model_api_mode(
     # Fetch the catalog once so normalize + endpoint check share it
     # (avoids two redundant network calls for non-GPT-5 models).
     if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
+        catalog = get_cached_github_model_catalog(api_key=api_key)
 
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if not normalized:
@@ -3021,6 +3123,11 @@ def github_model_reasoning_efforts(
     api_key: Optional[str] = None,
 ) -> list[str]:
     """Return supported reasoning-effort levels for a Copilot-visible model."""
+    if catalog is None and api_key:
+        catalog = get_cached_github_model_catalog(api_key=api_key)
+    elif catalog is None and api_key is None:
+        catalog = get_cached_github_model_catalog(resolve_auto_key=True)
+
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if not normalized:
         return []
@@ -3028,10 +3135,6 @@ def github_model_reasoning_efforts(
     catalog_entry = None
     if catalog is not None:
         catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
-    elif api_key:
-        fetched_catalog = fetch_github_model_catalog(api_key=api_key)
-        if fetched_catalog:
-            catalog_entry = next((item for item in fetched_catalog if item.get("id") == normalized), None)
 
     if catalog_entry is not None:
         capabilities = catalog_entry.get("capabilities")

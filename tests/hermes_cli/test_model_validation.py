@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
     azure_foundry_model_api_mode,
+    clamp_github_reasoning_effort,
     copilot_model_api_mode,
     fetch_github_model_catalog,
     curated_models_for_provider,
@@ -346,6 +347,98 @@ class TestGithubReasoningEfforts:
     def test_non_reasoning_model_returns_empty(self):
         catalog = [{"id": "gpt-4.1", "capabilities": {"type": "chat", "supports": {}}}]
         assert github_model_reasoning_efforts("gpt-4.1", catalog=catalog) == []
+
+    def test_auto_catalog_lookup_is_cached(self):
+        import hermes_cli.models as mod
+
+        catalog = [{
+            "id": "gpt-5.5",
+            "capabilities": {
+                "type": "chat",
+                "supports": {"reasoning_effort": ["low", "medium", "high", "xhigh"]},
+            },
+            "supported_endpoints": ["/responses"],
+        }]
+
+        mod._copilot_catalog_cache = {}
+        try:
+            with (
+                patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="token") as resolve,
+                patch("hermes_cli.models.fetch_github_model_catalog", return_value=catalog) as fetch,
+            ):
+                expected = ["low", "medium", "high", "xhigh"]
+                assert github_model_reasoning_efforts("gpt-5.5") == expected
+                assert github_model_reasoning_efforts("gpt-5.5") == expected
+
+            assert resolve.call_count == 2
+            assert fetch.call_count == 1
+        finally:
+            mod._copilot_catalog_cache = {}
+
+    def test_auto_catalog_lookup_is_scoped_to_resolved_key(self):
+        import hermes_cli.models as mod
+
+        token_a_catalog = [{
+            "id": "gpt-5.5",
+            "capabilities": {
+                "type": "chat",
+                "supports": {"reasoning_effort": ["low"]},
+            },
+            "supported_endpoints": ["/responses"],
+        }]
+        token_b_catalog = [{
+            "id": "gpt-5.5",
+            "capabilities": {
+                "type": "chat",
+                "supports": {"reasoning_effort": ["high"]},
+            },
+            "supported_endpoints": ["/responses"],
+        }]
+
+        mod._copilot_catalog_cache = {}
+        try:
+            with (
+                patch(
+                    "hermes_cli.models._resolve_copilot_catalog_api_key",
+                    side_effect=["token-a", "token-b", "token-b"],
+                ) as resolve,
+                patch(
+                    "hermes_cli.models.fetch_github_model_catalog",
+                    side_effect=[token_a_catalog, token_b_catalog],
+                ) as fetch,
+            ):
+                assert github_model_reasoning_efforts("gpt-5.5") == ["low"]
+                assert github_model_reasoning_efforts("gpt-5.5") == ["high"]
+                assert github_model_reasoning_efforts("gpt-5.5") == ["high"]
+
+            assert resolve.call_count == 3
+            assert fetch.call_count == 2
+        finally:
+            mod._copilot_catalog_cache = {}
+
+    def test_auto_catalog_lookup_skips_fetch_without_resolved_key(self):
+        import hermes_cli.models as mod
+
+        mod._copilot_catalog_cache = {}
+        try:
+            with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="") as resolve, \
+                 patch("hermes_cli.models.fetch_github_model_catalog") as fetch:
+                assert github_model_reasoning_efforts("gpt-5.5") == ["minimal", "low", "medium", "high"]
+                assert github_model_reasoning_efforts("gpt-5.5") == ["minimal", "low", "medium", "high"]
+
+            assert resolve.call_count == 1
+            fetch.assert_not_called()
+        finally:
+            mod._copilot_catalog_cache = {}
+
+    def test_clamps_unsupported_effort_to_nearest_supported(self):
+        assert clamp_github_reasoning_effort("xhigh", ["minimal", "low", "medium", "high"]) == "high"
+        assert clamp_github_reasoning_effort("minimal", ["low", "medium", "high"]) == "low"
+        assert clamp_github_reasoning_effort("unexpected", ["low", "medium", "high"]) == "medium"
+        assert clamp_github_reasoning_effort("high", ["low", "medium", "high"]) == "high"
+        assert clamp_github_reasoning_effort("xhigh", ["low", "medium", "high", "xhigh"]) == "xhigh"
+        assert clamp_github_reasoning_effort("unexpected", ["low"]) == "low"
+        assert clamp_github_reasoning_effort("high", []) is None
 
 
 class TestCopilotNormalization:

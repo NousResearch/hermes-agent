@@ -1462,22 +1462,26 @@ class TestBuildApiKwargs:
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
 
-    def test_reasoning_xhigh_normalized_for_copilot(self, agent):
-        """xhigh effort should normalize to high for Copilot GitHub Models."""
+    def test_reasoning_xhigh_clamped_for_copilot_provider_hook(self, agent):
         from agent.transports import get_transport
         from providers import get_provider_profile
 
         transport = get_transport("chat_completions")
         profile = get_provider_profile("copilot")
         msgs = [{"role": "user", "content": "hi"}]
-        kwargs = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=msgs,
-            tools=None,
-            supports_reasoning=True,
-            reasoning_config={"enabled": True, "effort": "xhigh"},
-            provider_profile=profile,
-        )
+        with patch(
+            "hermes_cli.models.github_model_reasoning_efforts",
+            return_value=["minimal", "low", "medium", "high"],
+        ):
+            kwargs = transport.build_kwargs(
+                model="gpt-5.5",
+                messages=msgs,
+                tools=None,
+                supports_reasoning=True,
+                reasoning_config={"enabled": True, "effort": "xhigh"},
+                provider_profile=profile,
+            )
+
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):

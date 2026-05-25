@@ -52,9 +52,11 @@ def _clear_cache():
     """Reset module-level cache before each test."""
     import hermes_cli.models as mod
 
+    mod._copilot_catalog_cache = {}
     mod._copilot_context_cache = {}
     mod._copilot_context_cache_time = 0.0
     yield
+    mod._copilot_catalog_cache = {}
     mod._copilot_context_cache = {}
     mod._copilot_context_cache_time = 0.0
 
@@ -94,6 +96,8 @@ class TestGetCopilotModelContext:
         assert mock_fetch.call_count == 1
 
         # Expire the cache
+        for key, (_, catalog) in mod._copilot_catalog_cache.items():
+            mod._copilot_catalog_cache[key] = (time.time() - 7200, catalog)
         mod._copilot_context_cache_time = time.time() - 7200
         get_copilot_model_context("gpt-4.1")
         assert mock_fetch.call_count == 2

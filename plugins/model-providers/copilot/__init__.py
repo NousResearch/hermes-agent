@@ -30,18 +30,16 @@ class CopilotProfile(ProviderProfile):
         extra_body: dict[str, Any] = {}
         if supports_reasoning and model:
             try:
-                from hermes_cli.models import github_model_reasoning_efforts
+                from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
 
                 supported_efforts = github_model_reasoning_efforts(model)
-                if supported_efforts and reasoning_config:
-                    effort = reasoning_config.get("effort", "medium")
-                    # Normalize non-standard effort levels to the nearest supported
-                    if effort == "xhigh":
-                        effort = "high"
-                    if effort in supported_efforts:
-                        extra_body["reasoning"] = {"effort": effort}
-                elif supported_efforts:
-                    extra_body["reasoning"] = {"effort": "medium"}
+                if supported_efforts:
+                    effort = "medium"
+                    if reasoning_config:
+                        effort = reasoning_config.get("effort", "medium")
+                    clamped_effort = clamp_github_reasoning_effort(effort, supported_efforts)
+                    if clamped_effort:
+                        extra_body["reasoning"] = {"effort": clamped_effort}
             except Exception:
                 pass
         return extra_body, {}

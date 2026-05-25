@@ -41,6 +41,23 @@ class TestCopilotCatalogApiKeyResolution:
         ):
             assert _resolve_copilot_catalog_api_key() == "tid_exchanged_xyz"
 
+    def test_uses_gh_cli_raw_token_when_exchange_falls_back_to_raw(self):
+        """`gh auth token` can query /models directly even when Copilot token exchange fails.
+
+        Regression: resolve_api_key_provider_credentials("copilot") returns the raw
+        gho_* token when exchange fails (get_copilot_api_token fallback), but
+        _resolve_copilot_catalog_api_key then retried exchange via the pool-only
+        path and returned "", causing /model to use the stale static list.
+        """
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "gho_from_gh_cli", "source": "gh auth token"},
+        ), patch(
+            "hermes_cli.auth.read_credential_pool",
+        ) as mock_pool:
+            assert _resolve_copilot_catalog_api_key() == "gho_from_gh_cli"
+            mock_pool.assert_not_called()
+
     def test_falls_back_when_env_resolution_raises(self):
         """Env path raising an exception still falls through to the pool."""
         with patch(
@@ -55,6 +72,27 @@ class TestCopilotCatalogApiKeyResolution:
         ):
             assert _resolve_copilot_catalog_api_key() == "tid_exchanged_xyz"
 
+    def test_falls_back_to_direct_gh_cli_resolution_when_auth_path_unavailable(self):
+        """If hermes_cli.auth cannot resolve, still try copilot_auth's gh CLI path.
+
+        This keeps the /model live catalog working in minimal contexts where
+        models.py is usable but importing auth.py or its dependencies fails.
+        """
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            side_effect=RuntimeError("auth dependency unavailable"),
+        ), patch(
+            "hermes_cli.auth.read_credential_pool",
+            return_value=[],
+        ), patch(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            return_value=("gho_from_gh_cli", "gh auth token"),
+        ), patch(
+            "hermes_cli.copilot_auth.get_copilot_api_token",
+            return_value="gho_from_gh_cli",
+        ):
+            assert _resolve_copilot_catalog_api_key() == "gho_from_gh_cli"
+
     def test_skips_classic_pat_in_pool(self):
         """Classic PATs (``ghp_…``) are unsupported by the Copilot API — skip them."""
         with patch(
@@ -65,7 +103,10 @@ class TestCopilotCatalogApiKeyResolution:
             return_value=[{"access_token": "ghp_classic_pat"}],
         ), patch(
             "hermes_cli.copilot_auth.exchange_copilot_token",
-        ) as mock_exchange:
+        ) as mock_exchange, patch(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            return_value=("", ""),
+        ):
             assert _resolve_copilot_catalog_api_key() == ""
             mock_exchange.assert_not_called()
 
@@ -131,6 +172,9 @@ class TestCopilotCatalogApiKeyResolution:
         ), patch(
             "hermes_cli.copilot_auth.exchange_copilot_token",
             side_effect=ValueError("Copilot token exchange failed"),
+        ), patch(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            return_value=("", ""),
         ):
             assert _resolve_copilot_catalog_api_key() == ""
 
@@ -142,16 +186,25 @@ class TestCopilotCatalogApiKeyResolution:
         ), patch(
             "hermes_cli.auth.read_credential_pool",
             return_value=[],
+        ), patch(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            return_value=("", ""),
         ):
             assert _resolve_copilot_catalog_api_key() == ""
 
-    def test_pool_failure_returns_empty_string(self):
-        """If the pool read itself raises, swallow and return ""."""
+    def test_pool_failure_falls_back_to_gh_cli_resolution(self):
+        """If the pool read itself raises, fall back to the GitHub CLI token path."""
         with patch(
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             return_value={"api_key": ""},
         ), patch(
             "hermes_cli.auth.read_credential_pool",
             side_effect=RuntimeError("auth.json locked"),
+        ), patch(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            return_value=("gho_from_gh_cli", "gh auth token"),
+        ), patch(
+            "hermes_cli.copilot_auth.get_copilot_api_token",
+            return_value="gho_from_gh_cli",
         ):
-            assert _resolve_copilot_catalog_api_key() == ""
+            assert _resolve_copilot_catalog_api_key() == "gho_from_gh_cli"

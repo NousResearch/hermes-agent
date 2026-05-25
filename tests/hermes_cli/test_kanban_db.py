@@ -2559,7 +2559,13 @@ def test_dispatch_worktree_task_rerun_reuses_existing_linked_worktree_and_branch
 # ---------------------------------------------------------------------------
 
 def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
-    """A scratch workspace under the kanban workspaces root is removed."""
+    """A scratch workspace under the kanban workspaces root is removed.
+
+    Fork PR #6 moved the inline rmtree out of complete_task into
+    gc_scratch_workspaces (run by the dispatcher) so the worker process
+    doesn't delete its own cwd. The cleanup must still happen — just on
+    the dispatcher's next tick.
+    """
     with kb.connect() as conn:
         t = kb.create_task(conn, title="scratchy")
         task = kb.get_task(conn, t)
@@ -2568,6 +2574,7 @@ def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
         kb.set_workspace_path(conn, t, ws)
         assert ws.is_dir()
         kb.complete_task(conn, t, result="ok")
+        kb.gc_scratch_workspaces(conn)
     assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
 
 
@@ -2628,6 +2635,7 @@ def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeyp
         )
         conn.commit()
         kb.complete_task(conn, t, result="ok")
+        kb.gc_scratch_workspaces(conn)
 
     assert not scratch_dir.exists(), "Override-root scratch dir should be cleaned up"
 

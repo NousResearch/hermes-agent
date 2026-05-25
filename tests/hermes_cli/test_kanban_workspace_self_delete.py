@@ -53,6 +53,10 @@ def test_gc_scratch_workspaces_reaps_done_tasks(tmp_path, monkeypatch):
     from hermes_cli import kanban_db
 
     monkeypatch.setattr(kanban_db, "_cleanup_worker_tmux", lambda conn, tid: None)
+    # Containment guard (PR #28818) restricts GC to paths under a managed
+    # workspaces root. Point HERMES_KANBAN_WORKSPACES_ROOT at tmp_path so the
+    # test's scratch dirs qualify.
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(tmp_path))
 
     done_scratch = tmp_path / "done-scratch"
     done_scratch.mkdir()

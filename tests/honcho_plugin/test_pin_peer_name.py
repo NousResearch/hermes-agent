@@ -22,7 +22,6 @@ touching the network.
 import json
 from unittest.mock import MagicMock
 
-import pytest
 
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import HonchoSessionManager

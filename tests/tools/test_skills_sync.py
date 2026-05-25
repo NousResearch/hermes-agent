@@ -13,8 +13,6 @@ from tools.skills_sync import (
     _dir_hash,
     sync_skills,
     reset_bundled_skill,
-    MANIFEST_FILE,
-    SKILLS_DIR,
 )
 
 

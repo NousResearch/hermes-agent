@@ -664,7 +664,7 @@ class CheckpointManager:
 
         ref = _ref_name(_project_hash(abs_dir))
         ok, stdout, _ = _run_git(
-            ["log", ref, f"--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
+            ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
             store, abs_dir,
             allowed_returncodes={128, 129},
         )

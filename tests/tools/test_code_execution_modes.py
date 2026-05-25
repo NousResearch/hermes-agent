@@ -137,7 +137,8 @@ class TestResolveChildPython(unittest.TestCase):
                 "Windows venvs use Scripts/python.exe and symlink creation "
                 "requires elevated privileges (WinError 1314)."
             )
-        import tempfile, pathlib
+        import tempfile
+        import pathlib
         with tempfile.TemporaryDirectory() as td:
             fake_venv = pathlib.Path(td)
             (fake_venv / "bin").mkdir()
@@ -166,7 +167,8 @@ class TestResolveChildPython(unittest.TestCase):
                 "Windows venvs use Scripts/python.exe and symlink creation "
                 "requires elevated privileges (WinError 1314)."
             )
-        import tempfile, pathlib
+        import tempfile
+        import pathlib
         with tempfile.TemporaryDirectory() as ve_td, tempfile.TemporaryDirectory() as conda_td:
             ve = pathlib.Path(ve_td)
             (ve / "bin").mkdir()

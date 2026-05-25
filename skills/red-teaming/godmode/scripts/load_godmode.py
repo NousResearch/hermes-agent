@@ -14,7 +14,8 @@ Usage in execute_code:
     # - escalate_encoding()
 """
 
-import os, sys
+import os
+import sys
 from pathlib import Path
 
 _gm_scripts_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode" / "scripts"

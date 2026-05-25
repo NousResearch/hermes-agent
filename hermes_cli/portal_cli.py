@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import sys
 import webbrowser
-from typing import Optional
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config
@@ -63,7 +62,7 @@ def _cmd_status(args) -> int:
     else:
         print(f"  Auth:    {color('not logged in', Colors.YELLOW)}")
         print(f"  Sign up: {SUBSCRIPTION_URL}")
-        print(f"  Login:   hermes auth add nous --type oauth")
+        print("  Login:   hermes auth add nous --type oauth")
 
     # Provider selection (independent of auth)
     model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}

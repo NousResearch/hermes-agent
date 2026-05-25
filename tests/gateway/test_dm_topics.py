@@ -9,12 +9,11 @@ Covers:
 - _build_message_event: DM topic resolution in message events
 """
 
-import asyncio
 import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch, mock_open
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

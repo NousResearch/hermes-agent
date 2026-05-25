@@ -21,16 +21,13 @@ bytes.  The child then fails to import with a SyntaxError:
 """
 
 import os
-import socket
 import subprocess
 import sys
 import textwrap
-import unittest.mock as mock
 
 import pytest
 
 from tools.code_execution_tool import (
-    _SAFE_ENV_PREFIXES,
     _SECRET_SUBSTRINGS,
     _WINDOWS_ESSENTIAL_ENV_VARS,
     _scrub_child_env,
@@ -477,7 +474,8 @@ class TestSandboxWritesUtf8:
         em-dashes (which it does — check the transport-header docstring).
         """
         from tools.code_execution_tool import generate_hermes_tools_module
-        import tempfile, ast
+        import tempfile
+        import ast
         stub = generate_hermes_tools_module(
             ["terminal", "read_file", "write_file"], transport="uds"
         )

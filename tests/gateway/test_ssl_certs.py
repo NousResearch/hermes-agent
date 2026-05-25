@@ -1,6 +1,5 @@
 """Tests for SSL certificate auto-detection in gateway/run.py."""
 
-import importlib
 import os
 from unittest.mock import patch, MagicMock
 
@@ -12,7 +11,8 @@ def _load_ensure_ssl():
     # but we need to be careful about side effects.  Instead, replicate the
     # logic in a controlled way.
     from types import ModuleType
-    import textwrap, ssl as _ssl  # noqa: F401
+    import textwrap
+    import ssl as _ssl  # noqa: F401
 
     code = textwrap.dedent("""\
     import os, ssl

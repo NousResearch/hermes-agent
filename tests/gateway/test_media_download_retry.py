@@ -536,7 +536,7 @@ import gateway.platforms.slack as _slack_mod  # noqa: E402
 _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
-from gateway.config import Platform, PlatformConfig  # noqa: E402
+from gateway.config import PlatformConfig  # noqa: E402
 
 
 def _make_slack_adapter():

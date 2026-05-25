@@ -249,7 +249,7 @@ class WebToolsTester:
                 "https://docs.firecrawl.dev/introduction",
                 "https://www.python.org/about/"
             ]
-            print(f"  Using default URLs for testing")
+            print("  Using default URLs for testing")
         else:
             print(f"  Using {len(urls)} URLs from search results")
         
@@ -334,7 +334,7 @@ class WebToolsTester:
                         f"No valid content. {failed_results} errors, {len(results) - failed_results} empty"
                     )
                     if self.verbose:
-                        print(f"\n  Extraction details:")
+                        print("\n  Extraction details:")
                         for detail in extraction_details:
                             print(f"    {detail}")
                     
@@ -392,7 +392,7 @@ class WebToolsTester:
                     )
                     
                     if self.verbose:
-                        print(f"\n    First 300 chars of processed content:")
+                        print("\n    First 300 chars of processed content:")
                         print(f"    {content[:300]}...")
                 else:
                     self.log_result("Extract (with LLM)", "failed", "No content after processing")
@@ -419,7 +419,7 @@ class WebToolsTester:
                 if instructions:
                     print(f"  Instructions: {instructions}")
                 else:
-                    print(f"  No instructions (general crawl)")
+                    print("  No instructions (general crawl)")
                 print(f"  Expected minimum pages: {expected_min_pages}")
                 
                 # Show what's being called
@@ -479,12 +479,12 @@ class WebToolsTester:
                 
                 # Show detailed results if verbose
                 if self.verbose:
-                    print(f"\n  Crawl Results:")
+                    print("\n  Crawl Results:")
                     print(f"    Total pages returned: {len(results)}")
                     print(f"    Valid pages (with content): {valid_pages}")
                     print(f"    Empty pages: {empty_pages}")
                     print(f"    Total content size: {total_content} characters")
-                    print(f"\n  Page Details:")
+                    print("\n  Page Details:")
                     for detail in page_details[:10]:  # Show first 10 pages
                         print(f"    - {detail}")
                     if len(page_details) > 10:
@@ -508,7 +508,7 @@ class WebToolsTester:
                 self.log_result(f"Crawl: {url}", "failed", f"Exception: {type(e).__name__}: {str(e)}")
                 if self.verbose:
                     import traceback
-                    print(f"    Traceback:")
+                    print("    Traceback:")
                     print("    " + "\n    ".join(traceback.format_exc().split("\n")))
     
     async def run_all_tests(self):

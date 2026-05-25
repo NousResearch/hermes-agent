@@ -4491,7 +4491,6 @@ def detect_stale_running(
     if stale_timeout_seconds <= 0:
         return []
 
-    import signal as _signal_mod
 
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6145,7 +6144,7 @@ def _to_epoch(val) -> Optional[int]:
         pass
     # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         return int(dt.timestamp())
     except (ValueError, OSError):

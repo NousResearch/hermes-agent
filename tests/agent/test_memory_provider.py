@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
@@ -433,7 +433,7 @@ class TestUserInstalledProviderDiscovery:
 
     def test_discover_finds_user_plugins(self, tmp_path, monkeypatch):
         """discover_memory_providers() includes user-installed plugins."""
-        from plugins.memory import discover_memory_providers, _get_user_plugins_dir
+        from plugins.memory import discover_memory_providers
         self._make_user_memory_plugin(tmp_path, "myexternal")
         monkeypatch.setattr(
             "plugins.memory._get_user_plugins_dir",

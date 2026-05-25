@@ -12,7 +12,6 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import signal
 from typing import Optional

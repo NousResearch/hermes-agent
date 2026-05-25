@@ -44,7 +44,7 @@ class TestJobContextFromField:
         assert loaded["context_from"] == [job_a["id"]]
 
     def test_create_job_with_context_from_list(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from cron.jobs import create_job
 
         job_a = create_job(prompt="Find news", schedule="every 1h")
         job_b = create_job(prompt="Find weather", schedule="every 1h")

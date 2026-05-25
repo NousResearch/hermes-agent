@@ -2,17 +2,13 @@
 
 import os
 import json
-import tempfile
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from hermes_cli.config import (
-    DEFAULT_CONFIG,
     reload_env,
     redact_key,
-    _EXTRA_ENV_KEYS,
     OPTIONAL_ENV_VARS,
 )
 
@@ -549,7 +545,7 @@ class TestConfigRoundTrip:
                 mismatches.append(f"{key}: expected bool, got {type(val).__name__}")
             elif expected == "list" and not isinstance(val, list):
                 mismatches.append(f"{key}: expected list, got {type(val).__name__}")
-        assert not mismatches, f"Type mismatches:\n" + "\n".join(mismatches)
+        assert not mismatches, "Type mismatches:\n" + "\n".join(mismatches)
 
 
 # ---------------------------------------------------------------------------
@@ -1924,7 +1920,6 @@ class TestPluginAPIAuth:
         shared layer can't silently break the WS auth contract.
         """
         from starlette.websockets import WebSocketDisconnect
-        from hermes_cli.web_server import _SESSION_TOKEN
 
         # Without a token the WS endpoint must close the upgrade itself
         # (its own _check_ws_token), NOT 401 from the HTTP middleware.
@@ -2341,7 +2336,8 @@ class TestPtyWebSocket:
                 # receive_text().  Without this, under heavy CI load the
                 # receive can race the broadcast and hang until
                 # pytest-timeout kills us.
-                import queue, threading
+                import queue
+                import threading
                 recv_q: queue.Queue = queue.Queue()
 
                 def _recv():

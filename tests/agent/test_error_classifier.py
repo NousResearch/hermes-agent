@@ -1,6 +1,5 @@
 """Tests for agent.error_classifier — structured API error classification."""
 
-import pytest
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,

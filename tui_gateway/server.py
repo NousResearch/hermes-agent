@@ -2127,7 +2127,8 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 
 def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     """Pre-analyze attached images via vision and prepend descriptions to user text."""
-    import asyncio, json as _json
+    import asyncio
+    import json as _json
     from tools.vision_tools import vision_analyze_tool
 
     prompt = (
@@ -2933,7 +2934,6 @@ def _(rid, params: dict) -> dict:
 
 
 def _spawn_trees_root():
-    from pathlib import Path as _P
     from hermes_constants import get_hermes_home
 
     root = get_hermes_home() / "spawn-trees"

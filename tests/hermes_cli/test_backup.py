@@ -999,7 +999,6 @@ class TestProfileRestoration:
         args = Namespace(zipfile=str(zip_path), force=True)
 
         # Simulate profiles module not being available
-        import hermes_cli.backup as backup_mod
         original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 
         def fake_import(name, *a, **kw):

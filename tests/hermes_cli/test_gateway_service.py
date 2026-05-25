@@ -1321,7 +1321,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_auto_detected_root_is_rejected(self, monkeypatch):
         """When root is auto-detected (not explicitly requested), raise."""
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "root")
@@ -1343,7 +1342,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_non_root_user_passes_through(self, monkeypatch):
         """Normal non-root user works as before."""
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "nobody")
@@ -1936,7 +1934,7 @@ class TestLegacyHermesUnitDetection:
             "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
         ]
         for i, execstart in enumerate(variants):
-            name = f"hermes.service" if i == 0 else f"hermes.service"  # same name
+            name = "hermes.service" if i == 0 else "hermes.service"  # same name
             # Test each variant fresh
             (user_dir / "hermes.service").write_text(
                 f"[Unit]\nDescription=Old Hermes\n[Service]\n{execstart}\n",

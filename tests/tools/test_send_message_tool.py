@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,7 +39,6 @@ from tools.send_message_tool import (
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
 from plugins.platforms.discord.adapter import (
-    _DISCORD_CHANNEL_TYPE_PROBE_CACHE,
     _derive_forum_thread_name,
     _probe_is_forum_cached,
     _remember_channel_is_forum,
@@ -1510,7 +1508,6 @@ class TestSendMatrixUrlEncoding:
 
     def test_room_id_is_percent_encoded_in_url(self):
         """Matrix room IDs with ! and : are percent-encoded in the PUT URL."""
-        import aiohttp
 
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -1887,10 +1884,6 @@ class TestForumProbeCache:
         discord_adapter._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
 
     def test_cache_round_trip(self):
-        from plugins.platforms.discord.adapter import (
-            _probe_is_forum_cached,
-            _remember_channel_is_forum,
-        )
         assert _probe_is_forum_cached("xyz") is None
         _remember_channel_is_forum("xyz", True)
         assert _probe_is_forum_cached("xyz") is True

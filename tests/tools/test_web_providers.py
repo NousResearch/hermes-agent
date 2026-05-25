@@ -305,7 +305,6 @@ class TestUnconfiguredErrorEnvelopeParity:
         """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
         — matching main's ``tool_error()`` envelope, not a per-result shape.
         """
-        import json
         from tools import web_tools
 
         self._clear_web_creds(monkeypatch)
@@ -329,7 +328,6 @@ class TestUnconfiguredErrorEnvelopeParity:
         into ``results[]``.
         """
         import asyncio
-        import json
         from tools import web_tools
 
         self._clear_web_creds(monkeypatch)

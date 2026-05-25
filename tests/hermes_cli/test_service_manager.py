@@ -361,7 +361,6 @@ def test_get_service_manager_returns_s6_instance(
 ) -> None:
     """The s6 backend ships in Phase 3 — the factory must return an
     S6ServiceManager when running inside a container."""
-    from hermes_cli.service_manager import S6ServiceManager
     monkeypatch.setattr(
         "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
     )
@@ -406,7 +405,6 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_s6_manager_kind_and_supports_registration() -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager()
     assert mgr.kind == "s6"
     assert mgr.supports_runtime_registration() is True
@@ -524,7 +522,6 @@ def test_seed_supervise_skeleton_is_idempotent(tmp_path) -> None:
 def test_s6_register_creates_service_dir_and_triggers_scan(
     s6_scandir, fake_subprocess_run,
 ) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
     mgr.register_profile_gateway("coder")
 
@@ -560,7 +557,6 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
 
 
 def test_s6_register_extra_env_is_quoted(s6_scandir, fake_subprocess_run) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
     mgr.register_profile_gateway(
         "x", extra_env={"FOO": "bar baz", "QUOTED": "a'b"},
@@ -572,14 +568,12 @@ def test_s6_register_extra_env_is_quoted(s6_scandir, fake_subprocess_run) -> Non
 
 
 def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
     with pytest.raises(ValueError):
         mgr.register_profile_gateway("Bad/Name")
 
 
 def test_s6_register_rejects_duplicate(s6_scandir, fake_subprocess_run) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
     (s6_scandir / "gateway-coder").mkdir(parents=True)
     with pytest.raises(ValueError, match="already registered"):
@@ -592,7 +586,6 @@ def test_s6_register_rolls_back_on_svscanctl_failure(
     """If s6-svscanctl fails the service dir must be cleaned up so the
     next register call doesn't see a stale duplicate."""
     import subprocess as _sp
-    from hermes_cli.service_manager import S6ServiceManager
 
     def _fail_scanctl(cmd, **kw):
         # Manager calls s6-svscanctl by absolute path; match on basename.
@@ -610,7 +603,6 @@ def test_s6_register_rolls_back_on_svscanctl_failure(
 def test_s6_unregister_removes_service_dir(
     s6_scandir, fake_subprocess_run,
 ) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     svc_dir = s6_scandir / "gateway-coder"
     svc_dir.mkdir(parents=True)
     (svc_dir / "type").write_text("longrun\n")
@@ -630,13 +622,11 @@ def test_s6_unregister_removes_service_dir(
 
 
 def test_s6_unregister_absent_profile_is_noop(s6_scandir) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     # Should NOT raise even though "ghost" doesn't exist
     S6ServiceManager(scandir=s6_scandir).unregister_profile_gateway("ghost")
 
 
 def test_s6_list_profile_gateways(s6_scandir) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     # Three gateway profiles + one unrelated service + one hidden dir
     (s6_scandir / "gateway-coder").mkdir()
     (s6_scandir / "gateway-assistant").mkdir()
@@ -649,7 +639,6 @@ def test_s6_list_profile_gateways(s6_scandir) -> None:
 
 
 def test_s6_list_profile_gateways_empty_when_scandir_missing(tmp_path) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     missing = tmp_path / "does-not-exist"
     assert S6ServiceManager(scandir=missing).list_profile_gateways() == []
 
@@ -657,7 +646,6 @@ def test_s6_list_profile_gateways_empty_when_scandir_missing(tmp_path) -> None:
 def test_s6_lifecycle_dispatches_to_s6_svc(
     s6_scandir, fake_subprocess_run,
 ) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
     # _run_svc now verifies the slot exists before invoking s6-svc, so
     # we have to pre-seed the dir. In real use the slot is created by
@@ -685,7 +673,6 @@ def test_lifecycle_raises_gateway_not_registered_for_missing_slot(
     opaque CalledProcessError stacktrace."""
     from hermes_cli.service_manager import (
         GatewayNotRegisteredError,
-        S6ServiceManager,
     )
 
     mgr = S6ServiceManager(scandir=s6_scandir)
@@ -715,7 +702,6 @@ def test_all_lifecycle_methods_check_for_missing_slot(
     """start/stop/restart all check for missing slots the same way."""
     from hermes_cli.service_manager import (
         GatewayNotRegisteredError,
-        S6ServiceManager,
     )
 
     mgr = S6ServiceManager(scandir=s6_scandir)
@@ -730,7 +716,6 @@ def test_gateway_not_registered_unprefixed_service_name(s6_scandir) -> None:
     accidentally strip user-provided text."""
     from hermes_cli.service_manager import (
         GatewayNotRegisteredError,
-        S6ServiceManager,
     )
 
     mgr = S6ServiceManager(scandir=s6_scandir)
@@ -747,7 +732,7 @@ def test_lifecycle_raises_s6_command_error_on_subprocess_failure(
     CalledProcessError into a named S6CommandError carrying the
     return code and stderr."""
     import subprocess as _sp
-    from hermes_cli.service_manager import S6CommandError, S6ServiceManager
+    from hermes_cli.service_manager import S6CommandError
 
     # Pre-create the slot so we reach the s6-svc call.
     (s6_scandir / "gateway-coder").mkdir()
@@ -776,7 +761,6 @@ def test_s6_is_running_parses_svstat(
     s6_scandir, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import subprocess as _sp
-    from hermes_cli.service_manager import S6ServiceManager
 
     def _svstat(cmd, **kw):
         if cmd[0].endswith("/s6-svstat"):

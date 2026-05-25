@@ -1395,7 +1395,6 @@ class TestShellSafety:
 
     def test_env_var_template_uses_shell_path(self, monkeypatch):
         """When HERMES_LOCAL_STT_COMMAND is set, use_shell should be True."""
-        import os
         from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
         monkeypatch.setenv(LOCAL_STT_COMMAND_ENV, "whisper {input_path} | tee log.txt")
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
@@ -1403,7 +1402,6 @@ class TestShellSafety:
 
     def test_no_env_var_uses_list_mode(self, monkeypatch):
         """When no env var is set, use_shell should be False."""
-        import os
         from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())

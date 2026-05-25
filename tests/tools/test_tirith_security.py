@@ -963,7 +963,7 @@ class TestDiskFailureMarker:
 
     def test_cosign_missing_disk_marker_allows_retry(self):
         """Disk marker with cosign_missing reason allows retry when cosign appears."""
-        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
+        from tools.tirith_security import _resolve_tirith_path
         _tirith_mod._resolved_path = None
 
         # _is_install_failed_on_disk sees "cosign_missing" + cosign on PATH → returns False

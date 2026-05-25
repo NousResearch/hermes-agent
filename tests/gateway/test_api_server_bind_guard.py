@@ -5,7 +5,7 @@ that connect() refuses to start on non-loopback without API_SERVER_KEY.
 """
 
 import socket
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 

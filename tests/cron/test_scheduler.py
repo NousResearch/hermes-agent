@@ -1239,7 +1239,6 @@ class TestRunJobSessionPersistence:
         (issue #8585)
         """
         from cron.scheduler import tick
-        from cron.jobs import load_jobs, save_jobs
 
         job = {
             "id": "empty-job",
@@ -2249,7 +2248,6 @@ class TestParallelTick:
     def test_parallel_jobs_run_concurrently(self):
         """Two jobs launched in the same tick should overlap in time."""
         import threading
-        import time
 
         barrier = threading.Barrier(2, timeout=5)
         call_order = []

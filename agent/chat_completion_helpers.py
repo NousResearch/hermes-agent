@@ -15,48 +15,22 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
-import concurrent.futures
-import contextvars
-import copy
 import json
 import logging
 import os
-import random
 import re
-import sys
 import threading
 import time
 import uuid
-from datetime import datetime
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, parse_qs, urlunparse
+from typing import Any, Dict
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
-from agent.error_classifier import classify_api_error, FailoverReason
+from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
-    _sanitize_messages_surrogates,
-    _sanitize_structure_surrogates,
-    _sanitize_messages_non_ascii,
-    _sanitize_tools_non_ascii,
-    _sanitize_structure_non_ascii,
-    _strip_images_from_messages,
-    _strip_non_ascii,
     _repair_tool_call_arguments,
-    _escape_invalid_chars_in_json_strings,
-)
-from agent.tool_dispatch_helpers import (
-    _is_multimodal_tool_result,
-    _multimodal_text_summary,
-)
-from agent.retry_utils import jittered_backoff
-from agent.tool_guardrails import (
-    ToolGuardrailDecision,
-    append_toolguard_guidance,
-    toolguard_synthetic_result,
 )
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname

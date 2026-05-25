@@ -3606,8 +3606,8 @@ def _model_flow_custom(config):
     )
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
-        print(f"  Hint: Did you mean to add /v1 at the end?")
-        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print("  Hint: Did you mean to add /v1 at the end?")
+        print("  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
         print(f"  e.g. {effective_url.rstrip('/')}/v1")
         try:
             _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
@@ -4027,7 +4027,7 @@ def _model_flow_azure_foundry(config, current_model=""):
         )
         print(f"  Current API mode:  {_lbl}")
     if current_auth_mode == "entra_id":
-        print(f"  Current auth mode: Microsoft Entra ID (keyless)")
+        print("  Current auth mode: Microsoft Entra ID (keyless)")
     elif current_api_key:
         print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
     print()
@@ -4554,7 +4554,7 @@ def _model_flow_named_custom(config, provider_info):
 # it to the model-selection handlers so plain `hermes --tui` does not pay for
 # requests/models.dev catalog imports before the Node TUI starts.
 if not _is_termux_startup_environment():
-    from hermes_cli.models import _PROVIDER_MODELS
+    pass
 
 
 def _current_reasoning_effort(config) -> str:
@@ -5553,7 +5553,6 @@ def _model_flow_bedrock(config, current_model=""):
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.auth import (
-        LMSTUDIO_NOAUTH_PLACEHOLDER,
         PROVIDER_REGISTRY,
         _prompt_model_selection,
         _save_model_choice,
@@ -8621,8 +8620,8 @@ def _run_pre_update_backup(args) -> None:
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
     print(f"  Restore:  hermes import {out_path}")
-    print(f"  Disable:  omit --backup (backups are off by default)")
-    print(f"            set updates.pre_update_backup: false in config.yaml")
+    print("  Disable:  omit --backup (backups are off by default)")
+    print("            set updates.pre_update_backup: false in config.yaml")
     print()
 
 
@@ -8785,7 +8784,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "✗ Authentication failed — check your git credentials or SSH key."
                 )
             else:
-                print(f"✗ Failed to fetch updates from origin.")
+                print("✗ Failed to fetch updates from origin.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
@@ -8966,7 +8965,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
-                    print(f"  Restore manually with: git stash apply")
+                    print("  Restore manually with: git stash apply")
                 else:
                     _restore_stashed_changes(
                         git_cmd,
@@ -10012,7 +10011,7 @@ def cmd_profile(args):
         try:
             set_active_profile(name)
             if name == "default":
-                print(f"Switched to: default (~/.hermes)")
+                print("Switched to: default (~/.hermes)")
             else:
                 print(f"Switched to: {name}")
         except (ValueError, FileNotFoundError) as e:
@@ -10097,9 +10096,9 @@ def cmd_profile(args):
                         if not _is_wrapper_dir_in_path():
                             print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                             print(
-                                f"  Add to your shell config (~/.bashrc or ~/.zshrc):"
+                                "  Add to your shell config (~/.bashrc or ~/.zshrc):"
                             )
-                            print(f'    export PATH="$HOME/.local/bin:$PATH"')
+                            print('    export PATH="$HOME/.local/bin:$PATH"')
 
             # Profile dir for display
             try:
@@ -10108,7 +10107,7 @@ def cmd_profile(args):
                 profile_dir_display = str(profile_dir)
 
             # Next steps
-            print(f"\nNext steps:")
+            print("\nNext steps:")
             print(f"  {name} setup              Configure API keys and model")
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
@@ -10119,7 +10118,7 @@ def cmd_profile(args):
                 print(
                     f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,"
                 )
-                print(f"    or it will inherit keys from your shell environment.")
+                print("    or it will inherit keys from your shell environment.")
                 print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
             print()
 
@@ -12732,7 +12731,7 @@ Examples:
                 )
                 return
 
-            print(f"\n  This will permanently erase the following memory files:")
+            print("\n  This will permanently erase the following memory files:")
             for f, desc in existing:
                 path = mem_dir / f
                 size = path.stat().st_size
@@ -12753,7 +12752,7 @@ Examples:
                 print(f"  ✓ Deleted {f} ({desc})")
 
             print(
-                f"\n  Memory reset complete. New sessions will start with a blank slate."
+                "\n  Memory reset complete. New sessions will start with a blank slate."
             )
             print(f"  Files were in: {display_hermes_home()}/memories/\n")
         else:

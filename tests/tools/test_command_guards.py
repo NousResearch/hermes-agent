@@ -10,12 +10,9 @@ from tools.approval import (
     approve_session,
     check_all_command_guards,
     is_approved,
-    set_current_session_key,
-    reset_current_session_key,
 )
 
 # Ensure the module is importable so we can patch it
-import tools.tirith_security
 
 
 # ---------------------------------------------------------------------------

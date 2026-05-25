@@ -4,12 +4,10 @@ and handles responses properly for all supported providers.
 Ensures changes to one provider path don't silently break another.
 """
 
-import json
-import os
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from agent.codex_responses_adapter import _chat_content_to_responses_parts, _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items

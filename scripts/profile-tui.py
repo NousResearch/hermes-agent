@@ -438,7 +438,9 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
         os.execvpe(node, node_args, env)
 
     try:
-        import fcntl, struct, termios
+        import fcntl
+        import struct
+        import termios
         winsize = struct.pack("HHHH", args.rows, args.cols, 0, 0)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 

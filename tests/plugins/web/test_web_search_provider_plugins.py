@@ -20,9 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import os
-import sys
-from typing import Any, Dict, List
 
 import pytest
 
@@ -273,7 +270,7 @@ class TestRegistryResolution:
         surfaces a precise "FOO_API_KEY is not set" error instead.
         """
         _ensure_plugins_loaded()
-        from agent.web_search_registry import _resolve, get_provider
+        from agent.web_search_registry import _resolve
 
         # No BRAVE_SEARCH_API_KEY (fixture cleared it).
         result = _resolve("brave-free", capability="search")

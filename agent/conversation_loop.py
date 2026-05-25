@@ -27,8 +27,6 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from agent.anthropic_adapter import _is_oauth_token
-from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -54,20 +52,12 @@ from agent.model_metadata import (
     parse_context_limit_from_error,
     save_context_length,
 )
-from agent.nous_rate_guard import (
-    clear_nous_rate_limit,
-    is_genuine_nous_rate_limit,
-    nous_rate_limit_remaining,
-    record_nous_rate_limit,
-)
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from hermes_constants import display_hermes_home as _dhh_fn
 from hermes_logging import set_session_context
-from tools.schema_sanitizer import strip_pattern_and_format
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
@@ -279,7 +269,6 @@ def run_conversation(
 
     # Tag all log records on this thread with the session ID so
     # ``hermes logs --session <id>`` can filter a single conversation.
-    from hermes_logging import set_session_context
     set_session_context(agent.session_id)
 
     # Bind the skill write-origin ContextVar for this thread so tool
@@ -288,7 +277,6 @@ def run_conversation(
     # a foreground user-directed turn. Set at the top of each call;
     # the review fork runs on its own thread with a fresh context,
     # so the foreground value here does not leak into it.
-    from tools.skill_provenance import set_current_write_origin
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
 
     # If the previous turn activated fallback, restore the primary
@@ -1306,7 +1294,7 @@ def run_conversation(
                     elif _resp_error_code == 504:
                         _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
                     elif _resp_error_code == 429:
-                        _failure_hint = f"rate limited by upstream provider (429)"
+                        _failure_hint = "rate limited by upstream provider (429)"
                     elif _resp_error_code in {500, 502}:
                         _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
                     elif _resp_error_code in {503, 529}:

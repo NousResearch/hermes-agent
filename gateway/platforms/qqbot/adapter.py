@@ -126,7 +126,6 @@ from gateway.platforms.qqbot.chunked_upload import (
 )
 from gateway.platforms.qqbot.keyboards import (
     ApprovalRequest,
-    ApprovalSender,
     InlineKeyboard,
     InteractionEvent,
     build_approval_keyboard,
@@ -2667,7 +2666,7 @@ class QQAdapter(BasePlatformAdapter):
 
         req = ApprovalRequest(
             session_key=session_key,
-            title=f"Execute this command?",
+            title="Execute this command?",
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,

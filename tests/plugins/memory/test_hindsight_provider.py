@@ -994,7 +994,6 @@ class TestSessionSwitchBufferFlush:
         old session to settle before clearing _prefetch_result, otherwise
         the thread can race and re-populate the field after the clear."""
         import threading
-        import time as _time
 
         gate = threading.Event()
         finished = threading.Event()

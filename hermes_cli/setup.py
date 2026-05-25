@@ -2206,9 +2206,9 @@ def _setup_matrix():
                     print_success(f"{matrix_pkg} installed")
                 except Exception as exc:
                     print_warning(
-                        f"Install failed — run manually: pip install "
-                        f"'mautrix[encryption]' asyncpg aiosqlite Markdown "
-                        f"aiohttp-socks"
+                        "Install failed — run manually: pip install "
+                        "'mautrix[encryption]' asyncpg aiosqlite Markdown "
+                        "aiohttp-socks"
                     )
                     print_info(f"  Error: {exc}")
         except ImportError:

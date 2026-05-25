@@ -3550,8 +3550,8 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
         hint_path = os.environ.get("HERMES_HOME", "~/.hermes")
         lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
         lines.append(
-            f"  \033[2mMove to config.yaml instead:  "
-            f"terminal:\\n    cwd: /your/project/path\033[0m"
+            "  \033[2mMove to config.yaml instead:  "
+            "terminal:\\n    cwd: /your/project/path\033[0m"
         )
         lines.append(
             f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m"
@@ -3760,7 +3760,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             config["stt"] = stt
             save_config(config)
             if not quiet:
-                print(f"  ✓ Migrated legacy stt.model to provider-specific config")
+                print("  ✓ Migrated legacy stt.model to provider-specific config")
 
     # ── Version 14 → 15: add explicit gateway interim-message gate ──
     if current_ver < 15:
@@ -4822,8 +4822,8 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
         f"\n"
         + "\n".join(f"  {line}" for line in bad_chars[:5])
         + ("\n  ... and more" if len(bad_chars) > 5 else "")
-        + f"\n\n  The non-ASCII characters have been stripped automatically.\n"
-        f"  If authentication fails, re-copy the key from the provider's dashboard.\n",
+        + "\n\n  The non-ASCII characters have been stripped automatically.\n"
+        "  If authentication fails, re-copy the key from the provider's dashboard.\n",
         file=sys.stderr,
     )
     return sanitized
@@ -5589,7 +5589,7 @@ def _inject_platform_plugin_env_vars() -> None:
                 # is a password field unless explicitly overridden.
                 name_upper = name.upper()
                 is_secret = bool(meta.get("password") or meta.get("secret"))
-                if not is_secret and not meta.get("password") is False:
+                if not is_secret and meta.get("password") is not False:
                     is_secret = any(
                         name_upper.endswith(suf)
                         for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")

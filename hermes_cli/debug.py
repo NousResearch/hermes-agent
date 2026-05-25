@@ -681,7 +681,7 @@ def run_debug_share(args):
 
     # Print results
     label_width = max(len(k) for k in urls)
-    print(f"\nDebug report uploaded:")
+    print("\nDebug report uploaded:")
     for label, url in urls.items():
         print(f"  {label:<{label_width}}  {url}")
 
@@ -690,12 +690,12 @@ def run_debug_share(args):
 
     # Schedule auto-deletion after 6 hours
     _schedule_auto_delete(list(urls.values()))
-    print(f"\n⏱  Pastes will auto-delete in 6 hours.")
+    print("\n⏱  Pastes will auto-delete in 6 hours.")
 
     # Manual delete fallback
-    print(f"To delete now:  hermes debug delete <url>")
+    print("To delete now:  hermes debug delete <url>")
 
-    print(f"\nShare these links with the Hermes team for support.")
+    print("\nShare these links with the Hermes team for support.")
 
 
 def run_debug_delete(args):

@@ -18,7 +18,6 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
 
 import pytest
 
@@ -1960,7 +1959,8 @@ def test_cli_bulk_complete_with_summary_rejects(kanban_home):
     # (args.func(args) discards the return value), so we check the side
     # effects instead.
     from subprocess import run as _run
-    import os, sys
+    import os
+    import sys
     env = os.environ.copy()
     r = _run(
         [sys.executable, "-m", "hermes_cli.main", "kanban",

@@ -34,7 +34,7 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
 

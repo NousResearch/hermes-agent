@@ -1,7 +1,5 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
-import os
-import stat
 import tempfile
 from pathlib import Path
 
@@ -33,8 +31,6 @@ from tools.skills_guard import (
     _resolve_trust_level,
     _check_structure,
     _unicode_char_name,
-    INSTALL_POLICY,
-    INVISIBLE_CHARS,
     MAX_FILE_COUNT,
     MAX_SINGLE_FILE_KB,
 )
@@ -257,7 +253,7 @@ class TestScanFile:
 
     def test_detect_invisible_unicode(self, tmp_path):
         f = tmp_path / "hidden.md"
-        f.write_text(f"normal text\u200b with zero-width space\n")
+        f.write_text("normal text\u200b with zero-width space\n")
         findings = scan_file(f, "hidden.md")
         assert any(fi.pattern_id == "invisible_unicode" for fi in findings)
 

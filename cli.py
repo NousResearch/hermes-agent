@@ -6425,7 +6425,7 @@ class HermesCLI:
         home = gw_config.get_home_channel(platform)
         if not home or not home.chat_id:
             _cprint(f"  No home channel configured for {platform_name}.")
-            _cprint(f"  Set one with /sethome on the destination chat first.")
+            _cprint("  Set one with /sethome on the destination chat first.")
             return True
 
         # Refuse mid-turn: an in-flight agent run would race with the
@@ -6480,7 +6480,7 @@ class HermesCLI:
             return True
 
         _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
-        _cprint(f"  Waiting for the gateway to pick it up...")
+        _cprint("  Waiting for the gateway to pick it up...")
 
         # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
         import time as _time
@@ -8854,7 +8854,7 @@ class HermesCLI:
                     sys_name = _plat.system()
                     chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:
-                        print(f"     Launch a Chromium-family browser manually:")
+                        print("     Launch a Chromium-family browser manually:")
                         print(f"     {chrome_cmd}")
                     else:
                         print("     No supported Chromium-family browser executable found in this environment")

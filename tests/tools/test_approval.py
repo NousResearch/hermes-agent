@@ -17,7 +17,6 @@ from tools.approval import (
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
-    submit_pending,
 )
 
 
@@ -697,7 +696,7 @@ class TestNormalizationBypass:
         """ANSI CSI color codes wrapping 'rm' must be stripped and caught."""
         cmd = "\x1b[31mrm\x1b[0m -rf /"
         dangerous, key, desc = detect_dangerous_command(cmd)
-        assert dangerous is True, f"ANSI-wrapped 'rm -rf /' was not detected"
+        assert dangerous is True, "ANSI-wrapped 'rm -rf /' was not detected"
 
     def test_ansi_osc_embedded_rm(self):
         """ANSI OSC sequences embedded in command must be stripped."""

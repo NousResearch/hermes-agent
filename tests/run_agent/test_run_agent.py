@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from agent.codex_responses_adapter import _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
+from agent.codex_responses_adapter import _normalize_codex_response
 
 import run_agent
 from run_agent import AIAgent
@@ -4406,7 +4406,6 @@ class TestSafeWriter:
 
     def test_double_wrap_prevented(self):
         """Wrapping an already-wrapped stream doesn't add layers."""
-        import sys
         from run_agent import _SafeWriter
         from io import StringIO
         inner = StringIO()
@@ -5057,7 +5056,7 @@ class TestInterruptVprintForceTrue:
                 if "force=True" not in stripped:
                     violations.append(f"line {i}: {stripped}")
         assert not violations, (
-            f"Interrupt _vprint calls missing force=True:\n"
+            "Interrupt _vprint calls missing force=True:\n"
             + "\n".join(violations)
         )
 

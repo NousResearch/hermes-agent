@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -36,7 +35,7 @@ def _make_bundle_yaml(
     for s in skills:
         lines.append(f"  - {s}")
     if instruction:
-        lines.append(f"instruction: |")
+        lines.append("instruction: |")
         for ln in instruction.splitlines():
             lines.append(f"  {ln}")
     path = bundles_dir / f"{slug}.yaml"

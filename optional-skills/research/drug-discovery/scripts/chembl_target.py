@@ -4,8 +4,13 @@ chembl_target.py — Search ChEMBL for a target and retrieve top active compound
 Usage: python3 chembl_target.py "EGFR" --min-pchembl 7 --limit 20
 No external dependencies.
 """
-import sys, json, time, argparse
-import urllib.request, urllib.parse, urllib.error
+import sys
+import json
+import time
+import argparse
+import urllib.request
+import urllib.parse
+import urllib.error
 
 BASE = "https://www.ebi.ac.uk/chembl/api/data"
 

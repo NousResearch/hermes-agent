@@ -13,7 +13,6 @@ import re
 import ssl
 import time
 from email.utils import formatdate
-from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
@@ -1270,7 +1269,6 @@ async def _send_email(extra, chat_id, message):
     """Send via SMTP (one-shot, no persistent connection needed)."""
     import smtplib
     from email.mime.text import MIMEText
-    from email.utils import formatdate
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
@@ -1703,7 +1701,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             token_data = token_resp.json()
             access_token = token_data.get("access_token")
             if not access_token:
-                return _error(f"QQBot: no access_token in response")
+                return _error("QQBot: no access_token in response")
 
             # Step 2: Send message via REST
             # QQ Bot API has separate endpoints for channels, C2C, and groups.

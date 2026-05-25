@@ -45,7 +45,6 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
-import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
@@ -6479,7 +6478,7 @@ def _xai_oauth_exchange_code_for_tokens(
         # key fallback.  See #26847.
         if response.status_code == 403:
             raise AuthError(
-                f"xAI token exchange failed (HTTP 403)."
+                "xAI token exchange failed (HTTP 403)."
                 + (f" Response: {body}" if body else "")
                 + " This OAuth account is not authorized for xAI API"
                   " access — xAI may be restricting API/OAuth use to"

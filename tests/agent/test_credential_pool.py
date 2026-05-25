@@ -7,7 +7,6 @@ import json
 import time
 from datetime import datetime, timezone
 
-import pytest
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:

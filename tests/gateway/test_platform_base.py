@@ -9,7 +9,6 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
-    MessageType,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,

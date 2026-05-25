@@ -2438,7 +2438,6 @@ def test_resolve_hermes_argv_module_actually_runs():
     Run it as a real subprocess to catch that regression.
     """
     import subprocess
-    import sys
     import hermes_cli.kanban_db as kb
     import shutil
     import unittest.mock as mock
@@ -3017,7 +3016,6 @@ def test_detect_stale_skips_recently_started_task(kanban_home, monkeypatch):
 
 def test_detect_stale_skips_when_timeout_zero(kanban_home, monkeypatch):
     """stale_timeout_seconds=0 disables stale detection entirely."""
-    import hermes_cli.kanban_db as _kb
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="disabled", assignee="worker")

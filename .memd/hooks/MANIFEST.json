@@ -1,0 +1,178 @@
+{
+  "$schema": "memd-hooks-manifest@v1",
+  "version": "1.1.0",
+  "contract_version": "0.3",
+  "generated_by": "docs/phases/v3/phase-a3-continuity-foundation.md Part 2/3 (contract 0.3 via docs/phases/v4/phase-b4-plan.md §4.9)",
+  "canonical_root": ".memd/hooks",
+  "notes": "sha256 verified by `memd hooks doctor`. integrations/hooks/ and .claude/hooks/ are install-generated mirrors.",
+  "hooks": [
+    {
+      "name": "install.sh",
+      "path": ".memd/hooks/install.sh",
+      "event": "none",
+      "harness": "shared",
+      "purpose": "Installs memd hooks into harness-specific targets (symlinks or copies).",
+      "sha256": "ea731d2932ed0858668043a5cc7201874e933bc6a852fa20a24aedcf3a0e6ac2"
+    },
+    {
+      "name": "install.ps1",
+      "path": ".memd/hooks/install.ps1",
+      "event": "none",
+      "harness": "shared",
+      "purpose": "Windows PowerShell counterpart of install.sh.",
+      "sha256": "d8e65ca0a1b34f0051c6571082542cac0b1d8375059db2c066a12e85a2636d82"
+    },
+    {
+      "name": "memd-bootstrap.sh",
+      "path": ".memd/hooks/memd-bootstrap.sh",
+      "event": "UserPromptSubmit",
+      "harness": "claude-code",
+      "purpose": "Runs memd wake on first prompt; enforces caveman voice + memd policy.",
+      "sha256": "d212f0d2953074903039b01aaa3c4dd75ea597d6b7eaef069c47041941f4a615"
+    },
+    {
+      "name": "memd-capture.sh",
+      "path": ".memd/hooks/memd-capture.sh",
+      "event": "Stop",
+      "harness": "claude-code",
+      "purpose": "Captures end-of-turn summary into memd via `memd hook capture`.",
+      "sha256": "7837052116ccf3a661716294542b911cffcf2088567a297ef31973ea43848fd8"
+    },
+    {
+      "name": "memd-capture.ps1",
+      "path": ".memd/hooks/memd-capture.ps1",
+      "event": "Stop",
+      "harness": "claude-code",
+      "purpose": "Windows counterpart of memd-capture.sh.",
+      "sha256": "a8a9d31a2fa0095957f241c77d6ce3278476af80d6dd687453c20db86ccb905c"
+    },
+    {
+      "name": "memd-context.sh",
+      "path": ".memd/hooks/memd-context.sh",
+      "event": "SessionStart",
+      "harness": "claude-code",
+      "purpose": "Emits wake packet into session context.",
+      "sha256": "bf27d8bea53a660c02c5c194f2fceb491e933eed9a879f2e6da678c8d4e22494"
+    },
+    {
+      "name": "memd-context.ps1",
+      "path": ".memd/hooks/memd-context.ps1",
+      "event": "SessionStart",
+      "harness": "claude-code",
+      "purpose": "Windows counterpart of memd-context.sh.",
+      "sha256": "a742735509e7bdba53910d4c80604cfac307df249027dc497a94fc4842ee596e"
+    },
+    {
+      "name": "memd-file-interaction.sh",
+      "path": ".memd/hooks/memd-file-interaction.sh",
+      "event": "PostToolUse",
+      "harness": "claude-code",
+      "purpose": "A3 Part 1 ledger: records {file,op,count,ts} into session file_interactions.json.",
+      "sha256": "5c836c2b180edd55ba15b2f5a66199fe270c2130e5a7f03cffcb73e7decec022"
+    },
+    {
+      "name": "memd-lifecycle-probe.sh",
+      "path": ".memd/hooks/memd-lifecycle-probe.sh",
+      "event": "cron",
+      "harness": "shared",
+      "purpose": "A3-D3 working-memory lifecycle self-test (store -> recall -> expire -> verify).",
+      "sha256": "57f2c0f9178717df7132d255889934267a2196d286c6ea298915bd1e6e379189"
+    },
+    {
+      "name": "memd-precompact-save.sh",
+      "path": ".memd/hooks/memd-precompact-save.sh",
+      "event": "PreCompact",
+      "harness": "claude-code",
+      "purpose": "NON-BLOCKING save before compaction; seals file-interaction ledger snapshot.",
+      "sha256": "4647916d818c18070ea24dc4cb91d401ebbf871973c6e23d38d3363ed372d4bf"
+    },
+    {
+      "name": "memd-precompact-save.ps1",
+      "path": ".memd/hooks/memd-precompact-save.ps1",
+      "event": "PreCompact",
+      "harness": "claude-code",
+      "purpose": "Windows counterpart of memd-precompact-save.sh.",
+      "sha256": "6bc717057a5250cc5bb2913ad2b8b7717f54d30124b752a8040701cd39cdbc67"
+    },
+    {
+      "name": "memd-postcompact-restore.sh",
+      "path": ".memd/hooks/memd-postcompact-restore.sh",
+      "event": "PostCompact",
+      "harness": "claude-code",
+      "purpose": "A4 Part 1: restore sealed file-interaction ledger after compaction before tools fire.",
+      "sha256": "c62e75d677426ab1f8a3f67b827dbf356abd0c5172770aaf55ce31ec13b93844"
+    },
+    {
+      "name": "memd-postcompact-restore.ps1",
+      "path": ".memd/hooks/memd-postcompact-restore.ps1",
+      "event": "PostCompact",
+      "harness": "claude-code",
+      "purpose": "Windows counterpart of memd-postcompact-restore.sh.",
+      "sha256": "d6413fe171961d7aaedb21920b9895ebe623878888bea765152f4a4170f396ea"
+    },
+    {
+      "name": "memd-postcompact-restore.sh",
+      "path": ".memd/hooks/memd-postcompact-restore.sh",
+      "event": "PostCompact",
+      "harness": "codex",
+      "purpose": "A4 Part 1: cross-harness PostCompact restore — same script, codex harness binding.",
+      "sha256": "c62e75d677426ab1f8a3f67b827dbf356abd0c5172770aaf55ce31ec13b93844"
+    },
+    {
+      "name": "memd-preedit-prime.sh",
+      "path": ".memd/hooks/memd-preedit-prime.sh",
+      "event": "PreToolUse",
+      "harness": "claude-code",
+      "purpose": "A3 Part 1 continuation-session primer: auto-reads files from prior session ledger before first Edit/Write.",
+      "sha256": "12b5c6eaad4e0dfd39a4a437e896a2c450cd46642673fbe97988015c67e7266f"
+    },
+    {
+      "name": "memd-pretool-gate.sh",
+      "path": ".memd/hooks/memd-pretool-gate.sh",
+      "event": "PreToolUse",
+      "harness": "claude-code",
+      "purpose": "A3 Part 3 write-path gate: blocks writes outside canonical layout when continuity.enforcement=block.",
+      "sha256": "962fff039984193a2dfc6cff6ce83c4c204f74d9f3f3d01ddd5c807c8ace0218"
+    },
+    {
+      "name": "memd-spill.sh",
+      "path": ".memd/hooks/memd-spill.sh",
+      "event": "PreCompact",
+      "harness": "claude-code",
+      "purpose": "Spills transcript into memd short-term lane before compaction.",
+      "sha256": "4972606ba98b0fabeafce9f39664fa8f64117b91ea64c9dbd2d96c21207a58d0"
+    },
+    {
+      "name": "memd-spill.ps1",
+      "path": ".memd/hooks/memd-spill.ps1",
+      "event": "PreCompact",
+      "harness": "claude-code",
+      "purpose": "Windows counterpart of memd-spill.sh.",
+      "sha256": "ae3e1f4cdf7a31af61152cb1cc5ca1b456d35929dabd50096ff8cedb9cce5f83"
+    },
+    {
+      "name": "memd-stop-save.sh",
+      "path": ".memd/hooks/memd-stop-save.sh",
+      "event": "Stop",
+      "harness": "claude-code",
+      "purpose": "End-of-turn checkpoint save; commits dirty tracked files when configured.",
+      "sha256": "acaa9a52a9f5b5b4e6e2208535a01f6014ca48df7f314345780a54e811528e29"
+    },
+    {
+      "name": "memd-turn-tick.sh",
+      "path": ".memd/hooks/memd-turn-tick.sh",
+      "event": "UserPromptSubmit",
+      "harness": "claude-code",
+      "purpose": "F4.7 per-turn drift driver: calls `memd preference tick` each turn so cadence rollovers append `tick_fire` rows to .memd/logs/preference-drift.ndjson. Gated on MEMD_F4_PREF_DRIFT.",
+      "sha256": "260472ffef783f607dd7a6e2612d6083ad7f2eed1177275a7a3549048b9aeb7b"
+    },
+    {
+      "name": "memd-stop-save.ps1",
+      "path": ".memd/hooks/memd-stop-save.ps1",
+      "event": "Stop",
+      "harness": "claude-code",
+      "purpose": "Windows counterpart of memd-stop-save.sh.",
+      "sha256": "6474026f8d38f4a4ce1ef443ee79c1ad66445c039626ac1fe9de0b674b5436af"
+    }
+  ]
+}

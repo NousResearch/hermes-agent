@@ -1,0 +1,3 @@
+$env:MEMD_BUNDLE_SCHEMA_VERSION = "2"
+$env:MEMD_BUNDLE_BACKEND_PROVIDER = "lightrag-compatible"
+$env:MEMD_BUNDLE_BACKEND_ENABLED = "false"

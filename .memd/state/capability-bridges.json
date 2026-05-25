@@ -1,0 +1,4345 @@
+{
+  "generated_at": "2026-05-25T04:05:22.701601279Z",
+  "actions": [
+    {
+      "harness": "opencode",
+      "capability": "codex:system--imagegen",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/imagegen/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/system--imagegen.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--openai-docs",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/openai-docs/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/system--openai-docs.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--plugin-creator",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/plugin-creator/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/system--plugin-creator.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--skill-creator",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/skill-creator/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/system--skill-creator.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--skill-installer",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/skill-installer/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/system--skill-installer.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:autodream",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/autodream/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/autodream.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:autoplan",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/autoplan/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/autoplan.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:autoresearch",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/autoresearch/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/autoresearch.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:benchmark",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/benchmark/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/benchmark.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:browse",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/browse/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/browse.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:canary",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/canary/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/canary.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:careful",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/careful/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/careful.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:caveman",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/caveman/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/caveman.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-excalidraw-diagram",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-excalidraw-diagram/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-excalidraw-diagram.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-2",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-2/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-2.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-autoplan",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-autoplan/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-autoplan.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-benchmark",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-benchmark/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-benchmark.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-browse",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-browse/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-browse.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-canary",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-canary/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-canary.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-careful",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-careful/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-careful.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-connect-chrome",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-connect-chrome/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-connect-chrome.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-cso",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-cso/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-cso.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-design-consultation",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-design-consultation/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-design-consultation.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-design-html",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-design-html/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-design-html.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-design-shotgun",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-design-shotgun/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-design-shotgun.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-document-release",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-document-release/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-document-release.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-freeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-freeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-freeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-guard",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-guard/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-guard.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-investigate",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-investigate/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-investigate.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-land-and-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-land-and-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-land-and-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-learn",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-learn/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-learn.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-office-hours",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-office-hours/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-office-hours.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-plan-ceo-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-plan-ceo-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-plan-ceo-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-plan-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-plan-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-plan-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-plan-eng-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-plan-eng-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-plan-eng-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-qa",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-qa/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-qa.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-qa-only",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-qa-only/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-qa-only.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-retro",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-retro/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-retro.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-setup-browser-cookies",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-setup-browser-cookies/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-setup-browser-cookies.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-setup-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-setup-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-setup-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-ship",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-ship/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-ship.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-unfreeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-unfreeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-unfreeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-upgrade",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-upgrade/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-upgrade.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-upgrade-2",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-upgrade-2/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-gstack-upgrade-2.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-skill-creator",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-skill-creator/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/claude-skill-creator.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:codex",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/codex/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/codex.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:connect-chrome",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/connect-chrome/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/connect-chrome.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:cso",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/cso/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/cso.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:deep-research",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/deep-research/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/deep-research.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:design-consultation",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/design-consultation/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/design-consultation.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:design-html",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/design-html/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/design-html.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:design-shotgun",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/design-shotgun/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/design-shotgun.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:document-release",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/document-release/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/document-release.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:dream",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/dream/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/dream.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:excalidraw-diagram",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/excalidraw-diagram/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/excalidraw-diagram.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:excalidraw-visuals",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/excalidraw-visuals/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/excalidraw-visuals.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:freeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/freeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/freeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:frontend-design",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/frontend-design/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/frontend-design.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-add-backlog",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-add-backlog/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-add-backlog.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-add-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-add-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-add-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-add-tests",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-add-tests/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-add-tests.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-add-todo",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-add-todo/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-add-todo.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-audit-milestone",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-audit-milestone/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-audit-milestone.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-audit-uat",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-audit-uat/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-audit-uat.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-autonomous",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-autonomous/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-autonomous.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-check-todos",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-check-todos/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-check-todos.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-cleanup",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-cleanup/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-cleanup.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-complete-milestone",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-complete-milestone/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-complete-milestone.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-debug",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-debug/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-debug.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-discuss-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-discuss-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-discuss-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-do",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-do/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-do.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-execute-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-execute-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-execute-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-fast",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-fast/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-fast.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-forensics",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-forensics/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-forensics.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-health",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-health/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-health.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-help",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-help/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-help.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-insert-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-insert-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-insert-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-join-discord",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-join-discord/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-join-discord.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-list-phase-assumptions",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-list-phase-assumptions/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-list-phase-assumptions.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-list-workspaces",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-list-workspaces/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-list-workspaces.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-manager",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-manager/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-manager.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-map-codebase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-map-codebase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-map-codebase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-milestone-summary",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-milestone-summary/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-milestone-summary.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-new-milestone",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-new-milestone/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-new-milestone.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-new-project",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-new-project/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-new-project.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-new-workspace",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-new-workspace/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-new-workspace.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-next",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-next/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-next.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-note",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-note/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-note.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-pause-work",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-pause-work/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-pause-work.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-plan-milestone-gaps",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-plan-milestone-gaps/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-plan-milestone-gaps.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-plan-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-plan-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-plan-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-plant-seed",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-plant-seed/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-plant-seed.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-pr-branch",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-pr-branch/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-pr-branch.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-profile-user",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-profile-user/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-profile-user.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-progress",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-progress/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-progress.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-quick",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-quick/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-quick.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-reapply-patches",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-reapply-patches/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-reapply-patches.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-remove-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-remove-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-remove-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-remove-workspace",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-remove-workspace/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-remove-workspace.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-research-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-research-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-research-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-resume-work",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-resume-work/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-resume-work.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-review-backlog",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-review-backlog/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-review-backlog.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-session-report",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-session-report/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-session-report.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-set-profile",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-set-profile/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-set-profile.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-settings",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-settings/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-settings.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-ship",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-ship/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-ship.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-stats",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-stats/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-stats.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-thread",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-thread/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-thread.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-ui-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-ui-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-ui-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-ui-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-ui-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-ui-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-update",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-update/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-update.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-validate-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-validate-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-validate-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-verify-work",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-verify-work/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-verify-work.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-workstreams",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-workstreams/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gsd-workstreams.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-autoplan",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-autoplan/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-autoplan.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-benchmark",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-benchmark/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-benchmark.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-browse",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-browse/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-browse.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-canary",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-canary/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-canary.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-careful",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-careful/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-careful.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-connect-chrome",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-connect-chrome/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-connect-chrome.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-cso",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-cso/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-cso.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-design-consultation",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-design-consultation/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-design-consultation.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-design-html",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-design-html/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-design-html.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-design-shotgun",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-design-shotgun/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-design-shotgun.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-document-release",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-document-release/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-document-release.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-freeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-freeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-freeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-guard",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-guard/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-guard.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-investigate",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-investigate/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-investigate.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-land-and-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-land-and-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-land-and-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-learn",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-learn/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-learn.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-office-hours",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-office-hours/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-office-hours.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-plan-ceo-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-plan-ceo-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-plan-ceo-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-plan-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-plan-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-plan-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-plan-eng-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-plan-eng-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-plan-eng-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-qa",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-qa/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-qa.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-qa-only",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-qa-only/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-qa-only.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-retro",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-retro/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-retro.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-setup-browser-cookies",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-setup-browser-cookies/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-setup-browser-cookies.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-setup-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-setup-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-setup-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-ship",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-ship/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-ship.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-unfreeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-unfreeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-unfreeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-upgrade",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-upgrade/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/gstack-upgrade.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:guard",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/guard/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/guard.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:investigate",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/investigate/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/investigate.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:land-and-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/land-and-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/land-and-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:learn",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/learn/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/learn.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/memd.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-hive",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-hive/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/memd-hive.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-hive-group-link",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-hive-group-link/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/memd-hive-group-link.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-hive-link",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-hive-link/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/memd-hive-link.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-init",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-init/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/memd-init.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-reload",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-reload/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/memd-reload.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-status",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-status/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/memd-status.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:nano-banana-images",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/nano-banana-images/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/nano-banana-images.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:nates-frontend-design",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/nates-frontend-design/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/nates-frontend-design.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:office-hours",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/office-hours/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/office-hours.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:openspace-delegate-task",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/openspace-delegate-task/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/openspace-delegate-task.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:openspace-skill-discovery",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/openspace-skill-discovery/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/openspace-skill-discovery.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:orchestrate-batch-refactor",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/orchestrate-batch-refactor/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/orchestrate-batch-refactor.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:plan-ceo-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/plan-ceo-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/plan-ceo-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:plan-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/plan-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/plan-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:plan-eng-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/plan-eng-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/plan-eng-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:qa",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/qa/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/qa.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:qa-only",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/qa-only/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/qa-only.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:retro",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/retro/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/retro.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:review-and-simplify-changes",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/review-and-simplify-changes/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/review-and-simplify-changes.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:security-check",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/security-check/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/security-check.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:security-sweep",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/security-sweep/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/security-sweep.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:setup-browser-cookies",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/setup-browser-cookies/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/setup-browser-cookies.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:setup-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/setup-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/setup-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:ship",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/ship/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/ship.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:skill-builder-ais",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/skill-builder-ais/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/skill-builder-ais.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:skill-creator",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/skill-creator/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/skill-creator.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-animation",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-animation/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-animation.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-fundamentals",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-fundamentals/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-fundamentals.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-geometry",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-geometry/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-geometry.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-interaction",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-interaction/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-interaction.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-lighting",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-lighting/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-lighting.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-loaders",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-loaders/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-loaders.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-materials",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-materials/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-materials.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-postprocessing",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-postprocessing/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-postprocessing.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-shaders",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-shaders/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-shaders.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-textures",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-textures/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/threejs-textures.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:unfreeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/unfreeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/unfreeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:video-to-website",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/video-to-website/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/video-to-website.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:frontend-design--frontend-design",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/frontend-design/frontend-design/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/frontend-design--frontend-design.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--brainstorming",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/brainstorming/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--brainstorming.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--dispatching-parallel-agents",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/dispatching-parallel-agents/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--dispatching-parallel-agents.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--executing-plans",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/executing-plans/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--executing-plans.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--finishing-a-development-branch",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/finishing-a-development-branch/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--finishing-a-development-branch.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--receiving-code-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/receiving-code-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--receiving-code-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--requesting-code-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/requesting-code-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--requesting-code-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--subagent-driven-development",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/subagent-driven-development/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--subagent-driven-development.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--systematic-debugging",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/systematic-debugging/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--systematic-debugging.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--test-driven-development",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/test-driven-development/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--test-driven-development.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--using-git-worktrees",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/using-git-worktrees/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--using-git-worktrees.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--using-superpowers",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/using-superpowers/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--using-superpowers.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--verification-before-completion",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/verification-before-completion/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--verification-before-completion.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--writing-plans",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/writing-plans/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--writing-plans.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--writing-skills",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/writing-skills/SKILL.md",
+      "target_path": "/home/aparcedodev/.config/opencode/command/superpowers--writing-skills.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--imagegen",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/imagegen/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/system--imagegen.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--openai-docs",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/openai-docs/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/system--openai-docs.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--plugin-creator",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/plugin-creator/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/system--plugin-creator.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--skill-creator",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/skill-creator/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/system--skill-creator.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:system--skill-installer",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/.system/skill-installer/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/system--skill-installer.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:autodream",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/autodream/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/autodream.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:autoplan",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/autoplan/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/autoplan.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:autoresearch",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/autoresearch/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/autoresearch.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:benchmark",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/benchmark/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/benchmark.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:browse",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/browse/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/browse.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:canary",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/canary/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/canary.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:careful",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/careful/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/careful.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:caveman",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/caveman/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/caveman.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-excalidraw-diagram",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-excalidraw-diagram/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-excalidraw-diagram.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-2",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-2/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-2.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-autoplan",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-autoplan/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-autoplan.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-benchmark",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-benchmark/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-benchmark.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-browse",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-browse/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-browse.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-canary",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-canary/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-canary.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-careful",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-careful/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-careful.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-connect-chrome",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-connect-chrome/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-connect-chrome.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-cso",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-cso/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-cso.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-design-consultation",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-design-consultation/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-design-consultation.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-design-html",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-design-html/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-design-html.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-design-shotgun",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-design-shotgun/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-design-shotgun.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-document-release",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-document-release/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-document-release.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-freeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-freeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-freeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-guard",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-guard/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-guard.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-investigate",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-investigate/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-investigate.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-land-and-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-land-and-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-land-and-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-learn",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-learn/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-learn.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-office-hours",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-office-hours/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-office-hours.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-plan-ceo-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-plan-ceo-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-plan-ceo-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-plan-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-plan-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-plan-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-plan-eng-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-plan-eng-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-plan-eng-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-qa",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-qa/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-qa.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-qa-only",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-qa-only/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-qa-only.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-retro",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-retro/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-retro.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-setup-browser-cookies",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-setup-browser-cookies/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-setup-browser-cookies.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-setup-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-setup-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-setup-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-ship",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-ship/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-ship.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-unfreeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-unfreeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-unfreeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-upgrade",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-upgrade/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-upgrade.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-gstack-upgrade-2",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-gstack-upgrade-2/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-gstack-upgrade-2.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:claude-skill-creator",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/claude-skill-creator/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/claude-skill-creator.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:codex",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/codex/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/codex.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:connect-chrome",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/connect-chrome/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/connect-chrome.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:cso",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/cso/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/cso.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:deep-research",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/deep-research/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/deep-research.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:design-consultation",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/design-consultation/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/design-consultation.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:design-html",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/design-html/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/design-html.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:design-shotgun",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/design-shotgun/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/design-shotgun.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:document-release",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/document-release/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/document-release.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:dream",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/dream/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/dream.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:excalidraw-diagram",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/excalidraw-diagram/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/excalidraw-diagram.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:excalidraw-visuals",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/excalidraw-visuals/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/excalidraw-visuals.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:freeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/freeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/freeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:frontend-design",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/frontend-design/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/frontend-design.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-add-backlog",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-add-backlog/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-add-backlog.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-add-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-add-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-add-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-add-tests",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-add-tests/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-add-tests.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-add-todo",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-add-todo/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-add-todo.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-audit-milestone",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-audit-milestone/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-audit-milestone.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-audit-uat",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-audit-uat/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-audit-uat.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-autonomous",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-autonomous/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-autonomous.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-check-todos",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-check-todos/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-check-todos.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-cleanup",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-cleanup/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-cleanup.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-complete-milestone",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-complete-milestone/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-complete-milestone.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-debug",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-debug/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-debug.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-discuss-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-discuss-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-discuss-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-do",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-do/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-do.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-execute-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-execute-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-execute-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-fast",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-fast/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-fast.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-forensics",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-forensics/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-forensics.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-health",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-health/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-health.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-help",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-help/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-help.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-insert-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-insert-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-insert-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-join-discord",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-join-discord/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-join-discord.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-list-phase-assumptions",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-list-phase-assumptions/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-list-phase-assumptions.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-list-workspaces",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-list-workspaces/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-list-workspaces.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-manager",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-manager/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-manager.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-map-codebase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-map-codebase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-map-codebase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-milestone-summary",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-milestone-summary/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-milestone-summary.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-new-milestone",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-new-milestone/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-new-milestone.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-new-project",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-new-project/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-new-project.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-new-workspace",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-new-workspace/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-new-workspace.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-next",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-next/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-next.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-note",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-note/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-note.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-pause-work",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-pause-work/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-pause-work.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-plan-milestone-gaps",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-plan-milestone-gaps/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-plan-milestone-gaps.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-plan-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-plan-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-plan-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-plant-seed",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-plant-seed/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-plant-seed.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-pr-branch",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-pr-branch/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-pr-branch.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-profile-user",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-profile-user/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-profile-user.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-progress",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-progress/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-progress.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-quick",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-quick/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-quick.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-reapply-patches",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-reapply-patches/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-reapply-patches.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-remove-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-remove-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-remove-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-remove-workspace",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-remove-workspace/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-remove-workspace.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-research-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-research-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-research-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-resume-work",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-resume-work/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-resume-work.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-review-backlog",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-review-backlog/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-review-backlog.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-session-report",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-session-report/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-session-report.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-set-profile",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-set-profile/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-set-profile.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-settings",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-settings/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-settings.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-ship",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-ship/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-ship.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-stats",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-stats/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-stats.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-thread",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-thread/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-thread.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-ui-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-ui-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-ui-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-ui-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-ui-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-ui-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-update",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-update/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-update.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-validate-phase",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-validate-phase/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-validate-phase.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-verify-work",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-verify-work/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-verify-work.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gsd-workstreams",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gsd-workstreams/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gsd-workstreams.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-autoplan",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-autoplan/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-autoplan.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-benchmark",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-benchmark/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-benchmark.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-browse",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-browse/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-browse.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-canary",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-canary/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-canary.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-careful",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-careful/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-careful.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-connect-chrome",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-connect-chrome/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-connect-chrome.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-cso",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-cso/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-cso.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-design-consultation",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-design-consultation/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-design-consultation.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-design-html",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-design-html/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-design-html.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-design-shotgun",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-design-shotgun/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-design-shotgun.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-document-release",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-document-release/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-document-release.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-freeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-freeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-freeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-guard",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-guard/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-guard.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-investigate",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-investigate/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-investigate.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-land-and-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-land-and-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-land-and-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-learn",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-learn/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-learn.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-office-hours",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-office-hours/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-office-hours.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-plan-ceo-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-plan-ceo-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-plan-ceo-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-plan-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-plan-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-plan-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-plan-eng-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-plan-eng-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-plan-eng-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-qa",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-qa/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-qa.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-qa-only",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-qa-only/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-qa-only.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-retro",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-retro/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-retro.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-setup-browser-cookies",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-setup-browser-cookies/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-setup-browser-cookies.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-setup-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-setup-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-setup-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-ship",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-ship/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-ship.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-unfreeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-unfreeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-unfreeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:gstack-upgrade",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/gstack-upgrade/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/gstack-upgrade.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:guard",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/guard/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/guard.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:investigate",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/investigate/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/investigate.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:land-and-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/land-and-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/land-and-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:learn",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/learn/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/learn.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/memd.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-hive",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-hive/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/memd-hive.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-hive-group-link",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-hive-group-link/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/memd-hive-group-link.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-hive-link",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-hive-link/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/memd-hive-link.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-init",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-init/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/memd-init.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-reload",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-reload/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/memd-reload.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:memd-status",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-status/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/memd-status.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:nano-banana-images",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/nano-banana-images/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/nano-banana-images.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:nates-frontend-design",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/nates-frontend-design/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/nates-frontend-design.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:office-hours",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/office-hours/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/office-hours.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:openspace-delegate-task",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/openspace-delegate-task/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/openspace-delegate-task.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:openspace-skill-discovery",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/openspace-skill-discovery/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/openspace-skill-discovery.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:orchestrate-batch-refactor",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/orchestrate-batch-refactor/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/orchestrate-batch-refactor.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:plan-ceo-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/plan-ceo-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/plan-ceo-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:plan-design-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/plan-design-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/plan-design-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:plan-eng-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/plan-eng-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/plan-eng-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:qa",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/qa/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/qa.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:qa-only",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/qa-only/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/qa-only.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:retro",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/retro/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/retro.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:review-and-simplify-changes",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/review-and-simplify-changes/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/review-and-simplify-changes.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:security-check",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/security-check/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/security-check.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:security-sweep",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/security-sweep/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/security-sweep.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:setup-browser-cookies",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/setup-browser-cookies/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/setup-browser-cookies.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:setup-deploy",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/setup-deploy/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/setup-deploy.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:ship",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/ship/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/ship.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:skill-builder-ais",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/skill-builder-ais/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/skill-builder-ais.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:skill-creator",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/skill-creator/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/skill-creator.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-animation",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-animation/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-animation.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-fundamentals",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-fundamentals/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-fundamentals.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-geometry",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-geometry/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-geometry.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-interaction",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-interaction/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-interaction.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-lighting",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-lighting/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-lighting.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-loaders",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-loaders/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-loaders.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-materials",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-materials/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-materials.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-postprocessing",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-postprocessing/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-postprocessing.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-shaders",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-shaders/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-shaders.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:threejs-textures",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/threejs-textures/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/threejs-textures.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:unfreeze",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/unfreeze/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/unfreeze.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex:video-to-website",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/video-to-website/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/video-to-website.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:frontend-design--frontend-design",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/frontend-design/frontend-design/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/frontend-design--frontend-design.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--brainstorming",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/brainstorming/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--brainstorming.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--dispatching-parallel-agents",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/dispatching-parallel-agents/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--dispatching-parallel-agents.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--executing-plans",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/executing-plans/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--executing-plans.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--finishing-a-development-branch",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/finishing-a-development-branch/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--finishing-a-development-branch.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--receiving-code-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/receiving-code-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--receiving-code-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--requesting-code-review",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/requesting-code-review/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--requesting-code-review.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--subagent-driven-development",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/subagent-driven-development/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--subagent-driven-development.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--systematic-debugging",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/systematic-debugging/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--systematic-debugging.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--test-driven-development",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/test-driven-development/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--test-driven-development.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--using-git-worktrees",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/using-git-worktrees/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--using-git-worktrees.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--using-superpowers",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/using-superpowers/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--using-superpowers.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--verification-before-completion",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/verification-before-completion/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--verification-before-completion.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--writing-plans",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/writing-plans/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--writing-plans.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "codex-bridge:superpowers--writing-skills",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.agents/skills/superpowers/writing-skills/SKILL.md",
+      "target_path": "/home/aparcedodev/.opencode/command/superpowers--writing-skills.md",
+      "notes": [
+        "OpenCode command bridge already current"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "memd",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd",
+      "target_path": "/home/aparcedodev/.claude/skills/memd",
+      "notes": [
+        "bridge already points at the current source"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "memd-init",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-init",
+      "target_path": "/home/aparcedodev/.claude/skills/memd-init",
+      "notes": [
+        "bridge already points at the current source"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "memd-reload",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-reload",
+      "target_path": "/home/aparcedodev/.claude/skills/memd-reload",
+      "notes": [
+        "bridge already points at the current source"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "memd-status",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-status",
+      "target_path": "/home/aparcedodev/.claude/skills/memd-status",
+      "notes": [
+        "bridge already points at the current source"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "codex:memd",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd/SKILL.md",
+      "target_path": "/home/aparcedodev/.claude/commands/memd.md",
+      "notes": [
+        "Claude command bridge already current"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "codex:memd-init",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-init/SKILL.md",
+      "target_path": "/home/aparcedodev/.claude/commands/memd/init.md",
+      "notes": [
+        "Claude command bridge already current"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "codex:memd-reload",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-reload/SKILL.md",
+      "target_path": "/home/aparcedodev/.claude/commands/memd/reload.md",
+      "notes": [
+        "Claude command bridge already current"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "codex:memd-status",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-status/SKILL.md",
+      "target_path": "/home/aparcedodev/.claude/commands/memd/status.md",
+      "notes": [
+        "Claude command bridge already current"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "codex:memd",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd/SKILL.md",
+      "target_path": "/home/aparcedodev/.claude/command/memd.md",
+      "notes": [
+        "Claude command bridge already current"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "codex:memd-init",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-init/SKILL.md",
+      "target_path": "/home/aparcedodev/.claude/command/memd/init.md",
+      "notes": [
+        "Claude command bridge already current"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "codex:memd-reload",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-reload/SKILL.md",
+      "target_path": "/home/aparcedodev/.claude/command/memd/reload.md",
+      "notes": [
+        "Claude command bridge already current"
+      ]
+    },
+    {
+      "harness": "claude",
+      "capability": "codex:memd-status",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/skills/memd-status/SKILL.md",
+      "target_path": "/home/aparcedodev/.claude/command/memd/status.md",
+      "notes": [
+        "Claude command bridge already current"
+      ]
+    },
+    {
+      "harness": "codex",
+      "capability": "frontend-design",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/plugins/cache/claude-plugins-official/frontend-design/b10b583de281/skills",
+      "target_path": "/home/aparcedodev/.agents/skills/frontend-design",
+      "notes": [
+        "bridge already points at the current source"
+      ]
+    },
+    {
+      "harness": "codex",
+      "capability": "superpowers",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/plugins/cache/claude-plugins-official/superpowers/5.0.6/skills",
+      "target_path": "/home/aparcedodev/.agents/skills/superpowers",
+      "notes": [
+        "bridge already points at the current source"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "superpowers",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/plugins/cache/claude-plugins-official/superpowers/5.0.6/.opencode/plugins",
+      "target_path": "/home/aparcedodev/.config/opencode/plugins/superpowers",
+      "notes": [
+        "bridge already points at the current source"
+      ]
+    },
+    {
+      "harness": "opencode",
+      "capability": "superpowers",
+      "status": "already-bridged",
+      "source_path": "/home/aparcedodev/.codex/plugins/cache/claude-plugins-official/superpowers/5.0.6/.opencode/plugins",
+      "target_path": "/home/aparcedodev/.opencode/plugins/superpowers",
+      "notes": [
+        "bridge already points at the current source"
+      ]
+    }
+  ]
+}

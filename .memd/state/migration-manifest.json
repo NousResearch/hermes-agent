@@ -1,0 +1,63 @@
+{
+  "generated_at": "2026-05-25T04:05:22.713115730Z",
+  "project_root": "/home/aparcedodev/.hermes/hermes-agent",
+  "source_registry_hash": null,
+  "source_registry_path": null,
+  "layer_summary": [
+    {
+      "layer": "live_truth",
+      "sources": 4,
+      "summary": [
+        "resume_delta: working 4 -> 3",
+        "repo_state: dirty 10 tracked=4 untracked=6",
+        "file_edited: AGENTS.md",
+        "file_edited: gateway/platforms/bluebubbles.py"
+      ]
+    },
+    {
+      "layer": "project_brain",
+      "sources": 6,
+      "summary": [
+        "id=a29b3bbb-370f-4d8f-8881-dd9d8b0b0732 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779653159 | c=As of 2026-05-24 14:47 ET, homelab agent ops verified clean from Codex: homelab doctor pass=19 warn=0 fail=0; homelab fleet-doctor pass=18 warn=0 fail=0. agent-vm, plex, and services all pass SSH, Bitwarden CLI, Vault...",
+        "id=d9640289-7523-41bb-aea4-afd554f80964 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779681918 | c=As of 2026-05-25 00:05 ET, agent-vm can SSH into josuesdesktop. Desktop Tailscale SSH is enabled (RunSSH=true), desktop is tagged tag:desktop, ACL allows tag:server/tag:router/tag:desktop to SSH into tag:desktop as jo...",
+        "id=f17d9aee-df0e-4ff4-b623-06e6f8c16ab5 | stage=candidate | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | tags=security:prompt-injection,quarantine:prompt-injection,security:pi-system-prompt | cf=0.25 | upd=1779656021 | c=As of 2026-05-24 16:53 ET, Hermes agent-vm shell has homelab CLI installed at /usr/local/bin/homelab and ~/.local/bin/homelab. BW_SESSION is present in the user systemd environment. From an agent-vm service-style shel...",
+        "id=a29b3bbb-370f-4d8f-8881-dd9d8b0b0732 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779653159 | c=As of...",
+        "id=d9640289-7523-41bb-aea4-afd554f80964 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779681918 | c=As of...",
+        "id=f17d9aee-df0e-4ff4-b623-06e6f8c16ab5 | stage=candidate | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | tags=security:prompt-injection,qua..."
+      ]
+    },
+    {
+      "layer": "user_policy",
+      "sources": 8,
+      "summary": [
+        "agent-zero / harness-pack / Agent Zero",
+        "claude / claude-config / settings.json",
+        "claude / command / command:memd.md",
+        "claude / command / command:memd.md",
+        "claude / hook / security-guidance:hooks.json",
+        "claude / hook / superpowers:hooks-cursor.json",
+        "claude / hook / superpowers:hooks.json",
+        "claude / plugin / code-review"
+      ]
+    },
+    {
+      "layer": "promoted_abstractions",
+      "sources": 8,
+      "summary": [
+        "opencode / codex:system--imagegen -> already-bridged",
+        "opencode / codex:system--openai-docs -> already-bridged",
+        "opencode / codex:system--plugin-creator -> already-bridged",
+        "opencode / codex:system--skill-creator -> already-bridged",
+        "opencode / codex:system--skill-installer -> already-bridged",
+        "opencode / codex:autodream -> already-bridged",
+        "opencode / codex:autoplan -> already-bridged",
+        "opencode / codex:autoresearch -> already-bridged"
+      ]
+    }
+  ],
+  "notes": [
+    "bootstrap remains read-once for unchanged sources",
+    "delta refresh reuses the existing source registry instead of reimporting stable files",
+    "explicit init remains the only mutating bridge path for shared runtime surfaces"
+  ]
+}

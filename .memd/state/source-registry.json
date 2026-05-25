@@ -1,0 +1,237 @@
+{
+  "project": "hermes-agent",
+  "project_root": "/home/aparcedodev",
+  "imported_at": "2026-05-24T17:38:40.146719742Z",
+  "sources": [
+    {
+      "path": ".claude/command/memd.md",
+      "kind": "claude-config",
+      "hash": "8212175642c0de7bd67664587f018bd3894d5dc843649c84a192e553956c92e4",
+      "bytes": 1123,
+      "lines": 25,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146069457Z",
+      "modified_at": "2026-05-24T17:38:01.623450658Z"
+    },
+    {
+      "path": ".claude/commands/memd/init.md",
+      "kind": "claude-config",
+      "hash": "81f18f3b5d22e7f8178c4629252cafe345f2bb82a88727e7d33cfbe27d683a55",
+      "bytes": 882,
+      "lines": 24,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146109044Z",
+      "modified_at": "2026-05-24T17:38:01.623238459Z"
+    },
+    {
+      "path": ".claude/commands/memd/reload.md",
+      "kind": "claude-config",
+      "hash": "0b7d1e87872304fe6335f1fa36e7df57fd47c58d0ebd018d44c4138306bb3f0b",
+      "bytes": 769,
+      "lines": 23,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146124314Z",
+      "modified_at": "2026-05-24T17:38:01.623413330Z"
+    },
+    {
+      "path": ".claude/commands/memd/status.md",
+      "kind": "claude-config",
+      "hash": "c124506696e54af240c3c321a577115fae8b9f32c1e86db11c210575663cbbfe",
+      "bytes": 669,
+      "lines": 21,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146138912Z",
+      "modified_at": "2026-05-24T17:38:01.623450658Z"
+    },
+    {
+      "path": ".claude/commands/memd.md",
+      "kind": "claude-config",
+      "hash": "8212175642c0de7bd67664587f018bd3894d5dc843649c84a192e553956c92e4",
+      "bytes": 1123,
+      "lines": 25,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146156374Z",
+      "modified_at": "2026-05-24T17:38:01.623238459Z"
+    },
+    {
+      "path": ".claude/settings.json",
+      "kind": "claude-config",
+      "hash": "750ea3cba58066be4006be1016e0613a3b9ff9c9eb263d74f14e617519f79905",
+      "bytes": 819,
+      "lines": 28,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146172859Z",
+      "modified_at": "2026-05-11T17:49:32.542031951Z"
+    },
+    {
+      "path": ".claude/skills/memd/SKILL.md",
+      "kind": "claude-skill",
+      "hash": "2f9639dd2031cc406899d80c10106d55767c88579224861c5ac7ef95159fae9f",
+      "bytes": 5665,
+      "lines": 100,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146213448Z",
+      "modified_at": "2026-04-09T17:17:18.135567558Z"
+    },
+    {
+      "path": ".claude/skills/memd-init/SKILL.md",
+      "kind": "claude-skill",
+      "hash": "186a36008782e76dac9fa25f85cc50700e9fc47197ec752abcb2c19192da1cd9",
+      "bytes": 2717,
+      "lines": 66,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146239975Z",
+      "modified_at": "2026-04-09T17:17:18.135567558Z"
+    },
+    {
+      "path": ".claude/skills/memd-reload/SKILL.md",
+      "kind": "claude-skill",
+      "hash": "a7b5bf88d2ab8c5f2e9a11c607943baeeccac23b41f4824a9f18b54ddf7a04fd",
+      "bytes": 2384,
+      "lines": 55,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146263976Z",
+      "modified_at": "2026-04-11T12:42:03.882458886Z"
+    },
+    {
+      "path": ".claude/skills/memd-status/SKILL.md",
+      "kind": "claude-skill",
+      "hash": "e9532e97c38a6d4f5b0035b62bb82623275db12cebd5b3ca5c3816da7b766cef",
+      "bytes": 1346,
+      "lines": 39,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146284129Z",
+      "modified_at": "2026-04-07T14:26:00.062527359Z"
+    },
+    {
+      "path": ".codex/config.toml",
+      "kind": "codex-config",
+      "hash": "965efb0616a618b843d7318fe3fea92f45989ac59c3ca3ab529be1a5c1cee785",
+      "bytes": 7860,
+      "lines": 184,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146333989Z",
+      "modified_at": "2026-05-22T16:25:28.751958159Z"
+    },
+    {
+      "path": ".codex/skills/autodream/SKILL.md",
+      "kind": "codex-skill",
+      "hash": "2d6ebbac3ed3c578bf6dba2472ff82bb5bfa842d2d3c8e7b53573b639be5a608",
+      "bytes": 4359,
+      "lines": 109,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146368530Z",
+      "modified_at": "2026-04-05T19:38:45.938777727Z"
+    },
+    {
+      "path": ".codex/skills/dream/SKILL.md",
+      "kind": "codex-skill",
+      "hash": "3047b061feda80ca56412b224d62096f463a7dee613498b9e42138c64b914a54",
+      "bytes": 12880,
+      "lines": 221,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146441719Z",
+      "modified_at": "2026-05-21T16:16:03.561669185Z"
+    },
+    {
+      "path": ".codex/skills/gsd-autonomous/SKILL.md",
+      "kind": "codex-skill",
+      "hash": "ed4864f1028beb204f6ecd899089b89857c4f0fc69fdaa44ff006db7c63ac21e",
+      "bytes": 6471,
+      "lines": 121,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146485446Z",
+      "modified_at": "2026-04-06T01:38:03.364296596Z"
+    },
+    {
+      "path": ".codex/skills/gsd-map-codebase/SKILL.md",
+      "kind": "codex-skill",
+      "hash": "899711a55615d8d17ae0364e19a31a30641224875d8c41ef355227208af94254",
+      "bytes": 4363,
+      "lines": 105,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146520467Z",
+      "modified_at": "2026-03-31T06:37:16.176012219Z"
+    },
+    {
+      "path": ".codex/skills/memd/SKILL.md",
+      "kind": "codex-skill",
+      "hash": "2f9639dd2031cc406899d80c10106d55767c88579224861c5ac7ef95159fae9f",
+      "bytes": 5665,
+      "lines": 100,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146558490Z",
+      "modified_at": "2026-04-09T17:17:18.135567558Z"
+    },
+    {
+      "path": ".codex/skills/memd-init/SKILL.md",
+      "kind": "codex-skill",
+      "hash": "186a36008782e76dac9fa25f85cc50700e9fc47197ec752abcb2c19192da1cd9",
+      "bytes": 2717,
+      "lines": 66,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146601874Z",
+      "modified_at": "2026-04-09T17:17:18.135567558Z"
+    },
+    {
+      "path": ".codex/skills/memd-reload/SKILL.md",
+      "kind": "codex-skill",
+      "hash": "a7b5bf88d2ab8c5f2e9a11c607943baeeccac23b41f4824a9f18b54ddf7a04fd",
+      "bytes": 2384,
+      "lines": 55,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146628824Z",
+      "modified_at": "2026-04-11T12:42:03.882458886Z"
+    },
+    {
+      "path": ".config/opencode/command/gsd-autonomous.md",
+      "kind": "opencode-config",
+      "hash": "44e5897de28dbd933f75bba24da5cb4cfb0b48a27843067f85fbb4ece752970d",
+      "bytes": 1032,
+      "lines": 38,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146647476Z",
+      "modified_at": "2026-05-24T17:38:01.589173672Z"
+    },
+    {
+      "path": ".config/opencode/command/gsd-map-codebase.md",
+      "kind": "opencode-config",
+      "hash": "1635fb95e9d5356117898345fa8108d365fdbf4d2b4a2c0259348f6764b39f37",
+      "bytes": 1049,
+      "lines": 38,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146665279Z",
+      "modified_at": "2026-05-24T17:38:01.590372739Z"
+    },
+    {
+      "path": ".config/opencode/command/memd.md",
+      "kind": "opencode-config",
+      "hash": "392f7dad195a4a25cc422cfba1c359e131dcb9628474d3fb520a604b41fe36b7",
+      "bytes": 1339,
+      "lines": 38,
+      "present": true,
+      "imported_at": "2026-05-24T17:38:40.146683783Z",
+      "modified_at": "2026-05-24T17:38:01.600395812Z"
+    },
+    {
+      "path": "AGENTS.md",
+      "kind": "policy",
+      "hash": "e16b33a9068531a040f49c374c3b5949aa988a411e98a5db4153377cb8c2a9da",
+      "bytes": 1943,
+      "lines": 36,
+      "present": true,
+      "imported_at": "2026-05-24T20:06:03.176608756Z",
+      "modified_at": "2026-05-24T18:32:51.799931497Z"
+    },
+    {
+      "path": "CLAUDE.md",
+      "kind": "policy",
+      "hash": "1b521856b8c756a2963e38c9fefba87b5c2c7b7bcb5acfdaaef2a4d0511e7ad7",
+      "bytes": 137,
+      "lines": 5,
+      "present": true,
+      "imported_at": "2026-05-24T20:06:03.176623303Z",
+      "modified_at": "2026-05-24T18:32:51.799931497Z"
+    }
+  ]
+}

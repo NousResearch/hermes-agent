@@ -1,0 +1,9 @@
+{
+  "turn_key": "86a8af4f7159d6a5521d9a751e6b715cea3cf69f73a08e45bfa1cb0d3e870270",
+  "project": "hermes-agent",
+  "namespace": "main",
+  "agent": "hermes@session-10bf22e5",
+  "mode": "refresh",
+  "query": "status m agents.md",
+  "refreshed_at": "2026-05-24T16:56:18.475844176Z"
+}

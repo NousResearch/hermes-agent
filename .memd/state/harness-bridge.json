@@ -1,0 +1,86 @@
+{
+  "generated_at": "2026-05-25T04:05:22.729558164Z",
+  "overall_portability_class": "adapter-required",
+  "all_wired": false,
+  "harnesses": [
+    {
+      "harness": "codex",
+      "wired": true,
+      "portability_class": "harness-native",
+      "required_surfaces": [
+        "config",
+        "hook",
+        "skill"
+      ],
+      "missing_surfaces": [],
+      "notes": [
+        "Codex is native when the config, hook, and skill surfaces are all present."
+      ]
+    },
+    {
+      "harness": "claude",
+      "wired": false,
+      "portability_class": "adapter-required",
+      "required_surfaces": [
+        "settings",
+        "hook"
+      ],
+      "missing_surfaces": [
+        "hook"
+      ],
+      "notes": [
+        "Claude is native when the settings and session hook surfaces exist."
+      ]
+    },
+    {
+      "harness": "claw",
+      "wired": false,
+      "portability_class": "adapter-required",
+      "required_surfaces": [
+        "binary",
+        "config",
+        "skill"
+      ],
+      "missing_surfaces": [
+        "binary",
+        "config"
+      ],
+      "notes": [
+        "Claw is memd-ready when the binary is installed, config exists, and memd skills are visible through shared skill roots."
+      ]
+    },
+    {
+      "harness": "openclaw",
+      "wired": false,
+      "portability_class": "adapter-required",
+      "required_surfaces": [
+        "agents",
+        "bootstrap"
+      ],
+      "missing_surfaces": [
+        "agents",
+        "bootstrap"
+      ],
+      "notes": [
+        "OpenClaw is native when AGENTS.md and BOOTSTRAP.md bridge surfaces exist."
+      ]
+    },
+    {
+      "harness": "opencode",
+      "wired": false,
+      "portability_class": "adapter-required",
+      "required_surfaces": [
+        "config",
+        "plugin",
+        "command"
+      ],
+      "missing_surfaces": [
+        "config",
+        "plugin"
+      ],
+      "notes": [
+        "OpenCode is native when config, plugin, and command surfaces all route through memd."
+      ]
+    }
+  ]
+}

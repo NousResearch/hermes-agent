@@ -1,0 +1,366 @@
+{
+  "turn_key": "ae038e5131af0723d2d958860fa3fc53bcda778a0bbf927b05410289498d0a49",
+  "snapshot": {
+    "project": "hermes-agent",
+    "namespace": "main",
+    "agent": "hermes@session-501c9276",
+    "workspace": null,
+    "visibility": null,
+    "route": "auto",
+    "intent": "current_task",
+    "context": {
+      "route": "project_first",
+      "intent": "current_task",
+      "retrieval_order": [
+        "project",
+        "synced",
+        "local",
+        "global"
+      ],
+      "records": [
+        {
+          "id": "a29b3bbb-370f-4d8f-8881-dd9d8b0b0732",
+          "record": "id=a29b3bbb-370f-4d8f-8881-dd9d8b0b0732 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779653159 | c=As of 2026-05-24 14:47 ET, homelab agent ops verified clean from Codex: homelab doctor pass=19 warn=0 fail=0; homelab fleet-doctor pass=18 warn=0 fail=0. agent-vm, plex, and services all pass SSH, Bitwarden CLI, Vault..."
+        },
+        {
+          "id": "d9640289-7523-41bb-aea4-afd554f80964",
+          "record": "id=d9640289-7523-41bb-aea4-afd554f80964 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779681918 | c=As of 2026-05-25 00:05 ET, agent-vm can SSH into josuesdesktop. Desktop Tailscale SSH is enabled (RunSSH=true), desktop is tagged tag:desktop, ACL allows tag:server/tag:router/tag:desktop to SSH into tag:desktop as jo..."
+        }
+      ]
+    },
+    "working": {
+      "route": "project_first",
+      "intent": "current_task",
+      "retrieval_order": [
+        "project",
+        "synced",
+        "local",
+        "global"
+      ],
+      "budget_chars": 1600,
+      "used_chars": 1100,
+      "remaining_chars": 500,
+      "truncated": true,
+      "policy": {
+        "admission_limit": 3,
+        "max_chars_per_item": 220,
+        "budget_chars": 1600,
+        "rehydration_limit": 4
+      },
+      "records": [
+        {
+          "id": "a29b3bbb-370f-4d8f-8881-dd9d8b0b0732",
+          "record": "id=a29b3bbb-370f-4d8f-8881-dd9d8b0b0732 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779653159 | c=As of..."
+        },
+        {
+          "id": "d9640289-7523-41bb-aea4-afd554f80964",
+          "record": "id=d9640289-7523-41bb-aea4-afd554f80964 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779681918 | c=As of..."
+        },
+        {
+          "id": "f17d9aee-df0e-4ff4-b623-06e6f8c16ab5",
+          "record": "id=f17d9aee-df0e-4ff4-b623-06e6f8c16ab5 | stage=candidate | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | tags=security:prompt-injection,qua..."
+        }
+      ],
+      "evicted": [
+        {
+          "id": "26cad9c1-ca78-4d14-82ac-e297de33c2f1",
+          "record": "id=26cad9c1-ca78-4d14-82ac-e297de33c2f1 | stage=canonical | scope=synced | kind=status | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | tags=resume_state,session_state |...",
+          "reason": "evicted_by_admission_limit;kind=Status;status=active;source=derived;source_trust=0.66;freshness_days=0;verified_days=0;recent_use_days=0;rehearsals=33;trust_rank=2"
+        },
+        {
+          "id": "0ed68b60-581e-4a1f-9753-7ad0fb11f48b",
+          "record": "id=0ed68b60-581e-4a1f-9753-7ad0fb11f48b | stage=canonical | scope=project | kind=status | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | tags=checkpoint,current-task,aut...",
+          "reason": "evicted_by_admission_limit;kind=Status;status=active;source=derived;source_trust=0.72;freshness_days=0;verified_days=45;recent_use_days=0;rehearsals=13;trust_rank=2"
+        }
+      ],
+      "rehydration_queue": [
+        {
+          "id": "26cad9c1-ca78-4d14-82ac-e297de33c2f1",
+          "kind": "working_memory_record",
+          "label": "status",
+          "summary": "id=26cad9c1-ca78-4d14-82ac-e297de33c2f1 | stage=canonical | scope=synced | kind=status | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | tags=resume_state,session_state |...",
+          "reason": "evicted_by_admission_limit;kind=Status;status=active;source=derived;source_trust=0.66;freshness_days=0;verified_days=0;recent_use_days=0;rehearsals=33;trust_rank=2",
+          "source_agent": "hermes@session-501c9276",
+          "source_system": "memd-resume-state",
+          "source_path": "/home/aparcedodev/.hermes/hermes-agent",
+          "source_quality": "derived",
+          "recorded_at": "2026-05-25T04:21:11.758374938Z"
+        },
+        {
+          "id": "0ed68b60-581e-4a1f-9753-7ad0fb11f48b",
+          "kind": "working_memory_record",
+          "label": "status",
+          "summary": "id=0ed68b60-581e-4a1f-9753-7ad0fb11f48b | stage=canonical | scope=project | kind=status | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | tags=checkpoint,current-task,aut...",
+          "reason": "evicted_by_admission_limit;kind=Status;status=active;source=derived;source_trust=0.72;freshness_days=0;verified_days=45;recent_use_days=0;rehearsals=13;trust_rank=2",
+          "source_agent": "hermes@session-501c9276",
+          "source_system": "memd-short-term",
+          "source_path": "remember",
+          "source_quality": "derived",
+          "recorded_at": "2026-05-25T04:05:22.984603255Z"
+        }
+      ],
+      "traces": [
+        {
+          "item_id": "a29b3bbb-370f-4d8f-8881-dd9d8b0b0732",
+          "entity_id": "56d4f09a-a97a-442a-be7e-45d8b212044f",
+          "memory_kind": "fact",
+          "memory_stage": "canonical",
+          "typed_memory": "semantic+canonical",
+          "event_type": "retrieved_working",
+          "summary": "retrieved_working route=project_first intent=current_task",
+          "occurred_at": "2026-05-25T04:25:49.840725013Z",
+          "salience_score": 1.0
+        },
+        {
+          "item_id": "d9640289-7523-41bb-aea4-afd554f80964",
+          "entity_id": "a9510085-9fa5-4079-a6cd-1bd9c3e61038",
+          "memory_kind": "fact",
+          "memory_stage": "canonical",
+          "typed_memory": "semantic+canonical",
+          "event_type": "retrieved_compact_context",
+          "summary": "retrieved_compact_context route=project_first intent=current_task",
+          "occurred_at": "2026-05-25T04:25:49.491813Z",
+          "salience_score": 0.84
+        },
+        {
+          "item_id": "f17d9aee-df0e-4ff4-b623-06e6f8c16ab5",
+          "entity_id": "7500b148-928e-4255-85da-beb38fd5740e",
+          "memory_kind": "fact",
+          "memory_stage": "candidate",
+          "typed_memory": "semantic+candidate",
+          "event_type": "retrieved_compact_context",
+          "summary": "retrieved_compact_context route=project_first intent=current_task",
+          "occurred_at": "2026-05-25T04:05:20.701210021Z",
+          "salience_score": 0.25
+        }
+      ],
+      "semantic_consolidation": null,
+      "procedures": [],
+      "compaction_quality": {
+        "admitted": 3,
+        "evicted": 2,
+        "per_kind_admitted": {
+          "fact": 3
+        },
+        "per_kind_evicted": {
+          "status": 2
+        },
+        "chars_per_kind_admitted": {
+          "fact": 660
+        },
+        "budget_chars": 1600,
+        "used_chars": 1100
+      }
+    },
+    "inbox": {
+      "route": "project_first",
+      "intent": "current_task",
+      "items": []
+    },
+    "workspaces": {
+      "workspaces": [
+        {
+          "project": "hermes-agent",
+          "namespace": "main",
+          "workspace": null,
+          "visibility": "private",
+          "item_count": 12,
+          "active_count": 11,
+          "candidate_count": 1,
+          "contested_count": 0,
+          "source_lane_count": 6,
+          "avg_confidence": 0.69583327,
+          "trust_score": 0.6644166,
+          "last_seen_at": "2026-05-25T04:25:48.988348277Z",
+          "tags": [
+            "auto-short-term",
+            "bundle-refresh",
+            "checkpoint",
+            "current-task",
+            "remember",
+            "resume_state"
+          ]
+        }
+      ]
+    },
+    "sources": {
+      "sources": [
+        {
+          "source_agent": "memd",
+          "source_system": "memd-live-truth",
+          "project": "hermes-agent",
+          "namespace": "main",
+          "workspace": null,
+          "visibility": "private",
+          "item_count": 2,
+          "active_count": 2,
+          "candidate_count": 0,
+          "derived_count": 2,
+          "synthetic_count": 0,
+          "contested_count": 0,
+          "avg_confidence": 0.98,
+          "trust_score": 0.8684,
+          "last_seen_at": "2026-05-25T04:25:48.988348277Z",
+          "tags": [
+            "live_truth",
+            "repo_changes"
+          ]
+        },
+        {
+          "source_agent": "hermes@session-501c9276",
+          "source_system": "memd-short-term",
+          "project": "hermes-agent",
+          "namespace": "main",
+          "workspace": null,
+          "visibility": "private",
+          "item_count": 3,
+          "active_count": 3,
+          "candidate_count": 0,
+          "derived_count": 3,
+          "synthetic_count": 0,
+          "contested_count": 0,
+          "avg_confidence": 0.72,
+          "trust_score": 0.7176,
+          "last_seen_at": "2026-05-25T04:05:22.984603255Z",
+          "tags": [
+            "auto-short-term",
+            "bundle-refresh",
+            "checkpoint",
+            "current-task",
+            "remember"
+          ]
+        },
+        {
+          "source_agent": "hermes@session-10bf22e5",
+          "source_system": "memd-short-term",
+          "project": "hermes-agent",
+          "namespace": "main",
+          "workspace": null,
+          "visibility": "private",
+          "item_count": 1,
+          "active_count": 1,
+          "candidate_count": 0,
+          "derived_count": 1,
+          "synthetic_count": 0,
+          "contested_count": 0,
+          "avg_confidence": 0.72,
+          "trust_score": 0.7176,
+          "last_seen_at": "2026-05-24T18:46:28.707143939Z",
+          "tags": [
+            "auto-short-term",
+            "bundle-refresh",
+            "checkpoint",
+            "current-task",
+            "refresh"
+          ]
+        },
+        {
+          "source_agent": "hermes@session-501c9276",
+          "source_system": "memd-resume-state",
+          "project": "hermes-agent",
+          "namespace": "main",
+          "workspace": null,
+          "visibility": "private",
+          "item_count": 2,
+          "active_count": 2,
+          "candidate_count": 0,
+          "derived_count": 2,
+          "synthetic_count": 0,
+          "contested_count": 0,
+          "avg_confidence": 0.62,
+          "trust_score": 0.6596,
+          "last_seen_at": "2026-05-25T04:21:11.758374938Z",
+          "tags": [
+            "resume_state",
+            "session_state"
+          ]
+        },
+        {
+          "source_agent": "hermes@session-10bf22e5",
+          "source_system": "memd-resume-state",
+          "project": "hermes-agent",
+          "namespace": "main",
+          "workspace": null,
+          "visibility": "private",
+          "item_count": 1,
+          "active_count": 1,
+          "candidate_count": 0,
+          "derived_count": 1,
+          "synthetic_count": 0,
+          "contested_count": 0,
+          "avg_confidence": 0.62,
+          "trust_score": 0.6596,
+          "last_seen_at": "2026-05-24T18:46:28.795330148Z",
+          "tags": [
+            "resume_state",
+            "session_state"
+          ]
+        },
+        {
+          "source_agent": "hermes@session-501c9276",
+          "source_system": "memd",
+          "project": "hermes-agent",
+          "namespace": "main",
+          "workspace": null,
+          "visibility": "private",
+          "item_count": 3,
+          "active_count": 2,
+          "candidate_count": 1,
+          "derived_count": 1,
+          "synthetic_count": 0,
+          "contested_count": 0,
+          "avg_confidence": 0.55,
+          "trust_score": 0.46233332,
+          "last_seen_at": "2026-05-25T04:05:18.971590290Z",
+          "tags": [
+            "quarantine:prompt-injection",
+            "security:pi-system-prompt",
+            "security:prompt-injection"
+          ]
+        }
+      ]
+    },
+    "semantic": null,
+    "claims": {
+      "claims": []
+    },
+    "recent_repo_changes": [
+      "repo_dirty_total=10 tracked=4 untracked=6",
+      "status M AGENTS.md",
+      "status M gateway/platforms/bluebubbles.py",
+      "status M package-lock.json",
+      "status M scripts/whatsapp-bridge/package-lock.json",
+      "status ?? .memd.backup.20260524-133048.tgz",
+      "status ?? .memd/",
+      "status ?? CLAUDE.md",
+      "status ?? gateway/platforms/bluebubbles.py.chat_allowlist.bak.20260523144730",
+      "diff AGENTS.md                                | 34 +++++++++++",
+      "diff gateway/platforms/bluebubbles.py         | 74 +++++++++++++++++-------",
+      "diff package-lock.json                        |  6 +-",
+      "diff .../whatsapp-bridge/package-lock.json    |  8 +--"
+    ],
+    "change_summary": [
+      "next_recovery -> status: id=26cad9c1-ca78-4d14-82ac-e297de33c2f1 | stage=canonical | scope=synced | kind=status | status=active | proj...",
+      "rehydration 0 -> 2"
+    ],
+    "resume_state_age_minutes": 20,
+    "refresh_recommended": true,
+    "atlas_region_hints": [
+      "facts (2)"
+    ],
+    "handoff_quality": {
+      "fill_rate": 0.6,
+      "budget_utilization": 0.6875,
+      "dominant_kind": "fact",
+      "eviction_pressure": 0.4,
+      "fact_coverage": 1.0,
+      "decision_coverage": 0.0,
+      "working_depth": 0.375,
+      "composite": 0.54375
+    },
+    "files_touched": [],
+    "un_read_paths": [],
+    "preferences": []
+  },
+  "refreshed_at": "2026-05-25T04:25:51.386490Z"
+}

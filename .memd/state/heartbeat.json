@@ -1,0 +1,60 @@
+{
+  "session": "session-501c9276",
+  "agent": "hermes",
+  "effective_agent": "hermes@session-501c9276",
+  "tab_id": null,
+  "hive_system": "hermes",
+  "hive_role": "agent",
+  "worker_name": "Hermes",
+  "display_name": null,
+  "role": "agent",
+  "capabilities": [
+    "coordination",
+    "memory"
+  ],
+  "hive_groups": [
+    "project:hermes-agent"
+  ],
+  "lane_id": "/home/aparcedodev/.hermes/hermes-agent",
+  "hive_group_goal": null,
+  "authority": "participant",
+  "authority_mode": "shared",
+  "authority_degraded": false,
+  "heartbeat_model": "llama-desktop/qwen",
+  "project": "hermes-agent",
+  "namespace": "main",
+  "workspace": null,
+  "repo_root": "/home/aparcedodev/.hermes/hermes-agent",
+  "worktree_root": "/home/aparcedodev/.hermes/hermes-agent",
+  "branch": "main",
+  "base_branch": null,
+  "visibility": null,
+  "base_url": "http://100.104.154.24:8787",
+  "base_url_healthy": null,
+  "host": null,
+  "pid": 1089256,
+  "topic_claim": "c=As of...",
+  "scope_claims": [
+    "project"
+  ],
+  "task_id": null,
+  "focus": "id=a29b3bbb-370f-4d8f-8881-dd9d8b0b0732 | stage=canonical | scope=project | kind=fact | status=active | project=hermes-agent | ns=main | vis=private | agent=hermes@session-501c9276 | cf=0.70 | upd=1779653159 | c=As of...",
+  "pressure": null,
+  "next_recovery": null,
+  "next_action": "c=As of...",
+  "working": "c=As of...",
+  "touches": [
+    "project"
+  ],
+  "blocked_by": [],
+  "cowork_with": [],
+  "handoff_target": null,
+  "offered_to": [],
+  "needs_help": false,
+  "needs_review": false,
+  "handoff_state": null,
+  "confidence": null,
+  "risk": null,
+  "status": "live",
+  "last_seen": "2026-05-25T04:29:13.985137907Z"
+}

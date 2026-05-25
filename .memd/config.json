@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "project": "hermes-agent",
+  "namespace": "main",
+  "agent": "hermes",
+  "session": "session-501c9276",
+  "tab_id": null,
+  "hive_system": "hermes",
+  "hive_role": "agent",
+  "capabilities": [
+    "coordination",
+    "memory"
+  ],
+  "hive_groups": [
+    "project:hermes-agent"
+  ],
+  "hive_group_goal": null,
+  "hive_project_enabled": false,
+  "hive_project_anchor": null,
+  "hive_project_joined_at": null,
+  "authority": "participant",
+  "base_url": "http://100.104.154.24:8787",
+  "route": "auto",
+  "intent": "current_task",
+  "workspace": null,
+  "visibility": null,
+  "heartbeat_model": "llama-desktop/qwen",
+  "voice_mode": "caveman-lite",
+  "auto_short_term_capture": true,
+  "auto_commit": {
+    "enabled": false
+  },
+  "telemetry": {
+    "enabled": false,
+    "retention_days": 90,
+    "export_scope": "local"
+  },
+  "authority_policy": {
+    "shared_primary": true,
+    "localhost_fallback_policy": "deny"
+  },
+  "authority_state": {
+    "mode": "shared",
+    "degraded": false,
+    "shared_base_url": "http://100.104.154.24:8787",
+    "fallback_base_url": null,
+    "activated_at": "2026-05-24T17:38:40.146733227Z",
+    "activated_by": "init",
+    "reason": "shared authority available",
+    "warning_acknowledged_at": null,
+    "expires_at": null,
+    "blocked_capabilities": []
+  },
+  "backend": {
+    "rag": {
+      "enabled": false,
+      "provider": "lightrag-compatible",
+      "url": null
+    },
+    "embedding_model": null
+  },
+  "hooks": {
+    "context": "hooks/memd-context.sh",
+    "capture": "hooks/memd-capture.sh",
+    "spill": "hooks/memd-spill.sh",
+    "context_ps1": "hooks/memd-context.ps1",
+    "capture_ps1": "hooks/memd-capture.ps1",
+    "spill_ps1": "hooks/memd-spill.ps1"
+  },
+  "rag_url": null
+}

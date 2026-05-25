@@ -271,6 +271,10 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        # P30-5 FIX (audit 100 passes): read-after-write verify flag.  When
+        # enabled, sync_all re-reads recently written memories to confirm
+        # persistence.  Loaded lazily from config.yaml on first sync_all call.
+        self._read_after_write_verify: Optional[bool] = None
 
     # -- Registration --------------------------------------------------------
 
@@ -395,8 +399,37 @@ class MemoryManager:
 
     # -- Sync ----------------------------------------------------------------
 
+    def _load_read_after_write_verify(self) -> None:
+        """Lazily load read_after_write_verify from config.yaml once."""
+        if self._read_after_write_verify is not None:
+            return
+        try:
+            from hermes_constants import get_config_path
+            from agent.skill_utils import yaml_load
+            config_path = get_config_path()
+            if config_path.exists():
+                parsed = yaml_load(config_path.read_text(encoding="utf-8")) or {}
+                skills_cfg = parsed.get("skills", {})
+                if isinstance(skills_cfg, dict):
+                    self._read_after_write_verify = bool(
+                        skills_cfg.get("read_after_write_verify", False)
+                    )
+                    return
+        except Exception:
+            pass
+        self._read_after_write_verify = False
+
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Sync a completed turn to all providers."""
+        """Sync a completed turn to all providers.
+
+        P30-5 FIX (audit 100 passes): if read_after_write_verify is True in
+        config.yaml (skills.read_after_write_verify), re-read the last memory
+        entry after each write to confirm persistence.  Detects silent write
+        failures (network timeout after send, write-only backend, etc.).
+        """
+        self._load_read_after_write_verify()
+        verify = self._read_after_write_verify
+
         for provider in self._providers:
             try:
                 provider.sync_turn(user_content, assistant_content, session_id=session_id)
@@ -405,6 +438,26 @@ class MemoryManager:
                     "Memory provider '%s' sync_turn failed: %s",
                     provider.name, e,
                 )
+                continue
+
+            # P30-5: read-after-write verification
+            if verify:
+                try:
+                    recent = getattr(provider, "recent_memories", None)
+                    if callable(recent):
+                        # Re-read the last entry to confirm persistence
+                        entries = recent(limit=1, session_id=session_id)
+                        if not entries:
+                            logger.warning(
+                                "Memory provider '%s' read-after-write verify: "
+                                "no memories found after sync — write may have failed silently.",
+                                provider.name,
+                            )
+                except Exception as e:
+                    logger.debug(
+                        "Memory provider '%s' read-after-write verify failed: %s",
+                        provider.name, e,
+                    )
 
     # -- Tools ---------------------------------------------------------------
 

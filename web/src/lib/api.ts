@@ -145,11 +145,17 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
+  createCronJob: (job: CronJobCreatePayload, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(job),
+    }),
+  updateCronJob: (id: string, updates: CronJobUpdate, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates }),
     }),
   pauseCronJob: (id: string, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
@@ -561,19 +567,69 @@ export interface CronJob {
   id: string;
   profile?: string | null;
   profile_name?: string | null;
+  run_profile?: string | null;
   hermes_home?: string | null;
   is_default_profile?: boolean;
   name?: string | null;
   prompt?: string | null;
   script?: string | null;
+  no_agent?: boolean | null;
   schedule?: { kind?: string; expr?: string; display?: string };
   schedule_display?: string | null;
+  repeat?: { times?: number | null; completed?: number | null } | null;
+  skill?: string | null;
+  skills?: string[] | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  context_from?: string | string[] | null;
+  enabled_toolsets?: string[] | null;
+  workdir?: string | null;
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  created_at?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
   last_error?: string | null;
+  last_status?: string | null;
+  last_delivery_error?: string | null;
+}
+
+export interface CronJobUpdate {
+  name?: string;
+  prompt?: string;
+  schedule?: string;
+  deliver?: string;
+  repeat?: { times: number | null; completed?: number | null };
+  skills?: string[];
+  script?: string | null;
+  no_agent?: boolean;
+  workdir?: string | null;
+  profile?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  context_from?: string[] | null;
+  enabled_toolsets?: string[] | null;
+}
+
+export interface CronJobCreatePayload {
+  name?: string;
+  prompt?: string;
+  schedule: string;
+  deliver?: string;
+  repeat?: number | null;
+  skills?: string[];
+  script?: string | null;
+  no_agent?: boolean;
+  workdir?: string | null;
+  profile?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  context_from?: string[] | null;
+  enabled_toolsets?: string[] | null;
 }
 
 export interface SkillInfo {

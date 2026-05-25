@@ -132,6 +132,92 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
 
 
 @pytest.mark.asyncio
+async def test_cron_update_preserves_storage_profile_and_exposes_run_profile(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = web_server._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="default storage worker runtime",
+        schedule="every 1h",
+        name="profile-edit-job",
+    )
+
+    updated = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(updates={"profile": "worker_alpha"}),
+        profile="default",
+    )
+
+    assert updated["profile"] == "default"
+    assert updated["profile_name"] == "default"
+    assert updated["run_profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
+async def test_cron_create_accepts_dashboard_config_fields(isolated_profiles):
+    from hermes_cli import web_server
+
+    created = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            prompt="collect the latest status",
+            schedule="every 1h",
+            name="dashboard-full-config",
+            deliver="local",
+            repeat=3,
+            skills=["research", "ops"],
+            script="status_report.py",
+            no_agent=False,
+            workdir=str(isolated_profiles["default"]),
+            profile="worker_alpha",
+            model="gpt-test",
+            provider="openai-codex",
+            base_url="http://example.test",
+            context_from=["seed-job"],
+            enabled_toolsets=["terminal", "web"],
+        ),
+        profile="default",
+    )
+
+    assert created["profile"] == "default"
+    assert created["profile_name"] == "default"
+    assert created["run_profile"] == "worker_alpha"
+    assert created["name"] == "dashboard-full-config"
+    assert created["repeat"]["times"] == 3
+    assert created["skills"] == ["research", "ops"]
+    assert created["script"] == "status_report.py"
+    assert created["workdir"] == str(isolated_profiles["default"])
+    assert created["model"] == "gpt-test"
+    assert created["provider"] == "openai-codex"
+    assert created["base_url"] == "http://example.test"
+    assert created["context_from"] == ["seed-job"]
+    assert created["enabled_toolsets"] == ["terminal", "web"]
+
+
+@pytest.mark.asyncio
+async def test_cron_update_rejects_non_config_fields(isolated_profiles):
+    from hermes_cli import web_server
+
+    job = web_server._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="state should not be dashboard-editable",
+        schedule="every 1h",
+        name="state-guard",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.update_cron_job(
+            job["id"],
+            web_server.CronJobUpdate(updates={"state": "paused"}),
+            profile="default",
+        )
+
+    assert exc.value.status_code == 400
+    assert "Unsupported cron update field" in exc.value.detail
+
+
+@pytest.mark.asyncio
 async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_profiles):
     from hermes_cli import web_server
 

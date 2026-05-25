@@ -206,7 +206,7 @@ export const zh: Translations = {
     prompt: "提示词",
     promptPlaceholder: "代理每次运行时应执行什么操作？",
     schedule: "调度表达式（cron）",
-    schedulePlaceholder: "0 9 * * *",
+    schedulePlaceholder: "every 30m",
     deliverTo: "投递至",
     scheduledJobs: "已调度任务",
     noJobs: "暂无定时任务。在上方创建一个。",
@@ -215,6 +215,73 @@ export const zh: Translations = {
     pause: "暂停",
     resume: "恢复",
     triggerNow: "立即触发",
+    edit: "Edit",
+    editJob: "Edit Cron Job",
+    profile: "Profile",
+    allProfiles: "All profiles",
+    idLabel: "ID",
+    storedIn: "stored in",
+    sections: {
+      core: "Core",
+      execution: "Execution",
+      advancedModelAndContext: "Advanced model and context",
+    },
+    repeatCount: "Repeat count",
+    repeatPlaceholder: "blank = unlimited",
+    deliveryHint:
+      "local only saves output. origin replies to the source channel. Use telegram, discord, all, platform:chat_id, or comma-separated targets.",
+    skills: "Skills",
+    skillsPlaceholder: "research",
+    script: "Script",
+    scriptPlaceholder: "health_check.py",
+    workdir: "Workdir",
+    workdirPlaceholder: "/root/project",
+    noAgentMode: "No-agent mode",
+    runProfile: "Run profile",
+    runProfilePlaceholder: "blank = scheduler default",
+    provider: "Provider",
+    providerPlaceholder: "openai-codex",
+    model: "Model",
+    modelPlaceholder: "gpt-5.5",
+    baseUrl: "Base URL",
+    baseUrlPlaceholder: "https://api.example.com/v1",
+    contextFrom: "Context from",
+    contextFromPlaceholder: "a1b2c3d4e5f6",
+    enabledToolsets: "Enabled toolsets",
+    enabledToolsetsPlaceholder: "terminal",
+    helpers: {
+      name: "Leave blank to derive a name from the prompt, first skill, or script.",
+      schedule:
+        "Accepted: 30m one-shot, every 30m recurring, 0 9 * * * cron, or 2026-05-22T09:00 timestamp.",
+      prompt:
+        "The final response is delivered automatically. Ask the agent to produce the result, not to send a message.",
+      storageProfile:
+        "Stores the job definition in this profile. Runtime execution can use a different run profile.",
+      repeat:
+        "Positive number limits total runs. Blank means unlimited; one-shot schedules default to 1.",
+      skills:
+        "Loads these skills before the prompt on every run. Put one skill name per line.",
+      script:
+        "Script must live under HERMES_HOME/scripts/. .sh/.bash use bash; other files use Python.",
+      noAgent:
+        "When enabled, Hermes skips the agent and delivers script stdout directly. Script is required.",
+      workdir:
+        "Must be an existing absolute directory. Context files and terminal/file tools use this directory.",
+      runProfile:
+        "Runs the job with this Hermes profile's config, keys, skills, scripts, and memory.",
+      provider: "Optional per-job provider override. Blank uses the run profile default.",
+      model: "Optional per-job model override. Blank uses the run profile default.",
+      baseUrl: "Only set this for a custom provider endpoint.",
+      contextFrom:
+        "Injects the latest output from listed cron job IDs as context. Put one 12-character job ID per line.",
+      enabledToolsets:
+        "Restricts the agent to these toolsets. Blank uses cron defaults. Ignored in no-agent mode.",
+    },
+    errors: {
+      scheduleRequired: "Schedule is required",
+      repeatPositiveInteger: "Repeat count must be a positive integer",
+      noAgentRequiresScript: "No-agent mode requires a script",
+    },
     delivery: {
       local: "本地",
       telegram: "Telegram",

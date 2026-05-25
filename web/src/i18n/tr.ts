@@ -205,11 +205,11 @@ export const tr: Translations = {
     confirmDeleteTitle: "Zamanlanmış görev silinsin mi?",
     newJob: "Yeni Cron Görevi",
     nameOptional: "Ad (isteğe bağlı)",
-    namePlaceholder: "örn. Günlük özet",
+    namePlaceholder: "örn. Sunucu sağlık kontrolü",
     prompt: "İstem",
-    promptPlaceholder: "Agent her çalıştırmada ne yapmalı?",
+    promptPlaceholder: "Disk kullanımını kontrol et ve %80 üstündeyse raporla.",
     schedule: "Zamanlama (cron ifadesi)",
-    schedulePlaceholder: "0 9 * * *",
+    schedulePlaceholder: "every 30m",
     deliverTo: "Şuraya teslim et",
     scheduledJobs: "Zamanlanmış Görevler",
     noJobs: "Yapılandırılmış cron görevi yok. Yukarıdan bir tane oluşturun.",
@@ -218,6 +218,73 @@ export const tr: Translations = {
     pause: "Duraklat",
     resume: "Devam ettir",
     triggerNow: "Şimdi tetikle",
+    edit: "Düzenle",
+    editJob: "Cron Görevini Düzenle",
+    profile: "Profil",
+    allProfiles: "Tüm profiller",
+    idLabel: "Kimlik",
+    storedIn: "saklandığı profil",
+    sections: {
+      core: "Temel",
+      execution: "Çalıştırma",
+      advancedModelAndContext: "Gelişmiş model ve bağlam",
+    },
+    repeatCount: "Tekrar sayısı",
+    repeatPlaceholder: "boş = sınırsız",
+    deliveryHint:
+      "local sadece çıktıyı kaydeder. origin kaynak kanala döner. telegram, discord, all, platform:chat_id veya virgülle ayrılmış hedefler kullanılabilir.",
+    skills: "Yetenekler",
+    skillsPlaceholder: "research",
+    script: "Betik",
+    scriptPlaceholder: "health_check.py",
+    workdir: "Çalışma dizini",
+    workdirPlaceholder: "/root/project",
+    noAgentMode: "Agent kullanmadan çalıştır",
+    runProfile: "Çalıştırma profili",
+    runProfilePlaceholder: "boş = zamanlayıcı varsayılanı",
+    provider: "Sağlayıcı",
+    providerPlaceholder: "openai-codex",
+    model: "Model",
+    modelPlaceholder: "gpt-5.5",
+    baseUrl: "Temel URL",
+    baseUrlPlaceholder: "https://api.example.com/v1",
+    contextFrom: "Bağlam kaynağı",
+    contextFromPlaceholder: "a1b2c3d4e5f6",
+    enabledToolsets: "Etkin araç setleri",
+    enabledToolsetsPlaceholder: "terminal",
+    helpers: {
+      name: "Boş bırakılırsa ad; istem, ilk yetenek veya betikten otomatik türetilir.",
+      schedule:
+        "Kabul edilenler: 30m tek seferlik, every 30m tekrar eden, 0 9 * * * cron veya 2026-05-22T09:00 zaman damgası.",
+      prompt:
+        "Final yanıt otomatik teslim edilir. Ajanın mesaj göndermesini değil, sonucu üretmesini isteyin.",
+      storageProfile:
+        "Görev tanımını bu profilde saklar. Çalışma sırasında farklı bir çalıştırma profili kullanılabilir.",
+      repeat:
+        "Pozitif sayı toplam çalıştırmayı sınırlar. Boş değer sınırsızdır; tek seferlik zamanlamalar varsayılan olarak 1 olur.",
+      skills:
+        "Her çalıştırmada istemden önce bu yetenekler yüklenir. Her satıra bir yetenek adı yazın.",
+      script:
+        "Betik HERMES_HOME/scripts/ altında olmalıdır. .sh/.bash bash ile, diğer dosyalar Python ile çalışır.",
+      noAgent:
+        "Açıkken Hermes ajanı atlar ve betik stdout çıktısını doğrudan teslim eder. Betik zorunludur.",
+      workdir:
+        "Mevcut bir mutlak dizin olmalı. Bağlam dosyaları ve terminal/file araçları bu dizini kullanır.",
+      runProfile:
+        "Görevi bu Hermes profilinin config, anahtar, yetenek, betik ve hafıza yapısıyla çalıştırır.",
+      provider: "İsteğe bağlı görev bazlı sağlayıcı geçersiz kılması. Boşsa çalıştırma profilinin varsayılanı kullanılır.",
+      model: "İsteğe bağlı görev bazlı model geçersiz kılması. Boşsa çalıştırma profilinin varsayılanı kullanılır.",
+      baseUrl: "Yalnızca özel sağlayıcı uç noktası kullanıyorsanız doldurun.",
+      contextFrom:
+        "Listelenen cron görev ID'lerinin son çıktısını bağlam olarak ekler. Her satıra 12 karakterlik bir görev ID'si yazın.",
+      enabledToolsets:
+        "Ajanı bu araç setleriyle sınırlar. Boşsa cron varsayılanları kullanılır. Agent kullanmadan çalıştır modunda yok sayılır.",
+    },
+    errors: {
+      scheduleRequired: "Zamanlama gereklidir",
+      repeatPositiveInteger: "Tekrar sayısı pozitif bir tam sayı olmalıdır",
+      noAgentRequiresScript: "Agent kullanmadan çalıştırma modu için betik gereklidir",
+    },
     delivery: {
       local: "Yerel",
       telegram: "Telegram",

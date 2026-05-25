@@ -2,7 +2,7 @@
 name: himalaya
 description: "Himalaya CLI: IMAP/SMTP email from terminal."
 version: 1.1.0
-author: community
+author: Eugene Ohu (gingerol)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -17,10 +17,16 @@ prerequisites:
 
 Himalaya is a CLI email client that lets you manage emails from the terminal using IMAP, SMTP, Notmuch, or Sendmail backends.
 
+## When to Use
+
+Load this skill when the user asks to check, read, search, send, or manage email from the terminal, or when email-related tools (himalaya, gog) are detected in the environment.
+
 ## References
 
 - `references/configuration.md` (config file setup + IMAP/SMTP authentication)
 - `references/message-composition.md` (MML syntax for composing emails)
+- `references/gog-gmail.md` (gog OAuth fallback, keychain patterns, scope constraints)
+- `references/oauth-imap-flow.md` (browser OAuth flow to get IMAP-scoped tokens for himalaya)
 
 ## Prerequisites
 
@@ -248,10 +254,11 @@ List accounts:
 himalaya account list
 ```
 
-Use a specific account:
+Use a specific account (v1.2.0: `-a` is a subcommand flag, not top-level):
 
 ```bash
-himalaya --account work envelope list
+himalaya envelope list -a work --page-size 20
+himalaya envelope list -a personal subject meeting
 ```
 
 ## Attachments
@@ -291,9 +298,89 @@ Full trace with backtrace:
 RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
 ```
 
+## Gmail OAuth (gog fallback)
+
+When himalaya fails on a Gmail/Google Workspace account with the error:
+
+```
+Application-specific password required: https://support.google.com/accounts/answer/185833
+```
+
+**DO NOT tell the user to generate an app-specific password or assume credentials are missing.** Many setups have `gog` already installed with working OAuth tokens. Check first:
+
+```bash
+which gog && gog version
+```
+
+If `gog` v0.11.0+ is present, use it to read and search Gmail via OAuth (it handles the token lifecycle):
+
+```bash
+# List recent inbox
+gog -a user@domain.com gmail search "newer_than:7d" --max 20 --json
+
+# Search inbox
+gog -a user@domain.com gmail search "subject:meeting" --max 10 --json
+
+# Read a specific thread (by thread ID from search results)
+gog -a user@domain.com gmail get <thread-id>
+```
+
+`gog` credentials live at `~/Library/Application Support/gogcli/` and tokens are stored in the macOS keychain under service `gogcli`, account `token:default:user@domain.com`. OAuth is self-maintaining — no password scripts needed. See `references/gog-gmail.md` for keychain token retrieval patterns.
+
+### Building himalaya with OAuth2 support
+
+The Homebrew build of himalaya 1.2.0 does **not** include the `oauth2` Cargo feature. If you need native OAuth2 in himalaya, build from source:
+
+```bash
+# Check current features — if +oauth2 is missing, rebuild
+himalaya --version
+
+# Build with oauth2
+cargo install himalaya --version 1.2.0 --locked --features "oauth2,smtp,imap"
+```
+
+### himalaya OAuth2 config (TOML format)
+
+himalaya v1.2.0 OAuth2 config requires these fields (all mandatory except `pkce` which defaults false):
+
+```toml
+backend.auth.type = "oauth2"
+backend.auth.method = "xoauth2"         # or "oauth-bearer"
+backend.auth.client-id = "..."           # string
+backend.auth.client-secret = { cmd = "/path/to/script" }  # Secret: { cmd = "..." } or { raw = "..." } or { keyring = "..." }
+backend.auth.refresh-token = { cmd = "/path/to/script" }
+backend.auth.access-token = { cmd = "/path/to/script" }    # can be empty if refresh-token is set
+backend.auth.auth-url = "https://accounts.google.com/o/oauth2/auth"
+backend.auth.token-url = "https://oauth2.googleapis.com/token"
+backend.auth.pkce = false
+backend.auth.scope = "https://mail.google.com/"            # single scope; use `scopes = ["...", "..."]` for multiple
+```
+
+### Critical pitfall: scope mismatch
+
+Google's Gmail REST API scope (`https://www.googleapis.com/auth/gmail.modify`) is **not** the same as Google's IMAP/SMTP scope (`https://mail.google.com/`). If a gog refresh token was authorized for the REST API only, it will fail with XOAUTH2 on IMAP. Google responds with `{"status":"400","schemes":"Bearer","scope":"https://mail.google.com/"}` — this means the token doesn't have the right scope, not that credentials are broken.
+
+When this happens, do NOT attempt to re-authorize via browser flow immediately — just use `gog` for reading/searching (it works fine with REST API scope). The OAuth re-auth to add the IMAP scope is a separate user-browser action.
+
+### Account flag location (v1.2.0)
+
+v1.2.0 moved the account flag to subcommand level, NOT top level:
+
+```bash
+# CORRECT (v1.2.0+)
+himalaya envelope list -a lbs --page-size 5
+
+# WRONG — silently ignored in v1.2.0
+himalaya --account lbs envelope list
+```
+
+Verify with `himalaya account list` first to see configured accounts.
+
 ## Tips
 
 - Use `himalaya --help` or `himalaya <command> --help` for detailed usage.
 - Message IDs are relative to the current folder; re-list after folder changes.
 - For composing rich emails with attachments, use MML syntax (see `references/message-composition.md`).
 - Store passwords securely using `pass`, system keyring, or a command that outputs the password.
+- For Gmail/Google Workspace accounts where password auth is blocked, use `gog` (OAuth) for reading/searching. See `references/gog-gmail.md` for token details and scope constraints.
+- Never assume credentials are broken when you see "Application-specific password required" — check for `gog` first. Users often have OAuth already set up from prior tools.

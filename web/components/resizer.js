@@ -1,9 +1,3 @@
-/*
-INSTRUCTIONS:
-1. Enables draggable resizing between panels.
-2. Prevents layout breaking using min/max widths.
-*/
-
 const resizer = document.getElementById("resizer");
 const left = document.getElementById("leftPanel");
 
@@ -11,6 +5,7 @@ let isDragging = false;
 
 resizer.addEventListener("mousedown", () => {
   isDragging = true;
+  document.body.style.cursor = "col-resize";
 });
 
 window.addEventListener("mousemove", (e) => {
@@ -26,4 +21,5 @@ window.addEventListener("mousemove", (e) => {
 
 window.addEventListener("mouseup", () => {
   isDragging = false;
+  document.body.style.cursor = "default";
 });

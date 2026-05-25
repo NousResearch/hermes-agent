@@ -38,6 +38,7 @@ from hermes_cli.production_order_db import (
     StageEntry,
     StateTransitionError,
     _base36_random,
+    create_architect_handoff,
     create_orchestrator_handoff,
     create_production_kanban_graph,
     create_production_order,
@@ -47,6 +48,7 @@ from hermes_cli.production_order_db import (
     list_production_orders,
     log_workflow_event,
     run_full_bridge,
+    run_orchestrator_triage_bridge,
     transition_state,
     validate_brief,
     validate_state_transition,
@@ -332,6 +334,8 @@ def test_valid_state_transitions():
     assert validate_state_transition("ACTION_APPROVED", "PRODUCTION_ORDER_CREATED", "hermes")
     # PRODUCTION_ORDER_CREATED -> ORCHESTRATOR_TRIAGE
     assert validate_state_transition("PRODUCTION_ORDER_CREATED", "ORCHESTRATOR_TRIAGE", "orchestrator_os")
+    # ORCHESTRATOR_TRIAGE -> ARCHITECT_SPEC
+    assert validate_state_transition("ORCHESTRATOR_TRIAGE", "ARCHITECT_SPEC", "orchestrator_os")
 
 
 def test_invalid_state_transition_rejected():
@@ -675,6 +679,101 @@ def test_full_bridge_smoke(conn, sample_brief):
     assert "kanban_graph_created" in event_types
     assert "handoff_created" in event_types
     assert "state_transitioned" in event_types
+
+
+def test_orchestrator_triage_bridge_moves_existing_order_to_architect_spec(conn, sample_brief):
+    """Slice 5 advances an existing PO without duplicating the Kanban graph."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    triaged = run_orchestrator_triage_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+    )
+
+    assert triaged.current_state == "ARCHITECT_SPEC"
+    assert triaged.current_owner_profile == "architect_os"
+    assert triaged.child_kanban_card_ids == original_child_ids
+    assert len(triaged.child_kanban_card_ids) == 6
+    assert triaged.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert any(
+        s.from_state == "ORCHESTRATOR_TRIAGE" and s.to_state == "ARCHITECT_SPEC"
+        for s in triaged.stage_history
+    )
+
+    link_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (triaged.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert link_count == 6
+
+    architect_card = kb.get_task(conn, original_child_ids[1])
+    assert architect_card is not None
+    assert architect_card.status == "ready"
+    assert architect_card.body is not None
+    assert "--- HANDOFF PACKET ---" in architect_card.body
+    assert '"to_profile": "architect_os"' in architect_card.body
+
+    events = conn.execute(
+        "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events] == [
+        "brief_approved",
+        "production_order_created",
+        "kanban_graph_created",
+        "state_transitioned",
+        "handoff_created",
+        "orchestrator_triage_completed",
+        "handoff_created",
+    ]
+    assert events[-2]["from_state"] == "ORCHESTRATOR_TRIAGE"
+    assert events[-2]["to_state"] == "ARCHITECT_SPEC"
+    assert events[-2]["owner_profile"] == "orchestrator_os"
+
+
+def test_orchestrator_triage_bridge_rejects_missing_graph(conn, sample_brief):
+    """Slice 5 requires the already-created 6-card Kanban graph."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    transition_state(conn, po, "ORCHESTRATOR_TRIAGE", "orchestrator_os")
+
+    with pytest.raises(ValueError, match="must have 6 child cards"):
+        run_orchestrator_triage_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+        )
+
+
+def test_architect_handoff_uses_frozen_brief_metadata(conn, sample_brief):
+    """ArchitectOS handoff packet is derived from the frozen PO brief."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    handoff = create_architect_handoff(po)
+
+    assert handoff["from_profile"] == "orchestrator_os"
+    assert handoff["to_profile"] == "architect_os"
+    assert handoff["current_state"] == "ORCHESTRATOR_TRIAGE"
+    assert handoff["requested_next_state"] == "ARCHITECT_SPEC"
+    assert handoff["scope"] == sample_brief["scope"]
+    assert handoff["out_of_scope"] == sample_brief["out of scope"]
+    assert sample_brief["target repo or workspace"] in handoff["inputs"]
 
 
 # ---------------------------------------------------------------------------

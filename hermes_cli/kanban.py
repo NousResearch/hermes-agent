@@ -889,6 +889,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     po_status.add_argument("--json", action="store_true",
                            help="Emit JSON output")
 
+    po_triage = po_sub.add_parser(
+        "triage",
+        help="Run Slice 5 OrchestratorOS triage for an existing production order",
+    )
+    po_triage.add_argument("production_order_id",
+                           help="Production order ID in ORCHESTRATOR_TRIAGE")
+    po_triage.add_argument("--board", default=None,
+                           help="Kanban board slug (default: current board)")
+    po_triage.add_argument("--json", action="store_true",
+                           help="Emit JSON output")
+
     return kanban_parser
 
 
@@ -2736,6 +2747,7 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
         list_production_orders,
         log_workflow_event,
         run_full_bridge,
+        run_orchestrator_triage_bridge,
         validate_brief,
     )
     import json as stdlib_json
@@ -2833,6 +2845,36 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
             for o in orders:
                 print(format_production_order_status(o))
                 print("---")
+        return 0
+
+    if po_action == "triage":
+        po_id = getattr(args, "production_order_id", None)
+        if not po_id:
+            print("kanban production-order triage: production_order_id is required",
+                  file=sys.stderr)
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_orchestrator_triage_bridge(
+                    conn,
+                    production_order_id=po_id,
+                )
+        except Exception as exc:
+            print(f"kanban production-order triage: {exc}", file=sys.stderr)
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_architect_os",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nSlice 5 triage complete: ArchitectOS handoff attached.")
         return 0
 
     if po_action == "show":

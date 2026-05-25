@@ -83,12 +83,13 @@ PRODUCTION_ORDER_FIELD = "production_order_id"
 STATE_FIELD = "current_state"
 WORKFLOW_TEMPLATE_ID = "hermes-production-workflow-v1"
 
-# Only Slice 4 transitions are wired. Remaining transitions become live
-# when each downstream profile uses the state machine.
+# Only Slice 4 + Slice 5 transitions are wired. Remaining transitions become
+# live when each downstream profile uses the state machine.
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "BRIEF_DRAFTED":                {"ACTION_APPROVED"},
     "ACTION_APPROVED":              {"PRODUCTION_ORDER_CREATED"},
     "PRODUCTION_ORDER_CREATED":     {"ORCHESTRATOR_TRIAGE"},
+    "ORCHESTRATOR_TRIAGE":          {"ARCHITECT_SPEC"},
 }
 
 STATE_OWNERS: dict[str, str] = {
@@ -96,6 +97,7 @@ STATE_OWNERS: dict[str, str] = {
     "ACTION_APPROVED":              "hermes",
     "PRODUCTION_ORDER_CREATED":     "orchestrator_os",
     "ORCHESTRATOR_TRIAGE":          "orchestrator_os",
+    "ARCHITECT_SPEC":               "architect_os",
 }
 
 WORKFLOW_INITIAL_STATE = "PRODUCTION_ORDER_CREATED"
@@ -130,6 +132,36 @@ ORCHESTRATOR_HANDOFF_TEMPLATE: dict[str, str] = {
         "scheduled automation, or scope expansion."
     ),
     "evidence_required": "Triage classification result",
+}
+
+ARCHITECT_HANDOFF_TEMPLATE: dict[str, str] = {
+    "from_profile": "orchestrator_os",
+    "to_profile": "architect_os",
+    "current_state": "ORCHESTRATOR_TRIAGE",
+    "requested_next_state": "ARCHITECT_SPEC",
+    "objective": (
+        "Produce the bounded ArchitectOS spec and DevOS handoff packet "
+        "from the frozen production-order brief"
+    ),
+    "expected_output": (
+        "ArchitectOS spec, contracts, quality gates, and DevOS handoff packet"
+    ),
+    "acceptance_criteria": (
+        "Spec is bounded to the approved brief, preserves non-goals, and "
+        "names verification requirements before DevOS implementation"
+    ),
+    "source_truth": "specs/architecture/workflows/hermes-production-workflow-v1.md",
+    "stop_conditions": (
+        "Missing source truth, ambiguous product behavior, contract/schema "
+        "decision not present in the frozen brief, approval boundary hit, "
+        "or scope expansion beyond the production-order metadata."
+    ),
+    "approval_required_before": (
+        "Spending, publishing, destructive changes, new profiles, permission "
+        "widening, secret access, external services, scheduled automation, "
+        "or scope expansion."
+    ),
+    "evidence_required": "ArchitectOS spec artifact and DevOS handoff packet",
 }
 
 # Approval phrases from spec section 3
@@ -725,6 +757,7 @@ def transition_state(
     error: Optional[str] = None,
     next_action: Optional[str] = None,
     card_id: Optional[str] = None,
+    event_type: str = "state_transitioned",
 ) -> str:
     """Validate and execute a state transition on ``po``.
 
@@ -752,7 +785,7 @@ def transition_state(
 
     # Log event.
     log_workflow_event(
-        conn, po.production_order_id, "state_transitioned",
+        conn, po.production_order_id, event_type,
         from_state=from_state,
         to_state=to_state,
         owner_profile=calling_profile,
@@ -800,6 +833,32 @@ def create_orchestrator_handoff(
         or f"Parent card ID: {po.parent_kanban_card_id}, "
         f"Child card IDs: {', '.join(po.child_kanban_card_ids)}, "
         f"Frozen brief: {po.title}"
+    )
+    return packet
+
+
+def create_architect_handoff(po: ProductionOrder) -> dict[str, str]:
+    """Create the Slice 5 handoff packet from OrchestratorOS to ArchitectOS.
+
+    The packet is deterministic and is derived only from the reconstructed
+    production order plus the frozen brief metadata stored on the parent card.
+    """
+    brief = _parse_source_brief(po.source_brief)
+    packet = dict(ARCHITECT_HANDOFF_TEMPLATE)
+    packet["production_order_id"] = po.production_order_id
+    packet["context"] = (
+        f"Frozen production-order brief: {po.title}; "
+        f"parent card: {po.parent_kanban_card_id}"
+    )
+    packet["scope"] = str(get_brief_value(brief, "scope", "From the frozen brief"))
+    packet["out_of_scope"] = str(
+        get_brief_value(brief, "out of scope", "From the frozen brief")
+    )
+    packet["inputs"] = (
+        f"Parent card ID: {po.parent_kanban_card_id}; "
+        f"Child card IDs: {', '.join(po.child_kanban_card_ids)}; "
+        f"Repo/workspace: {po.repo_or_workspace or get_brief_value(brief, 'target repo or workspace', '')}; "
+        "Frozen brief metadata is stored on the parent card body."
     )
     return packet
 
@@ -901,6 +960,97 @@ def run_full_bridge(
             "UPDATE tasks SET current_state = ? WHERE id = ?",
             (po.current_state, cid),
         )
+
+    return po
+
+
+def run_orchestrator_triage_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+) -> ProductionOrder:
+    """Run deterministic Slice 5 triage for an existing production order.
+
+    Preconditions are intentionally strict: the order must already be in
+    ORCHESTRATOR_TRIAGE, be owned by OrchestratorOS, and have the existing
+    6-card Kanban graph. This function does not create a new production order
+    and does not advance beyond ARCHITECT_SPEC.
+    """
+    matches = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == production_order_id
+    ]
+    if not matches:
+        raise ValueError(f"production order {production_order_id!r} not found")
+    po = matches[0]
+
+    if po.current_state != "ORCHESTRATOR_TRIAGE":
+        raise StateTransitionError(
+            f"Production order {production_order_id} is in {po.current_state!r}; "
+            "expected 'ORCHESTRATOR_TRIAGE'"
+        )
+    if po.current_owner_profile != "orchestrator_os":
+        raise StateTransitionError(
+            f"Production order {production_order_id} is owned by "
+            f"{po.current_owner_profile!r}; expected 'orchestrator_os'"
+        )
+    if not po.parent_kanban_card_id:
+        raise ValueError("production order parent Kanban card is missing")
+    if len(po.child_kanban_card_ids) != 6:
+        raise ValueError(
+            f"production order Kanban graph must have 6 child cards; "
+            f"found {len(po.child_kanban_card_ids)}"
+        )
+    if len(set(po.child_kanban_card_ids)) != 6:
+        raise ValueError("production order Kanban graph contains duplicate child card IDs")
+
+    placeholders = ",".join(["?"] * len(po.child_kanban_card_ids))
+    existing_child_count = conn.execute(
+        f"SELECT COUNT(*) AS n FROM tasks WHERE id IN ({placeholders})",
+        tuple(po.child_kanban_card_ids),
+    ).fetchone()["n"]
+    if existing_child_count != 6:
+        raise ValueError(
+            f"production order Kanban graph references {6 - existing_child_count} "
+            "missing child card(s)"
+        )
+
+    architect_card_id = po.child_kanban_card_ids[1]
+    handoff = create_architect_handoff(po)
+    freeze_handoff_on_card(conn, architect_card_id, handoff)
+
+    transition_state(
+        conn,
+        po,
+        "ARCHITECT_SPEC",
+        "orchestrator_os",
+        result="triage complete; ArchitectOS handoff attached",
+        next_action="dispatch_architect_os",
+        card_id=po.parent_kanban_card_id,
+        event_type="orchestrator_triage_completed",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="ORCHESTRATOR_TRIAGE",
+        to_state="ARCHITECT_SPEC",
+        owner_profile="orchestrator_os",
+        kanban_card_id=architect_card_id,
+        result="ArchitectOS handoff packet attached",
+        next_action="dispatch_architect_os",
+    )
+
+    for cid in po.child_kanban_card_ids:
+        conn.execute(
+            "UPDATE tasks SET current_state = ? WHERE id = ?",
+            (po.current_state, cid),
+        )
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (architect_card_id,),
+    )
 
     return po
 

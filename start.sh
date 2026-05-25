@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
 
-# Make sure Hermes home folders exist
+echo "[start.sh] Preparing Hermes directories..."
+
 mkdir -p /data/.hermes/cron \
          /data/.hermes/sessions \
          /data/.hermes/logs \
@@ -13,20 +14,18 @@ mkdir -p /data/.hermes/cron \
          /data/.hermes/audio_cache \
          /data/.hermes/workspace
 
-# Create empty env file if missing
 if [ ! -f /data/.hermes/.env ]; then
+  echo "[start.sh] Creating empty .env"
   touch /data/.hermes/.env
 fi
 
-# Seed config.yaml only if it does not exist yet
-# server.py will rewrite this later using the selected provider/model
 if [ ! -f /data/.hermes/config.yaml ] && [ -f /opt/hermes-agent/cli-config.yaml.example ]; then
+  echo "[start.sh] Seeding config.yaml from example"
   cp /opt/hermes-agent/cli-config.yaml.example /data/.hermes/config.yaml
 fi
 
-# Ensure expected environment values exist
 export HOME=/data
 export HERMES_HOME=/data/.hermes
 
-# Start the admin wrapper
+echo "[start.sh] Starting admin server..."
 exec python /app/server.py

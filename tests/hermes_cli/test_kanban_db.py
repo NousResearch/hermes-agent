@@ -3069,6 +3069,40 @@ def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     assert "still here" in titles
 
 
+def test_transient_malformed_probe_does_not_classify_as_corrupt(tmp_path, monkeypatch):
+    """A transient ``DatabaseError`` (e.g. WAL torn-page seen mid-write)
+    must NOT permanently flag the file as corrupt. The guard should retry
+    the integrity probe and accept the file when a subsequent attempt
+    succeeds. Regression test for the kanban dispatcher disabling itself
+    on a healthy DB after a worker write blip."""
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    real_connect = sqlite3.connect
+    calls = {"n": 0}
+
+    def flaky_then_healthy_connect(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Simulate a single transient torn-page read.
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(kb.sqlite3, "connect", flaky_then_healthy_connect)
+
+    # Should succeed without raising — the retry sees a healthy DB on attempt 2.
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="survived")
+        titles = [t.title for t in kb.list_tasks(conn)]
+    assert "survived" in titles
+
+    # And critically: no .corrupt backup may be produced for a transient blip.
+    backups = list(tmp_path.glob("*.corrupt.*"))
+    assert backups == [], f"unexpected corrupt backups: {backups}"
+    assert calls["n"] >= 2, "retry path was not exercised"
+
+
 def test_init_db_allows_missing_then_healthy(tmp_path):
     db_path = tmp_path / "fresh.db"
     assert not db_path.exists()

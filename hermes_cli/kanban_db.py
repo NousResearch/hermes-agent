@@ -1112,21 +1112,37 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         return
     if str(resolved) in _INITIALIZED_PATHS:
         return
+    # Probe with retries. Under WAL with concurrent writers, a probe can
+    # transiently see a torn page and SQLite returns DatabaseError
+    # ("database disk image is malformed") or a non-"ok" integrity row
+    # — even though the file is fine and the next probe succeeds. We
+    # retry a few times with a short backoff before declaring corruption
+    # to avoid disabling the dispatcher on a brief contention blip.
     reason: Optional[str] = None
-    try:
-        probe = sqlite3.connect(str(resolved), timeout=5, isolation_level=None)
+    attempts = 3
+    backoff = 0.25
+    for attempt in range(1, attempts + 1):
+        reason = None
         try:
-            row = probe.execute("PRAGMA integrity_check").fetchone()
-        finally:
-            probe.close()
-        if not row or (row[0] or "").lower() != "ok":
-            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
-    except sqlite3.OperationalError:
-        # Lock contention, busy, transient IO — not corruption. Let it propagate.
-        raise
-    except sqlite3.DatabaseError as exc:
-        reason = f"sqlite refused to open file: {exc}"
+            probe = sqlite3.connect(str(resolved), timeout=5, isolation_level=None)
+            try:
+                row = probe.execute("PRAGMA integrity_check").fetchone()
+            finally:
+                probe.close()
+            if not row or (row[0] or "").lower() != "ok":
+                reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+        except sqlite3.OperationalError:
+            # Lock contention, busy, transient IO — not corruption. Let it propagate.
+            raise
+        except sqlite3.DatabaseError as exc:
+            reason = f"sqlite refused to open file: {exc}"
+        if reason is None:
+            return
+        if attempt < attempts:
+            time.sleep(backoff * attempt)
     if reason is None:
+        # All attempts produced a "no error" outcome — defensive guard;
+        # in practice we'd have returned above on the first clean probe.
         return
     backup = _backup_corrupt_db(resolved)
     raise KanbanDbCorruptError(resolved, backup, reason)

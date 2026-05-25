@@ -13155,3 +13155,235 @@ Tokens (access_token, refresh_token) are stored in JSON files (auth.json, google
 ---
 *Pass #93 complete — 2026-05-26T12:30:00Z*
 *Commit at scan: 5a51a1f65*
+
+## Pass #94 – Logging Completeness, Audit Trail & Forensics Deep Dive – 2026-05-26T13:00:00Z
+
+Scope: hermes_logging.py, agent/redact.py, hermes_state.py, gateway/session.py, gateway/shutdown_forensics.py, agent/message_sanitization.py, gateway/run.py
+
+---
+
+### P94-1 · Authentication failures logged via standard logger.warning — PASS
+
+**File:** `gateway/run.py:1067` (`logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)`)
+**Severity:** INFO — No gap
+
+`gateway/run.py` logs primary-provider auth failures at WARNING level. These flow into `errors.log` (WARNING+) and are also captured in `agent.log` (INFO+). The auth failure path in `hermes_cli/auth.py` (the multi-provider OAuth/API-key system) also uses `logger.warning` for failures. The pattern is consistent: auth failures are logged, not silently swallowed.
+
+The one nuance is that `logger.warning` (not `error`) is used for auth failures — but this is intentional because the system has fallback providers and these aren't terminal errors. The auth failure is still recorded for forensics.
+
+---
+
+### P94-2 · Authorization failures: no explicit audit event for denied operations — LOW
+
+**File:** `gateway/run.py`, `gateway/platforms/base.py`, `hermes_cli/auth.py`
+**Severity:** LOW
+
+There is no explicit `AuthorizationDenied` or `PermissionDenied` audit event being logged. Operations that fail authorization (e.g., token refresh failures, permission check failures in platform adapters) flow through normal `logger.warning` paths but without a structured "AUTHZ_DENIED" marker.
+
+For context: the system primarily relies on auth token validation rather than fine-grained authorization checks within the gateway. Token expiry/invalidity is treated as an auth failure (P94-1), not a separate authorization denial.
+
+**Recommendation:** Consider adding a structured audit event for authorization denials — e.g., `logger.warning("AUTHZ_DENIED: action=%s platform=%s user=%s", ...)` with a consistent marker to allow grep-based alerting.
+
+---
+
+### P94-3 · Session changes (create/reset/expire) are fully logged — PASS
+
+**File:** `gateway/session.py`, `hermes_state.py`
+**Severity:** INFO — No gap
+
+Session lifecycle is well-instrumented:
+- Session creation: `gateway/session.py` records `started_at` and `created_at` timestamps in the SQLite `sessions` table (via `hermes_state.py`)
+- Session reset/expire: `was_auto_reset`, `auto_reset_reason`, `reset_had_activity`, `is_fresh_reset` flags are tracked and logged via normal logger calls
+- Session end: `ended_at`, `end_reason` fields persist to the DB
+- Session expiry watcher in `gateway/run.py` triggers `on_session_finalize` hooks and logs finalization
+
+Each session carries `source` (platform origin), `user_id`, `model`, and token counts — providing a full audit trail of session activity.
+
+---
+
+### P94-4 · Audit trail: source tracing via SessionDB — PASS
+
+**File:** `hermes_state.py`, `gateway/session.py`
+**Severity:** INFO — Strong
+
+The SQLite `sessions` table (`hermes_state.py:190–222`) stores:
+- `id` (session ID), `source` (platform: cli/telegram/discord/etc.), `user_id`
+- `started_at`, `ended_at`, `end_reason`
+- `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`
+- `api_call_count`, `model`, `billing_provider`, `estimated_cost_usd`, `actual_cost_usd`
+- `parent_session_id` for compression-triggered session chaining
+
+The `messages` table stores every message with `timestamp`, `role`, `content`, `tool_call_id`, `tool_name`, `platform_message_id`, and FTS5 triggers for full-text search. This provides full provenance from source platform through to individual messages.
+
+Source tracing is possible across the full chain: platform → session_id → messages → token counts.
+
+---
+
+### P94-5 · Audit trail: no tamper-evidence mechanism — LOW
+
+**File:** `hermes_state.py`, `hermes_logging.py`
+**Severity:** LOW
+
+The audit trail (SessionDB, log files) has no explicit tamper-evidence mechanism:
+- No HMAC/signature over log entries or DB rows
+- No append-only logging (WAL mode can be reset by DELETE journal_mode)
+- No external hash chain
+
+The system does use WAL mode for SQLite (with DELETE fallback on NFS), which provides some atomicity at the SQLite level, but this is not tamper-evident in the forensic sense.
+
+Note: The `optional-skills/security/oss-forensics/` skill provides a separate `EvidenceStore` class (SHA-256 chain-of-custody, sign/verify) that is the proper tool for forensic evidence collection — but it is not automatically integrated into the core session audit path.
+
+**Recommendation:** If the threat model includes malicious insider tampering with logs, consider integrating the EvidenceStore pattern into the core logging path, or at minimum configure filesystem-level immutable snapshots (e.g., auditd on Linux).
+
+---
+
+### P94-6 · Log retention: RotatingFileHandler with configurable rotation — PASS
+
+**File:** `hermes_logging.py:156–259` (`setup_logging`)
+**Severity:** INFO — No gap
+
+Log rotation is properly implemented:
+- `agent.log`: 5MB default (configurable via `logging.max_size_mb`), 3 backups (configurable via `logging.backup_count`)
+- `errors.log`: 2MB max, 2 backups
+- `gateway.log`: 5MB max, 3 backups (when mode="gateway")
+- `RedactingFormatter` applied to all handlers — secrets never reach disk
+- `_ManagedRotatingFileHandler` (subclass of `RotatingFileHandler`) ensures group-writable perms in managed mode (NixOS) via chmod after `_open()` and `doRollover()`
+
+Retention is effectively: 3 × 5MB + 2 × 2MB + 3 × 5MB = ~29MB maximum per log type, with rotation preventing unbounded growth.
+
+---
+
+### P94-7 · Log retention: no archival/deletion policy beyond rotation — LOW
+
+**File:** `hermes_logging.py`, `hermes_cli/config.py`
+**Severity:** LOW
+
+After `backup_count` rotations, the oldest backup file is overwritten — no long-term archival, no age-based deletion, no compression of old logs. This means:
+- Log history is bounded by `backup_count × max_size_mb` (e.g., ~15MB for agent.log)
+- Forensic analysis of historical incidents beyond the rotation window is not possible from the log files themselves
+- The SQLite state.db may contain longer history (sessions and messages are not automatically purged), so `hermes_state.py` is the more durable audit record
+
+For a typical forensics use case, the SessionDB (sessions + messages tables) provides longer-term history than the rotating log files.
+
+---
+
+### P94-8 · Forensic capabilities: shutdown forensics — PASS (excellent)
+
+**File:** `gateway/shutdown_forensics.py` (462 lines)
+**Severity:** INFO — Strong
+
+`shutdown_forensics.py` provides excellent forensic capture on SIGTERM/SIGINT:
+- `snapshot_shutdown_context()`: Fast (<10ms) non-blocking probe capturing signal name, PID/PPID, parent process info from `/proc`, systemd invocation ID, load average, tracer PID, takeover/planned-stop markers, and both wall-clock (`time.time()`) and monotonic (`time.monotonic()`) timestamps for cross-correlation
+- `spawn_async_diagnostic()`: Fire-and-forget `ps`-style snapshot (via detached subprocess with `start_new_session=True`) that cannot block the asyncio event loop. Writes to a diagnostic log file with `date`, `ps auxf`, `pstree`, `/proc/loadavg`, and recent dmesg/journalctl
+- `check_systemd_timing_alignment()`: Validates that systemd's `TimeoutStopSec` >= drain_timeout to prevent SIGKILL mid-drain
+- `format_context_for_log()`: Renders the context as a single scannable log line for `errors.log`
+
+The design correctly separates fast synchronous capture (for the signal handler) from slow async diagnostics (that run detached).
+
+---
+
+### P94-9 · Forensic capabilities: no crash dump / evidence store in core path — INFO
+
+**File:** `gateway/shutdown_forensics.py`, `optional-skills/security/oss-forensics/`
+**Severity:** INFO — Not a gap, a design choice
+
+The core gateway does not automatically capture a full process state dump or invoke the `EvidenceStore` on crashes. Shutdown forensics captures the triggering signal context and process tree, but not memory or full state.
+
+The `optional-skills/security/oss-forensics/` skill provides the `EvidenceStore` class (SHA-256 content hashing, chain-of-custody log, sign/verify) as a separate optional component for deep forensic work. This is appropriate — it keeps the core gateway lightweight while providing a structured forensic tool for operators who need it.
+
+---
+
+### P94-10 · Log injection prevention: RedactingFormatter — PASS (strong)
+
+**File:** `agent/redact.py` (509 lines), `hermes_logging.py:211`
+**Severity:** INFO — Strong
+
+`agent/redact.py` provides comprehensive log injection prevention via secret redaction before logs reach disk:
+- 19 known API key prefixes (sk-, ghp_, github_pat_, gho_, ghu_, ghs_, ghr_, xoxb-, AIza, pplx-, fal_, fc-, bb_live_, gAAAAA, AKIA, sk_live_, sk_test_, rk_live_, SG., hf_, r8_, npm_, pypi-, dop_v1_, doo_v1_, am_, sk_, tvly-, exa_, gsk_, syt_, retaindb_, hsk-, mem0_, brv_, xai-)
+- ENV assignment patterns (`API_KEY=...`)
+- JSON fields (`"apiKey": "..."`)
+- Authorization headers (Bearer tokens)
+- Telegram bot tokens, private key blocks, DB connection strings, JWTs (eyJ prefix)
+- Discord mentions, E.164 phone numbers
+- URL userinfo and query string parameter redaction
+- Substring pre-checks for performance (~68% speedup on non-secret lines)
+
+`_REDACT_ENABLED` is snapshot at import time (secure default, not affected by runtime env mutations). Users can opt out via `security.redact_secrets: false` in config or `HERMES_REDACT_SECRETS=false` env var, with a startup warning logged.
+
+The `RedactingFormatter` wraps all log handlers, so no secret can reach `agent.log`, `errors.log`, or `gateway.log`.
+
+---
+
+### P94-11 · Log injection prevention: message sanitization — PASS
+
+**File:** `agent/message_sanitization.py` (444 lines)
+**Severity:** INFO — Strong
+
+Message sanitization handles multiple injection vectors:
+- **Surrogates**: `_sanitize_surrogates()` / `_sanitize_messages_surrogates()` replaces lone surrogates (U+D800–U+DFFF) with U+FFFD. Prevents JSON crashes from byte-level models (xiaomi/mimo, kimi, glm)
+- **Control chars**: `_escape_invalid_chars_in_json_strings()` escapes 0x00-0x1F control characters inside JSON string values. Prevents log corruption via literal control characters
+- **Non-ASCII stripping**: `_sanitize_messages_non_ascii()` strips non-ASCII as last resort for ASCII-only systems
+- **Malformed tool arguments**: `_repair_tool_call_arguments()` repairs truncated JSON, trailing commas, Python `None`, unclosed structures. All repairs are logged at WARNING. Last resort returns `{}` rather than crashing
+
+Each helper logs at WARNING when repairs are triggered, providing audit trail entries for sanitization events.
+
+---
+
+### P94-12 · Timestamp integrity: asctime from Python logging stdlib — PASS (with note)
+
+**File:** `hermes_logging.py:46` (`_LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s..."`)
+**Severity:** INFO — No gap, note for forensics
+
+Log timestamps use Python's `%(asctime)s` (wall-clock from the logging module). This is the standard approach and is adequate for most forensic use cases. Shutdown forensics (`gateway/shutdown_forensics.py:118–119`) records both `time.time()` (wall-clock) and `time.monotonic()` (monotonic) in the same context record, allowing cross-correlation with monotonic-based internal timings.
+
+No explicit timestamp manipulation prevention exists at the logging formatter level (e.g., no server-side time authoritative check). This is standard practice and not a gap.
+
+---
+
+### P94-13 · No structured security event log separate from general logging — INFO
+
+**File:** `hermes_logging.py`, `gateway/run.py`
+**Severity:** INFO — Design observation
+
+There is no separate `security.log` or structured security event stream. Security-relevant events (auth failures, session resets, permission denials) are logged as `WARNING` / `INFO` entries within `agent.log` / `errors.log` alongside all other activity. A forensic analyst investigating a security incident would need to filter by message content rather than log file.
+
+This is a design choice rather than a gap. The separation of `agent.log` (all activity) and `errors.log` (WARNING+) provides some triage capability, and `gateway.log` (when enabled) separates gateway events. However, a dedicated security audit log with structured event types would simplify SIEM integration and automated alerting.
+
+---
+
+### P94-14 · SessionDB: WAL checkpoint for durability — PASS
+
+**File:** `hermes_state.py:429–448` (`_try_wal_checkpoint`)
+**Severity:** INFO — No gap
+
+`SessionDB` periodically runs a PASSIVE WAL checkpoint every 50 writes (`_CHECKPOINT_EVERY_N_WRITES`). On `close()`, it runs a final checkpoint. This means committed session data is periodically flushed from WAL to the main DB file, reducing data loss risk on clean shutdown.
+
+For abnormal termination, the WAL provides recovery to the last checkpoint. The `_WRITE_MAX_RETRIES = 15` with jitter retry on `BEGIN IMMEDIATE` prevents silent write failures under contention.
+
+---
+
+### Summary
+
+| Area | Finding | Severity |
+|------|---------|----------|
+| Authentication failures logged | P94-1 | INFO (PASS) |
+| Authorization failures explicit audit | P94-2 | LOW (gap) |
+| Session change logging | P94-3 | INFO (PASS) |
+| Audit trail / source tracing | P94-4 | INFO (PASS) |
+| Tamper-evidence on audit trail | P94-5 | LOW (gap) |
+| Log rotation/retention | P94-6 | INFO (PASS) |
+| Long-term log archival | P94-7 | LOW (gap) |
+| Shutdown forensics | P94-8 | INFO (PASS – excellent) |
+| Crash dump / EvidenceStore in core | P94-9 | INFO (design choice) |
+| Secret redaction (log injection) | P94-10 | INFO (PASS – strong) |
+| Message sanitization | P94-11 | INFO (PASS – strong) |
+| Timestamp integrity | P94-12 | INFO (PASS) |
+| Structured security event log | P94-13 | INFO (design observation) |
+| SessionDB WAL durability | P94-14 | INFO (PASS) |
+
+**Overall:** Logging infrastructure is solid. Secret redaction, message sanitization, log rotation, and shutdown forensics are all well-implemented. The main gaps are in tamper-evidence (no HMAC/signature on audit records), long-term archival beyond rotation, and an explicit structured security event log. For most forensic use cases, the SessionDB provides a more durable audit record than the rotating text logs.
+
+---
+
+*Pass #94 complete — 2026-05-26T13:00:00Z*
+*Commit at scan: 5a51a1f65*

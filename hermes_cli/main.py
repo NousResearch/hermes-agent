@@ -9272,18 +9272,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("FHS PATH guard check failed: %s", e)
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
-        # The upstream installer is gated on macOS and on the binary already
-        # being on PATH, so this is a no-op for users who don't have it.
+        # Use the same resolver as the runtime/status paths so gateway/venv
+        # launches that miss ~/.local/bin on PATH still refresh installed CUA.
         # Tying the refresh to ``hermes update`` gives users a predictable
         # cadence (matches when they pull new agent code) without adding
         # startup latency or a per-launch GitHub API call.
         try:
-            if sys.platform == "darwin" and shutil.which("cua-driver"):
-                from hermes_cli.tools_config import install_cua_driver
+            if sys.platform == "darwin":
+                from tools.computer_use.cua_backend import resolve_cua_driver_command
 
-                print()
-                print("→ Refreshing cua-driver (Computer Use)...")
-                install_cua_driver(upgrade=True)
+                if resolve_cua_driver_command():
+                    from hermes_cli.tools_config import install_cua_driver
+
+                    print()
+                    print("→ Refreshing cua-driver (Computer Use)...")
+                    install_cua_driver(upgrade=True)
         except Exception as e:
             logger.debug("cua-driver refresh failed: %s", e)
 
@@ -12904,14 +12907,15 @@ Examples:
         "--upgrade",
         action="store_true",
         help=(
-            "Re-run the upstream installer even if cua-driver is already on "
-            "PATH. The upstream install.sh always pulls the latest release, "
-            "so this performs an in-place upgrade."
+            "Re-run the upstream installer even if cua-driver already resolves "
+            "via PATH, HERMES_CUA_DRIVER_CMD, ~/.local/bin, or the app bundle. "
+            "The upstream install.sh always pulls the latest release, so this "
+            "performs an in-place upgrade."
         ),
     )
     computer_use_sub.add_parser(
         "status",
-        help="Print whether cua-driver is installed and on PATH",
+        help="Print whether cua-driver is installed/resolvable",
     )
 
     def cmd_computer_use(args):
@@ -12921,14 +12925,15 @@ Examples:
             install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
             return
         if action == "status":
-            import shutil
             import subprocess
-            path = shutil.which("cua-driver")
+            from tools.computer_use.cua_backend import resolve_cua_driver_command
+
+            path = resolve_cua_driver_command()
             if path:
                 version = ""
                 try:
                     version = subprocess.run(
-                        ["cua-driver", "--version"],
+                        [path, "--version"],
                         capture_output=True, text=True, timeout=5,
                     ).stdout.strip()
                 except Exception:
@@ -12939,7 +12944,7 @@ Examples:
                     print(f"cua-driver: installed at {path}")
                 print("  Refresh to latest: hermes computer-use install --upgrade")
                 return
-            print("cua-driver: not installed")
+            print("cua-driver: not installed or not executable")
             print("  Run: hermes computer-use install")
             return
         # No subcommand → show help

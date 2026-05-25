@@ -766,7 +766,8 @@ def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():
     Returning users enabling Computer Use through `hermes tools` must reach the
     cua-driver post-setup installer even though the provider has no API keys.
     """
-    with patch("shutil.which", return_value=None):
+    with patch("shutil.which", return_value=None), \
+         patch("tools.computer_use.cua_backend._is_executable_file", return_value=False):
         assert _toolset_needs_configuration_prompt("computer_use", {}) is True
 
 
@@ -813,7 +814,18 @@ def test_computer_use_post_setup_respects_custom_driver_command_when_installed()
         _run_post_setup("cua_driver")
 
     run.assert_called_once()
-    assert run.call_args.args[0] == ["custom-cua", "--version"]
+    assert run.call_args.args[0] == ["/opt/bin/custom-cua", "--version"]
+
+
+def test_computer_use_configuration_check_uses_cua_resolver_fallback():
+    """The setup gate should share runtime fallback paths for app-bundle installs."""
+    bundle = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": ""}), \
+         patch("shutil.which", return_value=None), \
+         patch("tools.computer_use.cua_backend._is_executable_file",
+               side_effect=lambda p: p == bundle):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
 
 
 def test_computer_use_post_setup_missing_override_does_not_accept_default_binary():

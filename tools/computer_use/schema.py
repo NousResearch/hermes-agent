@@ -75,6 +75,19 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "frontmost app's window or the whole screen."
                 ),
             },
+            "window_title": {
+                "type": "string",
+                "description": (
+                    "Optional Hermes-side capture scope. First resolve an "
+                    "on-screen window whose title contains this string "
+                    "(case-insensitive), then call the structured cua-driver "
+                    "window primitives for that window. Use with app= when "
+                    "multiple browser/editor windows may be open; if no "
+                    "matching title is found, capture returns an explicit "
+                    "empty result instead of falling back to the frontmost "
+                    "or unrelated window."
+                ),
+            },
             "max_elements": {
                 "type": "integer",
                 "description": (

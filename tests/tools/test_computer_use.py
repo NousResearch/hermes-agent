@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
@@ -63,6 +64,13 @@ class TestSchema:
         assert props["element"]["type"] == "integer"
         assert props["coordinate"]["type"] == "array"
 
+    def test_schema_supports_window_title_capture_scoping(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert "window_title" in props
+        assert props["window_title"]["type"] == "string"
+        assert "Hermes-side capture scope" in props["window_title"]["description"]
+
     def test_schema_lists_all_expected_actions(self):
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
         actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
@@ -116,6 +124,84 @@ class TestRegistration:
             assert entry.check_fn() is False
 
 
+class TestCuaDriverResolution:
+    def _reload_backend(self):
+        import tools.computer_use.cua_backend as cua_backend
+        return importlib.reload(cua_backend)
+
+    def test_resolves_app_bundle_when_not_on_path(self):
+        bundle = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_CUA_DRIVER_CMD", None)
+            cua_backend = self._reload_backend()
+            with patch.object(cua_backend.shutil, "which", return_value=None), \
+                 patch.object(cua_backend, "_is_executable_file",
+                              side_effect=lambda p: p == bundle):
+                assert cua_backend.resolve_cua_driver_command() == bundle
+                assert cua_backend.cua_driver_binary_available() is True
+
+    def test_path_wins_before_installed_fallbacks(self):
+        path_binary = "/opt/homebrew/bin/cua-driver"
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_CUA_DRIVER_CMD", None)
+            cua_backend = self._reload_backend()
+            with patch.object(cua_backend.shutil, "which", return_value=path_binary), \
+                 patch.object(cua_backend, "_is_executable_file", return_value=True):
+                assert cua_backend.resolve_cua_driver_command() == path_binary
+
+    def test_local_bin_fallback_wins_before_app_bundle(self):
+        local = os.path.expanduser("~/.local/bin/cua-driver")
+        bundle = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_CUA_DRIVER_CMD", None)
+            cua_backend = self._reload_backend()
+            with patch.object(cua_backend.shutil, "which", return_value=None), \
+                 patch.object(cua_backend, "_is_executable_file",
+                              side_effect=lambda p: p in {local, bundle}):
+                assert cua_backend.resolve_cua_driver_command() == local
+
+    def test_env_override_invalid_does_not_fallback(self):
+        bundle = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
+        with patch.dict(os.environ, {"HERMES_CUA_DRIVER_CMD": "/missing/cua-driver"}, clear=False):
+            cua_backend = self._reload_backend()
+            with patch.object(cua_backend.shutil, "which", return_value=None), \
+                 patch.object(cua_backend, "_is_executable_file",
+                              side_effect=lambda p: p == bundle):
+                assert cua_backend.resolve_cua_driver_command() is None
+                assert cua_backend.cua_driver_binary_available() is False
+
+    def test_env_override_valid_absolute_path_wins(self):
+        override = "/tmp/custom-cua-driver"
+        with patch.dict(os.environ, {"HERMES_CUA_DRIVER_CMD": override}, clear=False):
+            cua_backend = self._reload_backend()
+            with patch.object(cua_backend, "_is_executable_file",
+                              side_effect=lambda p: p == override):
+                assert cua_backend.resolve_cua_driver_command() == override
+
+    def test_parse_windows_preserves_titles_for_safe_scoping(self):
+        cua_backend = self._reload_backend()
+        text = '- Google Chrome (pid 123) "Hermes CUA Probe abc" [window_id: 456]'
+        windows = cua_backend._parse_windows_from_text(text)
+        assert windows == [{
+            "app_name": "Google Chrome",
+            "pid": 123,
+            "title": "Hermes CUA Probe abc",
+            "window_id": 456,
+            "off_screen": False,
+        }]
+
+    def test_parse_windows_tolerates_legacy_lines_without_title(self):
+        cua_backend = self._reload_backend()
+        text = '- TextEdit (pid 321) [off-screen] [window_id: 654]'
+        windows = cua_backend._parse_windows_from_text(text)
+        assert windows == [{
+            "app_name": "TextEdit",
+            "pid": 321,
+            "title": "",
+            "window_id": 654,
+            "off_screen": True,
+        }]
+
 # ---------------------------------------------------------------------------
 # Dispatch & action routing
 # ---------------------------------------------------------------------------
@@ -139,6 +225,20 @@ class TestDispatch:
         parsed = json.loads(out)
         assert "apps" in parsed
         assert parsed["count"] == 0
+
+    def test_capture_routes_window_title_to_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({
+            "action": "capture",
+            "mode": "ax",
+            "app": "Google Chrome",
+            "window_title": "Hermes CUA Probe",
+        })
+        parsed = json.loads(out)
+        assert parsed["window_title"] == "Hermes CUA Probe"
+        capture_kw = next(c[1] for c in noop_backend.calls if c[0] == "capture")
+        assert capture_kw["app"] == "Google Chrome"
+        assert capture_kw["window_title"] == "Hermes CUA Probe"
 
     def test_wait_clamps_long_waits(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use

@@ -16,7 +16,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 if "faster_whisper" not in sys.modules:
+    import importlib.machinery
     faster_whisper_stub = types.ModuleType("faster_whisper")
+    faster_whisper_stub.__spec__ = importlib.machinery.ModuleSpec(
+        "faster_whisper", None, is_package=False
+    )
     faster_whisper_stub.WhisperModel = MagicMock(name="WhisperModel")
     # Set ``__spec__`` so ``importlib.util.find_spec("faster_whisper")``
     # doesn't raise ``ValueError: faster_whisper.__spec__ is None`` during

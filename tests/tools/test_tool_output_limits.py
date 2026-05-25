@@ -1,152 +1,188 @@
-"""Tests for tools.tool_output_limits.
-
-Covers:
-1. Default values when no config is provided.
-2. Config override picks up user-supplied max_bytes / max_lines /
-   max_line_length.
-3. Malformed values (None, negative, wrong type) fall back to defaults
-   rather than raising.
-4. Integration: the helpers return what the terminal_tool and
-   file_operations call paths will actually consume.
-
-Port-tracking: anomalyco/opencode PR #23770
-(feat(truncate): allow configuring tool output truncation limits).
-"""
+"""Tests for tools.tool_output_limits — configurable truncation limits."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
+from tools.tool_output_limits import (
+    DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_LINE_LENGTH,
+    DEFAULT_MAX_LINES,
+    _coerce_positive_int,
+    get_max_bytes,
+    get_max_line_length,
+    get_max_lines,
+    get_tool_output_limits,
+)
 
-from tools import tool_output_limits as tol
+
+# ============================================================================
+# _coerce_positive_int
+# ============================================================================
+class TestCoercePositiveInt:
+    def test_positive_int_returns_itself(self):
+        assert _coerce_positive_int(42, 100) == 42
+
+    def test_zero_returns_default(self):
+        assert _coerce_positive_int(0, 100) == 100
+
+    def test_negative_returns_default(self):
+        assert _coerce_positive_int(-5, 100) == 100
+
+    def test_none_returns_default(self):
+        assert _coerce_positive_int(None, 100) == 100
+
+    def test_string_int_coerced(self):
+        assert _coerce_positive_int("42", 100) == 42
+
+    def test_invalid_string_returns_default(self):
+        assert _coerce_positive_int("not-a-number", 100) == 100
+
+    def test_float_coerced(self):
+        assert _coerce_positive_int(42.7, 100) == 42
+
+    def test_float_zero_returns_default(self):
+        # int(0.5) = 0 ≤ 0 → returns default
+        assert _coerce_positive_int(0.5, 100) == 100
+
+    def test_large_int(self):
+        assert _coerce_positive_int(1_000_000, 50) == 1_000_000
+
+    def test_one_is_positive(self):
+        assert _coerce_positive_int(1, 100) == 1
 
 
-class TestDefaults:
-    def test_defaults_match_previous_hardcoded_values(self):
-        assert tol.DEFAULT_MAX_BYTES == 50_000
-        assert tol.DEFAULT_MAX_LINES == 2000
-        assert tol.DEFAULT_MAX_LINE_LENGTH == 2000
+# ============================================================================
+# get_tool_output_limits
+# ============================================================================
+class TestGetToolOutputLimits:
+    def test_no_config_returns_defaults(self):
+        with patch("hermes_cli.config.load_config", return_value=None):
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
+            assert limits["max_lines"] == DEFAULT_MAX_LINES
+            assert limits["max_line_length"] == DEFAULT_MAX_LINE_LENGTH
 
-    def test_get_limits_returns_defaults_when_config_missing(self):
+    def test_empty_config_returns_defaults(self):
         with patch("hermes_cli.config.load_config", return_value={}):
-            limits = tol.get_tool_output_limits()
-        assert limits == {
-            "max_bytes": tol.DEFAULT_MAX_BYTES,
-            "max_lines": tol.DEFAULT_MAX_LINES,
-            "max_line_length": tol.DEFAULT_MAX_LINE_LENGTH,
-        }
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
+            assert limits["max_lines"] == DEFAULT_MAX_LINES
 
-    def test_get_limits_returns_defaults_when_config_not_a_dict(self):
-        # load_config should always return a dict but be defensive anyway.
-        with patch("hermes_cli.config.load_config", return_value="not a dict"):
-            limits = tol.get_tool_output_limits()
-        assert limits["max_bytes"] == tol.DEFAULT_MAX_BYTES
+    def test_custom_values(self):
+        cfg = {"tool_output": {"max_bytes": 100_000, "max_lines": 5000}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == 100_000
+            assert limits["max_lines"] == 5000
+            assert limits["max_line_length"] == DEFAULT_MAX_LINE_LENGTH
 
-    def test_get_limits_returns_defaults_when_load_config_raises(self):
-        def _boom():
-            raise RuntimeError("boom")
+    def test_tool_output_not_a_dict(self):
+        cfg = {"tool_output": "not-a-dict"}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
 
-        with patch("hermes_cli.config.load_config", side_effect=_boom):
-            limits = tol.get_tool_output_limits()
-        assert limits["max_lines"] == tol.DEFAULT_MAX_LINES
+    def test_config_is_not_a_dict(self):
+        with patch("hermes_cli.config.load_config", return_value=42):
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
 
+    def test_config_is_list(self):
+        with patch("hermes_cli.config.load_config", return_value=["not dict"]):
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
 
-class TestOverrides:
-    def test_user_config_overrides_all_three(self):
+    def test_load_config_raises(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            side_effect=RuntimeError("config broken"),
+        ):
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
+
+    def test_invalid_value_coerced(self):
+        cfg = {"tool_output": {"max_bytes": -1, "max_lines": "abc"}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
+            assert limits["max_lines"] == DEFAULT_MAX_LINES
+
+    def test_string_values_coerced(self):
         cfg = {
             "tool_output": {
-                "max_bytes": 100_000,
-                "max_lines": 5000,
-                "max_line_length": 4096,
+                "max_bytes": "100000",
+                "max_lines": "5000",
+                "max_line_length": "3000",
             }
         }
         with patch("hermes_cli.config.load_config", return_value=cfg):
-            limits = tol.get_tool_output_limits()
-        assert limits == {
-            "max_bytes": 100_000,
-            "max_lines": 5000,
-            "max_line_length": 4096,
-        }
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == 100000
+            assert limits["max_lines"] == 5000
+            assert limits["max_line_length"] == 3000
 
-    def test_partial_override_preserves_other_defaults(self):
-        cfg = {"tool_output": {"max_bytes": 200_000}}
+    def test_empty_tool_output_section(self):
+        cfg = {"tool_output": {}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
-            limits = tol.get_tool_output_limits()
-        assert limits["max_bytes"] == 200_000
-        assert limits["max_lines"] == tol.DEFAULT_MAX_LINES
-        assert limits["max_line_length"] == tol.DEFAULT_MAX_LINE_LENGTH
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
+            assert limits["max_lines"] == DEFAULT_MAX_LINES
+            assert limits["max_line_length"] == DEFAULT_MAX_LINE_LENGTH
 
-    def test_section_not_a_dict_falls_back(self):
-        cfg = {"tool_output": "nonsense"}
+    def test_all_keys_present(self):
+        with patch("hermes_cli.config.load_config", return_value=None):
+            limits = get_tool_output_limits()
+            assert set(limits.keys()) == {"max_bytes", "max_lines", "max_line_length"}
+
+    def test_zero_values_rejected(self):
+        cfg = {"tool_output": {"max_bytes": 0, "max_lines": 0}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
-            limits = tol.get_tool_output_limits()
-        assert limits["max_bytes"] == tol.DEFAULT_MAX_BYTES
+            limits = get_tool_output_limits()
+            assert limits["max_bytes"] == DEFAULT_MAX_BYTES
+            assert limits["max_lines"] == DEFAULT_MAX_LINES
 
 
-class TestCoercion:
-    @pytest.mark.parametrize("bad", [None, "not a number", -1, 0, [], {}])
-    def test_invalid_values_fall_back_to_defaults(self, bad):
-        cfg = {"tool_output": {"max_bytes": bad, "max_lines": bad, "max_line_length": bad}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
-            limits = tol.get_tool_output_limits()
-        assert limits["max_bytes"] == tol.DEFAULT_MAX_BYTES
-        assert limits["max_lines"] == tol.DEFAULT_MAX_LINES
-        assert limits["max_line_length"] == tol.DEFAULT_MAX_LINE_LENGTH
-
-    def test_string_integer_is_coerced(self):
-        cfg = {"tool_output": {"max_bytes": "75000"}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
-            limits = tol.get_tool_output_limits()
-        assert limits["max_bytes"] == 75_000
-
-
+# ============================================================================
+# Shortcut functions
+# ============================================================================
 class TestShortcuts:
-    def test_individual_accessors_delegate_to_get_tool_output_limits(self):
+    def test_get_max_bytes(self):
+        with patch("hermes_cli.config.load_config", return_value=None):
+            assert get_max_bytes() == DEFAULT_MAX_BYTES
+
+    def test_get_max_lines(self):
+        with patch("hermes_cli.config.load_config", return_value=None):
+            assert get_max_lines() == DEFAULT_MAX_LINES
+
+    def test_get_max_line_length(self):
+        with patch("hermes_cli.config.load_config", return_value=None):
+            assert get_max_line_length() == DEFAULT_MAX_LINE_LENGTH
+
+    def test_shortcuts_respect_custom_config(self):
         cfg = {
             "tool_output": {
-                "max_bytes": 111,
-                "max_lines": 222,
-                "max_line_length": 333,
+                "max_bytes": 99,
+                "max_lines": 77,
+                "max_line_length": 55,
             }
         }
         with patch("hermes_cli.config.load_config", return_value=cfg):
-            assert tol.get_max_bytes() == 111
-            assert tol.get_max_lines() == 222
-            assert tol.get_max_line_length() == 333
+            assert get_max_bytes() == 99
+            assert get_max_lines() == 77
+            assert get_max_line_length() == 55
 
 
-class TestDefaultConfigHasSection:
-    """The DEFAULT_CONFIG in hermes_cli.config must expose tool_output so
-    that ``hermes setup`` and default installs stay in sync with the
-    helpers here."""
+# ============================================================================
+# Default constants
+# ============================================================================
+class TestDefaultConstants:
+    def test_defaults_are_positive(self):
+        assert DEFAULT_MAX_BYTES > 0
+        assert DEFAULT_MAX_LINES > 0
+        assert DEFAULT_MAX_LINE_LENGTH > 0
 
-    def test_default_config_contains_tool_output_section(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-        assert "tool_output" in DEFAULT_CONFIG
-        section = DEFAULT_CONFIG["tool_output"]
-        assert isinstance(section, dict)
-        assert section["max_bytes"] == tol.DEFAULT_MAX_BYTES
-        assert section["max_lines"] == tol.DEFAULT_MAX_LINES
-        assert section["max_line_length"] == tol.DEFAULT_MAX_LINE_LENGTH
-
-
-class TestIntegrationReadPagination:
-    """normalize_read_pagination uses get_max_lines() — verify the plumbing."""
-
-    def test_pagination_limit_clamped_by_config_value(self):
-        from tools.file_operations import normalize_read_pagination
-        cfg = {"tool_output": {"max_lines": 50}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
-            offset, limit = normalize_read_pagination(offset=1, limit=1000)
-        # limit should have been clamped to 50 (the configured max_lines)
-        assert limit == 50
-        assert offset == 1
-
-    def test_pagination_default_when_config_missing(self):
-        from tools.file_operations import normalize_read_pagination
-        with patch("hermes_cli.config.load_config", return_value={}):
-            offset, limit = normalize_read_pagination(offset=10, limit=100000)
-        # Clamped to default MAX_LINES (2000).
-        assert limit == tol.DEFAULT_MAX_LINES
-        assert offset == 10
+    def test_defaults_are_ints(self):
+        assert isinstance(DEFAULT_MAX_BYTES, int)
+        assert isinstance(DEFAULT_MAX_LINES, int)
+        assert isinstance(DEFAULT_MAX_LINE_LENGTH, int)

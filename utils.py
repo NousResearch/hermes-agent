@@ -359,3 +359,117 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+def chown_to_match_parent(path: Union[str, Path]) -> bool:
+    """Chown *path* to match its parent directory's owner when running as root.
+
+    Fixes a class of ownership bug seen with `docker exec` against containers
+    where Hermes runs as a non-root user (default UID 10000): the privileged
+    `docker exec` writes a state file (e.g. ``auth.json``) as ``root:root``,
+    which the runtime user can no longer read.  By rewriting the file owner
+    to match the parent directory immediately after the write, the runtime
+    user keeps access regardless of which UID called ``hermes login``.
+
+    No-op when:
+      * Not running on POSIX (Windows ``os.chown`` does not exist).
+      * Effective UID is not 0 (root) — non-root processes can only chown
+        files they already own to themselves, which buys nothing.
+      * The target itself is a symlink — see security note below.
+      * The parent directory's owner already matches the file's owner.
+
+    **Symlink safety (TOCTOU on auth.json).** ``os.stat`` and the default
+    ``os.chown`` both follow symlinks. If an attacker replaces the target
+    with a symlink to e.g. ``/etc/shadow`` between the atomic write and
+    this call, a naive implementation would re-own the symlink's
+    destination as root.  We defend in two layers:
+
+      1. Use ``os.lstat`` (not ``os.stat``) on the target to read its
+         on-disk metadata without following symlinks. If the target IS
+         a symlink, return False without touching it — the helper only
+         exists to reconcile a regular state file's ownership.
+      2. Pass ``follow_symlinks=False`` to ``os.chown`` (or fall back to
+         ``os.lchown`` on platforms where ``os.chown`` doesn't accept the
+         keyword) so that even in the impossible-but-let's-be-paranoid
+         case where a symlink slips through the lstat check, we still
+         never re-own the link's destination.
+
+    The parent-directory ``stat`` follows symlinks intentionally — root
+    controls the parent, and resolving a parent-dir symlink mirrors the
+    behavior of the surrounding write that just landed in the same
+    directory.
+
+    Errors are swallowed (and logged at debug) so a chown failure never
+    breaks the surrounding write — the file mode is still 0o600, so the
+    worst case is the pre-fix bug.
+
+    Returns True when a chown was actually performed, False otherwise.
+    """
+    chown = getattr(os, "chown", None)
+    geteuid = getattr(os, "geteuid", None)
+    if chown is None or geteuid is None:  # Windows / non-POSIX
+        return False
+    try:
+        if geteuid() != 0:
+            return False
+    except OSError:
+        return False
+
+    target = Path(path)
+    try:
+        # lstat: do NOT follow symlinks when inspecting the target.
+        # If an attacker swapped auth.json for a symlink between the
+        # atomic write and this call, st_mode tells us so.
+        file_stat = os.lstat(target)
+    except OSError:
+        return False
+    if stat.S_ISLNK(file_stat.st_mode):
+        # Refuse to operate on symlinks. The caller wrote a regular file;
+        # if a link is here now, something else is going on and we should
+        # not chown either the link or its destination.
+        logger.warning(
+            "chown_to_match_parent: %s is a symlink, refusing to chown "
+            "(possible TOCTOU substitution; see issue #15718).",
+            target,
+        )
+        return False
+
+    try:
+        # Parent stat may follow symlinks: root controls the parent dir
+        # and we want the same UID/GID that owns it on disk.
+        parent_stat = os.stat(target.parent)
+    except OSError:
+        return False
+
+    target_uid = parent_stat.st_uid
+    target_gid = parent_stat.st_gid
+    if file_stat.st_uid == target_uid and file_stat.st_gid == target_gid:
+        return False
+
+    try:
+        # Belt-and-suspenders: even though we lstat-checked above, pass
+        # follow_symlinks=False so a TOCTOU race between the lstat and
+        # the chown still cannot re-own a link destination.  Fall back
+        # to os.lchown when the platform's os.chown doesn't accept the
+        # keyword (rare on modern Linux/macOS but possible elsewhere).
+        if chown in os.supports_follow_symlinks:
+            chown(target, target_uid, target_gid, follow_symlinks=False)
+        elif hasattr(os, "lchown"):
+            os.lchown(target, target_uid, target_gid)
+        else:
+            # No safe primitive available — refuse rather than risk
+            # following a symlink.
+            logger.debug(
+                "chown_to_match_parent: no symlink-safe chown on this "
+                "platform, skipping %s",
+                target,
+            )
+            return False
+    except OSError as exc:
+        logger.debug("chown_to_match_parent: failed to chown %s: %s", target, exc)
+        return False
+    logger.warning(
+        "Adjusted ownership of %s to %d:%d to match parent directory "
+        "(file was written as root, but parent is owned by a non-root user). "
+        "Run 'hermes login' as the runtime user to avoid this remediation.",
+        target, target_uid, target_gid,
+    )
+    return True

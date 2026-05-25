@@ -50,7 +50,7 @@ import yaml
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, is_truthy_value
+from utils import atomic_replace, atomic_yaml_write, chown_to_match_parent, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1081,6 +1081,7 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
         auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
+    chown_to_match_parent(auth_file)
     return auth_file
 
 
@@ -1960,6 +1961,7 @@ def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
             fh.flush()
             os.fsync(fh.fileno())
         atomic_replace(tmp_path, auth_path)
+        chown_to_match_parent(auth_path)
     finally:
         try:
             if tmp_path.exists():

@@ -430,7 +430,7 @@ class LoopManager:
         """Multi-line status listing all loops with UIDs and countdown."""
         # Refresh from SessionDB so countdown reflects latest last_fired_at
         fresh = load_all_loops(self.session_id)
-        if fresh:
+        if isinstance(fresh, dict):
             self._states = fresh
         if not self._states:
             return "No active loops. Set one with /loop [interval] <prompt>."

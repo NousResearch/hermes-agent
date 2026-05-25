@@ -2,7 +2,12 @@
   "mcpServers": {
     "hermes": {
       "command": "${workspaceFolder}/hermes-mcp-serve",
-      "args": []
+      "args": [],
+      "env": {
+        "HERMES_REPO": "${workspaceFolder}",
+        "HERMES_HOME": "${HOME}/.hermes",
+        "HERMES_AGENTS_DIR": ""
+      }
     }
   }
 }

@@ -1,0 +1,3 @@
+{
+  "install": "if [ -f \"${workspaceFolder}/.venv/bin/activate\" ]; then source \"${workspaceFolder}/.venv/bin/activate\"; elif [ -f \"${workspaceFolder}/venv/bin/activate\" ]; then source \"${workspaceFolder}/venv/bin/activate\"; elif ! command -v hermes >/dev/null 2>&1; then cd \"${workspaceFolder}\" && ./setup-hermes.sh; fi && hermes --version"
+}

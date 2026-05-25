@@ -1,864 +1,645 @@
 /**
- * ChatPage — embeds `hermes --tui` inside the dashboard.
+ * ChatPage — Full-featured chat with session history for Hermes Agent dashboard.
  *
- *   <div host> (dashboard chrome)                                         .
- *     └─ <div wrapper> (rounded, dark bg, padded — the "terminal window"  .
- *         look that gives the page a distinct visual identity)            .
- *         └─ @xterm/xterm Terminal (WebGL renderer, Unicode 11 widths)    .
- *              │ onData      keystrokes → WebSocket → PTY master          .
- *              │ onResize    terminal resize → `\x1b[RESIZE:cols;rows]`   .
- *              │ write(data) PTY output bytes → VT100 parser              .
- *              ▼                                                          .
- *     WebSocket /api/pty?token=<session>                                  .
- *          ▼                                                              .
- *     FastAPI pty_ws  (hermes_cli/web_server.py)                          .
- *          ▼                                                              .
- *     POSIX PTY → `node ui-tui/dist/entry.js` → tui_gateway + AIAgent     .
+ * Features:
+ * - Session list sidebar with previews
+ * - Continue old conversations or start new ones
+ * - Delete conversations
+ * - File/image attachment support
+ * - Markdown rendering for assistant responses
  */
 
-import { FitAddon } from "@xterm/addon-fit";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { Terminal } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import {
+  MessageSquare,
+  Send,
+  Loader2,
+  Trash2,
+  Plus,
+  Paperclip,
+  Menu,
+} from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
-import { Typography } from "@/components/NouiTypography";
-import { HERMES_BASE_PATH } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { useSearchParams } from "react-router-dom";
+import { fetchJSON } from "@/lib/api";
+import { Markdown } from "@/components/Markdown";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 
-import { ChatSidebar } from "@/components/ChatSidebar";
-import { usePageHeader } from "@/contexts/usePageHeader";
-import { useI18n } from "@/i18n";
-import { api } from "@/lib/api";
-import { PluginSlot } from "@/plugins";
+// --- Types ---
 
-function buildWsUrl(
-  token: string,
-  resume: string | null,
-  channel: string,
-): string {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const qs = new URLSearchParams({ token, channel });
-  if (resume) qs.set("resume", resume);
-  return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  id: string;
+  timestamp?: number;
 }
 
-// Channel id ties this chat tab's PTY child (publisher) to its sidebar
-// (subscriber).  Generated once per mount so a tab refresh starts a fresh
-// channel — the previous PTY child terminates with the old WS, and its
-// channel auto-evicts when no subscribers remain.
-function generateChannelId(): string {
+interface SessionInfo {
+  id: string;
+  title: string | null;
+  preview: string | null;
+  message_count: number;
+  started_at: number;
+  last_active: number;
+}
+
+interface SessionMessageFromAPI {
+  role: string;
+  content: string | null;
+  timestamp?: number;
+}
+
+interface ChatSendResponse {
+  response: string | null;
+  session_id: string | null;
+}
+
+// --- Helpers ---
+
+function generateId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
-  return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// Colors for the terminal body.  Matches the dashboard's dark teal canvas
-// with cream foreground — we intentionally don't pick monokai or a loud
-// theme, because the TUI's skin engine already paints the content; the
-// terminal chrome just needs to sit quietly inside the dashboard.
-const TERMINAL_THEME = {
-  background: "#0d2626",
-  foreground: "#f0e6d2",
-  cursor: "#f0e6d2",
-  cursorAccent: "#0d2626",
-  selectionBackground: "#f0e6d244",
-};
-
-/**
- * CSS width for xterm font tiers.
- *
- * Prefer the terminal host's `clientWidth` — Chrome DevTools device mode often
- * keeps `window.innerWidth` at the full desktop value while the *drawn* layout
- * is phone-sized, which made us pick desktop font sizes (~14px) and look huge.
- */
-function terminalTierWidthPx(host: HTMLElement | null): number {
-  if (typeof window === "undefined") return 1280;
-  const fromHost = host?.clientWidth ?? 0;
-  if (fromHost > 2) return Math.round(fromHost);
-  const doc = document.documentElement?.clientWidth ?? 0;
-  const vv = window.visualViewport;
-  const inner = window.innerWidth;
-  const vvw = vv?.width ?? inner;
-  const layout = Math.min(inner, vvw, doc > 0 ? doc : inner);
-  return Math.max(1, Math.round(layout));
+function formatTime(ts: number): string {
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const diff = now.getTime() - d.getTime();
+  if (diff < 86400000) {
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  if (diff < 604800000) {
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    return days[d.getDay()];
+  }
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-function terminalFontSizeForWidth(layoutWidthPx: number): number {
-  if (layoutWidthPx < 300) return 7;
-  if (layoutWidthPx < 360) return 8;
-  if (layoutWidthPx < 420) return 9;
-  if (layoutWidthPx < 520) return 10;
-  if (layoutWidthPx < 720) return 11;
-  if (layoutWidthPx < 1024) return 12;
-  return 14;
+// --- File reader helper ---
+
+function readFileAsDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
-function terminalLineHeightForWidth(layoutWidthPx: number): number {
-  return layoutWidthPx < 1024 ? 1.02 : 1.15;
+function isImageFile(file: File): boolean {
+  return file.type.startsWith("image/");
 }
+
+// --- Component ---
 
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  // Exposed to the main metrics-sync effect so it can refit the terminal
-  // the moment `isActive` flips back to true (display:none → display:flex
-  // collapses the host's box, so ResizeObserver never fires on return).
-  const syncMetricsRef = useRef<(() => void) | null>(null);
-  const [searchParams, setSearchParams] = useSearchParams();
-  // Lazy-init: the missing-token check happens at construction so the effect
-  // body doesn't have to setState (React 19's set-state-in-effect rule).
-  const [banner, setBanner] = useState<string | null>(() =>
-    typeof window !== "undefined" && !window.__HERMES_SESSION_TOKEN__
-      ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
-      : null,
-  );
-  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
-  const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Raw state for the mobile side-sheet + a derived value that force-
-  // closes whenever the chat tab isn't active.  The *derived* value is
-  // what side-effects (body-scroll lock, keydown listener, portal render)
-  // key on — that way switching to another tab triggers the effect's
-  // cleanup, releasing the scroll-lock on /sessions etc.  Returning to
-  // /chat re-runs the effect (derived flips back to true) and re-locks.
-  // Keying on the raw state would leak the body.overflow="hidden" across
-  // tabs because the dep wouldn't change on tab switch.
-  const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
-  const mobilePanelOpen = isActive && mobilePanelOpenRaw;
-  const { setEnd } = usePageHeader();
-  const { t } = useI18n();
-  const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
-  const modelToolsLabel = useMemo(
-    () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
-    [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
-  );
-  const [portalRoot] = useState<HTMLElement | null>(() =>
-    typeof document !== "undefined" ? document.body : null,
-  );
-  const [narrow, setNarrow] = useState(() =>
-    typeof window !== "undefined"
-      ? window.matchMedia("(max-width: 1023px)").matches
-      : false,
-  );
+  // --- State ---
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
 
-  // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
-  // switches. That is great for ordinary /chat navigation, but it means query
-  // param changes do NOT remount the component. Resume-in-chat from the
-  // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
-  // treat the current resume target as part of the PTY identity and rebuild the
-  // terminal session when it changes.
-  const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const sessionTitle = useMemo(() => {
+    if (!activeSessionId) return "New Chat";
+    const s = sessions.find((s) => s.id === activeSessionId);
+    return s?.title || s?.preview || "Chat";
+  }, [activeSessionId, sessions]);
+
+  // --- Load sessions on mount ---
+  const loadSessions = useCallback(async () => {
+    try {
+      const data = await fetchJSON<{ sessions: SessionInfo[] }>(
+        "/api/sessions?limit=50"
+      );
+      setSessions(data.sessions || []);
+    } catch {
+      // Silently fail — sessions list is non-critical
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (!resumeParam) return;
+    if (isActive) loadSessions();
+  }, [isActive, loadSessions]);
 
-    let cancelled = false;
+  // --- Load messages for a session ---
+  const loadSessionMessages = useCallback(async (sessionId: string) => {
+    try {
+      const data = await fetchJSON<{
+        session_id: string;
+        messages: SessionMessageFromAPI[];
+      }>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
 
-    api
-      .getSessionLatestDescendant(resumeParam)
-      .then((res) => {
-        if (cancelled || !res.session_id || res.session_id === resumeParam) {
-          return;
+      const mapped: ChatMessage[] = (data.messages || [])
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .filter((m) => m.content)
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content || "",
+          id: generateId(),
+          timestamp: m.timestamp,
+        }));
+
+      setMessages(mapped);
+    } catch {
+      setMessages([]);
+    }
+  }, []);
+
+  // --- Create new chat ---
+  const startNewChat = useCallback(() => {
+    setActiveSessionId(null);
+    setMessages([]);
+    setInput("");
+    setError(null);
+    setSidebarOpen(false);
+    inputRef.current?.focus();
+  }, []);
+
+  // --- Select a session ---
+  const selectSession = useCallback(
+    async (sessionId: string) => {
+      setActiveSessionId(sessionId);
+      setLoading(true);
+      await loadSessionMessages(sessionId);
+      setLoading(false);
+      setSidebarOpen(false);
+      inputRef.current?.focus();
+    },
+    [loadSessionMessages]
+  );
+
+  // --- Delete a session ---
+  const deleteSession = useCallback(
+    async (sessionId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      try {
+        await fetchJSON<{ ok: boolean }>(
+          `/api/sessions/${encodeURIComponent(sessionId)}`,
+          { method: "DELETE" }
+        );
+        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+        if (activeSessionId === sessionId) {
+          startNewChat();
         }
+      } catch {
+        setError("Failed to delete session");
+      }
+    },
+    [activeSessionId, startNewChat]
+  );
 
-        const next = new URLSearchParams(searchParams);
-        next.set("resume", res.session_id);
-        setSearchParams(next, { replace: true });
-      })
-      .catch(() => {
-        // Best-effort: old servers or missing sessions should not block chat.
+  // --- Send message ---
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
+    if ((!text && attachedFiles.length === 0) || loading) return;
+
+    // Build message content — text + attached files as data URLs
+    let content = text;
+    if (attachedFiles.length > 0) {
+      setUploading(true);
+      const fileParts: string[] = [];
+      for (const file of attachedFiles) {
+        try {
+          const dataUrl = await readFileAsDataURL(file);
+          const isImg = isImageFile(file);
+          if (isImg) {
+            fileParts.push(`![${file.name}](${dataUrl})`);
+          } else {
+            fileParts.push(`[${file.name}](${dataUrl})`);
+          }
+        } catch {
+          fileParts.push(`[${file.name}](upload-failed)`);
+        }
+      }
+      if (text) {
+        content = text + "\n\n" + fileParts.join("\n");
+      } else {
+        content = fileParts.join("\n");
+      }
+      setUploading(false);
+      setAttachedFiles([]);
+    }
+
+    const userMsg: ChatMessage = {
+      role: "user",
+      content,
+      id: generateId(),
+    };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setLoading(true);
+    setError(null);
+
+    try {
+      const data = await fetchJSON<ChatSendResponse>("/api/chat/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: content,
+          session_id: activeSessionId,
+        }),
       });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [resumeParam, searchParams, setSearchParams]);
+      const sid = data.session_id;
+      if (sid && sid !== activeSessionId) {
+        setActiveSessionId(sid);
+        loadSessions();
+      }
 
-  useEffect(() => {
-    const mql = window.matchMedia("(max-width: 1023px)");
-    const sync = () => setNarrow(mql.matches);
-    sync();
-    mql.addEventListener("change", sync);
-    return () => mql.removeEventListener("change", sync);
-  }, []);
-
-  useEffect(() => {
-    if (!mobilePanelOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeMobilePanel();
-    };
-    document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [mobilePanelOpen, closeMobilePanel]);
-
-  useEffect(() => {
-    const mql = window.matchMedia("(min-width: 1024px)");
-    const onChange = (e: MediaQueryListEvent) => {
-      if (e.matches) setMobilePanelOpenRaw(false);
-    };
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
-
-  useEffect(() => {
-    // When hidden (non-chat tab) we must not register the header button —
-    // another page owns the header's end slot at that point.
-    if (!isActive) {
-      setEnd(null);
-      return;
+      if (data.response) {
+        const assistantMsg: ChatMessage = {
+          role: "assistant",
+          content: data.response,
+          id: generateId(),
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to send message"
+      );
+    } finally {
+      setLoading(false);
     }
-    if (!narrow) {
-      setEnd(null);
-      return;
-    }
-    setEnd(
-      <Button
-        ghost
-        onClick={() => setMobilePanelOpenRaw(true)}
-        aria-expanded={mobilePanelOpen}
-        aria-controls="chat-side-panel"
-        className={cn(
-          "shrink-0 rounded border border-current/20",
-          "px-2 py-1 text-xs font-medium tracking-wide",
-          "text-text-secondary hover:text-midground hover:bg-midground/5",
-        )}
-      >
-        <span className="inline-flex items-center gap-1.5">
-          <PanelRight className="h-3 w-3 shrink-0" />
-          {modelToolsLabel}
-        </span>
-      </Button>,
-    );
-    return () => setEnd(null);
-  }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
+  }, [input, attachedFiles, loading, activeSessionId, loadSessions]);
 
-  const handleCopyLast = () => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Send the slash as a burst, wait long enough for Ink's tokenizer to
-    // emit a keypress event for each character (not coalesce them into a
-    // paste), then send Return as its own event.  The timing here is
-    // empirical — 100ms is safely past Node's default stdin coalescing
-    // window and well inside UI responsiveness.
-    ws.send("/copy");
-    setTimeout(() => {
-      const s = wsRef.current;
-      if (s && s.readyState === WebSocket.OPEN) s.send("\r");
-    }, 100);
-    setCopyState("copied");
-    if (copyResetRef.current) clearTimeout(copyResetRef.current);
-    copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
-    termRef.current?.focus();
+  // --- Handlers ---
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    handleSend();
   };
 
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-
-    const token = window.__HERMES_SESSION_TOKEN__;
-    // Banner already initialised above; just bail before wiring xterm/WS.
-    if (!token) {
-      return;
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
     }
+  };
 
-    const tierW0 = terminalTierWidthPx(host);
-    const term = new Terminal({
-      allowProposedApi: true,
-      cursorBlink: true,
-      fontFamily:
-        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
-      fontSize: terminalFontSizeForWidth(tierW0),
-      lineHeight: terminalLineHeightForWidth(tierW0),
-      letterSpacing: 0,
-      fontWeight: "400",
-      fontWeightBold: "700",
-      macOptionIsMeta: true,
-      // Hold Option (Alt on Linux/Windows) to force native text selection
-      // even when the inner Hermes TUI has enabled xterm mouse-events
-      // mode (CSI ?1000h family). Without this, click-and-drag in the
-      // chat canvas selects nothing and Cmd+C falls back to copying the
-      // entire visible buffer, which is rarely what the user wants.
-      // See #25720.
-      macOptionClickForcesSelection: true,
-      // Right-click selects the word under the pointer. xterm.js default
-      // is false; enabling it gives users a single-action selection
-      // path on top of the modifier-based bypass above.
-      rightClickSelectsWord: true,
-      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
-      // history in xterm.js so the browser wheel can scroll it directly.
-      scrollback: 5000,
-      theme: TERMINAL_THEME,
-    });
-    termRef.current = term;
-
-    // --- Clipboard integration ---------------------------------------
-    //
-    // Three independent paths all route to the system clipboard:
-    //
-    //   1. **Selection → Ctrl+C (or Cmd+C on macOS).**  Ink's own handler
-    //      in useInputHandlers.ts turns Ctrl+C into a copy when the
-    //      terminal has a selection, then emits an OSC 52 escape.  Our
-    //      OSC 52 handler below decodes that escape and writes to the
-    //      browser clipboard — so the flow works just like it does in
-    //      `hermes --tui`.
-    //
-    //   2. **Ctrl/Cmd+Shift+C.**  Belt-and-suspenders shortcut that
-    //      operates directly on xterm's selection, useful if the TUI
-    //      ever stops listening (e.g. overlays / pickers) or if the user
-    //      has selected with the mouse outside of Ink's selection model.
-    //
-    //   3. **Ctrl/Cmd+Shift+V.**  Reads the system clipboard and feeds
-    //      it to the terminal as keyboard input.  xterm's paste() wraps
-    //      it with bracketed-paste if the host has that mode enabled.
-    //
-    // OSC 52 reads (terminal asking to read the clipboard) are not
-    // supported — that would let any content the TUI renders exfiltrate
-    // the user's clipboard.
-    term.parser.registerOscHandler(52, (data) => {
-      // Format: "<targets>;<base64 | '?'>"
-      const semi = data.indexOf(";");
-      if (semi < 0) return false;
-      const payload = data.slice(semi + 1);
-      if (payload === "?" || payload === "") return false; // read/clear — ignore
-      try {
-        const binary = atob(payload);
-        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-        const text = new TextDecoder("utf-8").decode(bytes);
-        navigator.clipboard.writeText(text).catch((err) => {
-          // Most common reason: the Clipboard API requires a user gesture.
-          // This can fail when the OSC 52 response arrives outside the
-          // original keydown event's activation. Log to aid debugging.
-          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
-        });
-      } catch {
-        console.warn("[dashboard clipboard] malformed OSC 52 payload");
-      }
-      return true;
-    });
-
-    const isMac =
-      typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
-
-    term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== "keydown") return true;
-
-      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-
-      if (copyModifier && ev.key.toLowerCase() === "c") {
-        const sel = term.getSelection();
-        if (sel) {
-          // Direct writeText inside the keydown handler preserves the user
-          // gesture — async round-trips through OSC 52 can lose activation
-          // and fail with "Document is not focused".
-          navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
-          });
-          // Clear xterm.js's highlight after copy (matches gnome-terminal).
-          term.clearSelection();
-          ev.preventDefault();
-          return false;
-        }
-        // No selection → fall through so the TUI receives Ctrl+Shift+C
-        // (or the bare ev if the user used a different modifier).
-      }
-
-      if (pasteModifier && ev.key.toLowerCase() === "v") {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch((err) => {
-            console.warn("[dashboard clipboard] paste failed:", err.message);
-          });
-        ev.preventDefault();
-        return false;
-      }
-
-      return true;
-    });
-
-    const fit = new FitAddon();
-    fitRef.current = fit;
-    term.loadAddon(fit);
-
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
-    term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
-        return false;
-      }
-
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
-
-      ev.preventDefault();
-      ev.stopPropagation();
-      return false;
-    });
-
-    const unicode11 = new Unicode11Addon();
-    term.loadAddon(unicode11);
-    term.unicode.activeVersion = "11";
-
-    term.loadAddon(new WebLinksAddon());
-
-    term.open(host);
-
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) {
+      setAttachedFiles((prev) => [...prev, ...Array.from(files)]);
     }
+    // Reset the input so the same file can be selected again
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
-    // Initial fit + resize observer.  fit.fit() reads the container's
-    // current bounding box and resizes the terminal grid to match.
-    //
-    // The subtle bit: the dashboard has CSS transitions on the container
-    // (backdrop fade-in, rounded corners settling as fonts load).  If we
-    // call fit() at mount time, the bounding box we measure is often 1-2
-    // cell widths off from the final size.  ResizeObserver *does* fire
-    // when the container settles, but if the pixel delta happens to be
-    // smaller than one cell's width, fit() computes the same integer
-    // (cols, rows) as before and doesn't emit onResize — so the PTY
-    // never learns the final size.  Users see truncated long lines until
-    // they resize the browser window.
-    //
-    // We force one extra fit + explicit RESIZE send after two animation
-    // frames.  rAF→rAF guarantees one layout commit between the two
-    // callbacks, giving CSS transitions and font metrics time to finalize
-    // before we take the authoritative measurement.
-    let hostSyncRaf = 0;
-    const scheduleHostSync = () => {
-      if (hostSyncRaf) return;
-      hostSyncRaf = requestAnimationFrame(() => {
-        hostSyncRaf = 0;
-        syncTerminalMetrics();
-      });
-    };
+  const removeFile = (index: number) => {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
 
-    let metricsDebounce: ReturnType<typeof setTimeout> | null = null;
-    const syncTerminalMetrics = () => {
-      // display:none hosts have clientWidth/Height = 0, which fit() turns
-      // into a 1x1 terminal.  Skip entirely while hidden; the visibility
-      // effect below runs another fit as soon as the tab is shown again.
-      if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
-        return;
-      }
-      const w = terminalTierWidthPx(host);
-      const nextSize = terminalFontSizeForWidth(w);
-      const nextLh = terminalLineHeightForWidth(w);
-      const fontChanged =
-        term.options.fontSize !== nextSize ||
-        term.options.lineHeight !== nextLh;
-      if (fontChanged) {
-        term.options.fontSize = nextSize;
-        term.options.lineHeight = nextLh;
-      }
-      try {
-        fit.fit();
-      } catch {
-        return;
-      }
-      if (fontChanged && term.rows > 0) {
-        try {
-          term.refresh(0, term.rows - 1);
-        } catch {
-          /* ignore */
-        }
-      }
-      if (
-        fontChanged &&
-        wsRef.current &&
-        wsRef.current.readyState === WebSocket.OPEN
-      ) {
-        wsRef.current.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
-      }
-    };
-    syncMetricsRef.current = syncTerminalMetrics;
-
-    const scheduleSyncTerminalMetrics = () => {
-      if (metricsDebounce) clearTimeout(metricsDebounce);
-      metricsDebounce = setTimeout(() => {
-        metricsDebounce = null;
-        syncTerminalMetrics();
-      }, 60);
-    };
-
-    const ro = new ResizeObserver(() => scheduleHostSync());
-    ro.observe(host);
-
-    window.addEventListener("resize", scheduleSyncTerminalMetrics);
-    window.visualViewport?.addEventListener("resize", scheduleSyncTerminalMetrics);
-    scheduleHostSync();
-    requestAnimationFrame(() => scheduleHostSync());
-
-    // Double-rAF authoritative fit.  On the second frame the layout has
-    // committed at least once since mount; fit.fit() then reads the
-    // stable container size.  We always send a RESIZE escape afterwards
-    // (even if fit's cols/rows didn't change, so the PTY has the same
-    // dims registered as our JS state — prevents a drift where Ink
-    // thinks the terminal is one col bigger than what's on screen).
-    let settleRaf1 = 0;
-    let settleRaf2 = 0;
-    settleRaf1 = requestAnimationFrame(() => {
-      settleRaf1 = 0;
-      settleRaf2 = requestAnimationFrame(() => {
-        settleRaf2 = 0;
-        syncTerminalMetrics();
-      });
-    });
-
-    // WebSocket
-    const url = buildWsUrl(token, resumeParam, channel);
-    const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
-    // Suppress banner/terminal side-effects when cleanup() calls `ws.close()`
-    // (React StrictMode remount, route change) so we never write to a
-    // disposed xterm or setState on an unmounted tree.
-    let unmounting = false;
-
-    ws.onopen = () => {
-      setBanner(null);
-      // Send the initial RESIZE immediately so Ink has *a* size to lay
-      // out against on its first paint.  The double-rAF block above will
-      // follow up with the authoritative measurement — at worst Ink
-      // reflows once after the PTY boots, which is imperceptible.
-      ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
-    };
-
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
-    };
-
-    ws.onclose = (ev) => {
-      wsRef.current = null;
-      if (unmounting) {
-        return;
-      }
-      if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
-        return;
-      }
-      if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
-        return;
-      }
-      if (ev.code === 1011) {
-        // Server already wrote an ANSI error frame.
-        return;
-      }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
-    };
-
-    // Keystrokes → PTY.
-    //
-    // IMPORTANT:
-    // The embedded web chat has occasionally surfaced stray letters/digits
-    // in the input line after a turn completes. The most likely culprit is
-    // browser-side terminal control traffic being forwarded back into the
-    // PTY as if it were user text. SGR mouse tracking is the highest-risk
-    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
-    // ordinary bytes to the backend.
-    //
-    // For the browser embed we prefer input stability over terminal-style
-    // mouse reporting, so we drop SGR mouse reports entirely instead of
-    // forwarding them into Hermes. Keyboard input, paste, and resize still
-    // behave normally.
-    // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
-    const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-    const onDataDisposable = term.onData((data) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-
-      if (SGR_MOUSE_RE.test(data)) {
-        return;
-      }
-
-      ws.send(data);
-    });
-
-    const onResizeDisposable = term.onResize(({ cols, rows }) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(`\x1b[RESIZE:${cols};${rows}]`);
-      }
-    });
-
-    term.focus();
-
-    return () => {
-      unmounting = true;
-      syncMetricsRef.current = null;
-      onDataDisposable.dispose();
-      onResizeDisposable.dispose();
-      if (metricsDebounce) clearTimeout(metricsDebounce);
-      window.removeEventListener("resize", scheduleSyncTerminalMetrics);
-      window.visualViewport?.removeEventListener(
-        "resize",
-        scheduleSyncTerminalMetrics,
-      );
-      ro.disconnect();
-      if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
-      if (settleRaf1) cancelAnimationFrame(settleRaf1);
-      if (settleRaf2) cancelAnimationFrame(settleRaf2);
-      ws.close();
-      wsRef.current = null;
-      term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
-      if (copyResetRef.current) {
-        clearTimeout(copyResetRef.current);
-        copyResetRef.current = null;
-      }
-    };
-  }, [channel, resumeParam]);
-
-  // When the user returns to the chat tab (isActive: false → true), the
-  // terminal host just transitioned from display:none to display:flex.
-  // ResizeObserver won't fire on that kind of style-driven box change —
-  // xterm thinks its grid is still whatever it was when the tab was
-  // hidden (or 0×0, if it was hidden before first fit).  Force a refit
-  // after two animation frames so layout has committed.
-  //
-  // Focus handling: we only steal focus back into the terminal when
-  // nothing else inside ChatPage was holding it (typically the first
-  // activation after mount, where document.activeElement is <body>; or
-  // a return after the user had been typing in the terminal, where
-  // focus was already on the xterm textarea before the tab got hidden
-  // and has since fallen back to <body>).  If the user had clicked
-  // into the sidebar (model picker, tool-call entry) before switching
-  // tabs, we must not yank focus away from wherever they left it when
-  // they come back — that's a surprise and an a11y foot-gun.
+  // --- Auto-scroll ---
   useEffect(() => {
-    if (!isActive) return;
-    let raf1 = 0;
-    let raf2 = 0;
-    raf1 = requestAnimationFrame(() => {
-      raf1 = 0;
-      raf2 = requestAnimationFrame(() => {
-        raf2 = 0;
-        syncMetricsRef.current?.();
-        const host = hostRef.current;
-        const active = typeof document !== "undefined"
-          ? document.activeElement
-          : null;
-        const focusIsElsewhereInChatPage =
-          active !== null &&
-          active !== document.body &&
-          host !== null &&
-          !host.contains(active);
-        if (!focusIsElsewhereInChatPage) {
-          termRef.current?.focus();
-        }
-      });
-    });
-    return () => {
-      if (raf1) cancelAnimationFrame(raf1);
-      if (raf2) cancelAnimationFrame(raf2);
-    };
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // --- Focus input ---
+  useEffect(() => {
+    if (isActive) inputRef.current?.focus();
   }, [isActive]);
 
-  // Layout:
-  //   outer flex column — sits inside the dashboard's content area
-  //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
-  //   terminal wrapper — rounded, dark, padded — the "terminal window"
-  //   floating copy button — bottom-right corner, transparent with a
-  //     subtle border; stays out of the way until hovered.  Sends
-  //     `/copy\n` to Ink, which emits OSC 52 → our clipboard handler.
-  //   sidebar — ChatSidebar opens its own JSON-RPC sidecar; renders
-  //     model badge, tool-call list, model picker. Best-effort: if the
-  //     sidecar fails to connect the terminal pane keeps working.
-  //
-  // Mobile model/tools sheet is portaled to `document.body` so it stacks
-  // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
-  // dashboard column uses `relative z-2`, which traps `position:fixed`
-  // descendants below those layers (see Toast.tsx).
-  const mobileModelToolsPortal =
-    isActive &&
-    narrow &&
-    portalRoot &&
-    createPortal(
-      <>
-        {mobilePanelOpen && (
-          <Button
-            ghost
-            aria-label={t.app.closeModelTools}
-            onClick={closeMobilePanel}
-            className={cn(
-              "fixed inset-0 z-[55] p-0 block",
-              "bg-black/60 backdrop-blur-sm",
-            )}
-          />
-        )}
+  const empty = messages.length === 0 && !loading;
 
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 flex-1 flex-col",
+        isActive ? "" : "hidden"
+      )}
+    >
+      {/* Mobile header with sidebar toggle */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2 sm:hidden">
+        <Button
+          ghost
+          size="icon"
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="h-8 w-8 shrink-0"
+        >
+          <Menu className="h-4 w-4" />
+        </Button>
+        <span className="min-w-0 truncate text-sm font-medium text-foreground">
+          {sessionTitle}
+        </span>
+      </div>
+
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
         <div
-          id="chat-side-panel"
-          role="complementary"
-          aria-label={modelToolsLabel}
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm sm:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <div className="flex min-h-0 flex-1 gap-0">
+        {/* Sidebar */}
+        <aside
           className={cn(
-            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
-            "border-l border-current/20 text-midground",
-            "bg-background-base/95 backdrop-blur-sm",
-            "transition-transform duration-200 ease-out",
-            "[background:var(--component-sidebar-background)]",
-            "[clip-path:var(--component-sidebar-clip-path)]",
-            "[border-image:var(--component-sidebar-border-image)]",
-            mobilePanelOpen
-              ? "translate-x-0"
-              : "pointer-events-none translate-x-full",
+            "flex w-64 shrink-0 flex-col border-r border-border bg-background-base/50",
+            "fixed left-0 top-0 z-50 h-dvh sm:sticky sm:top-0 sm:h-auto sm:z-auto",
+            "transition-transform duration-200 ease-out sm:translate-x-0",
+            sidebarOpen ? "translate-x-0" : "-translate-x-full"
           )}
         >
-          <div
-            className={cn(
-              "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-5",
-            )}
-          >
-            <Typography
-              mondwest
-              className="text-display font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-              style={{ mixBlendMode: "plus-lighter" }}
-            >
-              {t.app.modelToolsSheetTitle}
-              <br />
-              {t.app.modelToolsSheetSubtitle}
-            </Typography>
-
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2.5">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              History
+            </span>
             <Button
               ghost
               size="icon"
-              onClick={closeMobilePanel}
-              aria-label={t.app.closeModelTools}
-              className="text-text-secondary hover:text-midground"
+              onClick={startNewChat}
+              title="New Chat"
+              className="h-7 w-7"
             >
-              <X />
+              <Plus className="h-3.5 w-3.5" />
             </Button>
           </div>
 
-          <div
-            className={cn(
-              "min-h-0 flex-1 overflow-y-auto overflow-x-hidden",
-              "border-t border-current/10",
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {sessionsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Spinner className="h-4 w-4 text-muted-foreground" />
+              </div>
+            ) : sessions.length === 0 ? (
+              <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                No conversations yet
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-px py-1">
+                {sessions.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      onClick={() => selectSession(s.id)}
+                      className={cn(
+                        "group relative flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors",
+                        "hover:bg-midground/5",
+                        s.id === activeSessionId
+                          ? "bg-midground/10 text-foreground"
+                          : "text-muted-foreground"
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-medium">
+                          {s.title || s.preview || "Chat"}
+                        </div>
+                        <div className="mt-0.5 truncate text-[10px] opacity-60">
+                          {s.message_count} messages ·{" "}
+                          {s.last_active ? formatTime(s.last_active) : ""}
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => deleteSession(s.id, e)}
+                        className="shrink-0 rounded p-0.5 opacity-0 transition-opacity hover:bg-destructive/20 hover:text-destructive group-hover:opacity-100"
+                        title="Delete"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
-          >
-            <ChatSidebar channel={channel} />
           </div>
-        </div>
-      </>,
-      portalRoot,
-    );
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <PluginSlot name="chat:top" />
-      {mobileModelToolsPortal}
+          {/* New chat button at bottom on mobile */}
+          <div className="shrink-0 border-t border-border p-2 sm:hidden">
+            <Button
+              ghost
+              onClick={() => {
+                startNewChat();
+                setSidebarOpen(false);
+              }}
+              className="w-full justify-center gap-2 text-xs"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              New Chat
+            </Button>
+          </div>
+        </aside>
 
-      {banner && (
-        <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
-          {banner}
-        </div>
-      )}
-
-      <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
-        <div
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
-          )}
-          style={{
-            backgroundColor: TERMINAL_THEME.background,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-          }}
-        >
-          <div
-            ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
-          />
-
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: TERMINAL_THEME.foreground }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
+        {/* Main chat area */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* Session title bar (desktop) */}
+          <div className="hidden shrink-0 items-center border-b border-border px-4 py-2 sm:flex">
+            <span className="text-xs font-medium text-muted-foreground truncate">
+              {sessionTitle}
             </span>
-          </Button>
-        </div>
-
-        {!narrow && (
-          <div
-            id="chat-side-panel"
-            role="complementary"
-            aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
-          >
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
-            </div>
           </div>
-        )}
+
+          {/* Messages */}
+          {empty && !error ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-12">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-midground/10">
+                <MessageSquare className="h-6 w-6 text-midground/60" />
+              </div>
+              <div className="text-center">
+                <h2 className="text-sm font-semibold text-midground tracking-wide">
+                  Chat with Hermes
+                </h2>
+                <p className="mt-1 max-w-xs text-xs text-muted-foreground leading-relaxed">
+                  Type a message or select a past conversation from the sidebar.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-4 space-y-4">
+              {messages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={cn(
+                    "flex",
+                    msg.role === "user" ? "justify-end" : "justify-start"
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "max-w-[90%] sm:max-w-[80%] rounded-2xl px-3.5 py-2 sm:px-4 sm:py-2.5",
+                      msg.role === "user"
+                        ? "bg-midground/15 text-foreground rounded-br-md"
+                        : "bg-card text-foreground border border-border rounded-bl-md"
+                    )}
+                  >
+                    {msg.role === "assistant" ? (
+                      <Markdown content={msg.content} />
+                    ) : (
+                      <div className="text-sm whitespace-pre-wrap break-words">
+                        {/* Render inline images in user messages */}
+                        {renderUserContent(msg.content)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              {loading && (
+                <div className="flex justify-start">
+                  <div className="rounded-2xl rounded-bl-md px-4 py-3 bg-card border border-border">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Thinking...</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+
+          {/* Error banner */}
+          {error && (
+            <div className="mx-3 sm:mx-4 mb-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {error}
+            </div>
+          )}
+
+          {/* Attached file previews */}
+          {attachedFiles.length > 0 && (
+            <div className="flex shrink-0 flex-wrap gap-1.5 border-t border-border px-3 pt-2 pb-1 sm:px-4">
+              {attachedFiles.map((file, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-1 text-[10px] text-muted-foreground"
+                >
+                  {isImageFile(file) ? (
+                    <span>🖼️</span>
+                  ) : (
+                    <span>📎</span>
+                  )}
+                  <span className="max-w-[120px] truncate">{file.name}</span>
+                  <button
+                    onClick={() => removeFile(i)}
+                    className="ml-0.5 hover:text-destructive"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Input area */}
+          <div className="shrink-0 border-t border-border bg-background-base/50 backdrop-blur-sm px-3 sm:px-4 py-3">
+            <form onSubmit={handleSubmit} className="flex items-end gap-1.5">
+              {/* File upload button */}
+              <Button
+                type="button"
+                ghost
+                size="icon"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading || uploading}
+                title="Attach file or image"
+                className="h-[44px] w-[36px] shrink-0 rounded-xl text-muted-foreground hover:text-foreground"
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/*,.pdf,.txt,.py,.js,.ts,.json,.yaml,.yml,.md,.csv"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+
+              {/* Text input */}
+              <div className="relative flex-1">
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Message Hermes..."
+                  rows={1}
+                  disabled={loading || uploading}
+                  className={cn(
+                    "w-full resize-none rounded-xl border border-border",
+                    "bg-card px-3.5 py-2.5",
+                    "text-sm text-foreground placeholder:text-muted-foreground",
+                    "focus:outline-none focus:ring-1 focus:ring-ring/40 focus:border-ring/50",
+                    "disabled:opacity-50 disabled:cursor-not-allowed",
+                    "min-h-[44px] max-h-[120px]"
+                  )}
+                />
+              </div>
+
+              {/* Send button */}
+              <Button
+                type="submit"
+                disabled={(!input.trim() && attachedFiles.length === 0) || loading || uploading}
+                className={cn(
+                  "h-[44px] w-[44px] shrink-0 rounded-xl",
+                  "bg-midground/15 text-midground",
+                  "hover:bg-midground/25",
+                  "disabled:opacity-30 disabled:cursor-not-allowed"
+                )}
+              >
+                {loading || uploading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+              </Button>
+            </form>
+            <p className="mt-1 px-1 text-[9px] text-muted-foreground/60 tracking-wide">
+              Enter to send · Shift+Enter for new line · Attach images/files with the paperclip
+            </p>
+          </div>
+        </div>
       </div>
-      <PluginSlot name="chat:bottom" />
     </div>
   );
 }
 
-declare global {
-  interface Window {
-    __HERMES_SESSION_TOKEN__?: string;
-  }
+/**
+ * Render user message content with inline images from data URLs.
+ */
+function renderUserContent(content: string): React.ReactNode {
+  // Split on markdown image syntax ![alt](url)
+  const parts = content.split(/(!\[.*?\]\(data:image\/[^)]+\))/g);
+  if (parts.length === 1) return <>{content}</>;
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        const imgMatch = part.match(
+          /^!\[(.*?)\]\((data:image\/[^)]+)\)$/
+        );
+        if (imgMatch) {
+          return (
+            <img
+              key={i}
+              src={imgMatch[2]}
+              alt={imgMatch[1]}
+              className="max-w-full rounded-lg my-1"
+              style={{ maxHeight: "300px" }}
+            />
+          );
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
 }

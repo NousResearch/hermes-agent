@@ -90,7 +90,7 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
-_DASHBOARD_EMBEDDED_CHAT_ENABLED = False
+_DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -2508,6 +2508,58 @@ async def delete_session_endpoint(session_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Chat API — simple message-based chat without the terminal TUI
+# ---------------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+
+
+@app.post("/api/chat/send")
+async def chat_send(body: ChatRequest, request: Request):
+    if not _has_valid_session_token(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from run_agent import AIAgent
+        from hermes_state import SessionDB
+
+        # Load user's config for model/provider settings
+        config = load_config()
+        model_cfg = config.get("model", {})
+        if isinstance(model_cfg, dict):
+            model = model_cfg.get("default", "")
+            provider = model_cfg.get("provider", "")
+        else:
+            model = str(model_cfg)
+            provider = config.get("provider", "")
+
+        # Create session DB for persistence
+        session_db = SessionDB()
+
+        agent = AIAgent(
+            quiet_mode=True,
+            model=model,
+            provider=provider,
+            session_id=body.session_id,
+            session_db=session_db,
+        )
+        response = agent.chat(body.message)
+        # Get the actual session_id that was used/created
+        sid = getattr(agent, "session_id", None)
+        # Close the DB connection
+        try:
+            session_db.close()
+        except Exception:
+            pass
+        return {"response": response, "session_id": sid}
+    except Exception as e:
+        _log.exception("Chat error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
 # Log viewer endpoint
 # ---------------------------------------------------------------------------
 
@@ -4664,7 +4716,7 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     *,
-    embedded_chat: bool = False,
+    embedded_chat: bool = True,
 ):
     """Start the web UI server."""
     import uvicorn

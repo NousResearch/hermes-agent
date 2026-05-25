@@ -5,9 +5,9 @@ Pins the contract:
 - text-only partial stream → stub.finish_reason == "length" so the
   conversation loop's existing length-continuation path can keep the
   agent moving against an unfinished goal.
-- partial mid-tool-call → stub.finish_reason == "stop" so the loop
-  hands control back to the user (matches the user-visible warning
-  "Ask me to retry if you want to continue").
+- partial mid-tool-call → stub.finish_reason == "length" so the loop
+  triggers continuation machinery with targeted chunking guidance
+  instead of ending the turn immediately.
 - conversation_loop's length-continuation prompt distinguishes a real
   output-length truncation from a partial-stream-stub network error
   via response.id.
@@ -19,6 +19,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from agent.conversation_loop import _get_continuation_prompt
 
 
 # ── Helpers (mirrors test_streaming.py) ────────────────────────────────────
@@ -78,8 +81,8 @@ class TestPartialStreamStubFinishReason:
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
-        assert response.id == "partial-stream-stub"
-        assert response.choices[0].finish_reason == "length", (
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH, (
             "Text-only partial streams must use finish_reason=length so the "
             "conversation loop continues from where the network died "
             "(issue #30963)."
@@ -89,9 +92,11 @@ class TestPartialStreamStubFinishReason:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_partial_tool_call_keeps_stop(self, _mock_close, mock_create, monkeypatch):
-        """Mid-tool-call partials keep finish_reason=stop on purpose — the
-        warning text asks the user to drive the retry, not the agent."""
+    def test_partial_tool_call_uses_length(self, _mock_close, mock_create, monkeypatch):
+        """Mid-tool-call partials now use finish_reason=length so the
+        conversation loop's continuation machinery fires — bounded 3-retry
+        with guidance to break output into smaller chunks (#31998).
+        tool_calls=None is preserved, so no tool auto-executes."""
 
         def _stalling_stream():
             yield _make_stream_chunk(content="Let me write the audit: ")
@@ -114,12 +119,18 @@ class TestPartialStreamStubFinishReason:
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
-        assert response.id == "partial-stream-stub"
-        assert response.choices[0].finish_reason == "stop", (
-            "Partial mid-tool-call must keep finish_reason=stop — the warning "
-            "appended to content asks the user to retry, so the agent must "
-            "not auto-replay a tool call with possible side-effects."
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH, (
+            "Partial mid-tool-call must use finish_reason=length so the "
+            "continuation machinery fires instead of ending the turn "
+            "immediately (#31998)."
         )
+        assert response.choices[0].message.tool_calls is None, (
+            "tool_calls must remain None (no auto-execution of side-effectful "
+            "tool calls)."
+        )
+        # The stub should carry dropped tool names for continuation prompt
+        assert getattr(response, "_dropped_tool_names", None) == ["write_file"]
         content = response.choices[0].message.content or ""
         assert "Stream stalled mid tool-call" in content
         assert "write_file" in content
@@ -129,30 +140,17 @@ class TestPartialStreamStubFinishReason:
 
 class TestLengthContinuationPromptBranching:
     """When finish_reason=length, the continuation prompt that reaches the
-    model has to tell the truth: real truncation vs. network interruption.
-    Lying ("you were truncated") on a partial-stream stub leads the model
-    to no-op ("I wasn't truncated, I'm done"), defeating recovery."""
+    model has to tell the truth: real truncation vs. network interruption
+    vs. dropped tool call (#31998).  Three distinct prompts now exist."""
 
-    def _simulate_branch(self, response_id: str) -> str:
+    def _simulate_branch(self, response_id: str, dropped_tools=None) -> str:
         """Return the continuation prompt text the loop would inject for
-        a `finish_reason=length` response with the given id. Mirrors the
-        exact branch in agent/conversation_loop.py."""
-        response = SimpleNamespace(id=response_id)
-        if getattr(response, "id", "") == "partial-stream-stub":
-            return (
-                "[System: The previous response was cut off by a "
-                "network error mid-stream. Continue exactly where "
-                "you left off. Do not restart or repeat prior text. "
-                "Finish the answer directly.]"
-            )
-        return (
-            "[System: Your previous response was truncated by the output "
-            "length limit. Continue exactly where you left off. Do not "
-            "restart or repeat prior text. Finish the answer directly.]"
-        )
+        a `finish_reason=length` response with the given id."""
+        is_partial = response_id == PARTIAL_STREAM_STUB_ID
+        return _get_continuation_prompt(is_partial, dropped_tools)
 
     def test_partial_stream_stub_uses_network_prompt(self):
-        prompt = self._simulate_branch("partial-stream-stub")
+        prompt = self._simulate_branch(PARTIAL_STREAM_STUB_ID)
         assert "network error mid-stream" in prompt
         assert "output length limit" not in prompt
 
@@ -164,6 +162,19 @@ class TestLengthContinuationPromptBranching:
     def test_no_id_falls_through_to_length_prompt(self):
         prompt = self._simulate_branch("")
         assert "output length limit" in prompt
+
+    def test_dropped_tool_call_uses_chunking_prompt(self):
+        """When the stub dropped a tool call, the continuation prompt
+        must guide the model to break its output into smaller chunks
+        instead of retrying the same large tool call (#31998)."""
+        prompt = self._simulate_branch(
+            PARTIAL_STREAM_STUB_ID, dropped_tools=["write_file"],
+        )
+        assert "too large" in prompt
+        assert "break" in prompt.lower()
+        assert "write_file" in prompt
+        assert "network error" not in prompt
+        assert "output length limit" not in prompt
 
 
 # ── Integration: live conversation loop ───────────────────────────────────
@@ -208,12 +219,12 @@ class TestConversationLoopPartialStreamContinuation:
 
         # First API call: the partial-stream stub (length on partial-stream-stub id).
         partial_stub = SimpleNamespace(
-            id="partial-stream-stub",
+            id=PARTIAL_STREAM_STUB_ID,
             model="test/model",
             choices=[SimpleNamespace(
                 index=0,
                 message=_mock_assistant_msg(content="The first half of "),
-                finish_reason="length",
+                finish_reason=FINISH_REASON_LENGTH,
             )],
             usage=None,
         )

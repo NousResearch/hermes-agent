@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
@@ -2172,37 +2173,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if deltas_were_sent["yes"]:
             # Streaming failed AFTER some tokens were already delivered to
             # the platform.  Re-raising would let the outer retry loop make
-            # a new API call, creating a duplicate message.  Return a
-            # partial response stub instead and let the outer loop decide:
-            #
-            #   - text-only partials → finish_reason="length" so the
-            #     conversation loop persists the partial assistant content
-            #     and asks the model to continue from where the stream
-            #     died (issue #30963: partial stop misclassified as a
-            #     clean completion was exiting the loop with budget
-            #     remaining and an unfinished goal).
-            #
-            #   - partial mid-tool-call → finish_reason="stop" stays.
-            #     The user-visible warning we append says "Ask me to
-            #     retry if you want to continue", so the agent should
-            #     hand control back rather than auto-retry a tool call
-            #     that may have side-effects.
-            #
-            # Recover whatever content was already streamed to the user.
-            # _current_streamed_assistant_text accumulates text fired
-            # through _fire_stream_delta, so it has exactly what the
-            # user saw before the connection died.
+            # Return a partial response stub with finish_reason="length"
+            # so the conversation loop's continuation machinery fires.
+            # tool_calls=None prevents auto-execution of incomplete calls.
             _partial_text = (
                 getattr(agent, "_current_streamed_assistant_text", "") or ""
             ).strip() or None
 
-            # If the stream died while the model was emitting a tool call,
-            # the stub below will silently set `tool_calls=None` and the
-            # agent loop will treat the turn as complete — the attempted
-            # action is lost with no user-facing signal.  Append a
-            # human-visible warning to the stub content so (a) the user
-            # knows something failed, and (b) the next turn's model sees
-            # in conversation history what was attempted and can retry.
+            # Append a user-visible warning if tool calls were dropped so
+            # the user and model both know what was attempted.
             _partial_names = list(result.get("partial_tool_names") or [])
             if _partial_names:
                 _name_str = ", ".join(_partial_names[:3])
@@ -2214,8 +2193,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     f"Ask me to retry if you want to continue."
                 )
                 _partial_text = (_partial_text or "") + _warn
-                # Also fire as a streaming delta so the user sees it now
-                # instead of only in the persisted transcript.
+                # Fire as streaming delta so the user sees it immediately.
                 try:
                     agent._fire_stream_delta(_warn)
                 except Exception:
@@ -2225,7 +2203,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "of text; surfaced warning to user: %s",
                     _partial_names, len(_partial_text or ""), result["error"],
                 )
-                _stub_finish_reason = "stop"
+                _stub_finish_reason = FINISH_REASON_LENGTH
             else:
                 logger.warning(
                     "Partial stream delivered before error; returning "
@@ -2235,18 +2213,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     len(_partial_text or ""),
                     result["error"],
                 )
-                _stub_finish_reason = "length"
+                _stub_finish_reason = FINISH_REASON_LENGTH
             _stub_msg = SimpleNamespace(
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,
             )
             return SimpleNamespace(
-                id="partial-stream-stub",
+                id=PARTIAL_STREAM_STUB_ID,
                 model=getattr(agent, "model", "unknown"),
                 choices=[SimpleNamespace(
                     index=0, message=_stub_msg, finish_reason=_stub_finish_reason,
                 )],
                 usage=None,
+                _dropped_tool_names=_partial_names or None,
             )
         raise result["error"]
     return result["response"]

@@ -466,6 +466,10 @@ class ContextCompressor(ContextEngine):
     def name(self) -> str:
         return "compressor"
 
+    def _recovery_growth_tokens(self) -> int:
+        """How much new prompt growth warrants another compression attempt."""
+        return max(int(self.threshold_tokens * 0.15), 8_000)
+
     def on_session_reset(self) -> None:
         """Reset all per-session state for /new or /reset."""
         super().on_session_reset()
@@ -479,6 +483,8 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._last_compression_time = 0.0
+        self._last_compression_prompt_tokens = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
 
     def update_model(
@@ -585,6 +591,8 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        self._last_compression_time: float = 0.0
+        self._last_compression_prompt_tokens: int = 0
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -621,6 +629,28 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        # Anti-thrashing recovery: allow another attempt after either enough
+        # wall-clock time has passed or enough new prompt growth has
+        # accumulated to make compression worthwhile again.
+        if self._ineffective_compression_count >= 2:
+            recovered = False
+            if (self._last_compression_time > 0
+                    and time.monotonic() - self._last_compression_time >= 300):
+                recovered = True
+                if not self.quiet_mode:
+                    logger.info(
+                        "Anti-thrashing cooldown expired — re-enabling auto-compression"
+                    )
+            elif (self._last_compression_prompt_tokens > 0
+                    and tokens - self._last_compression_prompt_tokens >= self._recovery_growth_tokens()):
+                recovered = True
+                if not self.quiet_mode:
+                    logger.info(
+                        "Anti-thrashing reset after prompt growth (%d new tokens)",
+                        tokens - self._last_compression_prompt_tokens,
+                    )
+            if recovered:
+                self._ineffective_compression_count = 0
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
@@ -1729,6 +1759,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         saved_estimate = display_tokens - new_estimate
 
         # Anti-thrashing: track compression effectiveness
+        self._last_compression_time = time.monotonic()
+        self._last_compression_prompt_tokens = display_tokens
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
         if savings_pct < 10:

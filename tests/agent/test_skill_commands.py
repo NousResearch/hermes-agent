@@ -377,6 +377,120 @@ class TestScanSkillCommands:
         assert "/sonarr-v3v4-api" in result
         assert any("/" in k[1:] for k in result) is False  # no unescaped /
 
+    def test_preserves_previous_mapping_on_import_failure(self, tmp_path, monkeypatch):
+        """Issue #18659: a failure in scan_skill_commands (e.g. a broken
+        import, unreadable skills dir) must NOT silently blank the global
+        _skill_commands. It should return the last-known-good mapping so
+        90+ slash commands don't vanish on a transient scan failure."""
+        import agent.skill_commands as sc_mod
+
+        # Seed a known-good mapping that scan_skill_commands would normally
+        # overwrite on success.
+        good = {
+            "/good-a": {"name": "good-a", "description": "d", "skill_md_path": "/x", "skill_dir": "/x"},
+            "/good-b": {"name": "good-b", "description": "d", "skill_md_path": "/y", "skill_dir": "/y"},
+        }
+        monkeypatch.setattr(sc_mod, "_skill_commands", dict(good))
+
+        # Simulate a failure in the import block by making one of the inner
+        # imports raise. Patching at the source module so the lazy import
+        # inside scan_skill_commands sees the broken symbol.
+        def boom(*a, **kw):
+            raise RuntimeError("simulated scan failure")
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", boom)
+
+        result = sc_mod.scan_skill_commands()
+
+        assert result == good, (
+            "On scan failure, scan_skill_commands must return the last-known-good "
+            "mapping rather than an empty dict"
+        )
+        assert sc_mod._skill_commands == good, (
+            "Global _skill_commands must remain populated on failure"
+        )
+
+    def test_logs_warning_on_scan_failure(self, tmp_path, monkeypatch, caplog):
+        """Failures were previously swallowed via `except Exception: pass`
+        with zero user-facing signal. Scan failures must be logged so users
+        can diagnose why their slash commands disappeared."""
+        import logging
+        import agent.skill_commands as sc_mod
+
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_scan_error_logged", False)
+
+        def boom(*a, **kw):
+            raise RuntimeError("disk read failed")
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", boom)
+
+        with caplog.at_level(logging.WARNING, logger="agent.skill_commands"):
+            sc_mod.scan_skill_commands()
+
+        assert any(
+            "scan_skill_commands failed" in rec.message for rec in caplog.records
+        ), f"expected warning log; got: {[r.message for r in caplog.records]}"
+
+    def test_repeated_scan_failures_do_not_flood_logs(self, tmp_path, monkeypatch, caplog):
+        """get_skill_commands() re-scans on every call when the cache is
+        empty. If the skills dir is persistently broken (bad perms, missing),
+        every caller would emit a full traceback without a first-failure-only
+        guard. Verify only the FIRST failure logs."""
+        import logging
+        import agent.skill_commands as sc_mod
+
+        monkeypatch.setattr(sc_mod, "_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_scan_error_logged", False)
+
+        def boom(*a, **kw):
+            raise RuntimeError("disk read failed")
+        monkeypatch.setattr("agent.skill_utils.get_external_skills_dirs", boom)
+
+        with caplog.at_level(logging.WARNING, logger="agent.skill_commands"):
+            for _ in range(5):
+                sc_mod.scan_skill_commands()
+
+        failure_logs = [r for r in caplog.records if "scan_skill_commands failed" in r.message]
+        assert len(failure_logs) == 1, (
+            f"expected exactly 1 failure log across 5 scans, got {len(failure_logs)}"
+        )
+
+    def test_scan_error_flag_resets_on_success(self, tmp_path, monkeypatch):
+        """After a successful scan, the error-logged flag must reset so a
+        subsequent failure is heard again (e.g. user fixes perms, then
+        the dir later breaks again)."""
+        import agent.skill_commands as sc_mod
+
+        monkeypatch.setattr(sc_mod, "_scan_error_logged", True)
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "healthy-skill")
+            scan_skill_commands()
+
+        assert sc_mod._scan_error_logged is False, (
+            "Successful scan must reset _scan_error_logged so future failures log"
+        )
+
+    def test_successful_scan_still_replaces_mapping(self, tmp_path, monkeypatch):
+        """The atomic-swap change must NOT regress the happy path: a
+        successful rescan should fully replace the previous mapping (e.g.
+        when skills are deleted on disk, they should disappear from the
+        global)."""
+        import agent.skill_commands as sc_mod
+
+        # Seed with a stale entry that no longer exists on disk
+        stale = {
+            "/stale-entry": {"name": "stale-entry", "description": "gone", "skill_md_path": "/x", "skill_dir": "/x"},
+        }
+        monkeypatch.setattr(sc_mod, "_skill_commands", dict(stale))
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "fresh-skill")
+            result = scan_skill_commands()
+
+        assert "/fresh-skill" in result
+        assert "/stale-entry" not in result, (
+            "Successful rescan must replace the mapping, not merge with stale entries"
+        )
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers

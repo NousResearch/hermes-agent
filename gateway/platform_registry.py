@@ -158,6 +158,12 @@ class PlatformEntry:
     # targets when the gateway is not co-resident with the cron process.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
 
+    # True when the plugin's send_message path can deliver MEDIA attachments
+    # without leaking local paths. Live adapters can also qualify by
+    # overriding BasePlatformAdapter.send_image_file; this flag covers
+    # standalone_sender_fn delivery when no live adapter is available.
+    send_message_media: bool = False
+
     # ── Target parsing ──
     # Optional: parse a raw target string into ``(chat_id, thread_id)`` for
     # ``tools/send_message_tool._parse_target_ref``.  Called as a fallback

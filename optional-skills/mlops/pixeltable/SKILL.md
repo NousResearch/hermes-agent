@@ -67,7 +67,22 @@ mcpServers:
 
 ## How to Run
 
-Run all Pixeltable operations via `terminal` using Python:
+Before running, verify the correct Python has Pixeltable installed:
+
+```bash
+python3 -c "import pixeltable as pxt; print(f'Pixeltable {pxt.__version__} ready')"
+```
+
+If this fails (ImportError, numpy incompatibility, or wrong version), find the right interpreter:
+
+```bash
+which python3
+pip show pixeltable
+```
+
+If Pixeltable is in a conda or virtualenv (e.g., `/opt/miniconda3/envs/pxt/bin/python3`), use the full path for all commands.
+
+Run Pixeltable operations via `terminal`:
 
 ```bash
 python3 -c "
@@ -106,35 +121,48 @@ Column types: `pxt.String`, `pxt.Int`, `pxt.Float`, `pxt.Bool`, `pxt.Timestamp`,
 
 ### 1. Image cross-modal search with CLIP (no API keys needed)
 
-Search images using natural language. This is runnable as-is -- uses public sample images.
+Search your own local images using natural language and CLIP. Tested patterns and pitfall notes included.
+
+#### To search your local images for a phrase (e.g., "a sunset over mountains"):
 
 ```python
 import pixeltable as pxt
 from pixeltable.functions.huggingface import clip
 
-pxt.create_dir('images', if_exists='ignore')
+# Adjust these as needed
+IMAGES_DIR = 'images'  # Directory to organize images
+TABLE_NAME = 'images.local_gallery'
 
-imgs = pxt.create_table('images.gallery', {'image': pxt.Image, 'label': pxt.String}, if_exists='replace')
+pxt.create_dir(IMAGES_DIR, if_exists='ignore')
+t = pxt.create_table(TABLE_NAME, {'image': pxt.Image}, if_exists='ignore')
 
-# CLIP embeds images AND text into the same vector space
+# (Optional) Insert images if table is empty:
+# t.insert([{'image': '/absolute/path/to/your/image1.jpg'}, ...])
+
 embed_fn = clip.using(model_id='openai/clip-vit-base-patch32')
-imgs.add_embedding_index('image', embedding=embed_fn, if_exists='ignore')
+t.add_embedding_index('image', embedding=embed_fn, if_exists='ignore')
 
-# Insert real sample images (COCO dataset hosted on GitHub)
-base = 'https://raw.githubusercontent.com/pixeltable/pixeltable/release/docs/resources/images'
-imgs.insert([
-    {'image': f'{base}/000000000030.jpg', 'label': 'outdoor scene'},
-    {'image': f'{base}/000000000034.jpg', 'label': 'people'},
-    {'image': f'{base}/000000000042.jpg', 'label': 'animals'},
-    {'image': f'{base}/000000000049.jpg', 'label': 'food'},
-    {'image': f'{base}/000000000057.jpg', 'label': 'sports'},
-])
-
-# Cross-modal search: text query finds matching images
-sim = imgs.image.similarity(string='a dog playing outside')
-results = imgs.order_by(sim, asc=False).limit(3).select(imgs.label, sim).collect()
+# Cross-modal search: 
+t_query = 'a sunset over mountains'
+sim = t.image.similarity(string=t_query)
+results = t.order_by(sim, asc=False).limit(5).select(t.image, sim).collect()
+print(f"Top matches for: '{t_query}'")
 print(results)
 ```
+
+- **Binary incompatibility warning**: If you see an error like `numpy.dtype size changed, may indicate binary incompatibility`, you need to downgrade numpy:
+  ```bash
+  pip install 'numpy>=1.22.4,<2.3.0'
+  ```
+- **HEIF support error**: If `ModuleNotFoundError: No module named 'pillow_heif'`, install it:
+  ```bash
+  pip install pillow-heif
+  ```
+- Always use the python/pip inside your venv: e.g., `.venv/bin/python3` and `.venv/bin/pip` for consistent environments.
+
+You can also use public web images for testing by inserting URLs instead of file paths.
+
+---
 
 ### 2. Video analysis pipeline (requires OPENAI_API_KEY)
 
@@ -203,6 +231,7 @@ print(results)
 - **`if_exists='ignore'` won't fix bugs**: If a computed column has wrong logic, `if_exists='ignore'` silently skips it. You must `t.drop_column('col')` then recreate.
 - **API keys**: Functions from `pixeltable.functions.openai`, `.anthropic`, etc. require the corresponding API keys set as environment variables.
 - **First import is slow**: The initial `import pixeltable` downloads and starts PostgreSQL (~10 seconds on first run, ~2 seconds thereafter).
+- **Wrong Python interpreter**: If `python3` resolves to a system or virtualenv Python without Pixeltable, commands will fail. Run `python3 -c "import pixeltable"` first. If it fails, use the full path to the correct interpreter (e.g., `/opt/miniconda3/envs/pxt/bin/python3`) for all subsequent commands.
 
 **Common mistakes — do NOT use these patterns:**
 

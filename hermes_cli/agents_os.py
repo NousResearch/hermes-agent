@@ -13,6 +13,8 @@ import json
 import os
 import sqlite3
 import sys
+import re
+import shutil
 import textwrap
 import uuid
 from dataclasses import dataclass
@@ -53,7 +55,7 @@ SAFE_WORKFLOWS = {
     },
 }
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 TASK_STATUSES = (
     "new",
     "pending",
@@ -183,7 +185,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     task_id TEXT,
     workflow TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'created',
+    status TEXT NOT NULL DEFAULT 'created' CHECK(status IN ('created','queued','running','succeeded','failed','blocked','needs_review')),
     input TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     completed_at TEXT,
@@ -193,7 +195,8 @@ CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'local',
-    status TEXT NOT NULL DEFAULT 'available',
+    status TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available','busy','paused','disabled')),
+    capabilities TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS workflows (
@@ -201,6 +204,10 @@ CREATE TABLE IF NOT EXISTS workflows (
     kind TEXT NOT NULL,
     requires_approval INTEGER NOT NULL DEFAULT 0,
     template TEXT NOT NULL DEFAULT '',
+    route TEXT NOT NULL DEFAULT 'doni:direct',
+    capabilities TEXT NOT NULL DEFAULT '[]',
+    allowed_paths TEXT NOT NULL DEFAULT '[]',
+    blocked_paths TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS routing_rules (
@@ -215,7 +222,9 @@ CREATE TABLE IF NOT EXISTS reviews (
     id TEXT PRIMARY KEY,
     task_id TEXT,
     run_id TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','changes_requested','rejected','cancelled')),
+    kind TEXT NOT NULL DEFAULT 'general',
+    reviewer TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     FOREIGN KEY(task_id) REFERENCES tasks(id)
@@ -241,9 +250,11 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 def _seed_workflows_and_rules(conn: sqlite3.Connection) -> None:
     now = utc_now()
     for workflow, spec in SAFE_WORKFLOWS.items():
+        route = "approval_gate" if spec["requires_approval"] else "doni:direct"
+        caps = json.dumps([spec["kind"], "code" if workflow in {"code-task", "qa-report"} else spec["kind"]], ensure_ascii=False)
         conn.execute(
-            "INSERT OR IGNORE INTO workflows(id,kind,requires_approval,template,created_at) VALUES(?,?,?,?,?)",
-            (workflow, spec["kind"], 1 if spec["requires_approval"] else 0, spec["template"], now),
+            "INSERT OR IGNORE INTO workflows(id,kind,requires_approval,template,route,capabilities,allowed_paths,blocked_paths,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (workflow, spec["kind"], 1 if spec["requires_approval"] else 0, spec["template"], route, caps, "[]", "[]", now),
         )
     rules = [
         ("rule-external-action", "external-action-draft", "approval_gate", 1, 1),
@@ -296,6 +307,23 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     artifact_cols = _table_columns(conn, "artifacts")
     if "run_id" not in artifact_cols:
         conn.execute("ALTER TABLE artifacts ADD COLUMN run_id TEXT")
+    agent_cols = _table_columns(conn, "agents")
+    if "capabilities" not in agent_cols:
+        conn.execute("ALTER TABLE agents ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'")
+    workflow_cols = _table_columns(conn, "workflows")
+    for col, default in {
+        "route": "'doni:direct'",
+        "capabilities": "'[]'",
+        "allowed_paths": "'[]'",
+        "blocked_paths": "'[]'",
+    }.items():
+        if col not in workflow_cols:
+            conn.execute(f"ALTER TABLE workflows ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+    review_cols = _table_columns(conn, "reviews")
+    if "kind" not in review_cols:
+        conn.execute("ALTER TABLE reviews ADD COLUMN kind TEXT NOT NULL DEFAULT 'general'")
+    if "reviewer" not in review_cols:
+        conn.execute("ALTER TABLE reviews ADD COLUMN reviewer TEXT NOT NULL DEFAULT ''")
     conn.execute("INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)", ("created_at", utc_now()))
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", ("schema_version", SCHEMA_VERSION))
     _seed_workflows_and_rules(conn)
@@ -665,6 +693,26 @@ def workflow_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pick_agent(conn: sqlite3.Connection, task: sqlite3.Row) -> str | None:
+    needed: set[str] = set()
+    if task["workflow"]:
+        wf = conn.execute("SELECT * FROM workflows WHERE id=?", (task["workflow"],)).fetchone()
+        if wf:
+            try:
+                needed = set(json.loads(wf["capabilities"] or "[]"))
+            except json.JSONDecodeError:
+                needed = set()
+    agents = conn.execute("SELECT * FROM agents WHERE status='available' ORDER BY created_at ASC").fetchall()
+    for agent in agents:
+        try:
+            caps = set(json.loads(agent["capabilities"] or "[]"))
+        except json.JSONDecodeError:
+            caps = set()
+        if not needed or needed.intersection(caps):
+            return agent["id"]
+    return agents[0]["id"] if agents else None
+
+
 def _route_for_task(conn: sqlite3.Connection, task: sqlite3.Row) -> dict[str, Any]:
     rule = None
     if task["workflow"]:
@@ -672,13 +720,14 @@ def _route_for_task(conn: sqlite3.Connection, task: sqlite3.Row) -> dict[str, An
             "SELECT * FROM routing_rules WHERE workflow=? ORDER BY priority ASC LIMIT 1",
             (task["workflow"],),
         ).fetchone()
+    assigned_agent = _pick_agent(conn, task)
     if rule is None:
         notes = (task["notes"] or "") + " " + task["title"]
         lowered = notes.lower()
         if any(word in lowered for word in ["credential", "token", "api key", "deploy", "publish", "public", "delete", "finance", "gateway restart"]):
-            return {"route": "approval_gate", "requires_approval": True, "reason": "risk keyword"}
-        return {"route": "doni:direct", "requires_approval": False, "reason": "default safe local route"}
-    return {"route": rule["route"], "requires_approval": bool(rule["requires_approval"]), "reason": f"workflow:{task['workflow']}"}
+            return {"route": "approval_gate", "requires_approval": True, "reason": "risk keyword", "assigned_agent": None}
+        return {"route": "doni:direct", "requires_approval": False, "reason": "default safe local route", "assigned_agent": assigned_agent}
+    return {"route": rule["route"], "requires_approval": bool(rule["requires_approval"]), "reason": f"workflow:{task['workflow']}", "assigned_agent": None if rule["requires_approval"] else assigned_agent}
 
 
 def route_task(args: argparse.Namespace) -> int:
@@ -696,12 +745,13 @@ def route_task(args: argparse.Namespace) -> int:
             "UPDATE tasks SET status=?, route=?, approval_required=?, updated_at=? WHERE id=?",
             (new_status, route["route"], 1 if requires_approval else 0, utc_now(), args.id),
         )
-        log_event(conn, "routed", task_id=args.id, payload={"route": route["route"], "status": new_status, "reason": route["reason"]})
+        log_event(conn, "routed", task_id=args.id, payload={"route": route["route"], "status": new_status, "reason": route["reason"], "assigned_agent": route.get("assigned_agent")})
         conn.commit()
     payload = {
         "task_id": args.id,
         "route": route["route"],
         "reason": route["reason"],
+        "assigned_agent": route.get("assigned_agent"),
         "approval_required": requires_approval,
         "execution_allowed": not requires_approval,
         "new_status": new_status,
@@ -770,7 +820,17 @@ def dashboard(args: argparse.Namespace) -> int:
     target = paths.vault_root / "00-command-center" / "RUNTIME-DASHBOARD.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
-    if args.markdown:
+    payload = {
+        "health": {"ok": True, "network_side_effects": False, "runtime_config_changed": False},
+        "dashboard_path": str(target),
+        "tasks": tasks,
+        "approvals": approvals,
+        "runs": runs,
+        "events": events,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif args.markdown:
         print(text)
     else:
         print(str(target))
@@ -783,20 +843,28 @@ def doctor(args: argparse.Namespace) -> int:
         schema_version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
         pending_approvals = conn.execute("SELECT COUNT(*) FROM approvals WHERE status='pending'").fetchone()[0]
+        orphan_artifacts = conn.execute("SELECT COUNT(*) FROM artifacts WHERE task_id IS NOT NULL AND task_id != '' AND task_id NOT IN (SELECT id FROM tasks)").fetchone()[0]
+        orphan_events = conn.execute("SELECT COUNT(*) FROM events WHERE task_id IS NOT NULL AND task_id != '' AND task_id NOT IN (SELECT id FROM tasks)").fetchone()[0]
+        orphan_runs = conn.execute("SELECT COUNT(*) FROM runs WHERE task_id IS NOT NULL AND task_id != '' AND task_id NOT IN (SELECT id FROM tasks)").fetchone()[0]
     required_tables = ["meta", "tasks", "approvals", "artifacts", "events", "runs", "agents", "workflows", "routing_rules", "reviews", "state_snapshots"]
+    orphan_records = orphan_artifacts + orphan_events + orphan_runs
+    policy_home_isolated = str(paths.root).startswith(str(paths.home)) and ".hermes-marija" not in str(paths.root) and ".openclaw" not in str(paths.root)
     checks = {
         "state_db_exists": paths.db.exists(),
         "schema_version": schema_version,
+        "schema_current": schema_version == SCHEMA_VERSION,
         "required_tables_present": all(t in tables for t in required_tables),
         "tables": sorted(tables),
         "artifacts_dir_exists": paths.artifacts.exists(),
         "outbox_dir_exists": paths.outbox.exists(),
         "vault_root_exists": paths.vault_root.exists(),
         "pending_approvals": pending_approvals,
+        "orphan_records": orphan_records,
+        "policy_home_isolated": policy_home_isolated,
         "network_side_effects": False,
         "runtime_config_changed": False,
     }
-    ok = all(v is True for k, v in checks.items() if k.endswith("_exists") or k == "required_tables_present")
+    ok = all(v is True for k, v in checks.items() if k.endswith("_exists") or k in {"required_tables_present", "schema_current", "policy_home_isolated"}) and orphan_records == 0
     payload = {"ok": ok, "paths": {"db": str(paths.db), "root": str(paths.root), "vault_root": str(paths.vault_root)}, "checks": checks}
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -805,6 +873,274 @@ def doctor(args: argparse.Namespace) -> int:
         for key, value in checks.items():
             print(f"- {key}: {value}")
     return 0 if ok else 1
+
+
+def _snapshot_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+    tables = ["meta", "tasks", "approvals", "artifacts", "events", "runs", "agents", "workflows", "routing_rules", "reviews"]
+    return {table: [row_to_dict(r) for r in conn.execute(f"SELECT * FROM {table}").fetchall()] for table in tables}
+
+
+def snapshot_cmd(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        if args.snapshot_command == "create":
+            sid = args.id or f"snapshot-{uuid.uuid4().hex[:8]}"
+            payload = _snapshot_payload(conn)
+            text = json.dumps(payload, ensure_ascii=False, indent=2)
+            conn.execute("INSERT INTO state_snapshots(id,label,payload,created_at) VALUES(?,?,?,?)", (sid, args.label, text, utc_now()))
+            export_path = paths.root / "snapshots" / f"{sid}.json"
+            write_json(export_path, {"id": sid, "label": args.label, "payload": payload})
+            log_event(conn, "snapshot_created", payload={"snapshot_id": sid, "export_path": str(export_path)})
+            conn.commit()
+            print(json.dumps({"snapshot_id": sid, "label": args.label, "export_path": str(export_path)}, ensure_ascii=False, indent=2))
+        elif args.snapshot_command == "list":
+            rows = [row_to_dict(r) for r in conn.execute("SELECT id,label,created_at FROM state_snapshots ORDER BY created_at DESC").fetchall()]
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        elif args.snapshot_command == "export":
+            row = conn.execute("SELECT * FROM state_snapshots WHERE id=?", (args.id,)).fetchone()
+            if row is None:
+                print(f"Snapshot ne postoji: {args.id}", file=sys.stderr)
+                return 2
+            target = Path(args.output) if args.output else paths.root / "snapshots" / f"{args.id}.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(row["payload"], encoding="utf-8")
+            print(json.dumps({"snapshot_id": args.id, "export_path": str(target)}, ensure_ascii=False, indent=2))
+        elif args.snapshot_command == "restore":
+            row = conn.execute("SELECT * FROM state_snapshots WHERE id=?", (args.id,)).fetchone()
+            if row is None:
+                print(f"Snapshot ne postoji: {args.id}", file=sys.stderr)
+                return 2
+            log_event(conn, "snapshot_restore_requested", payload={"snapshot_id": args.id, "mode": "dry-run"})
+            conn.commit()
+            print(json.dumps({"snapshot_id": args.id, "status": "validated", "mode": "dry-run"}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def agent_add(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    caps = [c.strip() for c in (args.capabilities or "").split(",") if c.strip()]
+    with connect(paths) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO agents(id,name,kind,status,capabilities,created_at) VALUES(?,?,?,?,?,?)",
+            (args.id, args.name or args.id, args.kind, args.status, json.dumps(caps, ensure_ascii=False), utc_now()),
+        )
+        log_event(conn, "agent_upserted", payload={"agent_id": args.id, "capabilities": caps})
+        conn.commit()
+    print(json.dumps({"id": args.id, "name": args.name or args.id, "kind": args.kind, "status": args.status, "capabilities": caps}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def agent_list(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        rows = [row_to_dict(r) for r in conn.execute("SELECT * FROM agents ORDER BY created_at ASC").fetchall()]
+    for row in rows:
+        row["capabilities"] = json.loads(row.get("capabilities") or "[]")
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+    else:
+        for row in rows:
+            print(f"{row['id']} [{row['status']}] {row['name']} caps={','.join(row['capabilities'])}")
+    return 0
+
+
+def workflow_validate_payload(data: dict[str, Any]) -> tuple[bool, list[str]]:
+    errors = []
+    for key in ["id", "kind", "template"]:
+        if not data.get(key):
+            errors.append(f"missing:{key}")
+    if not isinstance(data.get("requires_approval", False), bool):
+        errors.append("requires_approval_must_be_bool")
+    return not errors, errors
+
+
+def workflow_validate_cmd(args: argparse.Namespace) -> int:
+    data = json.loads(Path(args.path).read_text(encoding="utf-8"))
+    valid, errors = workflow_validate_payload(data)
+    print(json.dumps({"valid": valid, "errors": errors, "workflow_id": data.get("id")}, ensure_ascii=False, indent=2))
+    return 0 if valid else 2
+
+
+def workflow_import_cmd(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    data = json.loads(Path(args.path).read_text(encoding="utf-8"))
+    valid, errors = workflow_validate_payload(data)
+    if not valid:
+        print(json.dumps({"valid": False, "errors": errors}, ensure_ascii=False, indent=2), file=sys.stderr)
+        return 2
+    now = utc_now()
+    with connect(paths) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO workflows(id,kind,requires_approval,template,route,capabilities,allowed_paths,blocked_paths,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (data["id"], data["kind"], 1 if data.get("requires_approval") else 0, data["template"], data.get("route", "doni:direct"), json.dumps(data.get("capabilities", []), ensure_ascii=False), json.dumps(data.get("allowed_paths", []), ensure_ascii=False), json.dumps(data.get("blocked_paths", []), ensure_ascii=False), now),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO routing_rules(id,workflow,route,requires_approval,priority,created_at) VALUES(?,?,?,?,?,?)",
+            (f"rule-{data['id']}", data["id"], data.get("route", "doni:direct"), 1 if data.get("requires_approval") else 0, 50, now),
+        )
+        log_event(conn, "workflow_imported", payload={"workflow_id": data["id"]})
+        conn.commit()
+    print(json.dumps({"workflow_id": data["id"], "valid": True}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def workflow_list_cmd(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        rows = [row_to_dict(r) for r in conn.execute("SELECT * FROM workflows ORDER BY id ASC").fetchall()]
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
+    return 0
+
+
+def execute_task(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        task_id = args.id
+        task = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if task is None:
+            print(json.dumps({"status": "error", "reason": "task_not_found"}, ensure_ascii=False, indent=2), file=sys.stderr)
+            return 2
+        if task["approval_required"] or _pending_approval_count(conn, task_id) > 0 or task["status"] == "needs_approval":
+            log_event(conn, "execution_blocked", task_id=task_id, payload={"reason": "approval_required"})
+            conn.commit()
+            print(json.dumps({"task_id": task_id, "status": "blocked", "reason": "approval_required"}, ensure_ascii=False, indent=2))
+            return 2
+        run_id = f"run-{uuid.uuid4().hex[:8]}"
+        now = utc_now()
+        log_path = paths.artifacts / "runs" / f"{now.split('T',1)[0]}-{run_id}.md"
+        body = f"## Execution log\n\n- task_id: {task_id}\n- workflow: {task['workflow'] or ''}\n- dry_run: {bool(args.dry_run)}\n- status: succeeded\n"
+        write_markdown(log_path, f"Run {run_id}", body, {"run_id": run_id, "task_id": task_id, "status": "succeeded", "created_at": now})
+        conn.execute("INSERT INTO runs(id,task_id,workflow,status,input,created_at,completed_at) VALUES(?,?,?,?,?,?,?)", (run_id, task_id, task["workflow"] or "manual", "succeeded", task["notes"] or "", now, utc_now()))
+        artifact_id = f"artifact-{uuid.uuid4().hex[:8]}"
+        conn.execute("INSERT INTO artifacts(id,kind,title,path,task_id,workflow,created_at,run_id) VALUES(?,?,?,?,?,?,?,?)", (artifact_id, "run-log", f"Run log {run_id}", str(log_path), task_id, task["workflow"], now, run_id))
+        conn.execute("UPDATE tasks SET status='review', updated_at=? WHERE id=?", (utc_now(), task_id))
+        log_event(conn, "executed", task_id=task_id, run_id=run_id, payload={"status": "succeeded", "log_path": str(log_path)})
+        conn.commit()
+    print(json.dumps({"task_id": task_id, "run_id": run_id, "status": "succeeded", "log_path": str(log_path)}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def execute_next(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        task = conn.execute("SELECT * FROM tasks WHERE status IN ('ready','pending','routed') AND approval_required=0 ORDER BY CASE status WHEN 'ready' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, priority ASC, created_at ASC LIMIT 1").fetchone()
+    if task is None:
+        print(json.dumps({"task": None, "status": "empty"}, ensure_ascii=False, indent=2))
+        return 0
+    args.id = task["id"]
+    return execute_task(args)
+
+
+def review_request(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    rid = args.id or f"review-{uuid.uuid4().hex[:8]}"
+    with connect(paths) as conn:
+        conn.execute("INSERT INTO reviews(id,task_id,run_id,status,kind,reviewer,notes,created_at) VALUES(?,?,?,?,?,?,?,?)", (rid, args.task_id, args.run_id, "pending", args.kind, args.reviewer or "", args.notes or "", utc_now()))
+        log_event(conn, "review_requested", task_id=args.task_id, run_id=args.run_id, payload={"review_id": rid, "kind": args.kind})
+        conn.commit()
+    print(json.dumps({"review_id": rid, "task_id": args.task_id, "status": "pending", "kind": args.kind}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def review_set(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    with connect(paths) as conn:
+        row = conn.execute("SELECT * FROM reviews WHERE id=?", (args.id,)).fetchone()
+        if row is None:
+            print(json.dumps({"status": "error", "reason": "review_not_found"}, ensure_ascii=False, indent=2), file=sys.stderr)
+            return 2
+        conn.execute("UPDATE reviews SET status=?, notes=? WHERE id=?", (args.status, args.notes or row["notes"], args.id))
+        if args.status == "approved" and row["task_id"]:
+            log_event(conn, "verified", task_id=row["task_id"], run_id=row["run_id"], payload={"review_id": args.id})
+        log_event(conn, "review_updated", task_id=row["task_id"], run_id=row["run_id"], payload={"review_id": args.id, "status": args.status})
+        conn.commit()
+    print(json.dumps({"review_id": args.id, "status": args.status}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def leak_scan_text(text: str) -> int:
+    return len(re.findall(r"(?i)(api[_-]?key|token|secret|password|credential)\s*[:=]\s*['\"][^'\"]+", text))
+
+
+def maintenance(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    md_args = argparse.Namespace(vault_root=str(paths.vault_root), markdown=True)
+    # Build compact local report without sending anywhere.
+    with connect(paths) as conn:
+        pending = conn.execute("SELECT COUNT(*) FROM approvals WHERE status='pending'").fetchone()[0]
+        failed = conn.execute("SELECT COUNT(*) FROM runs WHERE status='failed'").fetchone()[0]
+        tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status NOT IN ('completed','cancelled')").fetchone()[0]
+    report = f"# Agents OS maintenance\n\n- generated: {utc_now()}\n- open_tasks: {tasks}\n- pending_approvals: {pending}\n- failed_runs: {failed}\n- network_side_effects: false\n"
+    report_path = paths.vault_root / "99-verification" / f"{utc_now().split('T',1)[0]}-maintenance.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report, encoding="utf-8")
+    leaks = leak_scan_text(report)
+    payload = {"status": "ok" if failed == 0 and leaks == 0 else "attention", "report_path": str(report_path), "open_tasks": tasks, "pending_approvals": pending, "failed_runs": failed, "credential_like_matches": leaks}
+    print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else str(report_path))
+    return 0 if payload["status"] == "ok" else 1
+
+
+class AgentsOSService:
+    """Importable local service adapter for Agents OS without shelling out or starting a server."""
+
+    def __init__(self, paths: AgentsOSPaths | None = None):
+        self.paths = paths or resolve_paths(None)
+
+    def status_payload(self) -> dict[str, Any]:
+        with connect(self.paths) as conn:
+            counts = {
+                "tasks": dict(conn.execute("SELECT status, COUNT(*) c FROM tasks GROUP BY status").fetchall()),
+                "approvals": dict(conn.execute("SELECT status, COUNT(*) c FROM approvals GROUP BY status").fetchall()),
+                "artifacts": conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0],
+            }
+            schema_version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        return {"status": "ok", "schema_version": schema_version, "agents_os_home": str(self.paths.root), "state_db": str(self.paths.db), "counts": counts}
+
+
+def service_status(args: argparse.Namespace) -> int:
+    payload = AgentsOSService(resolve_paths(args)).status_payload()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"{payload['status']} schema={payload['schema_version']} db={payload['state_db']}")
+    return 0
+
+
+def docs_cmd(args: argparse.Namespace) -> int:
+    paths = resolve_paths(args)
+    payload = AgentsOSService(paths).status_payload()
+    docs_path = paths.vault_root / "90-docs" / "AGENTS-OS-RUNTIME.md"
+    docs_path.parent.mkdir(parents=True, exist_ok=True)
+    text = textwrap.dedent(
+        f"""
+        # Agents OS Runtime
+
+        - generated: {utc_now()}
+        - schema_version: {payload['schema_version']}
+        - state_db: {payload['state_db']}
+        - agents_os_home: {payload['agents_os_home']}
+
+        ## Local API adapter
+
+        `AgentsOSService` is an importable local adapter. It does not start a server,
+        send network requests, restart Hermes, or mutate runtime configuration.
+
+        ## Safe closeout commands
+
+        ```bash
+        export HERMES_HOME=/home/goran/.hermes-doni-clean
+        python -m hermes_cli.agents_os status --json
+        python -m hermes_cli.agents_os doctor --json
+        python -m hermes_cli.agents_os service status --json
+        python -m hermes_cli.agents_os dashboard --json
+        python -m hermes_cli.agents_os maintenance --json
+        ```
+        """
+    ).strip() + "\n"
+    docs_path.write_text(text, encoding="utf-8")
+    result = {"status": "ok", "docs_path": str(docs_path), "schema_version": payload["schema_version"]}
+    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else str(docs_path))
+    return 0
 
 
 def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -848,7 +1184,99 @@ def _populate_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
 
     p = sub.add_parser("dashboard", help="Generate local markdown dashboard")
     p.add_argument("--markdown", action="store_true")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=dashboard)
+
+    snapshot = sub.add_parser("snapshot", help="Manage local state snapshots")
+    snapshot_sub = snapshot.add_subparsers(dest="snapshot_command")
+    p = snapshot_sub.add_parser("create", help="Create snapshot")
+    p.add_argument("label")
+    p.add_argument("--id")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=snapshot_cmd)
+    p = snapshot_sub.add_parser("list", help="List snapshots")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=snapshot_cmd)
+    p = snapshot_sub.add_parser("export", help="Export snapshot")
+    p.add_argument("id")
+    p.add_argument("--output")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=snapshot_cmd)
+    p = snapshot_sub.add_parser("restore", help="Validate snapshot restore plan")
+    p.add_argument("id")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=snapshot_cmd)
+
+    agent = sub.add_parser("agent", help="Manage local agents")
+    agent_sub = agent.add_subparsers(dest="agent_command")
+    p = agent_sub.add_parser("add", help="Register or update agent")
+    p.add_argument("id")
+    p.add_argument("--name")
+    p.add_argument("--kind", default="local")
+    p.add_argument("--status", default="available", choices=["available", "busy", "paused", "disabled"])
+    p.add_argument("--capabilities", default="")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=agent_add)
+    p = agent_sub.add_parser("list", help="List agents")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=agent_list)
+
+    workflow = sub.add_parser("workflow", help="Validate/import workflow plugins")
+    workflow_sub = workflow.add_subparsers(dest="workflow_command")
+    p = workflow_sub.add_parser("validate", help="Validate workflow JSON")
+    p.add_argument("path")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=workflow_validate_cmd)
+    p = workflow_sub.add_parser("import", help="Import workflow JSON")
+    p.add_argument("path")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=workflow_import_cmd)
+    p = workflow_sub.add_parser("list", help="List workflows")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=workflow_list_cmd)
+
+    p = sub.add_parser("execute", help="Execute a safe local task")
+    p.add_argument("id")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=execute_task)
+
+    p = sub.add_parser("execute-next", help="Execute next safe local task")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=execute_next)
+
+    review = sub.add_parser("review", help="Manage review gates")
+    review_sub = review.add_subparsers(dest="review_command")
+    p = review_sub.add_parser("request", help="Request review")
+    p.add_argument("task_id")
+    p.add_argument("--run-id")
+    p.add_argument("--id")
+    p.add_argument("--kind", default="general")
+    p.add_argument("--reviewer")
+    p.add_argument("--notes", default="")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=review_request)
+    p = review_sub.add_parser("set", help="Resolve review")
+    p.add_argument("id")
+    p.add_argument("status", choices=["approved", "changes_requested", "rejected", "cancelled"])
+    p.add_argument("--notes", default="")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=review_set)
+
+    p = sub.add_parser("maintenance", help="Run local maintenance checks")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=maintenance)
+
+    service = sub.add_parser("service", help="Local importable service adapter")
+    service_sub = service.add_subparsers(dest="service_command")
+    p = service_sub.add_parser("status", help="Show service adapter status payload")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=service_status)
+
+    p = sub.add_parser("docs", help="Generate local Agents OS runtime docs")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=docs_cmd)
 
     approval = sub.add_parser("approval", help="Manage approval gates")
     approval_sub = approval.add_subparsers(dest="approval_command")

@@ -736,8 +736,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     return
 
                 # Ignore Discord system messages (thread renames, pins, member joins, etc.)
-                # Allow both default and reply types — replies have a distinct MessageType.
-                if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
+                # Allow default, reply, and thread-creation message types.
+                # thread_starter_message: first message in a thread created via "Create Thread" button
+                # thread_created: system message when a thread is created (may contain starter content)
+                if message.type not in {discord.MessageType.default, discord.MessageType.reply, discord.MessageType.thread_starter_message, discord.MessageType.thread_created}:
                     return
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
@@ -4501,11 +4503,29 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Check allowed channels - if set, only respond in these channels
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+            allowed_channels = set()
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
                 if "*" not in allowed_channels and not (channel_ids & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
+
+            # Auto-register new threads when thread_require_mention is false
+            # AND allowed_channels are explicitly configured.  Without this,
+            # threads created manually via Discord's "Create Thread" button get
+            # stuck: the bot never responds because the thread isn't in
+            # self._threads, and the thread never enters self._threads because
+            # the bot never responds.  The allowed_channels gate prevents the
+            # bot from auto-joining arbitrary threads on servers that don't
+            # use the allowed_channels restriction.
+            if (
+                is_thread
+                and thread_id
+                and not self._discord_thread_require_mention()
+                and allowed_channels_raw
+            ):
+                if "*" in allowed_channels or (channel_ids & allowed_channels):
+                    self._threads.mark(thread_id)
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")

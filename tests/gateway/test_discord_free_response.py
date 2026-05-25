@@ -884,3 +884,27 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
         assert event.channel_context is None
 
 
+@pytest.mark.asyncio
+async def test_discord_new_thread_without_mention_gets_response(adapter, monkeypatch):
+    """When allowed_channels is set and thread_require_mention is false,
+    a brand-new thread (not yet in _threads) in an allowed channel should
+    still get a response without an @mention.
+    This covers the Discord "Create Thread" button workflow."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "100")
+
+    parent = FakeTextChannel(channel_id=100, name="coding")
+    thread = FakeThread(channel_id=200, name="test-thread", parent=parent)
+    # NOT calling adapter._threads.mark() — simulates a brand-new thread
+    # created via Discord's "Create Thread" button where the bot has
+    # never participated before.
+
+    message = make_message(
+        channel=thread,
+        content="hello in a new thread without mention",
+    )
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()

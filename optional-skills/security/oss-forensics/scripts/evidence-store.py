@@ -74,7 +74,7 @@ class EvidenceStore:
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     self.data = json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
+            except (OSError, json.JSONDecodeError) as e:
                 print(f"Error loading evidence store '{filepath}': {e}", file=sys.stderr)
                 print("Hint: The file might be corrupted. Check for manual edits or syntax errors.", file=sys.stderr)
                 sys.exit(1)

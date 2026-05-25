@@ -146,7 +146,7 @@ class TestApply:
         cfg = {}
 
         def persist_boom(c):
-            raise IOError("disk full")
+            raise OSError("disk full")
 
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")):

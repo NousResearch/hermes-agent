@@ -549,7 +549,7 @@ def _read_file_chunk(file_path: str, offset: int, length: int) -> bytes:
         fh.seek(offset)
         data = fh.read(length)
         if len(data) != length:
-            raise IOError(
+            raise OSError(
                 f"Short read from {file_path}: expected {length} bytes at "
                 f"offset {offset}, got {len(data)} (file may be truncated)"
             )

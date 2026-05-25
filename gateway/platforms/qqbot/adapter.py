@@ -1934,7 +1934,7 @@ class QQAdapter(BasePlatformAdapter):
             else:
                 logger.warning("[%s] STT: ASR returned empty transcript", self._log_tag)
             return transcript
-        except (httpx.HTTPStatusError, httpx.TransportError, IOError) as exc:
+        except (OSError, httpx.HTTPStatusError, httpx.TransportError) as exc:
             logger.warning(
                 "[%s] STT failed for voice attachment: %s: %s",
                 self._log_tag,
@@ -2233,7 +2233,7 @@ class QQAdapter(BasePlatformAdapter):
             if text.strip():
                 return text.strip()
             return None
-        except (httpx.HTTPStatusError, IOError) as exc:
+        except (OSError, httpx.HTTPStatusError) as exc:
             logger.warning(
                 "[%s] STT API call failed (model=%s, base=%s): %s",
                 self._log_tag,

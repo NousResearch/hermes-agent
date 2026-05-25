@@ -425,7 +425,7 @@ def load_jobs() -> List[Dict[str, Any]]:
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
             raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
-    except IOError as e:
+    except OSError as e:
         logger.error("IOError reading jobs.json: %s", e)
         raise RuntimeError(f"Failed to read cron database: {e}") from e
 

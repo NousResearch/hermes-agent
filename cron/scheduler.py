@@ -1813,7 +1813,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-    except (OSError, IOError):
+    except OSError:
         logger.debug("Tick skipped — another instance holds the lock")
         if lock_fd is not None:
             lock_fd.close()
@@ -1958,12 +1958,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if fcntl:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
+            except OSError:
                 pass
         elif msvcrt:
             try:
                 msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
+            except OSError:
                 pass
         lock_fd.close()
 

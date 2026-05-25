@@ -474,7 +474,7 @@ def load_credentials() -> Optional[GoogleCredentials]:
         with _credentials_lock():
             raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
-    except (json.JSONDecodeError, OSError, IOError) as exc:
+    except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to read Google OAuth credentials at %s: %s", path, exc)
         return None
     if not isinstance(data, dict):

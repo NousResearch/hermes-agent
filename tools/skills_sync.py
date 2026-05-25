@@ -72,7 +72,7 @@ def _read_manifest() -> Dict[str, str]:
                 # v1 format: plain name — empty hash triggers migration
                 result[line] = ""
         return result
-    except (OSError, IOError):
+    except OSError:
         return {}
 
 
@@ -167,7 +167,7 @@ def _dir_hash(directory: Path) -> str:
                 rel = fpath.relative_to(directory)
                 hasher.update(str(rel).encode("utf-8"))
                 hasher.update(fpath.read_bytes())
-    except (OSError, IOError):
+    except OSError:
         pass
     return hasher.hexdigest()
 
@@ -231,7 +231,7 @@ def sync_skills(quiet: bool = False) -> dict:
                     manifest[skill_name] = bundled_hash
                     if not quiet:
                         print(f"  + {skill_name}")
-            except (OSError, IOError) as e:
+            except OSError as e:
                 if not quiet:
                     print(f"  ! Failed to copy {skill_name}: {e}")
                 # Do NOT add to manifest — next sync should retry
@@ -273,12 +273,12 @@ def sync_skills(quiet: bool = False) -> dict:
                             print(f"  ↑ {skill_name} (updated)")
                         # Remove backup after successful copy
                         shutil.rmtree(backup, ignore_errors=True)
-                    except (OSError, IOError):
+                    except OSError:
                         # Restore from backup
                         if backup.exists() and not dest.exists():
                             shutil.move(str(backup), str(dest))
                         raise
-                except (OSError, IOError) as e:
+                except OSError as e:
                     if not quiet:
                         print(f"  ! Failed to update {skill_name}: {e}")
             else:
@@ -301,7 +301,7 @@ def sync_skills(quiet: bool = False) -> dict:
             try:
                 dest_desc.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(desc_md, dest_desc)
-            except (OSError, IOError) as e:
+            except OSError as e:
                 logger.debug("Could not copy %s: %s", desc_md, e)
 
     _write_manifest(manifest)
@@ -383,7 +383,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
             try:
                 shutil.rmtree(dest)
                 deleted_user_copy = True
-            except (OSError, IOError) as e:
+            except OSError as e:
                 return {
                     "ok": False,
                     "action": "manifest_cleared",

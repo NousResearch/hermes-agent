@@ -36,7 +36,7 @@ Before writing a long prompt explaining how to do something, check if there's al
 
 ### Multi-Line Input
 
-Press **Alt+Enter** (or **Ctrl+J**) to insert a newline without sending. This lets you compose multi-line prompts, paste code blocks, or structure complex requests before hitting Enter to send.
+Press **Alt+Enter**, **Ctrl+J**, or **Shift+Enter** to insert a newline without sending. `Shift+Enter` only works when the terminal sends it as a distinct keystroke (Kitty / foot / WezTerm / Ghostty by default; iTerm2 / Alacritty / VS Code terminal once the Kitty keyboard protocol is enabled). The other two work in every terminal.
 
 ### Paste Detection
 
@@ -80,7 +80,7 @@ Create an `AGENTS.md` in your project root with architecture decisions, coding c
 
 Want Hermes to have a stable default voice? Edit `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md` if you use a custom Hermes home). Hermes now seeds a starter SOUL automatically and uses that global file as the instance-wide personality source.
 
-For a full walkthrough, see [Use SOUL.md with Hermes](/docs/guides/use-soul-with-hermes).
+For a full walkthrough, see [Use SOUL.md with Hermes](/guides/use-soul-with-hermes).
 
 ```markdown
 # Soul

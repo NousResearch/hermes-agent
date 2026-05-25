@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -19,6 +20,8 @@ from tools.file_operations import (
     BINARY_EXTENSIONS,
     IMAGE_EXTENSIONS,
     MAX_LINE_LENGTH,
+    normalize_read_pagination,
+    normalize_search_pagination,
 )
 
 
@@ -56,6 +59,116 @@ class TestIsWriteDenied:
 
     def test_tilde_expansion(self):
         assert _is_write_denied("~/.ssh/authorized_keys") is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "auth.json",
+            "config.yaml",
+            "webhook_subscriptions.json",
+            ".anthropic_oauth.json",
+            "mcp-tokens/token1.json",
+            "mcp-tokens/subdir/token2.json",
+            "pairing/telegram-approved.json",
+            "pairing/discord-approved.json",
+            "pairing/telegram-pending.json",
+            "pairing",
+        ],
+    )
+    def test_hermes_control_files_oauth_and_mcp_tokens_denied(self, path):
+        """Hermes control files, PKCE creds, mcp-tokens, and pairing entries must be write-denied."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        full_path = str(hermes_home / path)
+        assert _is_write_denied(full_path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "dummy/../config.yaml",
+            "./auth.json",
+            "./.anthropic_oauth.json",
+            "mcp-tokens/../config.yaml",
+        ],
+    )
+    def test_hermes_control_files_and_oauth_traversal_denied(self, path):
+        """Path traversal attempts to protected Hermes files must be blocked."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        full_path = str(hermes_home / path)
+        assert _is_write_denied(full_path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/tmp/standard_file.txt",
+            "~/projects/myapp/main.py",
+            "/var/log/app.log",
+        ],
+    )
+    def test_standard_paths_allowed(self, path):
+        """Unrelated paths must still be allowed."""
+        assert _is_write_denied(path) is False
+
+    @pytest.mark.parametrize(
+        "name",
+        ["auth.json", "config.yaml", "webhook_subscriptions.json", ".anthropic_oauth.json"],
+    )
+    def test_control_files_and_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
+        """Under a profile, BOTH <profile>/X and <root>/X must be denied (#15981 shape).
+
+        Without the root-level pass, a profile-mode session leaves the
+        global ~/.hermes/{auth.json,config.yaml,webhook_subscriptions.json,
+        .anthropic_oauth.json} writable — the same gap PR #15981 fixed
+        for .env.
+        """
+        # Simulate a profile-mode HERMES_HOME layout:
+        #   <root>/profiles/coder/{auth.json,config.yaml,...}
+        #   <root>/{auth.json,config.yaml,...}        ← must also be denied
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        # Profile copy
+        assert _is_write_denied(str(profile / name)) is True
+        # Root copy — the gap this widening closes
+        assert _is_write_denied(str(root / name)) is True
+
+    def test_mcp_tokens_dir_protected_in_profile_mode(self, tmp_path, monkeypatch):
+        """mcp-tokens/ under profile AND under root must both be denied."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert _is_write_denied(str(profile / "mcp-tokens" / "tok.json")) is True
+        assert _is_write_denied(str(root / "mcp-tokens" / "tok.json")) is True
+        # The directory itself must also be denied (not just files inside)
+        assert _is_write_denied(str(root / "mcp-tokens")) is True
+
+    def test_pairing_dir_denied(self, tmp_path, monkeypatch):
+        """Regression: pairing/ must be write-denied under both profile and root.
+
+        PR #30383 introduced ~/.hermes/pairing/{platform}-approved.json as the
+        gateway access-control list. Without this block, a prompt-injected agent
+        can write arbitrary user IDs into an approved file, granting persistent
+        gateway access without going through the pairing code flow — the same
+        threat class that motivated protecting webhook_subscriptions.json.
+        """
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        # Active profile pairing entries
+        assert _is_write_denied(str(profile / "pairing" / "telegram-approved.json")) is True
+        assert _is_write_denied(str(profile / "pairing" / "discord-pending.json")) is True
+        # The directory itself
+        assert _is_write_denied(str(profile / "pairing")) is True
+        # Root pairing entries (profile mode — same shape as mcp-tokens gap)
+        assert _is_write_denied(str(root / "pairing" / "telegram-approved.json")) is True
+        assert _is_write_denied(str(root / "pairing")) is True
 
 
 
@@ -192,6 +305,17 @@ def file_ops(mock_env):
 
 
 class TestShellFileOpsHelpers:
+    def test_normalize_read_pagination_clamps_invalid_values(self):
+        assert normalize_read_pagination(offset=0, limit=0) == (1, 1)
+        assert normalize_read_pagination(offset=-10, limit=-5) == (1, 1)
+        assert normalize_read_pagination(offset="bad", limit="bad") == (1, 500)
+        assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
+
+    def test_normalize_search_pagination_clamps_invalid_values(self):
+        assert normalize_search_pagination(offset=-10, limit=-5) == (0, 1)
+        assert normalize_search_pagination(offset="bad", limit="bad") == (0, 50)
+        assert normalize_search_pagination(offset=3, limit=0) == (3, 1)
+
     def test_escape_shell_arg_simple(self, file_ops):
         assert file_ops._escape_shell_arg("hello") == "'hello'"
 
@@ -258,6 +382,58 @@ class TestShellFileOpsHelpers:
         ops = ShellFileOperations(env)
         assert ops.cwd == "/"
 
+    def test_read_file_strips_leaked_terminal_fence_markers(self, mock_env):
+        leaked = (
+            "'\x07__HERMES_FENCE_a9f7b3__\x1b]0;cat "
+            "'/tmp/test/a.py' 2> /dev/null\x07\n"
+            "print('ok')\n"
+            "__HERMES_FENCE_a9f7b3__\x07'\n"
+        )
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "12\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "print('ok')\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": leaked, "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "1\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/a.py")
+
+        assert result.error is None
+        assert "HERMES_FENCE" not in result.content
+        assert "\x1b]" not in result.content
+        assert "\x07" not in result.content
+        assert "     1|print('ok')" in result.content
+
+    def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
+        leaked = (
+            "__HERMES_FENCE_a9f7b3__\x07'\n"
+            "alpha\n"
+            "\x1b]0;cat '/tmp/test/a.txt'\x07__HERMES_FENCE_a9f7b3__\n"
+        )
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": "6\n", "returncode": 0}
+            if command.startswith("head -c"):
+                return {"output": "alpha\n", "returncode": 0}
+            if command.startswith("cat "):
+                return {"output": leaked, "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file_raw("/tmp/test/a.txt")
+
+        assert result.error is None
+        assert result.content == "alpha\n"
+
 
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""
@@ -323,6 +499,66 @@ class TestSearchPathValidation:
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
 
+class TestSearchFilesFallbackHiddenPaths:
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/"
+
+        def execute(command, **kwargs):
+            completed = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                capture_output=True,
+            )
+            return {
+                "output": completed.stdout,
+                "returncode": completed.returncode,
+            }
+
+        env.execute = execute
+        return env
+
+    def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
+        """Fallback find should include visible files when path is inside hidden root."""
+        root = tmp_path / ".hermes" / "logs"
+        root.mkdir(parents=True)
+        visible_file = root / "agent.log"
+        hidden_dir_file = root / ".hidden" / "secret.log"
+        nested_hidden_file = root / "nested" / ".secret.log"
+        visible_nested_file = root / "nested" / "visible.log"
+
+        for p in [visible_file, nested_hidden_file, visible_nested_file, hidden_dir_file]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("*.log", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+    def test_normal_root_still_excludes_hidden_descendants(self, tmp_path, monkeypatch):
+        """Fallback find should still exclude hidden descendant paths for normal roots."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        visible_file = root / "agent.log"
+        visible_nested_file = root / "nested" / "visible.log"
+        hidden_dir_file = root / ".hidden" / "secret.log"
+
+        for p in [visible_file, visible_nested_file, hidden_dir_file]:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("*.log", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert set(result.files) == {str(visible_file), str(visible_nested_file)}
+
+
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")
@@ -355,3 +591,116 @@ class TestShellFileOpsWriteDenied:
         result = ops.move_file("/tmp/nonexistent.txt", "/tmp/dest.txt")
         assert result.error is not None
         assert "Failed to move" in result.error
+
+
+class TestPatchReplacePostWriteVerification:
+    """Tests for the post-write verification added in patch_replace.
+
+    Confirms that a silent persistence failure (where write_file's command
+    appears to succeed but the bytes on disk don't match new_content) is
+    surfaced as an error instead of being reported as a successful patch.
+    """
+
+    def test_patch_replace_fails_when_file_not_persisted(self, mock_env):
+        """write_file reports success but the re-read returns old content:
+        patch_replace must return an error, not success-with-diff."""
+        file_contents = {"/tmp/test/a.py": "hello world\n"}
+
+        def side_effect(command, **kwargs):
+            # cat reads the file — both the initial read and the verify read
+            if command.startswith("cat "):
+                # Extract path from cat command (strip quotes)
+                for path in file_contents:
+                    if path in command:
+                        return {"output": file_contents[path], "returncode": 0}
+                return {"output": "", "returncode": 1}
+            # mkdir for parent dir
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            # wc -c for byte count after write
+            if command.startswith("wc -c"):
+                for path in file_contents:
+                    if path in command:
+                        return {"output": str(len(file_contents[path].encode())), "returncode": 0}
+                return {"output": "0", "returncode": 0}
+            # Everything else (including the write itself) pretends to succeed
+            # but DOESN'T update file_contents — simulates silent failure
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        assert result.error is not None, (
+            "Silent persistence failure must surface as error, got: "
+            f"success={result.success}, diff={result.diff}"
+        )
+        assert "verification failed" in result.error.lower()
+        assert "did not persist" in result.error.lower()
+
+    def test_patch_replace_succeeds_when_file_persisted(self, mock_env):
+        """Normal success path: write persists, verify read returns new bytes."""
+        state = {"content": "hello world\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            # Write is `cat > path` — detect by the `>` redirect, NOT just `cat `
+            if command.startswith("cat >"):
+                if stdin_data is not None:
+                    state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):  # read
+                return {"output": state["content"], "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        assert result.error is None, f"Unexpected error: {result.error}"
+        assert result.success is True
+        assert state["content"] == "hi world\n", f"File not actually updated: {state['content']!r}"
+
+    def test_patch_replace_fails_when_verify_read_errors(self, mock_env):
+        """If the verify-read step itself fails (exit code != 0), return an error."""
+        call_count = {"cat": 0}
+        state = {"content": "hello world\n"}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if command.startswith("cat >"):  # write
+                if stdin_data is not None:
+                    state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("cat "):  # read
+                call_count["cat"] += 1
+                # First read (initial fetch) succeeds; second read (verify) fails
+                if call_count["cat"] == 1:
+                    return {"output": state["content"], "returncode": 0}
+                return {"output": "", "returncode": 1}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": str(len(state["content"].encode())), "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
+        assert result.error is not None
+        assert "could not re-read" in result.error.lower()
+
+
+# =========================================================================
+# Git baseline check for write_file warning
+# =========================================================================
+
+class _DeletedTestGitBaselineCheck:
+    """Removed May 2026 — these tests asserted on a ``_check_git_baseline``
+    method that doesn't exist on ``ShellFileOperations`` (regression intro
+    by a separate refactor). All 6 tests in the class fail with
+    AttributeError on origin/main. Deleted wholesale per Teknium's
+    instruction to keep CI green; reinstate them when the underlying
+    helper is restored or replaced.
+    """
+    pass

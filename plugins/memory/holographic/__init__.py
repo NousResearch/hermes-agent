@@ -26,6 +26,7 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 from .store import MemoryStore
 from .retrieval import FactRetriever
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +101,9 @@ def _load_plugin_config() -> dict:
         return {}
     try:
         import yaml
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             all_config = yaml.safe_load(f) or {}
-        return all_config.get("plugins", {}).get("hermes-memory-store", {}) or {}
+        return cfg_get(all_config, "plugins", "hermes-memory-store", default={}) or {}
     except Exception:
         return {}
 
@@ -135,11 +136,11 @@ class HolographicMemoryProvider(MemoryProvider):
             import yaml
             existing = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8-sig") as f:
                     existing = yaml.safe_load(f) or {}
             existing.setdefault("plugins", {})
             existing["plugins"]["hermes-memory-store"] = values
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
         except Exception:
             pass

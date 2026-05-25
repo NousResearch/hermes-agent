@@ -162,3 +162,9 @@ Use an **inference profile ID** (prefixed with `us.` or `global.`) instead of th
 ### "ThrottlingException"
 
 You've hit the Bedrock per-model rate limit. Hermes automatically retries with backoff. To increase limits, request a quota increase in the [AWS Service Quotas console](https://console.aws.amazon.com/servicequotas/).
+
+## One-Click AWS Deployment
+
+For a fully automated deployment on EC2 with CloudFormation:
+
+**[sample-hermes-agent-on-aws-with-bedrock](https://github.com/JiaDe-Wu/sample-hermes-agent-on-aws-with-bedrock)** — creates VPC, IAM role, EC2 instance, and configures Bedrock automatically. Deploy in any region with one click.

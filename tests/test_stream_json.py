@@ -100,6 +100,59 @@ class TestStreamJsonEmitter:
         assert lines[0]["duration_ms"] == 500
         assert lines[0]["is_error"] is False
 
+    def test_current_tool_progress_shape_emits_use_and_result(self):
+        """Current Hermes progress callbacks use tool.started/tool.completed events."""
+        em = self._make_emitter()
+        self._buf.truncate(0)
+        self._buf.seek(0)
+
+        em.on_tool_progress(
+            "tool.started",
+            "read_file",
+            "read: main.py",
+            {"path": "main.py"},
+        )
+        em.on_tool_progress(
+            "tool.completed",
+            "read_file",
+            None,
+            None,
+            duration=0.25,
+            is_error=True,
+            result="tool failed",
+        )
+
+        lines = self._lines()
+        self._teardown()
+        assert len(lines) == 2
+        assert lines[0]["type"] == "tool_use"
+        assert lines[0]["name"] == "read_file"
+        assert lines[0]["input"] == {"path": "main.py"}
+        assert lines[1]["type"] == "tool_result"
+        assert lines[1]["output"] == "tool failed"
+        assert lines[1]["duration_ms"] == 250
+        assert lines[1]["is_error"] is True
+
+    def test_tool_gen_then_started_does_not_duplicate_tool_use(self):
+        """Streaming tool generation plus execution start should be one tool_use line."""
+        em = self._make_emitter()
+        self._buf.truncate(0)
+        self._buf.seek(0)
+
+        em.on_tool_gen_start("terminal")
+        em.on_tool_progress(
+            "tool.started",
+            "terminal",
+            "run: echo hi",
+            {"command": "echo hi"},
+        )
+
+        lines = self._lines()
+        self._teardown()
+        assert len(lines) == 1
+        assert lines[0]["type"] == "tool_use"
+        assert lines[0]["name"] == "terminal"
+
     def test_tool_progress_start_does_not_emit(self):
         em = self._make_emitter()
         self._buf.truncate(0)

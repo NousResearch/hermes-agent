@@ -22,19 +22,26 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
     telegram_mod = MagicMock()
     telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
 
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
+    # Register telegram.constants as a separate module mock so that
+    # ``from telegram.constants import ChatType`` resolves to our mock
+    # with string-valued members (not auto-generated MagicMocks).
+    constants_mod = MagicMock()
+    constants_mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    constants_mod.ChatType.GROUP = "group"
+    constants_mod.ChatType.SUPERGROUP = "supergroup"
+    constants_mod.ChatType.CHANNEL = "channel"
+    constants_mod.ChatType.PRIVATE = "private"
+
+    sys.modules["telegram"] = telegram_mod
+    sys.modules["telegram.ext"] = telegram_mod.ext
+    sys.modules["telegram.constants"] = constants_mod
+    sys.modules["telegram.request"] = telegram_mod.request
+
+    # Force reimport so the adapter picks up the mock ChatType.
+    sys.modules.pop("gateway.platforms.telegram", None)
 
 
 _ensure_telegram_mock()
@@ -198,6 +205,54 @@ async def test_create_dm_topic_returns_none_without_bot():
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_ensure_dm_topic_creates_on_demand_and_persists():
+    """Named delivery targets should create missing private DM topics on demand."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=444)
+    adapter._persist_dm_topic_thread_id = MagicMock()
+
+    result = await adapter.ensure_dm_topic("111", "On Demand")
+
+    assert result == "444"
+    adapter._bot.create_forum_topic.assert_called_once_with(
+        chat_id=111,
+        name="On Demand",
+    )
+    assert adapter._dm_topics["111:On Demand"] == 444
+    assert adapter._dm_topics_config == [
+        {"chat_id": 111, "topics": [{"name": "On Demand", "thread_id": 444}]}
+    ]
+    adapter._persist_dm_topic_thread_id.assert_called_once_with(
+        111, "On Demand", 444, replace_existing=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_dm_topic_force_create_replaces_persisted_thread_id():
+    """Refreshing a stale named topic should replace the cached persisted thread_id."""
+    adapter = _make_adapter()
+    bot = AsyncMock()
+    bot.create_forum_topic.return_value = SimpleNamespace(message_thread_id=777)
+    adapter._bot = bot
+    adapter._persist_dm_topic_thread_id = MagicMock()
+    adapter._dm_topics = {"111:General": 500}
+    adapter._dm_topics_config = [
+        {"chat_id": 111, "topics": [{"name": "General", "thread_id": 500}]}
+    ]
+
+    result = await adapter.ensure_dm_topic("111", "General", force_create=True)
+
+    assert result == "777"
+    bot.create_forum_topic.assert_called_once_with(chat_id=111, name="General")
+    assert adapter._dm_topics["111:General"] == 777
+    assert adapter._dm_topics_config[0]["topics"][0]["thread_id"] == 777
+    adapter._persist_dm_topic_thread_id.assert_called_once_with(
+        111, "General", 777, replace_existing=True
+    )
+
+
 # ── _persist_dm_topic_thread_id ──
 
 
@@ -280,7 +335,88 @@ def test_persist_dm_topic_thread_id_skips_if_already_set(tmp_path):
     assert topics[0]["thread_id"] == 500  # unchanged
 
 
+def test_persist_dm_topic_thread_id_replaces_existing_when_requested(tmp_path):
+    """Forced refresh should overwrite a stale persisted thread_id."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [
+                                {"name": "General", "icon_color": 123, "thread_id": 500},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    with open(config_file, "w") as f:
+        yaml.dump(config_data, f)
+
+    adapter = _make_adapter()
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+        adapter._persist_dm_topic_thread_id(111, "General", 999, replace_existing=True)
+
+    with open(config_file) as f:
+        result = yaml.safe_load(f)
+
+    topics = result["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
+    assert topics[0]["thread_id"] == 999
+
+
 # ── _get_dm_topic_info ──
+
+
+def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
+    """Failed writes should leave the original config.yaml intact."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [
+                                {"name": "General", "icon_color": 123},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    original_text = yaml.dump(config_data)
+    config_file.write_text(original_text, encoding="utf-8")
+
+    adapter = _make_adapter()
+
+    def fail_dump(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}), \
+         patch("yaml.dump", side_effect=fail_dump):
+        adapter._persist_dm_topic_thread_id(111, "General", 999)
+
+    assert config_file.read_text(encoding="utf-8") == original_text
+    result = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    topics = result["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
+    assert "thread_id" not in topics[0]
 
 
 def test_get_dm_topic_info_finds_cached_topic():
@@ -406,13 +542,16 @@ def test_cache_dm_topic_from_message_no_overwrite():
 
 
 def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id=None,
-                       user_id=42, user_name="Test User", forum_topic_created=None):
+                       user_id=42, user_name="Test User", forum_topic_created=None,
+                       is_topic_message=None, is_forum=None):
     """Create a mock Telegram Message for _build_message_event tests."""
     chat = SimpleNamespace(
         id=chat_id,
         type=chat_type,
         title=None,
     )
+    if is_forum is not None:
+        chat.is_forum = is_forum
     # Add full_name attribute for DM chats
     if not hasattr(chat, "full_name"):
         chat.full_name = user_name
@@ -422,11 +561,15 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
         full_name=user_name,
     )
 
+    if is_topic_message is None:
+        is_topic_message = bool(thread_id) if chat_type == "private" else None
+
     msg = SimpleNamespace(
         chat=chat,
         from_user=user,
         text=text,
         message_thread_id=thread_id,
+        is_topic_message=is_topic_message,
         message_id=1001,
         reply_to_message=None,
         date=None,
@@ -489,6 +632,40 @@ def test_build_message_event_no_auto_skill_without_thread():
     assert event.auto_skill is None
 
 
+def test_build_message_event_filters_non_topic_dm_thread_id():
+    """A DM reply-thread id should not be persisted unless Telegram marks it as a topic message."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(chat_id=111, thread_id=777, is_topic_message=False)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.thread_id is None
+    assert event.source.chat_topic is None
+    assert event.auto_skill is None
+
+
+def test_build_message_event_preserves_true_dm_topic_thread_id():
+    """True DM topic messages should keep their thread id for routing."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter([
+        {
+            "chat_id": 111,
+            "topics": [
+                {"name": "General", "thread_id": 200},
+            ],
+        }
+    ])
+    adapter._dm_topics["111:General"] = 200
+
+    msg = _make_mock_message(chat_id=111, thread_id=200, is_topic_message=True)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.thread_id == "200"
+    assert event.source.chat_topic == "General"
+
+
 # ── _build_message_event: group_topics skill binding ──
 
 # The telegram mock sets sys.modules["telegram.constants"] = telegram_mod (root mock),
@@ -513,7 +690,12 @@ def test_group_topic_skill_binding():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=5, text="hello"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=5,
+        text="hello",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -536,7 +718,12 @@ def test_group_topic_skill_binding_second_topic():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=12, text="deal update"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=12,
+        text="deal update",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -558,7 +745,12 @@ def test_group_topic_no_skill_binding():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=1, text="hey"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=1,
+        text="hey",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -580,7 +772,12 @@ def test_group_topic_unmapped_thread_id():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=999, text="random"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=999,
+        text="random",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -602,7 +799,12 @@ def test_group_topic_unmapped_chat_id():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1009999999999, chat_type=_ChatType.SUPERGROUP, thread_id=5, text="wrong group"
+        chat_id=-1009999999999,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=5,
+        text="wrong group",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
@@ -639,9 +841,65 @@ def test_group_topic_chat_id_int_string_coercion():
     ])
 
     msg = _make_mock_message(
-        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=7, text="test"
+        chat_id=-1001234567890,
+        chat_type=_ChatType.SUPERGROUP,
+        thread_id=7,
+        text="test",
+        is_topic_message=True,
+        is_forum=True,
     )
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.auto_skill == "hermes-agent-dev"
     assert event.source.chat_topic == "Dev"
+
+
+# ── _build_message_event: from_user=None fallback in DMs ──
+
+
+def test_build_message_event_dm_from_user_none_falls_back_to_chat_id():
+    """When from_user is None in a DM, user_id should fall back to chat.id."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(chat_id=12345, user_id=42, user_name="Alice")
+    # Simulate from_user being None (edge case on fresh restart / forwarded msg)
+    msg.from_user = None
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # Should fall back to chat.id since chat_type is "dm"
+    assert event.source.user_id == "12345"
+    assert event.source.user_name == "Alice"  # falls back to chat.full_name
+
+
+def test_build_message_event_group_from_user_none_stays_none():
+    """When from_user is None in a group, user_id should remain None."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP,
+        user_id=42, user_name="Alice"
+    )
+    msg.from_user = None
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # Groups should NOT fall back — anonymous senders stay None
+    assert event.source.user_id is None
+    assert event.source.user_name is None
+
+
+def test_build_message_event_dm_from_user_present_uses_user():
+    """When from_user is present in a DM, it should be used (no fallback)."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(chat_id=12345, user_id=99999, user_name="Bob")
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # Normal case — from_user is used directly
+    assert event.source.user_id == "99999"
+    assert event.source.user_name == "Bob"

@@ -4,11 +4,11 @@ import tools.terminal_tool as terminal_tool
 
 
 def setup_function():
-    terminal_tool._cached_sudo_password = ""
+    terminal_tool._reset_cached_sudo_passwords()
 
 
 def teardown_function():
-    terminal_tool._cached_sudo_password = ""
+    terminal_tool._reset_cached_sudo_passwords()
 
 
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
@@ -82,12 +82,77 @@ def test_explicit_empty_sudo_password_tries_empty_without_prompt(monkeypatch):
 def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-    terminal_tool._cached_sudo_password = "cached-pass"
+    terminal_tool._set_cached_sudo_password("cached-pass")
 
     transformed, sudo_stdin = terminal_tool._transform_sudo_command("echo ok && sudo whoami")
 
     assert transformed == "echo ok && sudo -S -p '' whoami"
     assert sudo_stdin == "cached-pass\n"
+
+
+def test_cached_sudo_password_isolated_by_session_key(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-a")
+    terminal_tool._set_cached_sudo_password("alpha-pass")
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-b")
+    assert terminal_tool._get_cached_sudo_password() == ""
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-a")
+    assert terminal_tool._get_cached_sudo_password() == "alpha-pass"
+
+
+def test_passwordless_sudo_skips_interactive_prompt_and_rewrite(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError(
+            "interactive sudo prompt should not run when sudo -n already works"
+        )
+
+    monkeypatch.setattr(terminal_tool, "_prompt_for_sudo_password", _fail_prompt)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: True, raising=False)
+
+    transformed, sudo_stdin = terminal_tool._transform_sudo_command("sudo whoami")
+
+    assert transformed == "sudo whoami"
+    assert sudo_stdin is None
+
+
+def test_passwordless_sudo_probe_rechecks_local_terminal(monkeypatch):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    calls = []
+
+    class Result:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return Result(0 if len(calls) == 1 else 1)
+
+    monkeypatch.setattr(terminal_tool.subprocess, "run", fake_run)
+
+    assert terminal_tool._sudo_nopasswd_works() is True
+    assert terminal_tool._sudo_nopasswd_works() is False
+    assert len(calls) == 2
+    assert calls[0][0] == ["sudo", "-n", "true"]
+    assert calls[1][0] == ["sudo", "-n", "true"]
+
+
+def test_passwordless_sudo_probe_is_disabled_for_nonlocal_terminal_env(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    def _fail_run(*_args, **_kwargs):
+        raise AssertionError("host sudo probe must not run for non-local terminal envs")
+
+    monkeypatch.setattr(terminal_tool.subprocess, "run", _fail_run)
+
+    assert terminal_tool._sudo_nopasswd_works() is False
 
 
 def test_validate_workdir_allows_windows_drive_paths():

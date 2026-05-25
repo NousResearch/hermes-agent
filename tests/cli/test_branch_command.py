@@ -168,6 +168,52 @@ class TestBranchCommandCLI:
 
         assert cli_instance._resumed is True
 
+    def test_branch_rotates_hermes_session_id_env_and_context(self, cli_instance, session_db):
+        """Branching must update process-local session-id readers too."""
+        from cli import HermesCLI
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+
+        old_session_id = cli_instance.session_id
+        os.environ["HERMES_SESSION_ID"] = old_session_id
+        _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
+
+        try:
+            HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+            assert cli_instance.session_id != old_session_id
+            assert os.environ["HERMES_SESSION_ID"] == cli_instance.session_id
+            assert get_session_env("HERMES_SESSION_ID") == cli_instance.session_id
+        finally:
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
+
+    def test_branch_fires_on_session_switch_hook(self, cli_instance, session_db):
+        """The /branch command must notify memory providers of the rotation.
+
+        Without this, providers that cache per-session state in
+        initialize() keep writing under the old session_id. See #6672.
+        """
+        from cli import HermesCLI
+
+        # Wire a real-ish agent object with a MagicMock memory_manager
+        agent = MagicMock()
+        mm = MagicMock()
+        agent._memory_manager = mm
+        cli_instance.agent = agent
+        original_id = cli_instance.session_id
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        # Hook must have been called exactly once with the new session_id,
+        # parent pointing at the branched-from session, reset=False, and
+        # reason="branch" for diagnostics.
+        assert mm.on_session_switch.call_count == 1
+        _, kwargs = mm.on_session_switch.call_args
+        assert mm.on_session_switch.call_args.args[0] == cli_instance.session_id
+        assert kwargs["parent_session_id"] == original_id
+        assert kwargs["reset"] is False
+        assert kwargs["reason"] == "branch"
+
     def test_fork_alias(self):
         """The /fork alias should resolve to 'branch'."""
         from hermes_cli.commands import resolve_command

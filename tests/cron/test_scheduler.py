@@ -575,6 +575,128 @@ class TestDeliverResultWrapping:
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
 
+    def test_large_delivery_writes_full_output_to_attachment_and_sends_bounded_text(self, tmp_path, monkeypatch):
+        """Oversized cron output should not be sent inline where platforms can abort it."""
+        from gateway.config import Platform
+
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(hermes_home / "document_cache"))
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        large_output = "0123456789" * 80
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "delivery_max_chars": 200}}):
+            job = {
+                "id": "large-job",
+                "name": "large cron",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, large_output)
+
+        send_mock.assert_called_once()
+        args, kwargs = send_mock.call_args
+        sent_content = args[3]
+        assert len(sent_content) <= 200
+        assert "Cron output was too large" in sent_content
+        assert "Full output attached" in sent_content
+        assert large_output not in sent_content
+        assert kwargs["media_files"]
+        attachment_path, is_voice = kwargs["media_files"][0]
+        assert is_voice is False
+        assert attachment_path.endswith(".txt")
+        assert os.path.exists(attachment_path)
+        assert large_output in open(attachment_path, encoding="utf-8").read()
+
+    def test_live_adapter_large_delivery_sends_document_attachment(self, tmp_path, monkeypatch):
+        """Live cron delivery should route oversized full output as a native document."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(hermes_home / "document_cache"))
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_document.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        large_output = "abcdef" * 100
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "delivery_max_chars": 180}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                {
+                    "id": "large-live",
+                    "name": "large live",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                large_output,
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        adapter.send.assert_called_once()
+        text_sent = adapter.send.call_args[0][1]
+        assert len(text_sent) <= 180
+        assert large_output not in text_sent
+        adapter.send_document.assert_called_once()
+        attachment_path = adapter.send_document.call_args[1]["file_path"]
+        assert attachment_path.endswith(".txt")
+        assert large_output in open(attachment_path, encoding="utf-8").read()
+
+    def test_large_delivery_preserves_original_media_tags_after_preview_cutoff(self, tmp_path, monkeypatch):
+        """Large-output fallback must not drop original MEDIA attachments outside preview."""
+        from gateway.config import Platform
+
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(hermes_home / "document_cache"))
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "late-chart.png")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        large_prefix = "x" * 500
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "delivery_max_chars": 200}}):
+            _deliver_result(
+                {
+                    "id": "late-media",
+                    "deliver": "origin",
+                    "origin": {"platform": "telegram", "chat_id": "123"},
+                },
+                f"{large_prefix}\nMEDIA:{media_path}",
+            )
+
+        media_files = send_mock.call_args.kwargs["media_files"]
+        assert (str(media_path), False) in media_files
+        assert any(path.endswith(".txt") for path, _ in media_files)
+
     def test_delivery_extracts_media_tags_before_send(self, tmp_path, monkeypatch):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
         from gateway.config import Platform

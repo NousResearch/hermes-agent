@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -153,6 +154,7 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+_DEFAULT_DELIVERY_MAX_CHARS = 3500
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -168,6 +170,61 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+def _resolve_delivery_max_chars(cron_cfg: dict | None = None) -> int:
+    """Resolve the max inline cron delivery size before using file fallback."""
+    env_value = os.getenv("HERMES_CRON_DELIVERY_MAX_CHARS", "").strip()
+    raw_value = env_value or (cron_cfg or {}).get("delivery_max_chars")
+    if raw_value is not None:
+        try:
+            value = int(float(raw_value))
+            if value > 0:
+                return max(value, 100)
+        except Exception:
+            logger.warning("Invalid cron delivery_max_chars=%r; using default", raw_value)
+    return _DEFAULT_DELIVERY_MAX_CHARS
+
+
+def _safe_delivery_attachment_name(job: dict) -> str:
+    raw_id = str(job.get("id") or "cron-job")
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_id).strip("-._") or "cron-job"
+    timestamp = _hermes_now().strftime("%Y%m%d-%H%M%S")
+    return f"cron-{safe_id}-{timestamp}-{os.getpid()}.txt"
+
+
+def _write_delivery_attachment(job: dict, content: str) -> Path:
+    """Persist full cron output under a Hermes-managed document cache."""
+    output_dir = _get_hermes_home() / "document_cache" / "cron-deliveries"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / _safe_delivery_attachment_name(job)
+    output_path.write_text(content, encoding="utf-8")
+    return output_path
+
+
+def _with_large_delivery_fallback(job: dict, delivery_content: str, max_chars: int) -> str:
+    """Replace oversized inline cron delivery text with a small summary + MEDIA file."""
+    if len(delivery_content) <= max_chars:
+        return delivery_content
+
+    attachment = _write_delivery_attachment(job, delivery_content)
+    prefix_budget = max(0, max_chars - 160)
+    preview = delivery_content[:prefix_budget].rstrip()
+    if prefix_budget and len(delivery_content) > prefix_budget:
+        preview += "\n..."
+
+    summary = (
+        "Cron output was too large for safe inline delivery.\n"
+        f"Full output attached: {attachment.name}\n"
+        f"Inline characters: {len(delivery_content)}; limit: {max_chars}."
+    )
+    if preview:
+        summary = f"{summary}\n\nPreview:\n{preview}"
+
+    # The MEDIA tag is stripped before text send and delivered separately by the
+    # existing attachment pipeline.  Keeping it on a separate final line makes
+    # extraction deterministic even when the summary is truncated aggressively.
+    return f"{summary[:max_chars].rstrip()}\nMEDIA:{attachment}"
 
 
 @contextmanager
@@ -641,11 +698,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    delivery_max_chars = _DEFAULT_DELIVERY_MAX_CHARS
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {}) if isinstance(user_cfg, dict) else {}
+        wrap_response = cron_cfg.get("wrap_response", True)
+        delivery_max_chars = _resolve_delivery_max_chars(cron_cfg)
     except Exception:
-        pass
+        delivery_max_chars = _resolve_delivery_max_chars({})
 
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -660,10 +720,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    # Extract user/model MEDIA tags before applying the large-text fallback so
+    # original attachments are not lost when their tag appears beyond the
+    # truncated preview.  The fallback can add one more MEDIA tag for the full
+    # text attachment, so extract that second pass too.
     from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    original_media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    fallback_content = _with_large_delivery_fallback(job, cleaned_delivery_content, delivery_max_chars)
+    fallback_media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(fallback_content)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(original_media_files + fallback_media_files)
 
     try:
         config = load_gateway_config()

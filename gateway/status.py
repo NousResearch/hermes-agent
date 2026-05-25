@@ -507,6 +507,7 @@ def write_runtime_status(
     exit_reason: Any = _UNSET,
     restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET,
+    cron: Any = _UNSET,
     platform: Any = _UNSET,
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
@@ -531,6 +532,17 @@ def write_runtime_status(
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
         payload["active_agents"] = max(0, int(active_agents))
+    if cron is not _UNSET:
+        if cron is None:
+            payload.pop("cron", None)
+        else:
+            cron_payload = payload.get("cron", {})
+            if not isinstance(cron_payload, dict):
+                cron_payload = {}
+            if isinstance(cron, dict):
+                cron_payload.update(cron)
+            cron_payload["updated_at"] = _utc_now_iso()
+            payload["cron"] = cron_payload
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})

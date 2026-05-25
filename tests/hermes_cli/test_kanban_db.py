@@ -48,6 +48,14 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_connect_context_manager_closes_connection(kanban_home):
+    with kb.connect() as conn:
+        conn.execute("SELECT 1").fetchone()
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        conn.execute("SELECT 1").fetchone()
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"
@@ -2113,13 +2121,15 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
 
     real_connect = _sqlite3.connect
 
-    class _WalBlockingConnection(_sqlite3.Connection):
-        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-            if "journal_mode=wal" in sql.lower().replace(" ", ""):
-                raise _sqlite3.OperationalError("locking protocol")
-            return super().execute(sql, *args, **kwargs)
-
     def wal_blocking_connect(*args, **kwargs):
+        base_factory = kwargs.pop("factory", _sqlite3.Connection)
+
+        class _WalBlockingConnection(base_factory):
+            def execute(self, sql, *execute_args, **execute_kwargs):  # type: ignore[override]
+                if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                    raise _sqlite3.OperationalError("locking protocol")
+                return super().execute(sql, *execute_args, **execute_kwargs)
+
         return real_connect(
             *args, factory=_WalBlockingConnection, **kwargs
         )
@@ -3338,4 +3348,3 @@ def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog
                 "SELECT kind FROM task_events WHERE task_id = ?", (tid,),
             ).fetchall()
             assert "tip_scratch_workspace" not in [e["kind"] for e in events]
-

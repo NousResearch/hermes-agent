@@ -956,6 +956,16 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
 
+class KanbanConnection(sqlite3.Connection):
+    """SQLite connection whose context manager also closes the handle."""
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
     if len(data) < offset + 5:
@@ -1141,6 +1151,9 @@ def connect(
 
     WAL mode is enabled on every connection; it's a no-op after the first
     time but keeps the code robust if the DB file is ever re-created.
+    The returned connection can be used as a context manager; unlike the
+    stdlib sqlite3 default, ``with connect() as conn:`` closes the handle
+    after committing or rolling back.
 
     The first connection to a given path auto-runs :func:`init_db` so
     fresh installs and test harnesses that construct `connect()`
@@ -1168,7 +1181,12 @@ def connect(
     # via _INITIALIZED_PATHS so it only runs once per process per path.
     _guard_existing_db_is_healthy(path)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        timeout=30,
+        factory=KanbanConnection,
+    )
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:

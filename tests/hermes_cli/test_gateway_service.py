@@ -1636,6 +1636,9 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>4096</integer>" in plist
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

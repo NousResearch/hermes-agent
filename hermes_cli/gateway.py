@@ -41,6 +41,8 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+_GATEWAY_NOFILE_SOFT_LIMIT = 4096
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -2856,6 +2858,12 @@ def generate_launchd_plist() -> str:
         <key>SuccessfulExit</key>
         <false/>
     </dict>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{_GATEWAY_NOFILE_SOFT_LIMIT}</integer>
+    </dict>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -3815,11 +3823,18 @@ def _runtime_health_lines() -> list[str]:
     active_agents = state.get("active_agents")
     restart_requested = state.get("restart_requested")
     platforms = state.get("platforms", {}) or {}
+    cron = state.get("cron", {}) or {}
 
     for platform, pdata in platforms.items():
         if pdata.get("state") == "fatal":
             message = pdata.get("error_message") or "unknown error"
             lines.append(f"⚠ {platform}: {message}")
+
+    if cron.get("state") == "failing":
+        failures = int(cron.get("consecutive_failures") or 0)
+        suffix = "" if failures == 1 else "s"
+        message = cron.get("last_error") or "unknown error"
+        lines.append(f"⚠ Cron ticker failing ({failures} consecutive failure{suffix}): {message}")
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")

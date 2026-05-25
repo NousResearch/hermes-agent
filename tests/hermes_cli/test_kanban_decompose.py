@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json as jsonlib
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -74,6 +75,26 @@ def _patch_list_profiles(names: list[str]):
         patch("hermes_cli.profiles.profile_exists", side_effect=lambda x: x in names),
         patch("hermes_cli.profiles.get_active_profile_name", return_value=names[0] if names else "default"),
     ]
+
+
+def _fd_count() -> int:
+    if os.name == "nt":
+        pytest.skip("fd accounting is POSIX-only")
+    fd_dir = Path("/proc/self/fd")
+    if not fd_dir.is_dir():
+        fd_dir = Path("/dev/fd")
+    if not fd_dir.is_dir():
+        pytest.skip("fd directory not available")
+    return len(list(fd_dir.iterdir()))
+
+
+def test_list_triage_ids_does_not_leak_connections(kanban_home):
+    before = _fd_count()
+    for _ in range(5):
+        assert decomp.list_triage_ids() == []
+    after = _fd_count()
+
+    assert after <= before + 1
 
 
 def test_decompose_with_fanout_creates_children(kanban_home):

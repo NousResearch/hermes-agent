@@ -119,6 +119,8 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_NOFILE_SOFT_LIMIT = 4096
+
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
     re.IGNORECASE,
@@ -17876,20 +17878,66 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     """
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
+    from gateway.status import write_runtime_status
     from hermes_cli.debug import _sweep_expired_pastes
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
+    CRON_FAILURE_LOG_EVERY = 300.0
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
+    cron_failure_count = 0
+    last_cron_failure_log_at = 0.0
+
+    def _record_cron_status(**fields) -> None:
+        try:
+            write_runtime_status(cron=fields)
+        except Exception as status_exc:
+            logger.debug("Cron runtime status write failed: %s", status_exc)
+
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+            cron_failure_count += 1
+            now_monotonic = time.monotonic()
+            should_log = (
+                cron_failure_count == 1
+                or now_monotonic - last_cron_failure_log_at >= CRON_FAILURE_LOG_EVERY
+            )
+            if should_log:
+                logger.warning(
+                    "Cron tick failed (%d consecutive failure%s): %s",
+                    cron_failure_count,
+                    "" if cron_failure_count == 1 else "s",
+                    e,
+                    exc_info=True,
+                )
+                last_cron_failure_log_at = now_monotonic
+            _record_cron_status(
+                state="failing",
+                consecutive_failures=cron_failure_count,
+                last_error=f"{type(e).__name__}: {e}",
+                last_error_at=datetime.now().astimezone().isoformat(),
+            )
+        else:
+            if cron_failure_count:
+                logger.info(
+                    "Cron tick recovered after %d consecutive failure%s",
+                    cron_failure_count,
+                    "" if cron_failure_count == 1 else "s",
+                )
+            cron_failure_count = 0
+            _record_cron_status(
+                state="healthy",
+                consecutive_failures=0,
+                last_success_at=datetime.now().astimezone().isoformat(),
+                last_error=None,
+                last_error_at=None,
+            )
 
         tick_count += 1
 
@@ -17955,6 +18003,40 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     logger.info("Cron ticker stopped")
 
 
+def _raise_gateway_nofile_limit(target: int = _GATEWAY_NOFILE_SOFT_LIMIT) -> None:
+    """Raise the process fd soft limit when the platform allows it."""
+    if os.name == "nt":
+        return
+    try:
+        import resource
+    except Exception:
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return
+    if soft < 0 or hard == 0:
+        return
+    desired = max(soft, target)
+    if hard > 0:
+        desired = min(desired, hard)
+    if desired <= soft:
+        logger.debug("Gateway fd limit: soft=%s hard=%s", soft, hard)
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (desired, hard))
+    except (OSError, ValueError) as exc:
+        logger.debug(
+            "Could not raise gateway fd limit from %s to %s (hard=%s): %s",
+            soft,
+            desired,
+            hard,
+            exc,
+        )
+        return
+    logger.info("Gateway fd limit raised: soft=%s->%s hard=%s", soft, desired, hard)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -17969,6 +18051,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    _raise_gateway_nofile_limit()
+
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile

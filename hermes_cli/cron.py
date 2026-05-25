@@ -16,6 +16,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from hermes_cli.colors import Colors, color
 
 
+def _cron_runtime_state() -> dict:
+    try:
+        from gateway.status import read_runtime_status
+    except Exception:
+        return {}
+    state = read_runtime_status() or {}
+    cron = state.get("cron", {}) if isinstance(state, dict) else {}
+    return cron if isinstance(cron, dict) else {}
+
+
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
     if skills is None:
         if single_skill is None:
@@ -140,9 +150,19 @@ def cron_status():
     print()
 
     pids = find_gateway_pids()
+    cron_state = _cron_runtime_state()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+        if cron_state.get("state") == "failing":
+            print(color("⚠ Gateway is running but the cron ticker is failing", Colors.YELLOW))
+        else:
+            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
         print(f"  PID: {', '.join(map(str, pids))}")
+        if cron_state.get("state") == "failing":
+            failures = int(cron_state.get("consecutive_failures") or 0)
+            suffix = "" if failures == 1 else "s"
+            error = cron_state.get("last_error") or "unknown error"
+            print(color(f"  Cron tick failures: {failures} consecutive failure{suffix}", Colors.YELLOW))
+            print(color(f"  Last error: {error}", Colors.YELLOW))
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()

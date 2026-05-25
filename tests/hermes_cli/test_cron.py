@@ -5,7 +5,7 @@ from argparse import Namespace
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_cli.cron import cron_command, cron_status
 
 
 @pytest.fixture()
@@ -17,6 +17,24 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
+    def test_status_surfaces_cron_ticker_failure(self, tmp_cron_dir, monkeypatch, capsys):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1234])
+        monkeypatch.setattr(
+            "hermes_cli.cron._cron_runtime_state",
+            lambda: {
+                "state": "failing",
+                "consecutive_failures": 2,
+                "last_error": "OSError: too many open files",
+            },
+        )
+
+        cron_status()
+
+        out = capsys.readouterr().out
+        assert "Gateway is running but the cron ticker is failing" in out
+        assert "Cron tick failures: 2 consecutive failures" in out
+        assert "OSError: too many open files" in out
+
     def test_pause_resume_run(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Check server status", schedule="every 1h")
 

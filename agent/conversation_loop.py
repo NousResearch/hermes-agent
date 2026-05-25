@@ -1094,6 +1094,12 @@ def run_conversation(
                         request_messages = api_kwargs.get("input")
                     if not isinstance(request_messages, list):
                         request_messages = api_messages
+                    # Anthropic Messages API moves system out of messages;
+                    # pass it explicitly for observability plugins (Langfuse).
+                    system_prompt_for_hooks = api_kwargs.get("system")
+                    if system_prompt_for_hooks is None and isinstance(request_messages, list):
+                        if request_messages and request_messages[0].get("role") == "system":
+                            system_prompt_for_hooks = request_messages[0].get("content")
                     # Shallow-copy the outer list so plugins that retain the
                     # reference for async snapshotting don't observe later
                     # mutations of api_messages.  The inner dicts are not
@@ -1113,6 +1119,7 @@ def run_conversation(
                         api_mode=agent.api_mode,
                         api_call_count=api_call_count,
                         request_messages=list(request_messages) if isinstance(request_messages, list) else [],
+                        system_prompt=system_prompt_for_hooks,
                         message_count=len(api_messages),
                         tool_count=len(agent.tools or []),
                         approx_input_tokens=approx_tokens,

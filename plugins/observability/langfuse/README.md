@@ -5,16 +5,20 @@ you explicitly enable it.
 
 ## Enable
 
+Pick one:
+
 ```bash
+# Interactive: walks you through credentials + SDK install + enable
+hermes tools  # → Langfuse Observability
+
+# Manual
 pip install langfuse
 hermes plugins enable observability/langfuse
 ```
 
-Or check the box in the interactive `hermes plugins` UI.
-
 ## Required credentials
 
-Set these in `~/.hermes/.env`:
+Set these in `~/.hermes/.env` (or via `hermes tools`):
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
@@ -31,6 +35,10 @@ open.
 hermes plugins list                 # observability/langfuse should show "enabled"
 hermes chat -q "hello"              # then check Langfuse for a "Hermes turn" trace
 ```
+
+Generation observations include the Hermes system prompt when the provider
+uses a separate `system` param (Anthropic Messages API). Open an **LLM call**
+child span to inspect `role: system` (truncated via `HERMES_LANGFUSE_MAX_CHARS`).
 
 ## Optional tuning
 

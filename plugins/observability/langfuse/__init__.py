@@ -421,6 +421,53 @@ def _coerce_request_messages(
     return [{"role": "user", "content": user_message}]
 
 
+def _serialize_system_prompt(system_prompt: Any) -> Optional[dict[str, Any]]:
+    """Normalize Anthropic ``system`` param or OpenAI-style system content for Langfuse."""
+    if system_prompt is None:
+        return None
+    if isinstance(system_prompt, str):
+        text = system_prompt.strip()
+        if not text:
+            return None
+        return {"role": "system", "content": _safe_value(text)}
+    if isinstance(system_prompt, list):
+        parts: list[str] = []
+        for block in system_prompt:
+            if isinstance(block, dict) and block.get("type") == "text":
+                piece = block.get("text", "")
+                if isinstance(piece, str) and piece:
+                    parts.append(piece)
+            elif isinstance(block, str) and block:
+                parts.append(block)
+        if not parts:
+            return None
+        return {"role": "system", "content": _safe_value("\n\n".join(parts))}
+    return None
+
+
+def _messages_for_langfuse_input(
+    *,
+    request_messages: Any = None,
+    messages: Any = None,
+    conversation_history: Any = None,
+    user_message: Any = None,
+    system_prompt: Any = None,
+) -> list[dict[str, Any]]:
+    """Build generation input: include Anthropic ``system`` when split out of ``messages``."""
+    raw = _coerce_request_messages(
+        request_messages=request_messages,
+        messages=messages,
+        conversation_history=conversation_history,
+        user_message=user_message,
+    )
+    if raw and raw[0].get("role") == "system":
+        return _serialize_messages(raw)
+    system_msg = _serialize_system_prompt(system_prompt)
+    if system_msg is None:
+        return _serialize_messages(raw)
+    return [system_msg, *_serialize_messages(raw)]
+
+
 def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
     if not isinstance(messages, list):
         return []
@@ -746,6 +793,7 @@ def on_pre_llm_request(
     max_tokens: Any = None,
     conversation_history: Any = None,
     user_message: Any = None,
+    system_prompt: Any = None,
     **_: Any,
 ) -> None:
     client = _get_langfuse()
@@ -758,6 +806,16 @@ def on_pre_llm_request(
         conversation_history=conversation_history,
         user_message=user_message,
     )
+    langfuse_input = _messages_for_langfuse_input(
+        request_messages=request_messages,
+        messages=messages,
+        conversation_history=conversation_history,
+        user_message=user_message,
+        system_prompt=system_prompt,
+    )
+    system_chars = 0
+    if langfuse_input and langfuse_input[0].get("role") == "system":
+        system_chars = len(str(langfuse_input[0].get("content") or ""))
 
     task_key = _trace_key(task_id, session_id)
     req_key = _request_key(api_call_count)
@@ -781,18 +839,23 @@ def on_pre_llm_request(
         previous = state.generations.pop(req_key, None)
         if previous is not None:
             _end_observation(previous)
+        gen_metadata = {
+            "provider": provider,
+            "platform": platform,
+            "api_mode": api_mode,
+            "base_url": base_url,
+            "message_count": message_count,
+            "approx_input_tokens": approx_input_tokens,
+        }
+        if system_chars:
+            gen_metadata["system_prompt_chars"] = system_chars
         state.generations[req_key] = _start_child_observation(
             state,
             client=client,
             name=f"LLM call {api_call_count}",
             as_type="generation",
-            input_value=_serialize_messages(input_messages),
-            metadata={
-                "provider": provider,
-                "platform": platform,
-                "api_mode": api_mode,
-                "base_url": base_url,
-            },
+            input_value=langfuse_input,
+            metadata=gen_metadata,
             model=model,
             model_parameters={"api_mode": api_mode, "provider": provider},
         )

@@ -467,6 +467,33 @@ class TestRequestMessageCoercion:
         ) == [{"role": "user", "content": "h"}]
         assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
 
+    def test_messages_for_langfuse_includes_anthropic_system_param(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        out = mod._messages_for_langfuse_input(
+            request_messages=[{"role": "user", "content": "hi"}],
+            system_prompt="You are Hermes.",
+        )
+        assert out[0]["role"] == "system"
+        assert out[0]["content"] == "You are Hermes."
+        assert out[1]["role"] == "user"
+
+    def test_messages_for_langfuse_skips_duplicate_system(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        out = mod._messages_for_langfuse_input(
+            request_messages=[
+                {"role": "system", "content": "already here"},
+                {"role": "user", "content": "hi"},
+            ],
+            system_prompt="ignored when messages include system",
+        )
+        assert out[0]["role"] == "system"
+        assert out[0]["content"] == "already here"
+        assert out[1]["role"] == "user"
+
 
 class TestToolCallOutputBackfill:
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):

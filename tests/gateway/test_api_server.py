@@ -18,6 +18,7 @@ import os
 import stat
 import time
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -481,6 +482,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/model/current", adapter._handle_current_model)
     app.router.add_post("/v1/sessions/{session_id}/model", adapter._handle_set_session_model)
+    app.router.add_delete("/v1/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_post("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/commands", adapter._handle_commands)
@@ -756,6 +758,78 @@ class TestSessionModelEndpoint:
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_mode": "codex_responses",
         }
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/sessions/{session_id}
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteSessionEndpoint:
+    @pytest.mark.asyncio
+    async def test_delete_session_removes_resolved_session(self, adapter, monkeypatch):
+        captured = {}
+
+        class FakeDB:
+            def resolve_session_id(self, session_id):
+                captured["resolved_from"] = session_id
+                return "20260315_092437_c9a6ff"
+
+            def delete_session(self, session_id, sessions_dir=None):
+                captured["deleted"] = session_id
+                captured["sessions_dir"] = sessions_dir
+                return True
+
+            def close(self):
+                captured["closed"] = True
+
+        fake_home = Path("/tmp/fake-hermes-home")
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: FakeDB())
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: fake_home)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.delete("/v1/sessions/20260315_092437_c9a6")
+
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["object"] == "hermes.session.deleted"
+        assert data["session_id"] == "20260315_092437_c9a6ff"
+        assert data["deleted"] is True
+        assert captured == {
+            "resolved_from": "20260315_092437_c9a6",
+            "deleted": "20260315_092437_c9a6ff",
+            "sessions_dir": fake_home / "sessions",
+            "closed": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_delete_session_returns_404_when_unknown(self, adapter, monkeypatch):
+        class FakeDB:
+            def resolve_session_id(self, session_id):
+                return None
+
+            def delete_session(self, session_id, sessions_dir=None):
+                raise AssertionError("delete_session should not run for unknown session")
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: FakeDB())
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: Path("/tmp/fake-hermes-home"))
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.delete("/v1/sessions/missing-session")
+
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_session_requires_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.delete("/v1/sessions/some-session")
+            assert resp.status == 401
 
 
 # ---------------------------------------------------------------------------

@@ -1429,6 +1429,39 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("GET /v1/sessions/{id}/messages failed: %s", exc)
             return web.json_response(_openai_error(str(exc)), status=500)
 
+    async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
+        """DELETE /v1/sessions/{session_id} — remove a stored session and its messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = str(request.match_info.get("session_id", "")).strip()
+        if not session_id:
+            return web.json_response(_openai_error("Session ID required"), status=400)
+
+        try:
+            from hermes_constants import get_hermes_home
+            from hermes_state import SessionDB
+
+            db = SessionDB()
+            try:
+                resolved = db.resolve_session_id(session_id)
+                if not resolved:
+                    return web.json_response(_openai_error("Session not found"), status=404)
+                sessions_dir = get_hermes_home() / "sessions"
+                if not db.delete_session(resolved, sessions_dir=sessions_dir):
+                    return web.json_response(_openai_error("Session not found"), status=404)
+                return web.json_response({
+                    "object": "hermes.session.deleted",
+                    "session_id": resolved,
+                    "deleted": True,
+                })
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("DELETE /v1/sessions/{id} failed: %s", exc)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
     async def _handle_commands(self, request: "web.Request") -> "web.Response":
         """GET /v1/commands — Return a dynamic list of active API-callable slash commands."""
         auth_err = self._check_auth(request)
@@ -4793,6 +4826,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/sessions", self._handle_list_sessions)
             self._app.router.add_get("/v1/sessions/{session_id}", self._handle_get_session)
             self._app.router.add_get("/v1/sessions/{session_id}/messages", self._handle_get_session_messages)
+            self._app.router.add_delete("/v1/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_post("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/commands", self._handle_commands)

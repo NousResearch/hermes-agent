@@ -1975,6 +1975,8 @@ class TestSharedBoardPaths:
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
         self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setenv("HERMES_TUI", "1")
+        monkeypatch.setenv("HERMES_TUI_QUERY", "stale tui query")
 
         captured = {}
 
@@ -2013,6 +2015,8 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+        assert "HERMES_TUI" not in env
+        assert "HERMES_TUI_QUERY" not in env
 
 
 # ---------------------------------------------------------------------------

@@ -5680,6 +5680,13 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    # Kanban workers are launched headlessly with stdin detached. If the
+    # dispatcher process was started from a TUI environment, inherited
+    # HERMES_TUI* hand-off variables can make `chat -q` enter TUI mode and
+    # fail before the worker calls kanban_complete/kanban_block.
+    for key in list(env):
+        if key == "HERMES_TUI" or key.startswith("HERMES_TUI_"):
+            env.pop(key, None)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root

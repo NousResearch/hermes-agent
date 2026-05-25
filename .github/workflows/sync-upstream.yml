@@ -1,0 +1,38 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"  # 每周日 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "hermes-sync"
+          git config user.email "hermes-agent@dddog"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch upstream
+
+      - name: Check divergence
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/main 2>/dev/null || echo "0")
+          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+          echo "Upstream is $BEHIND commits ahead of current branch"
+
+      - name: Sync via rebase
+        if: steps.check.outputs.behind != '0'
+        run: |
+          git rebase upstream/main
+          git push origin HEAD:main --force-with-lease

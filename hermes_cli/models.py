@@ -201,10 +201,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "openai-api": [
         "gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-nano",
         "gpt-5-mini",
+        "gpt-5.3-codex",
         "gpt-4.1",
         "gpt-4o",
         "gpt-4o-mini",
@@ -2240,7 +2242,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
-    if normalized == "openai":
+    if normalized in ("openai", "openai-api"):
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
             base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")

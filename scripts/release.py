@@ -49,6 +49,7 @@ AUTHOR_MAP = {
     "teknium1@gmail.com": "teknium1",
     "kenyon1977@gmail.com": "kenyonxu",
     "cipherframe@users.noreply.github.com": "CipherFrame",
+    "121752779+jacevys@users.noreply.github.com": "jacevys",
     "me@promplate.dev": "CNSeniorious000",
     "yichengqiao21@gmail.com": "YarrowQiao",
     "erhanyasarx@gmail.com": "erhnysr",

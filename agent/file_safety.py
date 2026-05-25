@@ -41,6 +41,11 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level .env, even when running under a profile — overwriting it
             # leaks credentials across every profile that inherits from root (#15981).
             str(hermes_root / ".env"),
+            # Active profile Anthropic PKCE credential store.
+            str(hermes_home / ".anthropic_oauth.json"),
+            # Top-level Anthropic PKCE credential store remains sensitive even
+            # when a profile is active; default/non-profile sessions still read it.
+            str(hermes_root / ".anthropic_oauth.json"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),
@@ -50,6 +55,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
             os.path.join(home, ".pypirc"),
+            os.path.join(home, ".git-credentials"),
             "/etc/sudoers",
             "/etc/passwd",
             "/etc/shadow",
@@ -71,6 +77,7 @@ def build_write_denied_prefixes(home: str) -> list[str]:
             os.path.join(home, ".docker"),
             os.path.join(home, ".azure"),
             os.path.join(home, ".config", "gh"),
+            os.path.join(home, ".config", "gcloud"),
         ]
     ]
 
@@ -127,6 +134,12 @@ def is_write_denied(path: str) -> bool:
                 return True
         except Exception:
             pass
+        try:
+            pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
+            if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
+                return True
+        except Exception:
+            pass
 
     safe_root = get_safe_write_root()
     if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
@@ -135,21 +148,42 @@ def is_write_denied(path: str) -> bool:
     return False
 
 
+# Common secret-bearing project-local environment file basenames.
+# These are blocked because .env files routinely contain API keys,
+# database passwords, and other credentials.
+_BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.production",
+    ".env.test",
+    ".env.staging",
+    ".envrc",
+}
+
+
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
-    Two categories are blocked:
+    Three categories are blocked:
 
       * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` —
         readable metadata that an attacker could use as a prompt-injection
         carrier.
       * Credential / secret stores under HERMES_HOME and the global Hermes
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
-        ``.env``, ``webhook_subscriptions.json``, and anything under
-        ``mcp-tokens/``. These hold plaintext provider keys, OAuth tokens,
-        and HMAC secrets that the agent never needs to read directly —
-        provider tools / gateway adapters consume them through internal
-        channels.
+        ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
+        and anything under ``mcp-tokens/``. These hold plaintext provider keys,
+        OAuth tokens, and HMAC secrets that the agent never needs to read
+        directly — provider tools / gateway adapters consume them through
+        internal channels.
+      * Project-local environment files anywhere on disk: ``.env``,
+        ``.env.local``, ``.env.development``, ``.env.production``,
+        ``.env.test``, ``.env.staging``, ``.envrc``. These routinely hold
+        API keys, database passwords, and other credentials for the user's
+        own projects. The agent helping debug a project shouldn't normally
+        need to read these — ``.env.example`` is the documented-shape
+        substitute.
 
     **This is NOT a security boundary.** The terminal tool runs as the
     same OS user with shell access; the agent can still ``cat auth.json``
@@ -214,6 +248,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         ".anthropic_oauth.json",
         ".env",
         "webhook_subscriptions.json",
+        os.path.join("auth", "google_oauth.json"),
     )
     for hd in hermes_dirs:
         for name in credential_file_names:
@@ -251,6 +286,19 @@ def get_read_block_error(path: str) -> Optional[str]:
             f"Access denied: {path} is a Hermes MCP token file "
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
+        )
+
+    # Block common secret-bearing project-local .env files anywhere on disk.
+    # The agent helping a user with their project rarely needs to read raw
+    # .env contents — .env.example is the documented-shape substitute. The
+    # terminal tool can still ``cat .env``; this is defense-in-depth, not a
+    # boundary (see module docstring).
+    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
+        return (
+            f"Access denied: {path} is a secret-bearing environment file "
+            "and cannot be read to prevent credential leakage. "
+            "If you need to check the file structure, read .env.example instead. "
+            "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
         )
 
     return None

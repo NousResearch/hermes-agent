@@ -127,21 +127,40 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     return p.resolve()
 
 
-def _is_blocked_device(filepath: str) -> bool:
-    """Return True if the path would hang the process (infinite output or blocking input).
-
-    Uses the *literal* path — no symlink resolution — because the model
-    specifies paths directly and realpath follows symlinks all the way
-    through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
-    the check.
-    """
-    normalized = os.path.expanduser(filepath)
+def _is_blocked_device_path(path: str) -> bool:
+    """Return True for concrete device/fd paths that can hang reads."""
+    normalized = os.path.expanduser(path)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
     if normalized.startswith("/proc/") and normalized.endswith(
         ("/fd/0", "/fd/1", "/fd/2")
     ):
+        return True
+    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps can leak secrets,
+    # command-line args, and memory layout from the host process (issue #4427)
+    if normalized.startswith("/proc/") and normalized.endswith(
+        ("/environ", "/cmdline", "/maps")
+    ):
+        return True
+    return False
+
+
+def _is_blocked_device(filepath: str) -> bool:
+    """Return True if the path would hang the process (infinite output or blocking input).
+
+    Check the literal path first so aliases like /dev/stdin are caught before
+    they resolve to terminal-specific paths. Then check the resolved path so a
+    workspace symlink to /dev/zero cannot bypass the guard.
+    """
+    normalized = os.path.expanduser(filepath)
+    if _is_blocked_device_path(normalized):
+        return True
+    try:
+        resolved = os.path.realpath(normalized)
+    except (OSError, ValueError):
+        return False
+    if resolved != normalized and _is_blocked_device_path(resolved):
         return True
     return False
 
@@ -910,8 +929,24 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _paths_to_check.append(path)
     if mode == "patch" and patch:
         import re as _re
+        from tools.path_security import has_traversal_component
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
+            v4a_path = _m.group(1).strip()
+            # V4A path headers come from patch CONTENT, not the explicit
+            # ``path=`` arg — so they're more attacker-influenceable (skill
+            # content, web extract, prompt injection). Reject ``..`` traversal
+            # in V4A headers: a legitimate multi-file patch from a single cwd
+            # can always emit absolute paths or paths relative to the agent's
+            # cwd without ``..``. The explicit ``path=`` arg is unchanged
+            # because the agent uses relative ``..`` paths legitimately
+            # (e.g. ``patch path="../other_module/x.py"`` from a worktree).
+            if has_traversal_component(v4a_path):
+                return tool_error(
+                    f"V4A patch header contains '..' traversal: {v4a_path!r}. "
+                    "Use the agent's cwd-relative path (no '..') or an absolute "
+                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                )
+            _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:

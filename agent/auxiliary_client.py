@@ -1406,6 +1406,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
             continue
+        if _is_provider_unhealthy(provider_id):
+            logger.debug("Auxiliary api-key chain: %s is unhealthy, skipping", provider_id)
+            continue
         if provider_id == "anthropic":
             # Only try anthropic when the user has explicitly configured it.
             # Without this gate, Claude Code credentials get silently used
@@ -2260,11 +2263,12 @@ def _is_payment_error(exc: Exception) -> bool:
             "credits", "insufficient funds",
             "can only afford", "billing",
             "payment required",
-            # Daily / monthly quota exhaustion keywords
+            # Daily / monthly / weekly quota exhaustion keywords
             "quota exceeded", "quota_exceeded",
             "too many tokens per day", "daily limit",
             "tokens per day", "daily quota",
             "resource exhausted",  # Vertex AI / gRPC quota errors
+            "weekly usage limit", "weekly limit",  # OpenCode Go weekly subscription cap
         )):
             return True
     return False
@@ -2478,7 +2482,11 @@ def _pool_error_context(exc: Exception) -> Dict[str, Any]:
     return payload
 
 
-def _recoverable_pool_provider(resolved_provider: str, client: Any) -> Optional[str]:
+def _recoverable_pool_provider(
+    resolved_provider: str,
+    client: Any,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client."""
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized not in {"", "auto", "custom"}:
@@ -2496,11 +2504,33 @@ def _recoverable_pool_provider(resolved_provider: str, client: Any) -> Optional[
         return "copilot"
     if base_url_host_matches(base, "api.kimi.com"):
         return "kimi-coding"
+    # For api_key providers not in the hardcoded list (e.g. opencode-go), match
+    # the client base URL against all registered api_key providers so that
+    # credential-pool rotation works for any provider the user configured.
+    if main_runtime:
+        rt = _normalize_main_runtime(main_runtime)
+        rt_provider = rt.get("provider", "")
+        if rt_provider and rt_provider not in {"", "auto", "custom"}:
+            try:
+                from hermes_cli.auth import PROVIDER_REGISTRY
+                pconfig = PROVIDER_REGISTRY.get(rt_provider)
+                if pconfig and getattr(pconfig, "auth_type", None) == "api_key":
+                    rt_base = str(getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
+                    if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)):
+                        return rt_provider
+            except Exception:
+                pass
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception) -> bool:
-    """Try same-provider credential-pool recovery for auxiliary calls."""
+def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
+    """Try same-provider credential-pool recovery for auxiliary calls.
+
+    ``failed_api_key`` is the API key that was actually used for the failing
+    request.  Passing it lets mark_exhausted_and_rotate identify the correct
+    pool entry even when another process has already rotated the pool (which
+    would leave current() as None, causing the wrong entry to be marked).
+    """
     normalized = _normalize_aux_provider(provider)
     try:
         pool = load_pool(normalized)
@@ -2512,6 +2542,7 @@ def _recover_provider_pool(provider: str, exc: Exception) -> bool:
 
     status_code = getattr(exc, "status_code", None)
     error_context = _pool_error_context(exc)
+    hint = failed_api_key or None
 
     if _is_auth_error(exc):
         refreshed = pool.try_refresh_current()
@@ -2521,6 +2552,7 @@ def _recover_provider_pool(provider: str, exc: Exception) -> bool:
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
+            api_key_hint=hint,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -2532,6 +2564,7 @@ def _recover_provider_pool(provider: str, exc: Exception) -> bool:
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context,
+            api_key_hint=hint,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -2936,6 +2969,11 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif runtime_api_key:
+            # Pin auxiliary to the same api_key as the active main chat session
+            # so that a working key is reused instead of re-selecting from the pool
+            # (which might pick a different, potentially exhausted key).
+            explicit_api_key = runtime_api_key
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call
@@ -3116,6 +3154,34 @@ def resolve_provider_client(
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
+    # Universal model-resolution fallback chain.  Callers (notably title
+    # generation, vision, session search, and other auxiliary tasks) can
+    # reach this function without an explicit model — the user picked their
+    # main provider, didn't bother configuring a per-task ``auxiliary.<task>.model``,
+    # and just expects "use my main model for side tasks too."  Resolve in
+    # this order, stopping at the first non-empty answer:
+    #
+    #   1. ``model`` argument (caller knew what they wanted)
+    #   2. Provider's catalog default — cheap/fast model the provider
+    #      registered via ``ProviderProfile.default_aux_model`` or the
+    #      legacy ``_API_KEY_PROVIDER_AUX_MODELS_FALLBACK`` dict.  Empty
+    #      string for OAuth-gated providers (openai-codex, xai-oauth)
+    #      whose accepted-model lists drift on the backend, so we don't
+    #      pin a default that can silently rot.
+    #   3. User's main model from ``model.model`` in config.yaml.  This is
+    #      the load-bearing step for OAuth providers: an xai-oauth user
+    #      with grok-4.3 configured gets grok-4.3 for title generation
+    #      instead of silently dropping to whatever Step-2 fallback (#31845).
+    #
+    # Each provider branch below sees a non-empty ``model`` whenever the
+    # user has *anything* configured — no provider-specific empty-model
+    # guards needed.  When the user has NOTHING configured (fresh install,
+    # main_model also empty), the branches still hit their own
+    # missing-credentials returns and ``_resolve_auto`` falls through to
+    # the Step-2 chain as before.
+    if not model:
+        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
+
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
 
@@ -3260,7 +3326,7 @@ def resolve_provider_client(
         if client is None:
             logger.warning(
                 "resolve_provider_client: xai-oauth requested but no xAI "
-                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok Subscription)"
+                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)"
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
@@ -3730,6 +3796,37 @@ _VISION_AUTO_PROVIDER_ORDER = (
 )
 
 
+def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
+    """Return True when ``provider``/``model`` is known to accept image input.
+
+    Used by the vision auto-detect chain to skip the user's main provider
+    when it's known to be text-only (e.g. DeepSeek, gpt-oss without vision).
+    Without this guard, ``resolve_vision_provider_client(provider="auto")``
+    would happily return the main-provider client and any subsequent image
+    payload would surface as a cryptic provider-side error
+    (``unknown variant `image_url`, expected `text```, #31179).
+
+    Returns True when capability lookup is unknown — preserves the historical
+    behaviour of attempting the call, so providers we haven't catalogued yet
+    don't silently regress to text-only.
+    """
+    try:
+        from agent.image_routing import _lookup_supports_vision
+        from hermes_cli.config import load_config
+    except ImportError:
+        return True
+    try:
+        supports = _lookup_supports_vision(provider, model, load_config())
+    except Exception:  # pragma: no cover - defensive
+        return True
+    if supports is None:
+        # No capability data — keep current behaviour and let the call attempt
+        # happen rather than silently skipping. This avoids false-positive
+        # skips for new/custom providers.
+        return True
+    return bool(supports)
+
+
 def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
@@ -3868,6 +3965,23 @@ def resolve_vision_provider_client(
                 logger.debug(
                     "Vision auto-detect: skipping main provider %s (no "
                     "vision support) — falling through to aggregator chain",
+                    main_provider,
+                )
+            elif not _main_model_supports_vision(main_provider, vision_model):
+                # The main model is known to be text-only (e.g. DeepSeek V4,
+                # gpt-oss-120b without vision). Building a client and sending
+                # an image would produce a cryptic provider-side error like
+                # ``unknown variant `image_url`, expected `text``` (#31179).
+                # Fall through to the aggregator chain instead.
+                #
+                # Only log the provider name (not the model) — mirrors the
+                # sibling _PROVIDERS_WITHOUT_VISION branch above, and avoids
+                # CodeQL py/clear-text-logging-sensitive-data heuristic false
+                # positives on multi-value interpolations.
+                logger.debug(
+                    "Vision auto-detect: skipping main provider %s "
+                    "(reports no vision capability) — falling through to "
+                    "aggregator chain",
                     main_provider,
                 )
             else:
@@ -4252,13 +4366,25 @@ def _get_cached_client(
             else:
                 effective = _compat_model(cached_client, model, cached_default)
                 return cached_client, effective
-    # Build outside the lock
+    # Build outside the lock.
+    # For pool-backed api_key providers, derive the active API key from the
+    # pool entry rather than from env vars.  resolve_api_key_provider_credentials
+    # always prefers env vars (first-entry bias), which bypasses pool rotation:
+    # after key #1 is marked exhausted the retry would still get key #1 from
+    # the env var and fail again, causing the retry2_err handler to mark key #2.
+    effective_api_key = api_key
+    if not effective_api_key:
+        _pe = _peek_pool_entry(_normalize_aux_provider(provider))
+        if _pe is not None:
+            _pk = _pool_runtime_api_key(_pe)
+            if _pk:
+                effective_api_key = _pk
     client, default_model = resolve_provider_client(
         provider,
         model,
         async_mode,
         explicit_base_url=base_url,
-        explicit_api_key=api_key,
+        explicit_api_key=effective_api_key,
         api_mode=api_mode,
         main_runtime=runtime,
         is_vision=is_vision,
@@ -4279,6 +4405,23 @@ def _get_cached_client(
             else:
                 client, default_model, _ = _client_cache[cache_key]
     return client, model or default_model
+
+
+# Aliases that target direct REST APIs not modeled as first-class providers
+# in PROVIDER_REGISTRY. Used for ``auxiliary.<task>.provider`` so users can
+# write the obvious name and have it resolve to a working ``custom`` endpoint
+# without needing to know our internal provider IDs.
+#
+# Why these specifically: PROVIDER_REGISTRY has ``openai-codex`` (OAuth) and
+# ``custom`` (manual base_url + OPENAI_API_KEY) but no plain ``openai`` for
+# direct API-key access. Users predictably type ``provider: openai`` and
+# expect it to use OPENAI_API_KEY against api.openai.com. Previously this
+# silently fell back to the user's main provider, sending OpenAI model names
+# to e.g. DeepSeek and producing cryptic ``unknown variant 'image_url'``
+# errors (issue #31179).
+_AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
+    "openai": "https://api.openai.com/v1",
+}
 
 
 def _resolve_task_provider_model(
@@ -4316,6 +4459,25 @@ def _resolve_task_provider_model(
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
+
+    # Convenience aliases for direct API-key endpoints that aren't first-class
+    # providers (e.g. ``provider: openai`` → custom + api.openai.com/v1).
+    # Applied to both explicit args and config-derived values. When the user
+    # has already supplied a base_url we keep their endpoint but still rewrite
+    # the provider to ``custom`` so resolution doesn't hit the
+    # PROVIDER_REGISTRY-only path (which has no ``openai`` entry).
+    def _expand_direct_api_alias(prov: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        if not prov:
+            return prov, existing_base
+        target_base = _AUX_DIRECT_API_BASE_URLS.get(prov.strip().lower())
+        if target_base is None:
+            return prov, existing_base
+        return "custom", existing_base or target_base
+
+    if provider:
+        provider, base_url = _expand_direct_api_alias(provider, base_url)
+    if cfg_provider:
+        cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
@@ -4836,10 +4998,17 @@ def call_llm(
                 )
 
         # ── Same-provider credential-pool recovery ─────────────────────
-        pool_provider = _recoverable_pool_provider(resolved_provider, client)
+        pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
+        # Capture the exact API key used so mark_exhausted_and_rotate can find
+        # the correct pool entry even when another process rotated the pool
+        # between this call and recovery (which leaves current()=None and makes
+        # _select_unlocked() return the NEXT key by mistake).
+        _client_api_key = str(getattr(client, "api_key", "") or "")
         if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
             recovery_err = first_err
-            if _is_rate_limit_error(first_err):
+            # Skip the extra retry for clear payment/quota errors — the endpoint
+            # won't accept another request with the same exhausted key.
+            if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
                     return _validate_llm_response(
                         client.chat.completions.create(**kwargs), task)
@@ -4847,27 +5016,40 @@ def call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err):
+            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
                 logger.info(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
-                return _retry_same_provider_sync(
-                    task=task,
-                    resolved_provider=resolved_provider,
-                    resolved_model=resolved_model,
-                    resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
-                    resolved_api_mode=resolved_api_mode,
-                    main_runtime=main_runtime,
-                    final_model=final_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                )
+                try:
+                    return _retry_same_provider_sync(
+                        task=task,
+                        resolved_provider=resolved_provider,
+                        resolved_model=resolved_model,
+                        resolved_base_url=resolved_base_url,
+                        resolved_api_key=resolved_api_key,
+                        resolved_api_mode=resolved_api_mode,
+                        main_runtime=main_runtime,
+                        final_model=final_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                    )
+                except Exception as retry2_err:
+                    # The rotated key also hit a quota/auth wall.  Mark it
+                    # immediately so concurrent processes don't make a
+                    # redundant API call to discover it's exhausted too.
+                    # Then fall through to the payment fallback below so
+                    # alternative providers can still serve the request.
+                    if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
+                            or _is_rate_limit_error(retry2_err)):
+                        _recover_provider_pool(pool_provider, retry2_err)
+                        first_err = retry2_err
+                    else:
+                        raise
 
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
@@ -4909,7 +5091,7 @@ def call_llm(
                 # 402). Mark THAT label unhealthy so subsequent aux calls
                 # skip it instead of paying another doomed RTT.
                 _mark_provider_unhealthy(
-                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                    _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime) or resolved_provider
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
@@ -5029,6 +5211,7 @@ async def async_call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
     max_tokens: int = None,
@@ -5215,10 +5398,13 @@ async def async_call_llm(
                 )
 
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
-        pool_provider = _recoverable_pool_provider(resolved_provider, client)
+        pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
+        _client_api_key = str(getattr(client, "api_key", "") or "")
         if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
             recovery_err = first_err
-            if _is_rate_limit_error(first_err):
+            # Skip the extra retry for clear payment/quota errors — the endpoint
+            # won't accept another request with the same exhausted key.
+            if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
                 try:
                     return _validate_llm_response(
                         await client.chat.completions.create(**kwargs), task)
@@ -5226,26 +5412,34 @@ async def async_call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err):
+            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
                 logger.info(
                     "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
-                return await _retry_same_provider_async(
-                    task=task,
-                    resolved_provider=resolved_provider,
-                    resolved_model=resolved_model,
-                    resolved_base_url=resolved_base_url,
-                    resolved_api_key=resolved_api_key,
-                    resolved_api_mode=resolved_api_mode,
-                    final_model=final_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                    effective_timeout=effective_timeout,
-                    effective_extra_body=effective_extra_body,
-                )
+                try:
+                    return await _retry_same_provider_async(
+                        task=task,
+                        resolved_provider=resolved_provider,
+                        resolved_model=resolved_model,
+                        resolved_base_url=resolved_base_url,
+                        resolved_api_key=resolved_api_key,
+                        resolved_api_mode=resolved_api_mode,
+                        final_model=final_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        effective_timeout=effective_timeout,
+                        effective_extra_body=effective_extra_body,
+                    )
+                except Exception as retry2_err:
+                    if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
+                            or _is_rate_limit_error(retry2_err)):
+                        _recover_provider_pool(pool_provider, retry2_err)
+                        first_err = retry2_err
+                    else:
+                        raise
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
         should_fallback = (

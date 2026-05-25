@@ -674,19 +674,19 @@ class SessionStore:
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None):
+                 has_active_processes_fn=None, db_path: Path = None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
-        
+
         # Initialize SQLite session database
         self._db = None
         try:
             from hermes_state import SessionDB
-            self._db = SessionDB()
+            self._db = SessionDB(db_path=db_path) if db_path else SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
     

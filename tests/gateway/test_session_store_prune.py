@@ -25,6 +25,23 @@ from gateway.config import GatewayConfig, Platform, SessionResetPolicy
 from gateway.session import SessionEntry, SessionStore
 
 
+def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch):
+    """SessionStore must honor runtime HERMES_HOME when opening the default DB."""
+    config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
+    fake_home = tmp_path / "alt_hermes_home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(fake_home))
+
+    with patch("gateway.session.SessionStore._ensure_loaded"):
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+
+    assert store._db is not None
+    assert store._db.db_path == fake_home / "state.db"
+
+    store._db._conn.close()
+
+
+
 def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
     """Build a SessionStore bypassing SQLite/disk-load side effects."""
     config = GatewayConfig(

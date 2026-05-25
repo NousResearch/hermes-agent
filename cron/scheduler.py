@@ -257,6 +257,30 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _cron_job_origin_log_suffix(job: dict) -> str:
+    """Return safe provenance details for security warnings about a cron job.
+
+    The scheduler normally has no live HTTP request object when it detects a
+    bad stored ``context_from`` reference. Including the job's saved origin
+    makes future probe logs actionable without exposing secrets: platform/chat
+    metadata for gateway-created jobs, and optional source-IP fields for API
+    surfaces that persist them in origin metadata.
+    """
+    origin = job.get("origin")
+    if not isinstance(origin, dict):
+        return ""
+
+    fields = []
+    for key in ("platform", "chat_id", "thread_id", "source_ip", "remote", "forwarded_for"):
+        value = origin.get(key)
+        if value is None:
+            continue
+        text = str(value).replace("\r", " ").replace("\n", " ").strip()
+        if text:
+            fields.append(f"origin_{key}={text[:200]!r}")
+    return " " + " ".join(fields) if fields else ""
+
+
 def _plugin_cron_env_var(platform_name: str) -> str:
     """Return the cron home-channel env var registered by a plugin platform.
 
@@ -1027,7 +1051,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         for source_job_id in context_from:
             # Guard against path traversal — valid job IDs are 12-char hex strings
             if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
-                logger.warning("context_from: skipping invalid job_id %r", source_job_id)
+                logger.warning(
+                    "context_from: skipping invalid job_id %r for job_id=%r name=%r%s",
+                    source_job_id,
+                    job.get("id"),
+                    job.get("name"),
+                    _cron_job_origin_log_suffix(job),
+                )
                 continue
             try:
                 job_output_dir = OUTPUT_DIR / source_job_id

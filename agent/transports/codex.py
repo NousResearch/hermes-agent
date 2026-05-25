@@ -135,8 +135,26 @@ class ResponsesApiTransport(ProviderTransport):
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
             else:
-                kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                kwargs["include"] = ["reasoning.encrypted_content"]
+                model_name = str(model or "").lower().rsplit("/", 1)[-1]
+                supports_encrypted_reasoning = (
+                    "codex" in model_name
+                    or model_name.startswith("o3")
+                    or model_name.startswith("o4")
+                )
+                supports_reasoning_effort = (
+                    supports_encrypted_reasoning
+                    or model_name.startswith("gpt-5.2")
+                    or model_name.startswith("gpt-5.3")
+                    or model_name.startswith("gpt-5.4")
+                    or model_name.startswith("gpt-5.5")
+                )
+                if supports_reasoning_effort:
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                kwargs["include"] = (
+                    ["reasoning.encrypted_content"]
+                    if supports_encrypted_reasoning
+                    else []
+                )
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 

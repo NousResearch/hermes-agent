@@ -375,6 +375,40 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
 
 
+def test_codex_transport_omits_reasoning_for_unsupported_gpt5_mini():
+    from agent.transports.codex import ResponsesApiTransport
+
+    kwargs = ResponsesApiTransport().build_kwargs(
+        model="gpt-5-mini",
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+        ],
+        tools=None,
+        reasoning_config={"enabled": True, "effort": "medium"},
+    )
+
+    assert "reasoning" not in kwargs
+    assert kwargs["include"] == []
+
+
+def test_codex_transport_keeps_reasoning_effort_without_encrypted_include_for_gpt54():
+    from agent.transports.codex import ResponsesApiTransport
+
+    kwargs = ResponsesApiTransport().build_kwargs(
+        model="gpt-5.4",
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+        ],
+        tools=None,
+        reasoning_config={"enabled": True, "effort": "high"},
+    )
+
+    assert kwargs["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert kwargs["include"] == []
+
+
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])

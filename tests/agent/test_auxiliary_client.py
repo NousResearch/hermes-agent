@@ -1781,7 +1781,7 @@ class _FailingThenSuccessCompletions:
     def create(self, **kwargs):
         self.calls += 1
         if self.calls == 1:
-            raise _AuxAuth401()
+            raise _AuxAuth401
         return _DummyResponse("sync-ok")
 
 
@@ -1792,7 +1792,7 @@ class _AsyncFailingThenSuccessCompletions:
     async def create(self, **kwargs):
         self.calls += 1
         if self.calls == 1:
-            raise _AuxAuth401()
+            raise _AuxAuth401
         return _DummyResponse("async-ok")
 
 

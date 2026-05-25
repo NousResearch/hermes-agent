@@ -314,7 +314,7 @@ def test_setup_keyboard_interrupt_gracefully_handled(tmp_path, monkeypatch):
     config = load_config()
 
     def fake_select():
-        raise KeyboardInterrupt()
+        raise KeyboardInterrupt
 
     monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
 

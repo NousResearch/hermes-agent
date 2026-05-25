@@ -268,7 +268,7 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
 
     async def fake_wait_for(awaitable, timeout):
         awaitable.close()
-        raise asyncio.TimeoutError()
+        raise asyncio.TimeoutError
 
     monkeypatch.setattr(discord_platform.asyncio, "wait_for", fake_wait_for)
 

@@ -133,7 +133,7 @@ class TestUpdateOutputStream:
                 return True
 
             def write(self, data):
-                raise BrokenPipeError()
+                raise BrokenPipeError
 
             def flush(self):
                 return None

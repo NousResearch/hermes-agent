@@ -555,7 +555,7 @@ def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     def _fake_api_call(api_kwargs):
         calls["api"] += 1
         if calls["api"] == 1:
-            raise _UnauthorizedError()
+            raise _UnauthorizedError
         return _codex_message_response("Recovered after refresh")
 
     def _fake_refresh(*, force=True):
@@ -648,7 +648,7 @@ def test_run_conversation_xai_oauth_refreshes_after_401_and_retries(monkeypatch)
     def _fake_api_call(api_kwargs):
         calls["api"] += 1
         if calls["api"] == 1:
-            raise _UnauthorizedError()
+            raise _UnauthorizedError
         return _codex_message_response("Recovered after xAI refresh")
 
     def _fake_refresh(*, force=True):
@@ -776,7 +776,7 @@ def test_run_conversation_copilot_refreshes_after_401_and_retries(monkeypatch):
     def _fake_api_call(api_kwargs):
         calls["api"] += 1
         if calls["api"] == 1:
-            raise _UnauthorizedError()
+            raise _UnauthorizedError
         return _codex_message_response("Recovered after copilot refresh")
 
     def _fake_refresh():

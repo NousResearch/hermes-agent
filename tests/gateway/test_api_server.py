@@ -2117,7 +2117,7 @@ class TestResponsesStreaming:
             # ...then give the drain loop a moment to pick it up before
             # raising CancelledError to simulate a server-side cancel.
             await asyncio.sleep(0.01)
-            raise asyncio.CancelledError()
+            raise asyncio.CancelledError
 
         agent_task = asyncio.ensure_future(_agent_coro())
         response_id = f"resp_{uuid.uuid4().hex[:28]}"

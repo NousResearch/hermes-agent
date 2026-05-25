@@ -376,7 +376,7 @@ async def test_heartbeat_probe_reenters_ladder_when_get_me_times_out():
     async def fast_wait_for(coro, timeout):
         if asyncio.iscoroutine(coro):
             coro.close()
-        raise asyncio.TimeoutError()
+        raise asyncio.TimeoutError
 
     with patch("asyncio.sleep", new_callable=AsyncMock):
         with patch("gateway.platforms.telegram.asyncio.wait_for", new=fast_wait_for):

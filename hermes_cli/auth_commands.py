@@ -660,7 +660,7 @@ def _pick_provider(prompt: str = "Provider") -> str:
     try:
         raw = input(f"{prompt}: ").strip()
     except (EOFError, KeyboardInterrupt):
-        raise SystemExit()
+        raise SystemExit
     return _normalize_provider(raw)
 
 

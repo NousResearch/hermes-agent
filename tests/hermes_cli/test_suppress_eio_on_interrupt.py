@@ -154,7 +154,7 @@ def _make_signal_handler(logger, agent_state):
                 agent_state["agent"].interrupt(f"received signal {signum}")
         except Exception:
             pass  # never block signal handling
-        raise KeyboardInterrupt()
+        raise KeyboardInterrupt
     return _signal_handler
 
 

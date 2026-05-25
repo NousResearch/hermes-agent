@@ -220,7 +220,7 @@ class TestRunAsyncWithRunningLoop:
         class TimeoutFuture:
             def result(self, timeout=None):
                 events["result_timeout"] = timeout
-                raise concurrent.futures.TimeoutError()
+                raise concurrent.futures.TimeoutError
 
             def cancel(self):
                 return True

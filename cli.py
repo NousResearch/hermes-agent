@@ -14295,7 +14295,7 @@ class HermesCLI:
                         return  # clean unwind — no traceback, no ENTER pause
             except Exception:
                 pass
-            raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
+            raise KeyboardInterrupt  # fallback for non-prompt_toolkit contexts
         
         try:
             import signal as _signal
@@ -14724,7 +14724,7 @@ def main(
                     time.sleep(_grace)
         except Exception:
             pass  # never block signal handling
-        raise KeyboardInterrupt()
+        raise KeyboardInterrupt
     try:
         import signal as _signal
         _signal.signal(_signal.SIGTERM, _signal_handler_q)

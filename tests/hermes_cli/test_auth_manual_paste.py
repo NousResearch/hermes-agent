@@ -187,7 +187,7 @@ def test_prompt_reads_stdin_and_parses(monkeypatch):
 
 def test_prompt_eof_returns_all_none(monkeypatch):
     def _raise_eof(*_a, **_k):
-        raise EOFError()
+        raise EOFError
 
     monkeypatch.setattr(builtins, "input", _raise_eof)
     with contextlib.redirect_stdout(io.StringIO()):
@@ -199,7 +199,7 @@ def test_prompt_eof_returns_all_none(monkeypatch):
 
 def test_prompt_keyboard_interrupt_returns_all_none(monkeypatch):
     def _raise_kbi(*_a, **_k):
-        raise KeyboardInterrupt()
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(builtins, "input", _raise_kbi)
     with contextlib.redirect_stdout(io.StringIO()):

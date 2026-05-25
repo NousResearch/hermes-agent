@@ -117,7 +117,7 @@ class TestMain:
 
         class FakeServer:
             def run(self):
-                raise KeyboardInterrupt()
+                raise KeyboardInterrupt
 
         monkeypatch.setattr(m, "_build_server", lambda: FakeServer())
         rc = m.main([])

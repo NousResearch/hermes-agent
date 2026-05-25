@@ -85,7 +85,7 @@ class _Codex401ThenSuccessAgent(run_agent.AIAgent):
         def _fake_api_call(api_kwargs):
             calls["api"] += 1
             if calls["api"] == 1:
-                raise _UnauthorizedError()
+                raise _UnauthorizedError
             return _codex_message_response("Recovered via refresh")
 
         self._interruptible_api_call = _fake_api_call

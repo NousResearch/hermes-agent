@@ -2704,7 +2704,10 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     # HERMES_HOME — the fixture creates an empty tmpdir without the
     # devops/kanban-worker tree, and _default_spawn gates the --skills
     # flag on actual resolvability.
-    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    # Patch the canonical location (kanban_launcher) since _default_spawn
+    # was extracted there in PR2 and calls _kanban_worker_skill_available
+    # from its own module namespace.
+    monkeypatch.setattr("hermes_cli.kanban_launcher._kanban_worker_skill_available", lambda _h: True)
 
     captured = {}
 
@@ -2975,7 +2978,7 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""
-    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    monkeypatch.setattr("hermes_cli.kanban_launcher._kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -3025,7 +3028,7 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
 
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
-    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    monkeypatch.setattr("hermes_cli.kanban_launcher._kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:

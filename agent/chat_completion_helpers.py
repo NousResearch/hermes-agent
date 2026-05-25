@@ -256,6 +256,33 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # apply richer recovery (credential rotation, provider fallback).
     _stale_timeout = agent._compute_non_stream_stale_timeout(api_kwargs)
 
+    # ── Time-to-first-byte (TTFB) watchdog for the Codex Responses stream ──
+    # The chatgpt.com/backend-api/codex endpoint has an intermittent failure
+    # mode where it accepts the connection but never emits a single stream
+    # event (observed directly: 0 events, no HTTP status, the socket just
+    # hangs). A fresh reconnect succeeds in ~2s, but the wall-clock stale
+    # timeout (often 180–900s) makes us wait minutes before retrying. While no
+    # stream event has arrived yet we apply a much shorter TTFB cutoff so the
+    # main retry loop can reconnect promptly. Once the first event arrives the
+    # stream is healthy, so we fall back to the wall-clock stale timeout and
+    # never interrupt a legitimate long generation. Gated to codex_responses:
+    # only that path streams events incrementally (the chat_completions
+    # non-stream, anthropic and bedrock branches here have no first-event
+    # signal). The marker advances on *any* event (see codex_runtime), so
+    # reasoning-only / tool-call-only turns are not mistaken for a stall.
+    # Operators can tune via HERMES_CODEX_TTFB_TIMEOUT_SECONDS (0 disables).
+    _ttfb_enabled = agent.api_mode == "codex_responses"
+    try:
+        _ttfb_timeout = float(os.getenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "45"))
+    except (TypeError, ValueError):
+        _ttfb_timeout = 45.0
+    if _ttfb_timeout <= 0:
+        _ttfb_enabled = False
+    if _ttfb_enabled:
+        # Reset before the worker starts so a marker left over from a previous
+        # call on this agent can't be misread as first-byte for this one.
+        agent._codex_stream_last_event_ts = None
+
     _call_start = time.time()
     agent._touch_activity("waiting for non-streaming API response")
 
@@ -274,9 +301,48 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
             )
 
+        _elapsed = time.time() - _call_start
+
+        # TTFB detector: the Codex stream has produced no event at all and
+        # we're past the first-byte cutoff → the backend opened the
+        # connection but isn't responding. Kill it so the retry loop can
+        # reconnect (a fresh connection typically succeeds in seconds),
+        # instead of waiting out the much longer wall-clock stale timeout.
+        if (
+            _ttfb_enabled
+            and _elapsed > _ttfb_timeout
+            and getattr(agent, "_codex_stream_last_event_ts", None) is None
+        ):
+            logger.warning(
+                "Codex stream produced no bytes within TTFB cutoff "
+                "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
+                "but sent no stream events. Killing connection so the retry "
+                "loop can reconnect.",
+                _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
+            )
+            agent._emit_status(
+                f"⚠️ No first byte from provider in {int(_elapsed)}s "
+                f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                f"Reconnecting."
+            )
+            try:
+                _close_request_client_once("codex_ttfb_kill")
+            except Exception:
+                pass
+            agent._touch_activity(
+                f"codex stream killed after {int(_elapsed)}s with no first byte"
+            )
+            # Wait briefly for the worker to notice the closed connection.
+            t.join(timeout=2.0)
+            if result["error"] is None and result["response"] is None:
+                result["error"] = TimeoutError(
+                    f"Codex stream produced no bytes within {int(_elapsed)}s "
+                    f"(TTFB threshold: {int(_ttfb_timeout)}s)"
+                )
+            break
+
         # Stale-call detector: kill the connection if no response
         # arrives within the configured timeout.
-        _elapsed = time.time() - _call_start
         if _elapsed > _stale_timeout:
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             _silent_hint: Optional[str] = None

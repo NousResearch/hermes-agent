@@ -102,3 +102,90 @@ def test_fragments_omit_bg_segment_when_idle():
     frags = cli_obj._get_status_bar_fragments()
     rendered = "".join(text for _style, text in frags)
     assert "▶" not in rendered
+
+
+# ── Background terminal-process indicator (⚙ N) ───────────────────────────
+# Source of truth is tools.process_registry.process_registry._running (a dict
+# of currently-running shell processes spawned by terminal(background=true)).
+# Distinct from /background tasks above: ▶ counts agent threads, ⚙ counts
+# shell processes. Both can be active simultaneously.
+
+
+class _FakeRunningRegistry:
+    """Minimal stand-in for process_registry; exposes count_running()."""
+
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    def count_running(self) -> int:
+        return self._count
+
+
+def _patch_process_registry(monkeypatch, count: int) -> None:
+    import tools.process_registry as pr_mod
+    monkeypatch.setattr(pr_mod, "process_registry", _FakeRunningRegistry(count))
+
+
+def test_snapshot_reports_zero_when_no_background_processes(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 0)
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_background_processes"] == 0
+
+
+def test_snapshot_counts_live_background_processes(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 3)
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_background_processes"] == 3
+
+
+def test_snapshot_safe_when_process_registry_raises(monkeypatch):
+    """If count_running() raises the snapshot stays at 0; no propagate."""
+    cli_obj = _make_cli()
+    import tools.process_registry as pr_mod
+
+    class _BoomRegistry:
+        def count_running(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(pr_mod, "process_registry", _BoomRegistry())
+    snap = cli_obj._get_status_bar_snapshot()
+    assert snap["active_background_processes"] == 0
+
+
+def test_plain_text_status_shows_proc_indicator_when_active(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 2)
+    text = cli_obj._build_status_bar_text(width=80)
+    assert "⚙ 2" in text
+
+
+def test_plain_text_status_omits_proc_indicator_when_idle(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 0)
+    text = cli_obj._build_status_bar_text(width=80)
+    assert "⚙" not in text
+
+
+def test_fragments_include_proc_segment_when_active(monkeypatch):
+    cli_obj = _make_cli()
+    _patch_process_registry(monkeypatch, 1)
+    cli_obj._status_bar_visible = True
+    cli_obj._get_tui_terminal_width = lambda: 120  # type: ignore[method-assign]
+    frags = cli_obj._get_status_bar_fragments()
+    rendered = "".join(text for _style, text in frags)
+    assert "⚙ 1" in rendered
+
+
+def test_indicators_independent_agents_and_processes(monkeypatch):
+    """▶ (agent tasks) and ⚙ (shell processes) render side-by-side."""
+    cli_obj = _make_cli()
+    cli_obj._background_tasks = {"bg_a": _stub_thread()}
+    _patch_process_registry(monkeypatch, 2)
+    cli_obj._status_bar_visible = True
+    cli_obj._get_tui_terminal_width = lambda: 120  # type: ignore[method-assign]
+    frags = cli_obj._get_status_bar_fragments()
+    rendered = "".join(text for _style, text in frags)
+    assert "▶ 1" in rendered
+    assert "⚙ 2" in rendered

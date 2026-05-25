@@ -57,6 +57,29 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
+    """Toolsets a cron-spawned agent must never receive.
+
+    Three protected toolsets are always disabled in cron context:
+      - ``cronjob`` — would let a cron-spawned agent schedule more cron jobs
+      - ``messaging`` — interactive, needs a live gateway session
+      - ``clarify`` — interactive, blocks waiting for user input
+
+    User-level ``agent.disabled_toolsets`` from config.yaml is layered on top
+    so per-job ``enabled_toolsets`` cannot bypass policy that applies to
+    ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
+    past config.yaml's denylist).
+    """
+    disabled = ["cronjob", "messaging", "clarify"]
+    agent_cfg = (cfg or {}).get("agent") or {}
+    user_disabled = agent_cfg.get("disabled_toolsets") or []
+    for name in user_disabled:
+        name = str(name).strip()
+        if name and name not in disabled:
+            disabled.append(name)
+    return disabled
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -232,6 +255,30 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     if platform and chat_id:
         return origin
     return None
+
+
+def _cron_job_origin_log_suffix(job: dict) -> str:
+    """Return safe provenance details for security warnings about a cron job.
+
+    The scheduler normally has no live HTTP request object when it detects a
+    bad stored ``context_from`` reference. Including the job's saved origin
+    makes future probe logs actionable without exposing secrets: platform/chat
+    metadata for gateway-created jobs, and optional source-IP fields for API
+    surfaces that persist them in origin metadata.
+    """
+    origin = job.get("origin")
+    if not isinstance(origin, dict):
+        return ""
+
+    fields = []
+    for key in ("platform", "chat_id", "thread_id", "source_ip", "remote", "forwarded_for"):
+        value = origin.get(key)
+        if value is None:
+            continue
+        text = str(value).replace("\r", " ").replace("\n", " ").strip()
+        if text:
+            fields.append(f"origin_{key}={text[:200]!r}")
+    return " " + " ".join(fields) if fields else ""
 
 
 def _plugin_cron_env_var(platform_name: str) -> str:
@@ -529,7 +576,9 @@ def _send_media_via_adapter(
     """
     from pathlib import Path
 
-    from gateway.platforms.base import should_send_media_as_audio
+    from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     for media_path, _is_voice in media_files:
         try:
@@ -614,6 +663,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     try:
         config = load_gateway_config()
@@ -1001,7 +1051,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         for source_job_id in context_from:
             # Guard against path traversal — valid job IDs are 12-char hex strings
             if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
-                logger.warning("context_from: skipping invalid job_id %r", source_job_id)
+                logger.warning(
+                    "context_from: skipping invalid job_id %r for job_id=%r name=%r%s",
+                    source_job_id,
+                    job.get("id"),
+                    job.get("name"),
+                    _cron_job_origin_log_suffix(job),
+                )
                 continue
             try:
                 job_output_dir = OUTPUT_DIR / source_job_id
@@ -1571,7 +1627,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

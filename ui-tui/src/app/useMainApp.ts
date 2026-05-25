@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -102,6 +102,7 @@ export function useMainApp(gw: GatewayClient) {
   const [stickyPrompt, setStickyPrompt] = useState('')
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)
   const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [voiceTts, setVoiceTts] = useState(false)
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
@@ -233,9 +234,15 @@ export function useMainApp(gw: GatewayClient) {
     return next
   }, [])
 
+  // Wrapped row heights are width-dependent. Cached layout outlives a resize
+  // and lands sticky-scroll at the stale max, cutting off the tail. The
+  // hook's "scale heights by oldCols/newCols" path is too approximate for
+  // mixed markdown — we deliberately remount every row so yoga re-measures
+  // off live geometry. Cost: per-row local state (e.g. systemOpen toggles)
+  // resets on resize; small UX hit for a hard correctness win.
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: messageId(msg), msg })),
-    [historyItems, messageId]
+    () => historyItems.map((msg, index) => ({ index, key: `${messageId(msg)}:c${cols}`, msg })),
+    [cols, historyItems, messageId]
   )
 
   const detailsLayoutKey = useMemo(() => {
@@ -245,7 +252,10 @@ export function useMainApp(gw: GatewayClient) {
     return `${thinking}:${tools}`
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
-  const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
+  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
+  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
+  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+  const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
@@ -274,10 +284,21 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        thinkingVisible: thinkingDetailsVisible,
+        toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
-    [cols, detailsVisible, firstUserIdx, ui.compact, ui.theme.brand.prompt, virtualRows]
+    [
+      cols,
+      detailsVisible,
+      firstUserIdx,
+      thinkingDetailsVisible,
+      toolsDetailsVisible,
+      ui.compact,
+      ui.theme.brand.prompt,
+      virtualRows
+    ]
   )
 
   const syncHeightCache = useCallback(
@@ -365,7 +386,7 @@ export function useMainApp(gw: GatewayClient) {
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
   const die = useCallback(() => {
-    gw.kill()
+    gw.kill('app.die')
     exit()
     // Ink's exit() calls unmount() which resets terminal modes but does NOT
     // call process.exit().  Without an explicit exit the Node process stays
@@ -377,7 +398,7 @@ export function useMainApp(gw: GatewayClient) {
   }, [exit, gw])
 
   const dieWithCode = useCallback((code: number) => {
-    gw.kill()
+    gw.kill(`app.dieWithCode:${code}`)
     exit()
     process.exit(code)
   }, [exit, gw])
@@ -424,10 +445,20 @@ export function useMainApp(gw: GatewayClient) {
 
     let timer: ReturnType<typeof setTimeout> | undefined
 
+    // Resize reflows wrapped lines; if the user is still pinned to the tail
+    // we need to re-snap once React has remeasured. virtualRows is keyed on
+    // cols so every column change forces a fresh measurement pass before
+    // this timer fires. Re-check isSticky() inside the timeout — a manual
+    // scroll during the 100ms window otherwise yanks the user back to tail.
     const onResize = () => {
       clearTimeout(timer)
       timer = setTimeout(() => {
         timer = undefined
+
+        if (scrollRef.current?.isSticky()) {
+          scrollRef.current.scrollToBottom()
+        }
+
         void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
       }, 100)
     }
@@ -555,7 +586,8 @@ export function useMainApp(gw: GatewayClient) {
       recording: voiceRecording,
       setProcessing: setVoiceProcessing,
       setRecording: setVoiceRecording,
-      setVoiceEnabled
+      setVoiceEnabled,
+      setVoiceTts
     },
     wheelStep: WHEEL_SCROLL_STEP
   })
@@ -579,7 +611,8 @@ export function useMainApp(gw: GatewayClient) {
         voice: {
           setProcessing: setVoiceProcessing,
           setRecording: setVoiceRecording,
-          setVoiceEnabled
+          setVoiceEnabled,
+          setVoiceTts
         }
       }),
     [
@@ -736,10 +769,13 @@ export function useMainApp(gw: GatewayClient) {
   const anyPanelVisible = SECTION_NAMES.some(
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
+
   const thinkingPanelVisible =
     sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const toolsPanelVisible =
     sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const activityPanelVisible =
     sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
 
@@ -827,7 +863,7 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
     }),
     [
       cwd,
@@ -839,7 +875,8 @@ export function useMainApp(gw: GatewayClient) {
       ui,
       voiceEnabled,
       voiceProcessing,
-      voiceRecording
+      voiceRecording,
+      voiceTts
     ]
   )
 

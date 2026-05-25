@@ -15,6 +15,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import get_env_value, load_env
+from agent.credential_persistence import (
+    is_borrowed_credential_source,
+    sanitize_borrowed_credential_payload,
+)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -86,7 +90,7 @@ CUSTOM_POOL_PREFIX = "custom:"
 _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
-    "agent_key_obtained_at", "tls",
+    "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
 })
 
 
@@ -161,7 +165,7 @@ class PooledCredential:
         for k, v in self.extra.items():
             if v is not None:
                 result[k] = v
-        return result
+        return sanitize_borrowed_credential_payload(result, self.provider)
 
     @property
     def runtime_api_key(self) -> str:
@@ -245,6 +249,16 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
         return float(sec_match.group(1))
+    # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits
+    hr_min_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\s+(\d+)\s*min", message, re.IGNORECASE)
+    if hr_min_match:
+        return int(hr_min_match.group(1)) * 3600 + int(hr_min_match.group(2)) * 60
+    hr_only_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\b", message, re.IGNORECASE)
+    if hr_only_match:
+        return int(hr_only_match.group(1)) * 3600
+    min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
+    if min_only_match:
+        return int(min_only_match.group(1)) * 60
     return None
 
 
@@ -1261,9 +1275,21 @@ class CredentialPool:
         *,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        api_key_hint: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
-            entry = self.current() or self._select_unlocked()
+            entry = None
+            if api_key_hint:
+                # Prefer the specific entry whose API key matches the one that
+                # actually failed.  When this pool was freshly loaded from disk
+                # (another process already rotated), current() is None and
+                # _select_unlocked() would return the NEXT key — the wrong one.
+                entry = next(
+                    (e for e in self._entries if e.runtime_api_key == api_key_hint),
+                    None,
+                )
+            if entry is None:
+                entry = self.current() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -1433,8 +1459,12 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     if field_updates or extra_updates:
         if extra_updates:
             field_updates["extra"] = {**existing.extra, **extra_updates}
-        entries[existing_idx] = replace(existing, **field_updates)
-        return True
+        updated = replace(existing, **field_updates)
+        entries[existing_idx] = updated
+        # Runtime-only borrowed secret updates should refresh the in-memory
+        # entry without forcing auth.json churn when the disk-safe payload is
+        # unchanged (for example env keys with the same fingerprint).
+        return existing.to_dict() != updated.to_dict()
     return False
 
 
@@ -1772,6 +1802,35 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     except ImportError:
         def _is_source_suppressed(_p, _s):  # type: ignore[misc]
             return False
+
+    def _secret_source_for_env(env_var: str) -> Optional[str]:
+        try:
+            from hermes_cli.env_loader import get_secret_source
+            source_label = get_secret_source(env_var)
+        except Exception:
+            source_label = None
+        return str(source_label).strip() if source_label else None
+
+    def _env_payload(
+        *,
+        source: str,
+        env_var: str,
+        token: str,
+        base_url: str,
+        auth_type: str = AUTH_TYPE_API_KEY,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "source": source,
+            "auth_type": auth_type,
+            "access_token": token,
+            "base_url": base_url,
+            "label": env_var,
+        }
+        secret_source = _secret_source_for_env(env_var)
+        if secret_source:
+            payload["secret_source"] = secret_source
+        return payload
+
     if provider == "openrouter":
         # Prefer ~/.hermes/.env over os.environ
         token = _get_env_prefer_dotenv("OPENROUTER_API_KEY")
@@ -1784,13 +1843,12 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
                 entries,
                 provider,
                 source,
-                {
-                    "source": source,
-                    "auth_type": AUTH_TYPE_API_KEY,
-                    "access_token": token,
-                    "base_url": OPENROUTER_BASE_URL,
-                    "label": "OPENROUTER_API_KEY",
-                },
+                _env_payload(
+                    source=source,
+                    env_var="OPENROUTER_API_KEY",
+                    token=token,
+                    base_url=OPENROUTER_BASE_URL,
+                ),
             )
         return changed, active_sources
 
@@ -1829,13 +1887,13 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             entries,
             provider,
             source,
-            {
-                "source": source,
-                "auth_type": auth_type,
-                "access_token": token,
-                "base_url": base_url,
-                "label": env_var,
-            },
+            _env_payload(
+                source=source,
+                env_var=env_var,
+                token=token,
+                base_url=base_url,
+                auth_type=auth_type,
+            ),
         )
     return changed, active_sources
 
@@ -1847,8 +1905,11 @@ def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources:
         if _is_manual_source(entry.source)
         or entry.source in active_sources
         or not (
-            entry.source.startswith("env:")
-            or entry.source in {"claude_code", "hermes_pkce"}
+            is_borrowed_credential_source(entry.source, entry.provider)
+            # Hermes PKCE is Hermes-owned/persistable while present, but it is
+            # still a file-backed singleton and should disappear from the pool
+            # when the backing OAuth file is gone.
+            or entry.source == "hermes_pkce"
         )
     ]
     if len(retained) == len(entries):
@@ -1933,17 +1994,22 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
     raw_entries = read_credential_pool(provider)
+    raw_needs_sanitization = any(
+        isinstance(payload, dict)
+        and sanitize_borrowed_credential_payload(payload, provider) != payload
+        for payload in raw_entries
+    )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
-        changed = custom_changed
+        changed = raw_needs_sanitization or custom_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)
-        changed = singleton_changed or env_changed
+        changed = raw_needs_sanitization or singleton_changed or env_changed
         changed |= _prune_stale_seeded_entries(entries, singleton_sources | env_sources)
         changed |= _normalize_pool_priorities(provider, entries)
 

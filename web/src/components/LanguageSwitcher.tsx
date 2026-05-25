@@ -69,12 +69,12 @@ export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
         aria-label={t.language.switchTo}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-muted-foreground hover:text-foreground"
+        className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground"
       >
         <span className="inline-flex items-center gap-1.5">
           <Typography
             mondwest
-            className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
+            className="hidden sm:inline text-display tracking-wide text-xs"
           >
             {locale === "en" ? "EN" : current.name}
           </Typography>

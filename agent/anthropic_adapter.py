@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import platform
+import secrets
+import stat
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1040,11 +1042,34 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        _tmp_cred = cred_path.with_suffix(".tmp")
-        _tmp_cred.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-        _tmp_cred.replace(cred_path)
-        # Restrict permissions (credentials file)
-        cred_path.chmod(0o600)
+        # Per-process random suffix avoids collisions between concurrent
+        # writers and stale leftovers from a prior crashed write.
+        _tmp_cred = cred_path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            # Create the temp file atomically at 0o600. The previous
+            # write_text + post-replace chmod opened a TOCTOU window where
+            # both the temp file and the destination briefly inherited the
+            # process umask (commonly 0o644 = world-readable), exposing
+            # Claude Code OAuth tokens to other local users between create
+            # and chmod. Mirrors agent/google_oauth.py (#19673) and
+            # tools/mcp_oauth.py (#21148). Parent dir (~/.claude/) is
+            # owned by Claude Code itself, so we leave its mode alone.
+            fd = os.open(
+                str(_tmp_cred),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(existing, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(_tmp_cred, cred_path)
+        except OSError:
+            try:
+                _tmp_cred.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
     except (OSError, IOError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 
@@ -1606,182 +1631,155 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def convert_messages_to_anthropic(
-    messages: List[Dict],
-    base_url: str | None = None,
-    model: str | None = None,
-) -> Tuple[Optional[Any], List[Dict]]:
-    """Convert OpenAI-format messages to Anthropic format.
+def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert an assistant message to Anthropic content blocks.
 
-    Returns (system_prompt, anthropic_messages).
-    System messages are extracted since Anthropic takes them as a separate param.
-    system_prompt is a string or list of content blocks (when cache_control present).
-
-    When *base_url* is provided and points to a third-party Anthropic-compatible
-    endpoint, all thinking block signatures are stripped.  Signatures are
-    Anthropic-proprietary — third-party endpoints cannot validate them and will
-    reject them with HTTP 400 "Invalid signature in thinking block".
-
-    When *model* is provided and matches the Kimi / Moonshot family (or
-    *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
-    synthesised from ``reasoning_content`` are preserved on replayed
-    assistant tool-call messages — Kimi requires the field to exist, even
-    if empty.
+    Handles thinking blocks, regular content, tool calls, and
+    reasoning_content injection for Kimi/DeepSeek endpoints.
     """
-    system = None
-    result = []
-
-    for m in messages:
-        role = m.get("role", "user")
-        content = m.get("content", "")
-
-        if role == "system":
-            if isinstance(content, list):
-                # Preserve cache_control markers on content blocks
-                has_cache = any(
-                    p.get("cache_control") for p in content if isinstance(p, dict)
-                )
-                if has_cache:
-                    system = [p for p in content if isinstance(p, dict)]
-                else:
-                    system = "\n".join(
-                        p["text"] for p in content if p.get("type") == "text"
-                    )
-            else:
-                system = content
-            continue
-
-        if role == "assistant":
-            blocks = _extract_preserved_thinking_blocks(m)
-            if content:
-                if isinstance(content, list):
-                    converted_content = _convert_content_to_anthropic(content)
-                    if isinstance(converted_content, list):
-                        blocks.extend(converted_content)
-                else:
-                    blocks.append({"type": "text", "text": str(content)})
-            for tc in m.get("tool_calls", []):
-                if not tc or not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function", {})
-                args = fn.get("arguments", "{}")
-                try:
-                    parsed_args = json.loads(args) if isinstance(args, str) else args
-                except (json.JSONDecodeError, ValueError):
-                    parsed_args = {}
-                blocks.append({
-                    "type": "tool_use",
-                    "id": _sanitize_tool_id(tc.get("id", "")),
-                    "name": fn.get("name", ""),
-                    "input": parsed_args,
-                })
-            # Kimi's /coding endpoint (Anthropic protocol) requires assistant
-            # tool-call messages to carry reasoning_content when thinking is
-            # enabled server-side.  Preserve it as a thinking block so Kimi
-            # can validate the message history.  See hermes-agent#13848.
-            #
-            # Accept empty string "" — _copy_reasoning_content_for_api()
-            # injects "" as a tier-3 fallback for Kimi tool-call messages
-            # that had no reasoning.  Kimi requires the field to exist, even
-            # if empty.
-            #
-            # Prepend (not append): Anthropic protocol requires thinking
-            # blocks before text and tool_use blocks.
-            #
-            # Guard: only add when reasoning_details didn't already contribute
-            # thinking blocks.  On native Anthropic, reasoning_details produces
-            # signed thinking blocks — adding another unsigned one from
-            # reasoning_content would create a duplicate (same text) that gets
-            # downgraded to a spurious text block on the last assistant message.
-            reasoning_content = m.get("reasoning_content")
-            _already_has_thinking = any(
-                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
-                for b in blocks
-            )
-            if isinstance(reasoning_content, str) and not _already_has_thinking:
-                blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
-            # Anthropic rejects empty assistant content
-            effective = blocks or content
-            if not effective or effective == "":
-                effective = [{"type": "text", "text": "(empty)"}]
-            result.append({"role": "assistant", "content": effective})
-            continue
-
-        if role == "tool":
-            # Sanitize tool_use_id and ensure non-empty content.
-            # Computer-use (and other multimodal) tool results arrive as
-            # either a list of OpenAI-style content parts, or a dict
-            # marked `_multimodal` with an embedded `content` list. Convert
-            # both into Anthropic `tool_result` inner blocks (text + image).
-            multimodal_blocks: Optional[List[Dict[str, Any]]] = None
-            if isinstance(content, dict) and content.get("_multimodal"):
-                multimodal_blocks = _content_parts_to_anthropic_blocks(
-                    content.get("content") or []
-                )
-                # Fallback text if the conversion produced nothing usable.
-                if not multimodal_blocks and content.get("text_summary"):
-                    multimodal_blocks = [
-                        {"type": "text", "text": str(content["text_summary"])}
-                    ]
-            elif isinstance(content, list):
-                converted = _content_parts_to_anthropic_blocks(content)
-                if any(b.get("type") == "image" for b in converted):
-                    multimodal_blocks = converted
-            # Back-compat: some callers stash blocks under a private key.
-            if multimodal_blocks is None:
-                stashed = m.get("_anthropic_content_blocks")
-                if isinstance(stashed, list) and stashed:
-                    text_content = content if isinstance(content, str) and content.strip() else None
-                    multimodal_blocks = (
-                        [{"type": "text", "text": text_content}] + stashed
-                        if text_content else list(stashed)
-                    )
-
-            if multimodal_blocks:
-                result_content: Any = multimodal_blocks
-            elif isinstance(content, str):
-                result_content = content
-            else:
-                result_content = json.dumps(content) if content else "(no output)"
-            if not result_content:
-                result_content = "(no output)"
-            tool_result = {
-                "type": "tool_result",
-                "tool_use_id": _sanitize_tool_id(m.get("tool_call_id", "")),
-                "content": result_content,
-            }
-            if isinstance(m.get("cache_control"), dict):
-                tool_result["cache_control"] = dict(m["cache_control"])
-            # Merge consecutive tool results into one user message
-            if (
-                result
-                and result[-1]["role"] == "user"
-                and isinstance(result[-1]["content"], list)
-                and result[-1]["content"]
-                and result[-1]["content"][0].get("type") == "tool_result"
-            ):
-                result[-1]["content"].append(tool_result)
-            else:
-                result.append({"role": "user", "content": [tool_result]})
-            continue
-
-        # Regular user message — validate non-empty content (Anthropic rejects empty)
+    content = m.get("content", "")
+    blocks = _extract_preserved_thinking_blocks(m)
+    if content:
         if isinstance(content, list):
-            converted_blocks = _convert_content_to_anthropic(content)
-            # Check if all text blocks are empty
-            if not converted_blocks or all(
-                b.get("text", "").strip() == ""
-                for b in converted_blocks
-                if isinstance(b, dict) and b.get("type") == "text"
-            ):
-                converted_blocks = [{"type": "text", "text": "(empty message)"}]
-            result.append({"role": "user", "content": converted_blocks})
+            converted_content = _convert_content_to_anthropic(content)
+            if isinstance(converted_content, list):
+                blocks.extend(converted_content)
         else:
-            # Validate string content is non-empty
-            if not content or (isinstance(content, str) and not content.strip()):
-                content = "(empty message)"
-            result.append({"role": "user", "content": content})
+            blocks.append({"type": "text", "text": str(content)})
+    for tc in m.get("tool_calls", []):
+        if not tc or not isinstance(tc, dict):
+            continue
+        fn = tc.get("function", {})
+        args = fn.get("arguments", "{}")
+        try:
+            parsed_args = json.loads(args) if isinstance(args, str) else args
+        except (json.JSONDecodeError, ValueError):
+            parsed_args = {}
+        blocks.append({
+            "type": "tool_use",
+            "id": _sanitize_tool_id(tc.get("id", "")),
+            "name": fn.get("name", ""),
+            "input": parsed_args,
+        })
+    # Kimi's /coding endpoint (Anthropic protocol) requires assistant
+    # tool-call messages to carry reasoning_content when thinking is
+    # enabled server-side.  Preserve it as a thinking block so Kimi
+    # can validate the message history.  See hermes-agent#13848.
+    #
+    # Accept empty string "" — _copy_reasoning_content_for_api()
+    # injects "" as a tier-3 fallback for Kimi tool-call messages
+    # that had no reasoning.  Kimi requires the field to exist, even
+    # if empty.
+    #
+    # Prepend (not append): Anthropic protocol requires thinking
+    # blocks before text and tool_use blocks.
+    #
+    # Guard: only add when reasoning_details didn't already contribute
+    # thinking blocks.  On native Anthropic, reasoning_details produces
+    # signed thinking blocks — adding another unsigned one from
+    # reasoning_content would create a duplicate (same text) that gets
+    # downgraded to a spurious text block on the last assistant message.
+    reasoning_content = m.get("reasoning_content")
+    _already_has_thinking = any(
+        isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+        for b in blocks
+    )
+    if isinstance(reasoning_content, str) and not _already_has_thinking:
+        blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
+    # Anthropic rejects empty assistant content
+    effective = blocks or content
+    if not effective or effective == "":
+        effective = [{"type": "text", "text": "(empty)"}]
+    return {"role": "assistant", "content": effective}
 
+
+def _convert_tool_message_to_result(
+    result: List[Dict[str, Any]], m: Dict[str, Any]
+) -> None:
+    """Convert a tool message to an Anthropic tool_result, merging consecutive
+    results into one user message.
+
+    Mutates ``result`` in place — either appends a new user message or extends
+    the trailing user message's tool_result list.
+    """
+    content = m.get("content", "")
+    multimodal_blocks: Optional[List[Dict[str, Any]]] = None
+    if isinstance(content, dict) and content.get("_multimodal"):
+        multimodal_blocks = _content_parts_to_anthropic_blocks(
+            content.get("content") or []
+        )
+        # Fallback text if the conversion produced nothing usable.
+        if not multimodal_blocks and content.get("text_summary"):
+            multimodal_blocks = [
+                {"type": "text", "text": str(content["text_summary"])}
+            ]
+    elif isinstance(content, list):
+        converted = _content_parts_to_anthropic_blocks(content)
+        if any(b.get("type") == "image" for b in converted):
+            multimodal_blocks = converted
+    # Back-compat: some callers stash blocks under a private key.
+    if multimodal_blocks is None:
+        stashed = m.get("_anthropic_content_blocks")
+        if isinstance(stashed, list) and stashed:
+            text_content = content if isinstance(content, str) and content.strip() else None
+            multimodal_blocks = (
+                [{"type": "text", "text": text_content}] + stashed
+                if text_content else list(stashed)
+            )
+
+    if multimodal_blocks:
+        result_content: Any = multimodal_blocks
+    elif isinstance(content, str):
+        result_content = content
+    else:
+        result_content = json.dumps(content) if content else "(no output)"
+    if not result_content:
+        result_content = "(no output)"
+    tool_result = {
+        "type": "tool_result",
+        "tool_use_id": _sanitize_tool_id(m.get("tool_call_id", "")),
+        "content": result_content,
+    }
+    if isinstance(m.get("cache_control"), dict):
+        tool_result["cache_control"] = dict(m["cache_control"])
+    # Merge consecutive tool results into one user message
+    if (
+        result
+        and result[-1]["role"] == "user"
+        and isinstance(result[-1]["content"], list)
+        and result[-1]["content"]
+        and result[-1]["content"][0].get("type") == "tool_result"
+    ):
+        result[-1]["content"].append(tool_result)
+    else:
+        result.append({"role": "user", "content": [tool_result]})
+
+
+def _convert_user_message(content: Any) -> Dict[str, Any]:
+    """Validate and convert a user message to anthropic format."""
+    if isinstance(content, list):
+        converted_blocks = _convert_content_to_anthropic(content)
+        if not converted_blocks or all(
+            b.get("text", "").strip() == ""
+            for b in converted_blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        ):
+            converted_blocks = [{"type": "text", "text": "(empty message)"}]
+        return {"role": "user", "content": converted_blocks}
+    else:
+        if not content or (isinstance(content, str) and not content.strip()):
+            content = "(empty message)"
+        return {"role": "user", "content": content}
+
+
+def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
+    """Strip tool_use blocks with no matching tool_result, and vice versa.
+
+    Context compression or session truncation can remove either side of a
+    tool-call pair.  Anthropic rejects both orphans with HTTP 400.
+
+    Mutates ``result`` in place.
+    """
     # Strip orphaned tool_use blocks (no matching tool_result follows)
     tool_result_ids = set()
     for m in result:
@@ -1799,10 +1797,7 @@ def convert_messages_to_anthropic(
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool call removed)"}]
 
-    # Strip orphaned tool_result blocks (no matching tool_use precedes them).
-    # This is the mirror of the above: context compression or session truncation
-    # can remove an assistant message containing a tool_use while leaving the
-    # subsequent tool_result intact.  Anthropic rejects these with a 400.
+    # Strip orphaned tool_result blocks (no matching tool_use precedes them)
     tool_use_ids = set()
     for m in result:
         if m["role"] == "assistant" and isinstance(m["content"], list):
@@ -1819,12 +1814,16 @@ def convert_messages_to_anthropic(
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool result removed)"}]
 
-    # Enforce strict role alternation (Anthropic rejects consecutive same-role messages)
+
+def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge consecutive same-role messages to enforce Anthropic alternation.
+
+    Returns a new list (caller must rebind ``result``).
+    """
     fixed = []
     for m in result:
         if fixed and fixed[-1]["role"] == m["role"]:
             if m["role"] == "user":
-                # Merge consecutive user messages
                 prev_content = fixed[-1]["content"]
                 curr_content = m["content"]
                 if isinstance(prev_content, str) and isinstance(curr_content, str):
@@ -1832,7 +1831,6 @@ def convert_messages_to_anthropic(
                 elif isinstance(prev_content, list) and isinstance(curr_content, list):
                     fixed[-1]["content"] = prev_content + curr_content
                 else:
-                    # Mixed types — wrap string in list
                     if isinstance(prev_content, str):
                         prev_content = [{"type": "text", "text": prev_content}]
                     if isinstance(curr_content, str):
@@ -1855,7 +1853,6 @@ def convert_messages_to_anthropic(
                 elif isinstance(prev_blocks, str) and isinstance(curr_blocks, str):
                     fixed[-1]["content"] = prev_blocks + "\n" + curr_blocks
                 else:
-                    # Mixed types — normalize both to list and merge
                     if isinstance(prev_blocks, str):
                         prev_blocks = [{"type": "text", "text": prev_blocks}]
                     if isinstance(curr_blocks, str):
@@ -1863,37 +1860,34 @@ def convert_messages_to_anthropic(
                     fixed[-1]["content"] = prev_blocks + curr_blocks
         else:
             fixed.append(m)
-    result = fixed
+    return fixed
 
-    # ── Thinking block signature management ──────────────────────────
-    # Anthropic signs thinking blocks against the full turn content.
-    # Any upstream mutation (context compression, session truncation,
-    # orphan stripping, message merging) invalidates the signature,
-    # causing HTTP 400 "Invalid signature in thinking block".
-    #
-    # Signatures are Anthropic-proprietary.  Third-party endpoints
-    # (MiniMax, Microsoft Foundry, self-hosted proxies) cannot validate
-    # them and will reject them outright.  When targeting a third-party
-    # endpoint, strip ALL thinking/redacted_thinking blocks from every
-    # assistant message — the third-party will generate its own
-    # thinking blocks if it supports extended thinking.
-    #
-    # For direct Anthropic (strategy following clawdbot/OpenClaw):
-    # 1. Strip thinking/redacted_thinking from all assistant messages
-    #    EXCEPT the last one — preserves reasoning continuity on the
-    #    current tool-use chain while avoiding stale signature errors.
-    # 2. Downgrade unsigned thinking blocks (no signature) to text —
-    #    Anthropic can't validate them and will reject them.
-    # 3. Strip cache_control from thinking/redacted_thinking blocks —
-    #    cache markers can interfere with signature validation.
+
+def _manage_thinking_signatures(
+    result: List[Dict[str, Any]], base_url: str | None, model: str | None
+) -> None:
+    """Strip or preserve thinking blocks based on endpoint type.
+
+    Anthropic signs thinking blocks against the full turn content.
+    Any upstream mutation (context compression, session truncation, orphan
+    stripping, message merging) invalidates the signature, causing HTTP 400
+    "Invalid signature in thinking block".
+
+    Signatures are Anthropic-proprietary.  Third-party endpoints (MiniMax,
+    Azure AI Foundry, AWS Bedrock, self-hosted proxies) cannot validate them
+    and will reject them outright.  Kimi's /coding and DeepSeek's /anthropic
+    endpoints speak the Anthropic protocol upstream but require unsigned
+    thinking blocks (synthesised from ``reasoning_content``) to round-trip on
+    replayed assistant tool-call messages.  See hermes-agent#13848 (Kimi) and
+    hermes-agent#16748 (DeepSeek).
+
+    Mutates ``result`` in place.
+    """
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
-    # Anthropic Messages protocol upstream but require that thinking blocks
-    # synthesised from reasoning_content round-trip on subsequent turns when
-    # thinking is enabled.  Signed Anthropic blocks still have to be stripped
-    # (neither endpoint can validate Anthropic's signatures); unsigned blocks
-    # are preserved.  See hermes-agent#13848 (Kimi) and #16748 (DeepSeek).
+    # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
+    # (neither upstream can validate Anthropic signatures), preserve unsigned
+    # ones synthesised from reasoning_content.  See #13848, #16748.
     _preserve_unsigned_thinking = (
         _is_kimi_family_endpoint(base_url, model)
         or _is_deepseek_anthropic_endpoint(base_url)
@@ -1910,26 +1904,19 @@ def convert_messages_to_anthropic(
             continue
 
         if _preserve_unsigned_thinking:
-            # Kimi's /coding and DeepSeek's /anthropic endpoints both enable
-            # thinking server-side and require unsigned thinking blocks on
-            # replayed assistant tool-call messages.  Strip signed Anthropic
-            # blocks (neither upstream can validate Anthropic signatures) but
-            # preserve the unsigned ones we synthesised from reasoning_content.
+            # Kimi / DeepSeek: strip signed, preserve unsigned.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
                     continue
                 if b.get("signature") or b.get("data"):
-                    # Anthropic-signed block — upstream can't validate, strip
+                    # Signed (or redacted-with-data) — upstream can't validate, strip.
                     continue
-                # Unsigned thinking (synthesised from reasoning_content) —
-                # keep it: the upstream needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:
-            # Third-party endpoint: strip ALL thinking blocks from every
-            # assistant message — signatures are Anthropic-proprietary.
+            # Third-party: strip ALL thinking blocks (signatures are proprietary).
             # Direct Anthropic: strip from non-latest assistant messages only.
             stripped = [
                 b for b in m["content"]
@@ -1937,24 +1924,21 @@ def convert_messages_to_anthropic(
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
         else:
-            # Latest assistant on direct Anthropic: keep signed thinking
-            # blocks for reasoning continuity; downgrade unsigned ones to
-            # plain text.
+            # Latest assistant on direct Anthropic: keep signed, downgrade unsigned
+            # to text so the reasoning isn't lost.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
                     continue
                 if b.get("type") == "redacted_thinking":
-                    # Redacted blocks use 'data' for the signature payload
+                    # Redacted blocks use 'data' for the signature payload —
+                    # drop the block when 'data' is missing (can't be validated).
                     if b.get("data"):
                         new_content.append(b)
-                    # else: drop — no data means it can't be validated
                 elif b.get("signature"):
-                    # Signed thinking block — keep it
                     new_content.append(b)
                 else:
-                    # Unsigned thinking — downgrade to text so it's not lost
                     thinking_text = b.get("thinking", "")
                     if thinking_text:
                         new_content.append({"type": "text", "text": thinking_text})
@@ -1966,12 +1950,15 @@ def convert_messages_to_anthropic(
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
 
-    # ── Image eviction: keep only the most recent N screenshots ─────
-    # computer_use screenshots (base64 images) sit inside tool_result
-    # blocks: they accumulate and are sent with every API call. Each
-    # costs ~1,465 tokens; after 10+ the conversation becomes slow
-    # even for simple text queries. Walk backward, keep the most recent
-    # _MAX_KEEP_IMAGES, replace older ones with a text placeholder.
+
+def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
+    """Keep only the most recent ``_MAX_KEEP_IMAGES`` computer-use screenshots.
+
+    Base64 images cost ~1,465 tokens each and accumulate across tool calls.
+    Walk backward, keep the most recent N, replace older ones with a placeholder.
+
+    Mutates ``result`` in place.
+    """
     _MAX_KEEP_IMAGES = 3
     _image_count = 0
     for msg in reversed(result):
@@ -1997,6 +1984,68 @@ def convert_messages_to_anthropic(
                     else {"type": "text", "text": "[screenshot removed to save context]"}
                     for b in inner
                 ]
+
+
+def convert_messages_to_anthropic(
+    messages: List[Dict],
+    base_url: str | None = None,
+    model: str | None = None,
+) -> Tuple[Optional[Any], List[Dict]]:
+    """Convert OpenAI-format messages to Anthropic format.
+
+    Returns (system_prompt, anthropic_messages).
+    System messages are extracted since Anthropic takes them as a separate param.
+    system_prompt is a string or list of content blocks (when cache_control present).
+
+    When *base_url* is provided and points to a third-party Anthropic-compatible
+    endpoint, all thinking block signatures are stripped.  Signatures are
+    Anthropic-proprietary — third-party endpoints cannot validate them and will
+    reject them with HTTP 400 "Invalid signature in thinking block".
+
+    When *model* is provided and matches the Kimi / Moonshot family (or
+    *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
+    synthesised from ``reasoning_content`` are preserved on replayed
+    assistant tool-call messages — Kimi requires the field to exist, even
+    if empty.
+    """
+    system = None
+    result: List[Dict[str, Any]] = []
+
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+
+        if role == "system":
+            if isinstance(content, list):
+                # Preserve cache_control markers on content blocks
+                has_cache = any(
+                    p.get("cache_control") for p in content if isinstance(p, dict)
+                )
+                if has_cache:
+                    system = [p for p in content if isinstance(p, dict)]
+                else:
+                    system = "\n".join(
+                        p["text"] for p in content if p.get("type") == "text"
+                    )
+            else:
+                system = content
+            continue
+
+        if role == "assistant":
+            result.append(_convert_assistant_message(m))
+            continue
+
+        if role == "tool":
+            _convert_tool_message_to_result(result, m)
+            continue
+
+        # Regular user message
+        result.append(_convert_user_message(content))
+
+    _strip_orphaned_tool_blocks(result)
+    result = _merge_consecutive_roles(result)
+    _manage_thinking_signatures(result, base_url, model)
+    _evict_old_screenshots(result)
 
     return system, result
 
@@ -2098,9 +2147,13 @@ def build_anthropic_kwargs(
                 block["text"] = text
 
         # 3. Prefix tool names with mcp_ (Claude Code convention)
+        #    Skip names that already begin with the marker — native MCP server
+        #    tools (from mcp_servers: in config.yaml) are registered under their
+        #    full mcp_<server>_<tool> name and would double-prefix otherwise,
+        #    breaking round-trip registry lookup in normalize_response. GH-25255.
         if anthropic_tools:
             for tool in anthropic_tools:
-                if "name" in tool:
+                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
                     tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
         # 4. Prefix tool names in message history (tool_use and tool_result blocks)

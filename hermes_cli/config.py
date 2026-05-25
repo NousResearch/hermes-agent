@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+from hermes_cli.secret_prompt import masked_secret_prompt
+
 logger = logging.getLogger(__name__)
 
 # Track which (config_path, mtime_ns, size) tuples we've already warned about
@@ -72,6 +74,82 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Env var names that influence how the next subprocess executes —
+# never writable through ``save_env_value``. Anything that controls
+# the loader, interpreter, shell, or replacement editor counts:
+#
+# * ``LD_PRELOAD`` / ``LD_LIBRARY_PATH`` / ``LD_AUDIT`` — Linux dynamic
+#   loader. ``DYLD_*`` — macOS equivalent. Planting a path here means
+#   the next ``subprocess.run([...])`` Hermes makes loads attacker code
+#   before main().
+# * ``PYTHONPATH`` / ``PYTHONHOME`` / ``PYTHONSTARTUP`` /
+#   ``PYTHONUSERBASE`` — Python interpreter init. Hermes itself starts
+#   from one of these on every restart.
+# * ``NODE_OPTIONS`` / ``NODE_PATH`` — Node interpreter; affects npm,
+#   ``hermes update``, the TUI build.
+# * ``PATH`` — too broad to allow. The dashboard never needs to rewrite
+#   the operator's PATH; if a tool can't be found, the fix is to add an
+#   absolute path in the integration config, not to mutate PATH globally.
+# * ``GIT_SSH_COMMAND`` / ``GIT_EXEC_PATH`` — git rewrites that fire
+#   on every plugin install / ``hermes update``.
+# * ``BROWSER`` / ``EDITOR`` / ``VISUAL`` / ``PAGER`` — commands the
+#   shell or CLI invokes implicitly. Wrong values here = RCE on next
+#   ``$EDITOR``.
+# * ``SHELL`` — what subprocess uses with ``shell=True`` (we try to
+#   avoid that, but defense in depth).
+# * ``HERMES_HOME`` / ``HERMES_PROFILE`` / ``HERMES_CONFIG`` /
+#   ``HERMES_ENV`` — Hermes runtime location flags. Writing these into
+#   ``.env`` would relocate state in ways the user did not request from
+#   the dashboard. ``config.yaml`` is the supported surface for these.
+#
+# IMPORTANT: ``HERMES_*`` overall is NOT blocked. Many legitimate
+# integration credentials follow that prefix (HERMES_GEMINI_CLIENT_ID,
+# HERMES_LANGFUSE_PUBLIC_KEY, HERMES_SPOTIFY_CLIENT_ID, ...). The
+# denylist is name-by-name on purpose so the gate stays narrow and
+# doesn't accidentally break provider setup wizards.
+#
+# This is enforced on *write* only — values already in ``.env`` (set
+# by the operator out-of-band, or pre-existing) keep working. The
+# point is that the dashboard's writable surface cannot escalate by
+# planting them.
+_ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
+    # Loader / linker
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
+    # Python
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE",
+    # Node
+    "NODE_OPTIONS", "NODE_PATH",
+    # General
+    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER",
+    # Git
+    "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_SHELL",
+    # Hermes runtime location — never via dashboard env writer.
+    # NOT a HERMES_* blanket: integration credentials (HERMES_GEMINI_*,
+    # HERMES_LANGFUSE_*, HERMES_SPOTIFY_*, ...) ARE allowed.
+    "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
+})
+
+
+def _reject_denylisted_env_var(key: str) -> None:
+    """Raise if ``key`` is in :data:`_ENV_VAR_NAME_DENYLIST`.
+
+    Centralised so both the regular and "secure" env writers share the
+    same gate, and so the message is consistent for callers.
+    """
+    if key in _ENV_VAR_NAME_DENYLIST:
+        raise ValueError(
+            f"Environment variable {key!r} is on the writer denylist. "
+            "Names that influence subprocess execution (LD_PRELOAD, "
+            "PYTHONPATH, PATH, EDITOR, ...) or Hermes runtime location "
+            "(HERMES_HOME, HERMES_PROFILE, ...) cannot be persisted via "
+            "the env writer. If you really need this, edit "
+            "~/.hermes/.env directly."
+        )
+
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # (path, mtime_ns, size) -> cached expanded config dict.
 # load_config() returns a deepcopy of the cached value when the file
@@ -658,7 +736,8 @@ DEFAULT_CONFIG = {
         # are owned by your host user instead of root, which avoids needing
         # `sudo chown` after container runs. Default off to preserve behavior
         # for images whose entrypoints expect to start as root (e.g. the
-        # bundled Hermes image, which drops to the `hermes` user via gosu).
+        # bundled Hermes image, which drops to the `hermes` user via
+        # s6-setuidgid inside each supervised service).
         # When on, SETUID/SETGID caps are omitted from the container since
         # no privilege drop is needed.
         "docker_run_as_host_user": False,
@@ -1008,6 +1087,19 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "kawaii",
         "resume_display": "full",
+        # Recap tuning for /resume and startup resume. The defaults match the
+        # historical hardcoded values; expose them as config so power users can
+        # widen or tighten the snapshot to taste.
+        "resume_exchanges": 10,            # max user+assistant pairs to show
+        "resume_max_user_chars": 300,      # truncate user message text
+        "resume_max_assistant_chars": 200, # truncate non-last assistant text
+        "resume_max_assistant_lines": 3,   # truncate non-last assistant lines
+        # When True (default), assistant entries that are *only* tool calls
+        # (no visible text) are skipped in the recap. This prevents the recap
+        # from being dominated by `[2 tool calls: terminal, read_file]` lines
+        # when an exchange was tool-heavy. Set False to restore the legacy
+        # behavior of showing tool-call summaries inline.
+        "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
         # When true, `hermes --tui` auto-resumes the most recent human-
         # facing session on launch instead of forging a fresh one.
@@ -1622,6 +1714,31 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Gateway settings — control how messaging platforms (Telegram, Discord,
+    # Slack, etc.) deliver agent-produced files as native attachments.
+    "gateway": {
+        # Extra directories from which model-emitted bare file paths may be
+        # uploaded as native gateway attachments. Files inside the Hermes
+        # cache (~/.hermes/cache/{documents,images,audio,video,screenshots})
+        # are always trusted; this list adds operator-controlled roots
+        # (project dirs, scratch dirs, mounted shares). Accepts a list of
+        # absolute paths or a single os.pathsep-separated string. Bridged
+        # to HERMES_MEDIA_ALLOW_DIRS at gateway startup. Tilde paths are
+        # expanded.
+        "media_delivery_allow_dirs": [],
+        # When true, files whose mtime is within ``trust_recent_files_seconds``
+        # of "now" are trusted for native delivery even outside the cache /
+        # operator allowlist — useful for ``pandoc -o /tmp/report.pdf`` or
+        # PDFs the agent writes into a working directory. System paths
+        # (/etc, /proc, ~/.ssh, ~/.aws, etc.) remain blocked regardless.
+        # Disable to fall back to pure-allowlist mode. Bridged to
+        # HERMES_MEDIA_TRUST_RECENT_FILES.
+        "trust_recent_files": True,
+        # Recency window in seconds. 600 (10 min) comfortably covers a
+        # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
+        "trust_recent_files_seconds": 600,
+    },
+
     # Session storage — controls automatic cleanup of ~/.hermes/state.db.
     # state.db accumulates every session, message, tool call, and FTS5 index
     # entry forever.  Without auto-pruning, a heavy user (gateway + cron)
@@ -1730,6 +1847,7 @@ DEFAULT_CONFIG = {
         "servers": {},
     },
 
+
     # X (Twitter) Search via xAI's built-in x_search Responses tool.
     # The tool registers when xAI credentials are available (SuperGrok
     # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
@@ -1775,11 +1893,29 @@ DEFAULT_CONFIG = {
             # ~/.hermes/bin/ on first use.  When False you must install
             # bws yourself and have it on PATH.
             "auto_install": True,
+            # Bitwarden region / self-hosted endpoint.  Empty string
+            # means use the bws CLI default (US Cloud,
+            # https://vault.bitwarden.com).  Set to
+            # https://vault.bitwarden.eu for EU Cloud, or your own URL
+            # for self-hosted Bitwarden.  Plumbed into the bws subprocess
+            # as BWS_SERVER_URL.  Prompted for during
+            # `hermes secrets bitwarden setup`.
+            "server_url": "",
         },
     },
 
+    # Paste collapse thresholds (TUI + CLI).
+    # collapse_threshold: paste collapses to a file reference when line count
+    #   exceeds this value (bracketed paste, safe: appends to existing text).
+    # collapse_threshold_fallback: same but for the fallback heuristic used
+    #   by terminals without bracketed paste support (destructive: replaces
+    #   entire buffer).  0 = disabled.
+    "paste_collapse_threshold": 5,
+    "paste_collapse_threshold_fallback": 0,
+
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================
@@ -3982,8 +4118,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print(f"  Get your key at: {var['url']}")
             
             if var.get("password"):
-                import getpass
-                value = getpass.getpass(f"  {var['prompt']}: ")
+                value = masked_secret_prompt(f"  {var['prompt']}: ")
             else:
                 value = input(f"  {var['prompt']}: ").strip()
             
@@ -4034,8 +4169,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     else:
                         print(f"  {info.get('description', name)}")
                     if info.get("password"):
-                        import getpass
-                        value = getpass.getpass(f"  {info.get('prompt', name)} (Enter to skip): ")
+                        value = masked_secret_prompt(
+                            f"  {info.get('prompt', name)} (Enter to skip): "
+                        )
                     else:
                         value = input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
                     if value:
@@ -4814,6 +4950,7 @@ def save_env_value(key: str, value: str):
         return
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
+    _reject_denylisted_env_var(key)
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)

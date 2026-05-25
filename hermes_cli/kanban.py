@@ -550,6 +550,39 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_promote = sub.add_parser(
+        "promote",
+        help="Manually move one or more todo/blocked tasks to ready (recovery path)",
+    )
+    p_promote.add_argument("task_id")
+    p_promote.add_argument(
+        "reason",
+        nargs="*",
+        help="Audit-trail reason (recorded on the task_events row)",
+    )
+    p_promote.add_argument(
+        "--ids",
+        nargs="+",
+        default=None,
+        help="Additional task ids to promote with the same reason (bulk mode)",
+    )
+    p_promote.add_argument(
+        "--force",
+        action="store_true",
+        help="Promote even if parent dependencies are not yet done/archived",
+    )
+    p_promote.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the promotion without mutating state",
+    )
+    p_promote.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Emit machine-readable JSON result",
+    )
+
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
                            help="Task ids to archive (default mode)")
@@ -899,6 +932,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "block":    _cmd_block,
         "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
+        "promote":  _cmd_promote,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
         "dispatch": _cmd_dispatch,
@@ -1952,6 +1986,57 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}")
+    return 0 if not failed else 1
+
+
+def _cmd_promote(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip() if args.reason else None
+    author = _profile_author()
+    as_json = getattr(args, "json", False)
+    extra_ids = list(getattr(args, "ids", None) or [])
+    # Dedupe while preserving order; positional task_id always first.
+    ids: list[str] = []
+    seen: set[str] = set()
+    for tid in [args.task_id, *extra_ids]:
+        if tid not in seen:
+            ids.append(tid)
+            seen.add(tid)
+
+    results: list[dict[str, object]] = []
+    with kb.connect() as conn:
+        for tid in ids:
+            ok, err = kb.promote_task(
+                conn,
+                tid,
+                actor=author,
+                reason=reason,
+                force=bool(args.force),
+                dry_run=bool(args.dry_run),
+            )
+            results.append({
+                "task_id": tid,
+                "promoted": ok,
+                "dry_run": bool(args.dry_run),
+                "forced": bool(args.force),
+                "reason": reason,
+                "error": err,
+            })
+
+    failed = [r for r in results if not r["promoted"]]
+    if as_json:
+        # Single-id stays a flat object for back-compat; bulk emits a list.
+        payload: object = results[0] if len(results) == 1 else results
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if not failed else 1
+
+    tag = " (dry)" if args.dry_run else ""
+    label = "Would promote" if args.dry_run else "Promoted"
+    for r in results:
+        if r["promoted"]:
+            suffix = f": {reason}" if reason else ""
+            print(f"{label} {r['task_id']} -> ready{tag}{suffix}")
+        else:
+            print(f"cannot promote {r['task_id']}: {r['error']}", file=sys.stderr)
     return 0 if not failed else 1
 
 

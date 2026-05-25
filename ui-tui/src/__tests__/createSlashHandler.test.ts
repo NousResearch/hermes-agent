@@ -222,6 +222,21 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
+  it('keeps visible scrollback when branching a TUI session', async () => {
+    patchUiState({ sid: 'sid-parent' })
+    const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', title: 'branch title' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/branch branch title')).toBe(true)
+
+    expect(rpc).toHaveBeenCalledWith('session.branch', { name: 'branch title', session_id: 'sid-parent' })
+    await vi.waitFor(() => {
+      expect(getUiState().sid).toBe('sid-branch')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('branched → branch title')
+    })
+    expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+  })
+
   it('reloads skills in the live gateway and refreshes the catalog', async () => {
     const rpc = vi.fn((method: string) => {
       if (method === 'skills.reload') {

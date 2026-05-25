@@ -1453,7 +1453,13 @@ def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
         '<article data-id="hermes-agent-lanes-decision-tree" data-title="Hermes Agent Lanes & Specialist Agents"><p>Lane decision tree.</p></article>',
         encoding="utf-8",
     )
-    (outputs / "hermes-agent-lanes-decision-tree.html").write_text("<html><p>Lane decision tree.</p></html>", encoding="utf-8")
+    (outputs / "hermes-agent-lanes-decision-tree.html").write_text(
+        """
+        <!doctype html><html><head><style>:root{--amber:#f5a400} body{background:#030302}</style></head>
+        <body><header>ACTA / OUTPUTS</header><h1>Lane decision tree</h1><p>Use topic lanes for lightweight routing.</p></body></html>
+        """,
+        encoding="utf-8",
+    )
     (tmp_path / "config.yaml").write_text(
         "cron:\n  html_artifacts:\n    publish:\n      enabled: true\n      endpoint: https://acta.imperatr.com\n"
     )
@@ -1483,6 +1489,12 @@ def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
     backing_publish = next(item for item in published if item["object_key"] == "public/outputs/hermes-agent-lanes-decision-tree.html")
     assert backing_publish["path"].name == "hermes-agent-lanes-decision-tree.html"
     assert "Lane decision tree" in backing_publish["html"]
+    assert "Use topic lanes for lightweight routing." in backing_publish["html"]
+    assert "Signed Acta detail. Same Imperatr app shell" in backing_publish["html"]
+    assert "#756cff" in backing_publish["html"]
+    assert "--amber" not in backing_publish["html"]
+    assert "#f5a400" not in backing_publish["html"]
+    assert "background:#030302" not in backing_publish["html"]
     runs_publish = next(item for item in published if item["object_key"] == "public/runs/index.html")
     assert runs_publish["path"].name == "runs.html"
     assert "Acta Runs" in runs_publish["html"]

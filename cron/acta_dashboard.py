@@ -1296,6 +1296,8 @@ def publish_catalog_output_artifacts(
     shelf and uploads them under slug-shaped object keys.
     """
     artifacts_dir = default_outputs_dir(hermes_home).resolve()
+    staging_dir = hermes_home / "acta" / "published-outputs"
+    staging_dir.mkdir(parents=True, exist_ok=True)
     for item in outputs:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", item.id):
             continue
@@ -1310,12 +1312,25 @@ def publish_catalog_output_artifacts(
         if not resolved.exists() or resolved.is_symlink() or not resolved.is_file():
             continue
         try:
+            wrapped_path = staging_dir / f"{item.id}.html"
+            wrapped_path.write_text(
+                render_acta_detail_report(
+                    _html_artifact_markdown_body(resolved, title=item.title),
+                    HtmlReportMetadata(
+                        job_id=f"catalog:{item.id}",
+                        job_name=item.title,
+                        run_time=item.updated_at or item.created_at,
+                        source_filename=resolved.name,
+                    ),
+                ),
+                encoding="utf-8",
+            )
             publish_html_artifact(
-                resolved,
+                wrapped_path,
                 {"id": "acta-output"},
                 {**publish_settings, "object_key": f"public/outputs/{item.id}.html"},
             )
-        except HtmlArtifactPublishError:
+        except (OSError, HtmlArtifactPublishError):
             continue
 
 
@@ -1630,22 +1645,18 @@ def _detail_body(item: CronSituationItem) -> str:
     return response
 
 
-def _html_detail_body(item: CronSituationItem) -> str:
-    """Extract useful text from an HTML-only artifact for the current v9 detail shell.
+def _html_artifact_markdown_body(path: Path, *, title: str) -> str:
+    """Extract useful text from an HTML artifact for the current Acta shell.
 
-    Markdown artifacts are the normal Acta path and render directly through
-    ``_detail_body``. Some historical cron runs only have an HTML artifact,
-    though; publishing that file directly can resurrect archived amber/terminal
-    styling on click-through. This fallback keeps the signed detail route in the
-    current Imperatr shell by carrying over visible text while dropping legacy
-    presentation markup and design-contract residue.
+    Historical catalog artifacts are often full standalone HTML pages with their
+    own amber/terminal skin. They are source material, not the UI contract. Acta
+    republishes the visible content inside the current Imperatr detail shell so a
+    persistent output cannot resurrect the old design on click-through.
     """
-    if not item.latest_html:
-        return f"# {item.name}\n\nNo output artifact exists yet."
     try:
-        raw = item.latest_html.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return f"# {item.name}\n\nThe HTML-only artifact could not be read."
+        return f"# {title}\n\nThe HTML artifact could not be read."
     body_match = re.search(r"<body[^>]*>(.*?)</body>", raw, flags=re.IGNORECASE | re.DOTALL)
     visible = body_match.group(1) if body_match else raw
     visible = re.sub(r"<script\b[^>]*>.*?</script>", "\n", visible, flags=re.IGNORECASE | re.DOTALL)
@@ -1664,8 +1675,23 @@ def _html_detail_body(item: CronSituationItem) -> str:
         lines.append(cleaned)
     summary = "\n\n".join(lines[:80]).strip()
     if not summary:
-        summary = "HTML-only artifact normalized into the current Acta detail shell."
-    return f"# {item.name}\n\n{summary}"
+        summary = "HTML artifact normalized into the current Acta detail shell."
+    return f"# {title}\n\n{summary}"
+
+
+def _html_detail_body(item: CronSituationItem) -> str:
+    """Extract useful text from an HTML-only artifact for the current v9 detail shell.
+
+    Markdown artifacts are the normal Acta path and render directly through
+    ``_detail_body``. Some historical cron runs only have an HTML artifact,
+    though; publishing that file directly can resurrect archived amber/terminal
+    styling on click-through. This fallback keeps the signed detail route in the
+    current Imperatr shell by carrying over visible text while dropping legacy
+    presentation markup and design-contract residue.
+    """
+    if not item.latest_html:
+        return f"# {item.name}\n\nNo output artifact exists yet."
+    return _html_artifact_markdown_body(item.latest_html, title=item.name)
 
 
 def attach_artifact_urls(

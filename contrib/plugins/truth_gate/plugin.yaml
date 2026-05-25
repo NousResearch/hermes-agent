@@ -1,0 +1,6 @@
+name: truth_gate
+version: 0.1.0
+description: Update-safe Hermes plugin adapter for SuperJarvis Truth Gate final-answer validation.
+author: Hermes Agent
+kind: standalone
+entry_point: __init__.py

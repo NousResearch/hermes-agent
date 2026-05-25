@@ -139,6 +139,11 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # ── Kanban→TUI notification FIFO (event-driven, zero polling) ─────────
 _KANBAN_FIFO_PATH = os.path.expanduser("~/.hermes/tui_kanban.fifo")
 
+# Global queue decouples FIFO reader from session dispatch.
+# The reader thread is eager (starts at import) and immortal.
+_kanban_fifo_queue: queue.Queue = queue.Queue(maxsize=10000)
+_kanban_global_reader_thread: threading.Thread | None = None
+
 # Create FIFO on import (idempotent). Clean up at exit so stale FIFOs
 # don't block future TUI starts (open() on a stale FIFO blocks forever).
 try:
@@ -160,6 +165,55 @@ def _cleanup_kanban_fifo() -> None:
 
 
 _atexit.register(_cleanup_kanban_fifo)
+
+
+def _start_global_kanban_reader() -> threading.Thread:
+    """Start the global kanban FIFO reader thread (idempotent, eager).
+
+    Reads JSON lines from the FIFO and pushes parsed dicts into
+    _kanban_fifo_queue.  Each session's notification poller drains
+    the queue for matching subscriptions.  This ensures the FIFO
+    always has a reader — eliminating ENXIO races — and notifications
+    survive gateway restart (they queue until a session starts).
+    """
+    global _kanban_global_reader_thread
+    if _kanban_global_reader_thread is not None and _kanban_global_reader_thread.is_alive():
+        return _kanban_global_reader_thread
+
+    def _reader() -> None:
+        while True:
+            try:
+                with open(_KANBAN_FIFO_PATH, "r", encoding="utf-8") as _fifo:
+                    for _line in _fifo:
+                        _line = _line.strip()
+                        if not _line:
+                            continue
+                        try:
+                            _data = json.loads(_line)
+                            _kanban_fifo_queue.put(_data, block=False)
+                        except Exception:
+                            pass
+            except (OSError, IOError):
+                # FIFO removed or TUI shutting down — recreate if missing
+                # so future writers can connect.
+                if not os.path.exists(_KANBAN_FIFO_PATH):
+                    try:
+                        os.mkfifo(_KANBAN_FIFO_PATH, 0o600)
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+            except Exception:
+                logger.exception("kanban_fifo_reader_error")
+                time.sleep(1.0)
+
+    _t = threading.Thread(target=_reader, daemon=True, name="kanban-fifo-global")
+    _t.start()
+    _kanban_global_reader_thread = _t
+    return _t
+
+
+# Eager start: the FIFO always has a reader as long as the gateway process lives.
+_start_global_kanban_reader()
 
 
 def _format_kanban_notification(ev, sub) -> "str | None":
@@ -195,94 +249,75 @@ def _format_kanban_notification(ev, sub) -> "str | None":
     return None
 
 
-def _start_kanban_fifo_reader(sid: str, session: dict) -> None:
-    """Start daemon thread that reads kanban notifications from a FIFO.
-
-    Blocks at the OS level on open() — zero polling, zero CPU when idle.
-    When data arrives, queries kanban DB for CLI-subscribed events and
-    injects a notification into the agent session.
+def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
+    """Query DB for CLI subscriptions matching ``data["task_id"]`` and
+    inject a formatted notification into the agent session.
     """
-    import json
+    _task_id = data.get("task_id", "")
+    if not _task_id:
+        return
 
-    def _fifo_reader() -> None:
-        _FMT_KINDS = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
-        _cursors: dict[tuple, int] = {}
-        while not session.get("_finalized"):
-            try:
-                # open() blocks until a writer opens the FIFO.
-                # for line in fifo blocks until a full line is written.
-                # Both are OS-level sleeps — zero polling.
-                with open(_KANBAN_FIFO_PATH, "r", encoding="utf-8") as _fifo:
-                    for _line in _fifo:
-                        if session.get("_finalized"):
-                            return
-                        _line = _line.strip()
-                        if not _line:
-                            continue
+    _FMT_KINDS = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
+
+    try:
+        from hermes_cli import kanban_db as _kb
+        _conn = _kb.connect()
+        try:
+            _subs = _kb.list_notify_subs(_conn)
+            for _sub in _subs:
+                if _sub.get("platform") != "cli":
+                    continue
+                if _sub["task_id"] != _task_id:
+                    continue
+
+                _cursors = session.setdefault("_kanban_cursors", {})
+                _ckey = (_task_id, _sub.get("chat_id", sid))
+                _last = _cursors.get(_ckey, _sub.get("last_event_id", 0))
+                _, _events = _kb.unseen_events_for_sub(
+                    _conn, task_id=_task_id,
+                    platform="cli", chat_id=_sub["chat_id"],
+                    thread_id=_sub.get("thread_id") or "",
+                    kinds=_FMT_KINDS,
+                )
+                if _events:
+                    _max_id = max(
+                        _last,
+                        max(
+                            e.id if hasattr(e, "id") else e["id"]
+                            for e in _events
+                        ),
+                    )
+                    _cursors[_ckey] = _max_id
+                for _ev in _events:
+                    _msg = _format_kanban_notification(_ev, _sub)
+                    if _msg:
+                        _emit("status.update", sid, {"kind": "process", "text": _msg})
+                        with session["history_lock"]:
+                            if session.get("running"):
+                                continue  # defer until idle
+                            session["running"] = True
+                        _rid = f"__kanban__{int(time.time() * 1000)}"
                         try:
-                            _data = json.loads(_line)
+                            _emit("message.start", sid)
+                            _run_prompt_submit(_rid, sid, session, _msg)
                         except Exception:
-                            continue
-                        _task_id = _data.get("task_id", "")
-                        if not _task_id:
-                            continue
+                            with session["history_lock"]:
+                                session["running"] = False
+        finally:
+            _conn.close()
+    except Exception:
+        pass  # Non-fatal — don't break the poller loop
 
-                        # Found a kanban event — query DB for CLI subscriptions
-                        try:
-                            from hermes_cli import kanban_db as _kb
-                            _conn = _kb.connect()
-                            try:
-                                _subs = _kb.list_notify_subs(_conn)
-                                for _sub in _subs:
-                                    if _sub.get("platform") != "cli":
-                                        continue
-                                    if _sub["task_id"] != _task_id:
-                                        continue
-                                    _ckey = (_task_id, _sub.get("chat_id", sid))
-                                    _last = _cursors.get(_ckey, _sub.get("last_event_id", 0))
-                                    _, _events = _kb.unseen_events_for_sub(
-                                        _conn, task_id=_task_id,
-                                        platform="cli", chat_id=_sub["chat_id"],
-                                        thread_id=_sub.get("thread_id") or "",
-                                        kinds=_FMT_KINDS,
-                                    )
-                                    if _events:
-                                        _max_id = max(
-                                            _last,
-                                            max(
-                                                e.id if hasattr(e, "id") else e["id"]
-                                                for e in _events
-                                            ),
-                                        )
-                                        _cursors[_ckey] = _max_id
-                                    for _ev in _events:
-                                        _msg = _format_kanban_notification(_ev, _sub)
-                                        if _msg:
-                                            # Same delivery pattern as process_registry
-                                            _emit("status.update", sid, {"kind": "process", "text": _msg})
-                                            with session["history_lock"]:
-                                                if session.get("running"):
-                                                    continue  # defer until idle
-                                                session["running"] = True
-                                            _rid = f"__kanban__{int(time.time() * 1000)}"
-                                            try:
-                                                _emit("message.start", sid)
-                                                _run_prompt_submit(_rid, sid, session, _msg)
-                                            except Exception:
-                                                with session["history_lock"]:
-                                                    session["running"] = False
-                            finally:
-                                _conn.close()
-                        except Exception:
-                            pass  # Non-fatal — don't break the reader loop
-            except (OSError, IOError):
-                # FIFO removed or TUI shutting down — retry next cycle
-                # without spinning (open will block on re-try)
-                pass
 
-    # Start the daemon reader thread
-    _t = threading.Thread(target=_fifo_reader, daemon=True, name="kanban-fifo")
-    _t.start()
+def _start_kanban_fifo_reader(sid: str, session: dict) -> threading.Thread:
+    """Ensure the global kanban FIFO reader is running.
+
+    Per-session FIFO readers are replaced by a single global reader
+    that feeds a shared queue.  Each session's notification poller
+    drains the queue for matching subscriptions.  This function is
+    kept for backward compatibility at existing call sites.
+    """
+    return _start_global_kanban_reader()
 
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
@@ -734,7 +769,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
             _wire_callbacks(sid)
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
-            _start_kanban_fifo_reader(sid, _sessions[sid])
+            _sessions[sid]["_kanban_fifo_thread"] = _start_kanban_fifo_reader(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent, current)
@@ -2567,7 +2602,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         pass
     _wire_callbacks(sid)
     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
-    _start_kanban_fifo_reader(sid, _sessions[sid])
+    _sessions[sid]["_kanban_fifo_thread"] = _start_kanban_fifo_reader(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent, _sessions[sid]))
 
@@ -4071,6 +4106,12 @@ def _notification_poller_loop(
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
+            # No process event — check kanban queue while we're awake.
+            try:
+                _kanban_evt = _kanban_fifo_queue.get_nowait()
+                _dispatch_kanban_notification(sid, session, _kanban_evt)
+            except queue.Empty:
+                pass
             continue
 
         _evt_sid = evt.get("session_id", "")

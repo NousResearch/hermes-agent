@@ -4330,8 +4330,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
                 (session_id,),
             )
-            messages = [
-                {
+            messages = []
+            for row in msg_cursor.fetchall():
+                msg = {
                     "role": row[0],
                     "content": row[1],
                     "tool_calls": row[2],
@@ -4339,8 +4340,40 @@ class APIServerAdapter(BasePlatformAdapter):
                     "reasoning": row[4],
                     "timestamp": row[5],
                 }
-                for row in msg_cursor.fetchall()
-            ]
+                # Add tool display metadata (emoji, label) for historical sessions.
+                # During SSE streaming these are sent as hermes.tool.progress events,
+                # but they are not stored in the database — compute them on retrieval.
+                _tc = msg.get("tool_calls")
+                if _tc:
+                    try:
+                        _tc_data = json.loads(_tc) if isinstance(_tc, str) else _tc
+                    except (json.JSONDecodeError, TypeError):
+                        _tc_data = None
+                    if isinstance(_tc_data, list):
+                        from agent.display import get_tool_emoji, build_tool_preview
+                        tool_progress = []
+                        for _call in _tc_data:
+                            _fn = None
+                            if isinstance(_call, dict):
+                                _fn_data = _call.get("function", _call)
+                                _fn = _fn_data.get("name") if isinstance(_fn_data, dict) else None
+                            if _fn:
+                                _args = {}
+                                try:
+                                    _args_raw = _fn_data.get("arguments", "{}")
+                                    _args = json.loads(_args_raw) if isinstance(_args_raw, str) else _args_raw
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                                _cid = _call.get("id", "") if isinstance(_call, dict) else ""
+                                tool_progress.append({
+                                    "tool": _fn,
+                                    "emoji": get_tool_emoji(_fn),
+                                    "label": build_tool_preview(_fn, _args) or _fn,
+                                    "toolCallId": _cid,
+                                })
+                        if tool_progress:
+                            msg["tool_progress"] = tool_progress
+                messages.append(msg)
 
             return web.json_response({
                 "session": session,

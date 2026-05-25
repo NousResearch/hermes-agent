@@ -1775,15 +1775,10 @@ def _find_agent_browser() -> str:
     # (not before the search) to prevent a race where a concurrent thread
     # sees resolved=True but _cached_agent_browser is still None.
 
-    # Check if it's in PATH (global install)
-    which_result = shutil.which("agent-browser")
-    if which_result:
-        _cached_agent_browser = which_result
-        _agent_browser_resolved = True
-        return which_result
-
     # Build an extended search PATH including Hermes-managed Node, macOS
     # versioned Homebrew installs, and fallback system dirs like Termux.
+    # Check these first — on WSL the system PATH may include Windows-side npm
+    # global binaries that don't actually work in the Linux environment.
     extended_path = _merge_browser_path("")
     if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
@@ -1791,6 +1786,13 @@ def _find_agent_browser() -> str:
             _cached_agent_browser = which_result
             _agent_browser_resolved = True
             return which_result
+
+    # Check if it's in PATH (global install) — fallback after known-good paths.
+    which_result = shutil.which("agent-browser")
+    if which_result:
+        _cached_agent_browser = which_result
+        _agent_browser_resolved = True
+        return which_result
 
     # Check local node_modules/.bin/ (npm install in repo root).
     # On Windows, npm drops three shims in .bin: an extensionless POSIX shell
@@ -3070,7 +3072,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     import base64
     import uuid as uuid_mod
     from hermes_constants import get_hermes_dir
-    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+    screenshots_dir = _get_screenshots_base() / "screenshots"
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     effective_task_id = _last_session_key(task_id or "default")
 
@@ -3104,8 +3106,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             _lp_fallback_warning = fb_result.get("fallback_warning")
             fb_path = fb_result.get("data", {}).get("path", "")
             if fb_path and os.path.exists(fb_path):
-                from hermes_constants import get_hermes_dir
-                screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+                screenshots_dir = _get_screenshots_base() / "screenshots"
                 screenshots_dir.mkdir(parents=True, exist_ok=True)
                 import shutil as _shutil_vision
                 persistent_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
@@ -3247,22 +3248,24 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         if vision_model:
             call_kwargs["model"] = vision_model
         # Try full-size screenshot; on size-related rejection, downscale and retry.
+        # qwen3.6-plus 等模型的请求体限制较小，使用 512KB 作为降级目标。
+        _VISION_RESIZE_LIMIT = 512 * 1024
         try:
             response = call_llm(**call_kwargs)
         except Exception as _api_err:
             from tools.vision_tools import (
-                _is_image_size_error, _resize_image_for_vision, _RESIZE_TARGET_BYTES,
+                _is_image_size_error, _resize_image_for_vision,
             )
-            if (_is_image_size_error(_api_err)
-                    and len(data_url) > _RESIZE_TARGET_BYTES):
+            if _is_image_size_error(_api_err) and len(data_url) > _VISION_RESIZE_LIMIT:
                 logger.info(
                     "Vision API rejected screenshot (%.1f MB); "
                     "auto-resizing to ~%.0f MB and retrying...",
                     len(data_url) / (1024 * 1024),
-                    _RESIZE_TARGET_BYTES / (1024 * 1024),
+                    _VISION_RESIZE_LIMIT / (1024 * 1024),
                 )
                 data_url = _resize_image_for_vision(
-                    screenshot_path, mime_type="image/png")
+                    screenshot_path, mime_type="image/png",
+                    max_base64_bytes=_VISION_RESIZE_LIMIT)
                 call_kwargs["messages"][0]["content"][1]["image_url"]["url"] = data_url
                 response = call_llm(**call_kwargs)
             else:
@@ -3294,6 +3297,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         error_info = {"success": False, "error": f"Error during vision analysis: {str(e)}"}
         if screenshot_path.exists():
             error_info["screenshot_path"] = str(screenshot_path)
+            error_info["screenshot_url"] = _build_workspace_url(screenshot_path)
             error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."
         _copy_fallback_warning(error_info, result if 'result' in locals() else {})
         return json.dumps(error_info, ensure_ascii=False)
@@ -3616,6 +3620,20 @@ def _chromium_installed() -> bool:
             ):
                 _cached_chromium_installed = True
                 return True
+
+    # 4. agent-browser's own browser cache (~/.agent-browser/browsers/)
+    #    agent-browser downloads Chrome builds into ``chrome-<version>``
+    #    directories (e.g. ``chrome-148.0.7778.56``), not the ``chromium-*``
+    #    naming that Playwright uses.
+    ab_browsers = os.path.join(os.path.expanduser("~"), ".agent-browser", "browsers")
+    if os.path.isdir(ab_browsers):
+        try:
+            for entry in os.listdir(ab_browsers):
+                if entry.startswith("chrome-"):
+                    _cached_chromium_installed = True
+                    return True
+        except OSError:
+            pass
 
     _cached_chromium_installed = False
     return False

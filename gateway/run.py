@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import locale
 import shlex
 import sys
 import signal
@@ -7428,7 +7429,9 @@ class GatewayRunner:
                                 env=sanitized_env,
                             )
                             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode("utf-8", errors="replace").strip()
+                            output = (stdout or stderr).decode(
+                                locale.getpreferredencoding(False), errors="replace"
+                            ).strip()
                             # Redact any remaining sensitive patterns in output
                             if output:
                                 from agent.redact import redact_sensitive_text

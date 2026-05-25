@@ -30,7 +30,7 @@ class NodeClient:
 
     # ----- core RPC -----------------------------------------------------
 
-    def _rpc(self, type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _rpc(self, type: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Send one request, return the response payload dict.
 
         Raises RuntimeError when the server sends an ``error`` envelope
@@ -77,8 +77,8 @@ class NodeClient:
         duration: Optional[str] = None,
         headed: bool = False,
         mode: str = "transcribe",
-    ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "url": url,
             "guest_name": guest_name,
             "headed": bool(headed),
@@ -88,20 +88,20 @@ class NodeClient:
             payload["duration"] = duration
         return self._rpc("start_bot", payload)
 
-    def stop(self) -> Dict[str, Any]:
+    def stop(self) -> dict[str, Any]:
         return self._rpc("stop", {})
 
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> dict[str, Any]:
         return self._rpc("status", {})
 
-    def transcript(self, last: Optional[int] = None) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {}
+    def transcript(self, last: Optional[int] = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
         if last is not None:
             payload["last"] = int(last)
         return self._rpc("transcript", payload)
 
-    def say(self, text: str) -> Dict[str, Any]:
+    def say(self, text: str) -> dict[str, Any]:
         return self._rpc("say", {"text": str(text)})
 
-    def ping(self) -> Dict[str, Any]:
+    def ping(self) -> dict[str, Any]:
         return self._rpc("ping", {})

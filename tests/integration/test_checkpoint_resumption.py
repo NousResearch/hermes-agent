@@ -53,7 +53,7 @@ def create_test_dataset(num_prompts: int = 20) -> Path:
     return dataset_file
 
 
-def monitor_checkpoint_during_run(checkpoint_file: Path, duration: int = 30) -> List[Dict[str, Any]]:
+def monitor_checkpoint_during_run(checkpoint_file: Path, duration: int = 30) -> list[dict[str, Any]]:
     """
     Monitor checkpoint file during a batch run to see when it gets updated.
     

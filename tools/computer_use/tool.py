@@ -160,7 +160,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     """Test/CI stub. Records calls; returns trivial results."""
 
     def __init__(self) -> None:
-        self.calls: List[Tuple[str, Dict[str, Any]]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
         self._started = False
 
     def start(self) -> None: self._started = True
@@ -192,7 +192,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("key", {"keys": keys}))
         return ActionResult(ok=True, action="key")
 
-    def list_apps(self) -> List[Dict[str, Any]]:
+    def list_apps(self) -> list[dict[str, Any]]:
         self.calls.append(("list_apps", {}))
         return []
 
@@ -209,7 +209,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
 # Dispatch
 # ---------------------------------------------------------------------------
 
-def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
+def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
     """Main entry point — dispatched by tools.registry.
 
     Returns either a JSON string (text-only) or a dict marked `_multimodal`
@@ -261,7 +261,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return json.dumps({"error": f"{action} failed: {e}"})
 
 
-def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
+def _request_approval(action: str, args: dict[str, Any]) -> Optional[str]:
     """Return None if approved, or a JSON error string if denied."""
     global _session_auto_approve, _always_allow
     if _session_auto_approve:
@@ -289,7 +289,7 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     return json.dumps({"error": "denied by user", "action": action})
 
 
-def _summarize_action(action: str, args: Dict[str, Any]) -> str:
+def _summarize_action(action: str, args: dict[str, Any]) -> str:
     if action in {"click", "double_click", "right_click", "middle_click"}:
         if args.get("element") is not None:
             return f"{action} element #{args['element']}"
@@ -313,7 +313,7 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     return action
 
 
-def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
+def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any]) -> Any:
     capture_after = bool(args.get("capture_after"))
 
     if action == "capture":
@@ -412,7 +412,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 # ---------------------------------------------------------------------------
 
 def _text_response(res: ActionResult) -> str:
-    payload: Dict[str, Any] = {"ok": res.ok, "action": res.action}
+    payload: dict[str, Any] = {"ok": res.ok, "action": res.action}
     if res.message:
         payload["message"] = res.message
     if res.meta:
@@ -521,7 +521,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             f"raise max_elements or pass app= to narrow)"
         )
     summary = "\n".join(summary_lines)
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "mode": cap.mode,
         "width": cap.width,
         "height": cap.height,
@@ -708,8 +708,8 @@ def _maybe_follow_capture(
     return json.dumps(data)
 
 
-def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str]:
-    out: List[str] = []
+def _format_elements(elements: list[UIElement], max_lines: int = 40) -> list[str]:
+    out: list[str] = []
     for e in elements[:max_lines]:
         label = e.label.replace("\n", " ")[:60]
         out.append(f"  #{e.index} {e.role} {label!r} @ {e.bounds}"
@@ -719,7 +719,7 @@ def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str
     return out
 
 
-def _element_to_dict(e: UIElement) -> Dict[str, Any]:
+def _element_to_dict(e: UIElement) -> dict[str, Any]:
     return {
         "index": e.index,
         "role": e.role,
@@ -744,6 +744,6 @@ def check_computer_use_requirements() -> bool:
     return cua_driver_binary_available()
 
 
-def get_computer_use_schema() -> Dict[str, Any]:
+def get_computer_use_schema() -> dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA
     return COMPUTER_USE_SCHEMA

@@ -158,7 +158,7 @@ class GoalState:
     # include them so the agent works toward them and the judge factors
     # them into the verdict. Backwards-compatible: defaults to empty so
     # old state_meta rows load unchanged.
-    subgoals: List[str] = field(default_factory=list)
+    subgoals: list[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -167,7 +167,7 @@ class GoalState:
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
-        subgoals: List[str] = []
+        subgoals: list[str] = []
         if isinstance(raw_subgoals, list):
             subgoals = [str(s).strip() for s in raw_subgoals if str(s).strip()]
         return cls(
@@ -203,7 +203,7 @@ def _meta_key(session_id: str) -> str:
     return f"goal:{session_id}"
 
 
-_DB_CACHE: Dict[str, Any] = {}
+_DB_CACHE: dict[str, Any] = {}
 
 
 def _get_session_db() -> Optional[Any]:
@@ -319,7 +319,7 @@ def _goal_judge_max_tokens() -> int:
     return DEFAULT_JUDGE_MAX_TOKENS
 
 
-def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
+def _parse_judge_response(raw: str) -> tuple[bool, str, bool]:
     """Parse the judge's reply. Fail-open to ``(False, "<reason>", parse_failed)``.
 
     Returns ``(done, reason, parse_failed)``. ``parse_failed`` is True when the
@@ -342,7 +342,7 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
             text = text[nl + 1:]
 
     # First try: parse the whole blob.
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[dict[str, Any]] = None
     try:
         data = json.loads(text)
     except Exception:
@@ -373,8 +373,8 @@ def judge_goal(
     last_response: str,
     *,
     timeout: float = DEFAULT_JUDGE_TIMEOUT,
-    subgoals: Optional[List[str]] = None,
-) -> Tuple[str, str, bool]:
+    subgoals: Optional[list[str]] = None,
+) -> tuple[str, str, bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed)`` where verdict is ``"done"``,
@@ -622,7 +622,7 @@ class GoalManager:
         last_response: str,
         *,
         user_initiated: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run the judge and update state. Return a decision dict.
 
         ``user_initiated`` distinguishes a real user prompt (True) from a

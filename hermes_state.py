@@ -463,7 +463,7 @@ class SessionDB:
                 self._conn = None
 
     @staticmethod
-    def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
+    def _parse_schema_columns(schema_sql: str) -> dict[str, dict[str, str]]:
         """Extract expected columns per table from SCHEMA_SQL.
 
         Uses an in-memory SQLite database to parse the SQL — SQLite itself
@@ -478,12 +478,12 @@ class SessionDB:
         ref = sqlite3.connect(":memory:")
         try:
             ref.executescript(schema_sql)
-            table_columns: Dict[str, Dict[str, str]] = {}
+            table_columns: dict[str, dict[str, str]] = {}
             for (tbl,) in ref.execute(
                 "SELECT name FROM sqlite_master "
                 "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall():
-                cols: Dict[str, str] = {}
+                cols: dict[str, str] = {}
                 for row in ref.execute(
                     f'PRAGMA table_info("{tbl}")'
                 ).fetchall():
@@ -701,7 +701,7 @@ class SessionDB:
         session_id: str,
         source: str,
         model: str = None,
-        model_config: Dict[str, Any] = None,
+        model_config: dict[str, Any] = None,
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
@@ -944,7 +944,7 @@ class SessionDB:
 
         return self._execute_write(_do) or 0
 
-    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
         """Get a session by ID."""
         with self._lock:
             cursor = self._conn.execute(
@@ -1065,7 +1065,7 @@ class SessionDB:
             row = cursor.fetchone()
         return row["title"] if row else None
 
-    def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+    def get_session_by_title(self, title: str) -> Optional[dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""
         with self._lock:
             cursor = self._conn.execute(
@@ -1177,13 +1177,13 @@ class SessionDB:
     def list_sessions_rich(
         self,
         source: str = None,
-        exclude_sources: List[str] = None,
+        exclude_sources: list[str] = None,
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
         order_by_last_active: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
         Returns dicts with keys: id, source, model, title, started_at, ended_at,
@@ -1364,7 +1364,7 @@ class SessionDB:
 
         return sessions
 
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def _get_session_rich_row(self, session_id: str) -> Optional[dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the
         session doesn't exist.
@@ -1542,7 +1542,7 @@ class SessionDB:
 
         return self._execute_write(_do)
 
-    def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+    def replace_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
 
         Used by transcript-rewrite flows such as /retry, /undo, and /compress.
@@ -1628,7 +1628,7 @@ class SessionDB:
 
         self._execute_write(_do)
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         """Load all messages for a session, ordered by insertion order."""
         with self._lock:
             cursor = self._conn.execute(
@@ -1655,7 +1655,7 @@ class SessionDB:
         session_id: str,
         around_message_id: int,
         window: int = 5,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Load a window of messages anchored on a specific message id.
 
         Returns a dict with:
@@ -1734,8 +1734,8 @@ class SessionDB:
         around_message_id: int,
         window: int = 5,
         bookend: int = 3,
-        keep_roles: Optional[Tuple[str, ...]] = ("user", "assistant"),
-    ) -> Dict[str, Any]:
+        keep_roles: Optional[tuple[str, ...]] = ("user", "assistant"),
+    ) -> dict[str, Any]:
         """Return an anchored window plus session bookends.
 
         Built on top of ``get_messages_around``. Three slices:
@@ -1797,8 +1797,8 @@ class SessionDB:
         # by id range, role, and non-empty content — tool-call-only assistant
         # turns (content='' with tool_calls populated) are excluded so they
         # don't crowd out actual prose openings/closings.
-        bookend_start_rows: List[Any] = []
-        bookend_end_rows: List[Any] = []
+        bookend_start_rows: list[Any] = []
+        bookend_end_rows: list[Any] = []
         if bookend > 0:
             with self._lock:
                 role_clause = ""
@@ -1826,7 +1826,7 @@ class SessionDB:
                 # End rows came back DESC for the LIMIT cap; flip to ASC.
                 bookend_end_rows = list(reversed(bookend_end_rows))
 
-        def _hydrate(row) -> Dict[str, Any]:
+        def _hydrate(row) -> dict[str, Any]:
             msg = dict(row)
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
@@ -1915,7 +1915,7 @@ class SessionDB:
 
     def get_messages_as_conversation(
         self, session_id: str, include_ancestors: bool = False
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
@@ -1992,7 +1992,7 @@ class SessionDB:
             messages.append(msg)
         return messages
 
-    def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+    def _session_lineage_root_to_tip(self, session_id: str) -> list[str]:
         if not session_id:
             return [session_id]
 
@@ -2015,7 +2015,7 @@ class SessionDB:
         return list(reversed(chain)) or [session_id]
 
     @staticmethod
-    def _is_duplicate_replayed_user_message(messages: List[Dict[str, Any]], msg: Dict[str, Any]) -> bool:
+    def _is_duplicate_replayed_user_message(messages: list[dict[str, Any]], msg: dict[str, Any]) -> bool:
         if msg.get("role") != "user":
             return False
         content = msg.get("content")
@@ -2119,13 +2119,13 @@ class SessionDB:
     def search_messages(
         self,
         query: str,
-        source_filter: List[str] = None,
-        exclude_sources: List[str] = None,
-        role_filter: List[str] = None,
+        source_filter: list[str] = None,
+        exclude_sources: list[str] = None,
+        role_filter: list[str] = None,
         limit: int = 20,
         offset: int = 0,
         sort: str = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
 
@@ -2421,7 +2421,7 @@ class SessionDB:
         source: str = None,
         limit: int = 20,
         offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
         Returns rows enriched with a computed ``last_active`` column (latest
@@ -2482,7 +2482,7 @@ class SessionDB:
     # Export and cleanup
     # =========================================================================
 
-    def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def export_session(self, session_id: str) -> Optional[dict[str, Any]]:
         """Export a single session with all its messages as a dict."""
         session = self.get_session(session_id)
         if not session:
@@ -2490,7 +2490,7 @@ class SessionDB:
         messages = self.get_messages(session_id)
         return {**session, "messages": messages}
 
-    def export_all(self, source: str = None) -> List[Dict[str, Any]]:
+    def export_all(self, source: str = None) -> list[dict[str, Any]]:
         """
         Export all sessions (with messages) as a list of dicts.
         Suitable for writing to a JSONL file for backup/analysis.
@@ -2857,7 +2857,7 @@ class SessionDB:
         *,
         chat_id: str,
         thread_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Return the session binding for a Telegram DM topic, if present."""
         with self._lock:
             try:
@@ -2876,7 +2876,7 @@ class SessionDB:
         self,
         *,
         chat_id: str,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """All Telegram DM topic bindings for one chat, newest first.
 
         Read-only; returns [] if the bindings table doesn't exist yet
@@ -2897,7 +2897,7 @@ class SessionDB:
         self,
         *,
         session_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Return the Telegram DM topic binding for a given session_id, if present.
 
         Uses the UNIQUE INDEX on telegram_dm_topic_bindings(session_id) for an
@@ -3009,7 +3009,7 @@ class SessionDB:
         chat_id: str,
         user_id: str,
         limit: int = 10,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List previous Telegram sessions for this user that are not bound to a topic.
 
         Read-only: does NOT trigger the telegram-topic migration. If the
@@ -3071,7 +3071,7 @@ class SessionDB:
                     (str(user_id), int(limit)),
                 ).fetchall()
 
-        sessions: List[Dict[str, Any]] = []
+        sessions: list[dict[str, Any]] = []
         for row in rows:
             session = dict(row)
             raw = str(session.pop("_preview_raw", "") or "").strip()
@@ -3110,7 +3110,7 @@ class SessionDB:
         min_interval_hours: int = 24,
         vacuum: bool = True,
         sessions_dir: Optional[Path] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Idempotent auto-maintenance: prune old sessions + optional VACUUM.
 
         Records the last run timestamp in state_meta so subsequent calls
@@ -3130,7 +3130,7 @@ class SessionDB:
           - ``"vacuumed"`` (bool) — true if VACUUM ran
           - ``"error"`` (str, optional) — present only on failure
         """
-        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
+        result: dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
         try:
             # Skip if another process/call did maintenance recently.
             last_raw = self.get_meta("last_auto_prune")
@@ -3208,7 +3208,7 @@ class SessionDB:
             return cur.rowcount > 0
         return self._execute_write(_do)
 
-    def get_handoff_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def get_handoff_state(self, session_id: str) -> Optional[dict[str, Any]]:
         """Read the current handoff state for a session.
 
         Returns ``{"state", "platform", "error"}`` or None if the session has
@@ -3231,7 +3231,7 @@ class SessionDB:
         except Exception:
             return None
 
-    def list_pending_handoffs(self) -> List[Dict[str, Any]]:
+    def list_pending_handoffs(self) -> list[dict[str, Any]]:
         """Return all sessions in handoff_state='pending', oldest first.
 
         Used by the gateway's handoff watcher.

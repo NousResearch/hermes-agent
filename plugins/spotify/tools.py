@@ -56,7 +56,7 @@ def _coerce_bool(raw: Any, default: bool = False) -> bool:
     return default
 
 
-def _as_list(raw: Any) -> List[str]:
+def _as_list(raw: Any) -> list[str]:
     if raw is None:
         return []
     if isinstance(raw, list):

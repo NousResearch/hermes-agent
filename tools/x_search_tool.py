@@ -67,7 +67,7 @@ MAX_HANDLES = 10
 # Config
 # ---------------------------------------------------------------------------
 
-def _load_x_search_config() -> Dict[str, Any]:
+def _load_x_search_config() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
 
@@ -103,7 +103,7 @@ def _get_x_search_retries() -> int:
 # Credential resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_xai_bearer() -> Tuple[str, str, str]:
+def _resolve_xai_bearer() -> tuple[str, str, str]:
     """Return ``(api_key, base_url, source)``.
 
     ``source`` is one of ``"xai-oauth"`` or ``"xai"`` so callers (and tests)
@@ -144,8 +144,8 @@ def check_x_search_requirements() -> bool:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _normalize_handles(handles: Optional[List[str]], field_name: str) -> List[str]:
-    cleaned: List[str] = []
+def _normalize_handles(handles: Optional[list[str]], field_name: str) -> list[str]:
+    cleaned: list[str] = []
     for handle in handles or []:
         normalized = str(handle or "").strip().lstrip("@")
         if normalized:
@@ -206,12 +206,12 @@ def _validate_date_range(from_date: str, to_date: str) -> None:
             )
 
 
-def _extract_response_text(payload: Dict[str, Any]) -> str:
+def _extract_response_text(payload: dict[str, Any]) -> str:
     output_text = str(payload.get("output_text") or "").strip()
     if output_text:
         return output_text
 
-    parts: List[str] = []
+    parts: list[str] = []
     for item in payload.get("output", []) or []:
         if item.get("type") != "message":
             continue
@@ -224,8 +224,8 @@ def _extract_response_text(payload: Dict[str, Any]) -> str:
     return "\n\n".join(parts).strip()
 
 
-def _extract_inline_citations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    citations: List[Dict[str, Any]] = []
+def _extract_inline_citations(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    citations: list[dict[str, Any]] = []
     for item in payload.get("output", []) or []:
         if item.get("type") != "message":
             continue
@@ -274,8 +274,8 @@ def _http_error_message(exc: requests.HTTPError) -> str:
 
 def x_search_tool(
     query: str,
-    allowed_x_handles: Optional[List[str]] = None,
-    excluded_x_handles: Optional[List[str]] = None,
+    allowed_x_handles: Optional[list[str]] = None,
+    excluded_x_handles: Optional[list[str]] = None,
     from_date: str = "",
     to_date: str = "",
     enable_image_understanding: bool = False,
@@ -300,7 +300,7 @@ def x_search_tool(
         except ValueError as exc:
             return tool_error(str(exc))
 
-        tool_def: Dict[str, Any] = {"type": "x_search"}
+        tool_def: dict[str, Any] = {"type": "x_search"}
         if allowed:
             tool_def["allowed_x_handles"] = allowed
         if excluded:
@@ -383,7 +383,7 @@ def x_search_tool(
         # any narrowing filter is active AND both citation channels came back
         # empty, mark the response as degraded so callers can decide to
         # broaden filters, retry, or fall back to a different source.
-        active_filters: List[str] = []
+        active_filters: list[str] = []
         if allowed:
             active_filters.append("allowed_x_handles")
         if excluded:

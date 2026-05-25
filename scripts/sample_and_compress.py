@@ -36,7 +36,7 @@ DEFAULT_DATASETS = [
 ]
 
 
-def load_dataset_from_hf(dataset_name: str) -> List[Dict[str, Any]]:
+def load_dataset_from_hf(dataset_name: str) -> list[dict[str, Any]]:
     """
     Load a dataset from HuggingFace.
     
@@ -85,7 +85,7 @@ def _init_tokenizer_worker(tokenizer_name: str):
     _TOKENIZER = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
 
 
-def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
+def _count_tokens_for_entry(entry: dict) -> tuple[dict, int]:
     """
     Count tokens for a single entry (used in parallel processing).
     
@@ -115,13 +115,13 @@ def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
 
 
 def sample_from_datasets(
-    datasets: List[str],
+    datasets: list[str],
     total_samples: int,
     min_tokens: int = 16000,
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking",
     seed: int = 42,
     num_proc: int = 8
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Load all datasets, filter by token count, then randomly sample from combined pool.
     
@@ -222,7 +222,7 @@ def sample_from_datasets(
 
 
 def save_samples_for_compression(
-    samples: List[Dict[str, Any]],
+    samples: list[dict[str, Any]],
     output_dir: Path,
     batch_size: int = 100
 ):

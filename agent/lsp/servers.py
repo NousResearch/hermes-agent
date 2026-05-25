@@ -32,7 +32,7 @@ logger = logging.getLogger("agent.lsp.servers")
 # Language IDs per LSP spec.  Used for ``textDocument/didOpen.languageId``.
 # Most servers don't care exactly, but a few (typescript-language-server,
 # vue-language-server) refuse files with the wrong ID.
-LANGUAGE_BY_EXT: Dict[str, str] = {
+LANGUAGE_BY_EXT: dict[str, str] = {
     ".py": "python",
     ".pyi": "python",
     ".ts": "typescript",
@@ -115,11 +115,11 @@ class SpawnSpec:
     marker not found, exclude marker hit, etc.).
     """
 
-    command: List[str]
+    command: list[str]
     workspace_root: str
     cwd: str
-    env: Dict[str, str] = field(default_factory=dict)
-    initialization_options: Dict[str, Any] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict)
+    initialization_options: dict[str, Any] = field(default_factory=dict)
     seed_diagnostics_on_first_push: bool = False
 
 
@@ -138,7 +138,7 @@ class ServerDef:
     """
 
     server_id: str
-    extensions: Tuple[str, ...]
+    extensions: tuple[str, ...]
     resolve_root: Callable[[str, str], Optional[str]]
     build_spawn: Callable[[str, "ServerContext"], Optional[SpawnSpec]]
     seed_first_push: bool = False
@@ -161,9 +161,9 @@ class ServerContext:
 
     workspace_root: str
     install_strategy: str = "auto"  # "auto" | "manual" | "off"
-    binary_overrides: Dict[str, List[str]] = field(default_factory=dict)
-    env_overrides: Dict[str, Dict[str, str]] = field(default_factory=dict)
-    init_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    binary_overrides: dict[str, list[str]] = field(default_factory=dict)
+    env_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    init_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         sibling = os.path.join(os.path.dirname(bin_path), "pyright-langserver")
         if os.path.exists(sibling):
             bin_path = sibling
-    init: Dict[str, Any] = {}
+    init: dict[str, Any] = {}
     # Pick the project's venv interpreter if there is one — otherwise
     # pyright defaults to "python on PATH" which is rarely the venv.
     py = _detect_python(root)
@@ -828,7 +828,7 @@ def _root_java(file_path: str, workspace: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-SERVERS: List[ServerDef] = [
+SERVERS: list[ServerDef] = [
     ServerDef(
         server_id="pyright",
         extensions=(".py", ".pyi"),

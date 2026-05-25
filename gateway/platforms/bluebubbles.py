@@ -128,7 +128,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
-        self._guid_cache: Dict[str, str] = {}
+        self._guid_cache: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # API helpers
@@ -138,13 +138,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         sep = "&" if "?" in path else "?"
         return f"{self.server_url}{path}{sep}password={quote(self.password, safe='')}"
 
-    async def _api_get(self, path: str) -> Dict[str, Any]:
+    async def _api_get(self, path: str) -> dict[str, Any]:
         assert self.client is not None
         res = await self.client.get(self._api_url(path))
         res.raise_for_status()
         return res.json()
 
-    async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         assert self.client is not None
         res = await self.client.post(self._api_url(path), json=payload)
         res.raise_for_status()
@@ -408,7 +408,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def truncate_message(content: str, max_length: int = MAX_TEXT_LENGTH) -> List[str]:
+    def truncate_message(content: str, max_length: int = MAX_TEXT_LENGTH) -> list[str]:
         # Use the base splitter but skip pagination indicators — iMessage
         # bubbles flow naturally without "(1/3)" suffixes.
         chunks = BasePlatformAdapter.truncate_message(content, max_length)
@@ -419,7 +419,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         text = self.format_message(content)
         if not text:
@@ -428,7 +428,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # becomes its own iMessage bubble, then truncate any that are still
         # too long.
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
-        chunks: List[str] = []
+        chunks: list[str] = []
         for para in (paragraphs or [text]):
             if len(para) <= self.MAX_MESSAGE_LENGTH:
                 chunks.append(para)
@@ -447,7 +447,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     success=False,
                     error=f"BlueBubbles chat not found for target: {chat_id}",
                 )
-            payload: Dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "chatGuid": guid,
                 "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
                 "message": chunk,
@@ -493,7 +493,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         try:
             with open(file_path, "rb") as f:
                 files = {"attachment": (fname, f, "application/octet-stream")}
-                data: Dict[str, str] = {
+                data: dict[str, str] = {
                     "chatGuid": guid,
                     "name": fname,
                     "tempGuid": uuid.uuid4().hex,
@@ -531,7 +531,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         try:
             from gateway.platforms.base import cache_image_from_url
@@ -592,7 +592,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         return await self.send_image(
             chat_id, animation_url, caption, reply_to, metadata
@@ -655,9 +655,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Chat info
     # ------------------------------------------------------------------
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         is_group = ";+;" in (chat_id or "")
-        info: Dict[str, Any] = {
+        info: dict[str, Any] = {
             "name": chat_id,
             "type": "group" if is_group else "dm",
         }
@@ -694,7 +694,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _download_attachment(
-        self, att_guid: str, att_meta: Dict[str, Any]
+        self, att_guid: str, att_meta: dict[str, Any]
     ) -> Optional[str]:
         """Download an attachment from BlueBubbles and cache it locally.
 
@@ -758,8 +758,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _extract_payload_record(
-        self, payload: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+        self, payload: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
         data = payload.get("data")
         if isinstance(data, dict):
             return data
@@ -841,8 +841,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         # --- Inbound attachment handling ---
         attachments = record.get("attachments") or []
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
         msg_type = MessageType.TEXT
 
         for att in attachments:

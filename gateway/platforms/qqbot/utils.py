@@ -39,7 +39,7 @@ def build_user_agent() -> str:
     return f"QQBotAdapter/{QQBOT_VERSION} (Python/{py_version}; {os_name}; Hermes/{hermes_version})"
 
 
-def get_api_headers() -> Dict[str, str]:
+def get_api_headers() -> dict[str, str]:
     """Return standard HTTP headers for QQBot API requests.
 
     Includes ``Content-Type``, ``Accept``, and a dynamic ``User-Agent``.
@@ -57,7 +57,7 @@ def get_api_headers() -> Dict[str, str]:
 # Config helpers
 # ---------------------------------------------------------------------------
 
-def coerce_list(value: Any) -> List[str]:
+def coerce_list(value: Any) -> list[str]:
     """Coerce config values into a trimmed string list.
 
     Accepts comma-separated strings, lists, tuples, sets, or single values.

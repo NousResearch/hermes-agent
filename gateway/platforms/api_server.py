@@ -125,7 +125,7 @@ def _normalize_chat_content(
         return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
 
     if isinstance(content, list):
-        parts: List[str] = []
+        parts: list[str] = []
         items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
         for item in items:
             if isinstance(item, str):
@@ -196,7 +196,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
         return _normalize_chat_content(content)
 
     items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
-    normalized_parts: List[Dict[str, Any]] = []
+    normalized_parts: list[dict[str, Any]] = []
     text_accum_len = 0
 
     for part in items:
@@ -253,7 +253,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
                 raise ValueError(
                     "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
                 )
-            image_part: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
+            image_part: dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
             if detail is not None:
                 if not isinstance(detail, str) or not detail.strip():
                     raise ValueError("invalid_content_part:Image detail must be a non-empty string when provided.")
@@ -390,7 +390,7 @@ class ResponseStore:
                     exc_info=True,
                 )
 
-    def get(self, response_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, response_id: str) -> Optional[dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
         row = self._conn.execute(
             "SELECT data FROM responses WHERE response_id = ?", (response_id,)
@@ -404,7 +404,7 @@ class ResponseStore:
         self._conn.commit()
         return json.loads(row[0])
 
-    def put(self, response_id: str, data: Dict[str, Any]) -> None:
+    def put(self, response_id: str, data: dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
@@ -509,7 +509,7 @@ else:
     cors_middleware = None  # type: ignore[assignment]
 
 
-def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
+def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> dict[str, Any]:
     """OpenAI-style error envelope."""
     return {
         "error": {
@@ -565,7 +565,7 @@ class _IdempotencyCache:
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
         from collections import OrderedDict
         self._store = OrderedDict()
-        self._inflight: Dict[tuple[str, str], "asyncio.Task[Any]"] = {}
+        self._inflight: dict[tuple[str, str], "asyncio.Task[Any]"] = {}
         self._ttl = ttl_seconds
         self._max = max_items
 
@@ -608,7 +608,7 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(body: dict[str, Any], keys: list[str]) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
     return sha256(repr(subset).encode("utf-8")).hexdigest()
@@ -684,18 +684,18 @@ class APIServerAdapter(BasePlatformAdapter):
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
-        self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
+        self._run_streams: dict[str, "asyncio.Queue[Optional[dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
-        self._run_streams_created: Dict[str, float] = {}
+        self._run_streams_created: dict[str, float] = {}
         # Active run agent/task references for stop support
-        self._active_run_agents: Dict[str, Any] = {}
-        self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        self._active_run_agents: dict[str, Any] = {}
+        self._active_run_tasks: dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
-        self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        self._run_statuses: dict[str, dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
-        self._run_approval_sessions: Dict[str, str] = {}
+        self._run_approval_sessions: dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
     @staticmethod
@@ -733,7 +733,7 @@ class APIServerAdapter(BasePlatformAdapter):
             pass
         return "hermes-agent"
 
-    def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
+    def _cors_headers_for_origin(self, origin: str) -> Optional[dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
         if not origin or not self._cors_origins:
             return None
@@ -1071,7 +1071,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
+        conversation_messages: list[dict[str, str]] = []
 
         for idx, msg in enumerate(messages):
             role = msg.get("role", "")
@@ -1530,7 +1530,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_q,
         agent_task,
         agent_ref,
-        conversation_history: List[Dict[str, str]],
+        conversation_history: list[dict[str, str]],
         user_message: str,
         instructions: Optional[str],
         conversation: Optional[str],
@@ -1585,13 +1585,13 @@ class APIServerAdapter(BasePlatformAdapter):
         await response.prepare(request)
 
         # State accumulated during the stream
-        final_text_parts: List[str] = []
+        final_text_parts: list[str] = []
         # Track open function_call items by name so we can emit a matching
         # ``done`` event when the tool completes.  Order preserved.
-        pending_tool_calls: List[Dict[str, Any]] = []
+        pending_tool_calls: list[dict[str, Any]] = []
         # Output items we've emitted so far (used to build the terminal
         # response.completed payload).  Kept in the order they appeared.
-        emitted_items: List[Dict[str, Any]] = []
+        emitted_items: list[dict[str, Any]] = []
         # Monotonic counter for output_index (spec requires it).
         output_index = 0
         # Monotonic counter for call_id generation if the agent doesn't
@@ -1607,7 +1607,7 @@ class APIServerAdapter(BasePlatformAdapter):
         message_output_index: Optional[int] = None
         message_opened = False
 
-        async def _write_event(event_type: str, data: Dict[str, Any]) -> None:
+        async def _write_event(event_type: str, data: dict[str, Any]) -> None:
             nonlocal sequence_number
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
@@ -1615,8 +1615,8 @@ class APIServerAdapter(BasePlatformAdapter):
             payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
             await response.write(payload.encode())
 
-        def _envelope(status: str) -> Dict[str, Any]:
-            env: Dict[str, Any] = {
+        def _envelope(status: str) -> dict[str, Any]:
+            env: dict[str, Any] = {
                 "id": response_id,
                 "object": "response",
                 "status": status,
@@ -1627,13 +1627,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         final_response_text = ""
         agent_error: Optional[str] = None
-        usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         terminal_snapshot_persisted = False
 
         def _persist_response_snapshot(
-            response_env: Dict[str, Any],
+            response_env: dict[str, Any],
             *,
-            conversation_history_snapshot: Optional[List[Dict[str, Any]]] = None,
+            conversation_history_snapshot: Optional[list[dict[str, Any]]] = None,
         ) -> None:
             if not store:
                 return
@@ -1660,7 +1660,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if not store or terminal_snapshot_persisted:
                 return
             incomplete_text = "".join(final_text_parts) or final_response_text
-            incomplete_items: List[Dict[str, Any]] = list(emitted_items)
+            incomplete_items: list[dict[str, Any]] = list(emitted_items)
             if incomplete_text:
                 incomplete_items.append({
                     "type": "message",
@@ -1728,7 +1728,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "logprobs": [],
                 })
 
-            async def _emit_tool_started(payload: Dict[str, Any]) -> str:
+            async def _emit_tool_started(payload: dict[str, Any]) -> str:
                 """Emit response.output_item.added for a function_call.
 
                 Returns the call_id so the matching completion event can
@@ -1774,7 +1774,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
                 return call_id
 
-            async def _emit_tool_completed(payload: Dict[str, Any]) -> None:
+            async def _emit_tool_completed(payload: dict[str, Any]) -> None:
                 """Emit response.output_item.done (function_call) followed
                 by response.output_item.added (function_call_output)."""
                 nonlocal output_index
@@ -1862,7 +1862,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # Other types are silently dropped.
 
             # ── Batching state ──
-            _batch_buf: List[str] = []
+            _batch_buf: list[str] = []
             _batch_timer: Optional[asyncio.Task] = None
             _batch_lock = asyncio.Lock()
 
@@ -1974,7 +1974,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # response envelope so clients that only parse the terminal
             # payload still see the assistant text.  This mirrors the
             # shape produced by _extract_output_items in the batch path.
-            final_items: List[Dict[str, Any]] = list(emitted_items)
+            final_items: list[dict[str, Any]] = list(emitted_items)
 
             # Trim large content from tool call arguments to keep the
             # response.completed event under ~100KB.  Clients already
@@ -2156,7 +2156,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # No error if conversation doesn't exist yet — it's a new conversation
 
         # Normalize input to message list
-        input_messages: List[Dict[str, Any]] = []
+        input_messages: list[dict[str, Any]] = []
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]
         elif isinstance(raw_input, list):
@@ -2177,7 +2177,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # This lets stateless clients supply their own history instead of
         # relying on server-side response chaining via previous_response_id.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, Any]] = []
+        conversation_history: list[dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -2656,11 +2656,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_response_conversation_history(
-        conversation_history: List[Dict[str, Any]],
+        conversation_history: list[dict[str, Any]],
         user_message: Any,
-        result: Dict[str, Any],
+        result: dict[str, Any],
         final_response: Any,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Build the stored Responses transcript without duplicating history."""
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
@@ -2687,9 +2687,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _response_messages_turn_start_index(
-        conversation_history: List[Dict[str, Any]],
+        conversation_history: list[dict[str, Any]],
         user_message: Any,
-        result: Dict[str, Any],
+        result: dict[str, Any],
     ) -> int:
         """Detect transcript-shaped result["messages"] and return turn start."""
         agent_messages = result.get("messages") if isinstance(result, dict) else None
@@ -2706,7 +2706,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return 0
 
     @staticmethod
-    def _extract_output_items(result: Dict[str, Any], start_index: int = 0) -> List[Dict[str, Any]]:
+    def _extract_output_items(result: dict[str, Any], start_index: int = 0) -> list[dict[str, Any]]:
         """
         Build the output item array from the agent's messages.
 
@@ -2715,7 +2715,7 @@ class APIServerAdapter(BasePlatformAdapter):
         - ``function_call_output`` items for each tool-role message
         - a final ``message`` item with the assistant's text reply
         """
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         messages = result.get("messages", [])
         if start_index > 0:
             messages = messages[start_index:]
@@ -2762,7 +2762,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _run_agent(
         self,
         user_message: str,
-        conversation_history: List[Dict[str, str]],
+        conversation_history: list[dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
@@ -2826,7 +2826,7 @@ class APIServerAdapter(BasePlatformAdapter):
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
-    def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
+    def _set_run_status(self, run_id: str, status: str, **fields: Any) -> dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
         current = self._run_statuses.get(run_id, {})
@@ -2843,7 +2843,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
-        def _push(event: Dict[str, Any]) -> None:
+        def _push(event: dict[str, Any]) -> None:
             self._set_run_status(
                 run_id,
                 self._run_statuses.get(run_id, {}).get("status", "running"),
@@ -2923,7 +2923,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: list[dict[str, str]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -2970,7 +2970,7 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        q: "asyncio.Queue[Optional[dict]]" = asyncio.Queue()
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
@@ -3012,7 +3012,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 self._active_run_agents[run_id] = agent
 
-                def _approval_notify(approval_data: Dict[str, Any]) -> None:
+                def _approval_notify(approval_data: dict[str, Any]) -> None:
                     event = dict(approval_data or {})
                     event.update({
                         "event": "approval.request",
@@ -3535,14 +3535,14 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """
         Not used — HTTP request/response cycle handles delivery directly.
         """
         return SendResult(success=False, error="API server uses HTTP request/response, not send()")
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about the API server."""
         return {
             "name": "API Server",

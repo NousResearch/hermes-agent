@@ -73,12 +73,12 @@ class _FakeSessionDB:
     def list_sessions_rich(
         self,
         source: Optional[str] = None,
-        exclude_sources: Optional[List[str]] = None,
+        exclude_sources: Optional[list[str]] = None,
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         if self.scan_delay:
             time.sleep(self.scan_delay)
         self.last_limit = limit
@@ -100,7 +100,7 @@ class _FakeSessionDB:
             for i in range(effective)
         ]
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         self.messages_calls += 1
         return [
             {"role": "user", "content": f"ask {session_id}"},
@@ -312,7 +312,7 @@ def test_background_scan_publishes_partial_snapshots(plugin_api):
     _install_fake_session_db(plugin_api, fake_db)
 
     # Record every partial snapshot the scanner publishes.
-    partial_snapshots: List[Dict[str, Any]] = []
+    partial_snapshots: list[dict[str, Any]] = []
     original_compute_from_scan = plugin_api._compute_from_scan
 
     def recording_compute(scan, *, is_partial=False):

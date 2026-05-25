@@ -23,7 +23,7 @@ class ProviderTransport(ABC):
         ...
 
     @abstractmethod
-    def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
+    def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI-format messages to provider-native format.
 
         Returns provider-specific structure (e.g. (system, messages) for Anthropic,
@@ -32,7 +32,7 @@ class ProviderTransport(ABC):
         ...
 
     @abstractmethod
-    def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
+    def convert_tools(self, tools: list[dict[str, Any]]) -> Any:
         """Convert OpenAI-format tool definitions to provider-native format.
 
         Returns provider-specific tool list (e.g. Anthropic input_schema format).
@@ -43,10 +43,10 @@ class ProviderTransport(ABC):
     def build_kwargs(
         self,
         model: str,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **params,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build the complete API call kwargs dict.
 
         This is the primary entry point — it typically calls convert_messages()
@@ -72,7 +72,7 @@ class ProviderTransport(ABC):
         """
         return True
 
-    def extract_cache_stats(self, response: Any) -> Optional[Dict[str, int]]:
+    def extract_cache_stats(self, response: Any) -> Optional[dict[str, int]]:
         """Optional: extract provider-specific cache hit/creation stats.
 
         Returns dict with 'cached_tokens' and 'creation_tokens', or None.

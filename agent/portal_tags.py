@@ -55,7 +55,7 @@ def hermes_client_tag() -> str:
     return f"client=hermes-client-v{_hermes_version()}"
 
 
-def nous_portal_tags() -> List[str]:
+def nous_portal_tags() -> list[str]:
     """Return the canonical list of Nous Portal product tags.
 
     Always returns a fresh list so callers can mutate it freely

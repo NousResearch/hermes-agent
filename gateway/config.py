@@ -214,7 +214,7 @@ class HomeChannel:
     name: str  # Human-readable name for display
     thread_id: Optional[str] = None
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = {
             "platform": self.platform.value,
             "chat_id": self.chat_id,
@@ -225,7 +225,7 @@ class HomeChannel:
         return result
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
+    def from_dict(cls, data: dict[str, Any]) -> "HomeChannel":
         return cls(
             platform=Platform(data["platform"]),
             chat_id=str(data["chat_id"]),
@@ -251,7 +251,7 @@ class SessionResetPolicy:
     notify: bool = True  # Send a notification to the user when auto-reset occurs
     notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
             "at_hour": self.at_hour,
@@ -261,7 +261,7 @@ class SessionResetPolicy:
         }
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
+    def from_dict(cls, data: dict[str, Any]) -> "SessionResetPolicy":
         # Handle both missing keys and explicit null values (YAML null → None)
         mode = data.get("mode")
         at_hour = data.get("at_hour")
@@ -299,9 +299,9 @@ class PlatformConfig:
     gateway_restart_notification: bool = True
 
     # Platform-specific settings
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = {
             "enabled": self.enabled,
             "extra": self.extra,
@@ -317,7 +317,7 @@ class PlatformConfig:
         return result
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "PlatformConfig":
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
@@ -377,7 +377,7 @@ class StreamingConfig:
     # matches the OpenClaw rollout.  Set to 0 to disable.
     fresh_final_after_seconds: float = 60.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
             "transport": self.transport,
@@ -388,7 +388,7 @@ class StreamingConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "StreamingConfig":
         if not data:
             return cls()
         return cls(
@@ -456,18 +456,18 @@ class GatewayConfig:
     Manages all platform connections, session policies, and delivery settings.
     """
     # Platform configurations
-    platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
+    platforms: dict[Platform, PlatformConfig] = field(default_factory=dict)
     
     # Session reset policies by type
     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
-    reset_by_type: Dict[str, SessionResetPolicy] = field(default_factory=dict)
-    reset_by_platform: Dict[Platform, SessionResetPolicy] = field(default_factory=dict)
+    reset_by_type: dict[str, SessionResetPolicy] = field(default_factory=dict)
+    reset_by_platform: dict[Platform, SessionResetPolicy] = field(default_factory=dict)
     
     # Reset trigger commands
-    reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
+    reset_triggers: list[str] = field(default_factory=lambda: ["/new", "/reset"])
 
     # User-defined quick commands (slash commands that bypass the agent loop)
-    quick_commands: Dict[str, Any] = field(default_factory=dict)
+    quick_commands: dict[str, Any] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -495,7 +495,7 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
-    def get_connected_platforms(self) -> List[Platform]:
+    def get_connected_platforms(self) -> list[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
         for platform, config in self.platforms.items():
@@ -566,7 +566,7 @@ class GatewayConfig:
         
         return self.default_reset_policy
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "platforms": {
                 p.value: c.to_dict() for p, c in self.platforms.items()
@@ -591,7 +591,7 @@ class GatewayConfig:
         }
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "GatewayConfig":
         platforms = {}
         for platform_name, platform_data in data.get("platforms", {}).items():
             try:

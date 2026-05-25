@@ -795,7 +795,7 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
-def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+def _read_claude_code_credentials_from_keychain() -> Optional[dict[str, Any]]:
     """Read Claude Code OAuth credentials from the macOS Keychain.
 
     Claude Code >=2.1.114 stores credentials in the macOS Keychain under the
@@ -852,7 +852,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
-def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
+def read_claude_code_credentials() -> Optional[dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
     Checks two sources in order:
@@ -906,7 +906,7 @@ def read_claude_managed_key() -> Optional[str]:
     return None
 
 
-def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
+def is_claude_code_token_valid(creds: dict[str, Any]) -> bool:
     """Check if Claude Code credentials have a non-expired access token."""
     import time
 
@@ -921,7 +921,7 @@ def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     return now_ms < (expires_at - 60_000)
 
 
-def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) -> Dict[str, Any]:
+def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) -> dict[str, Any]:
     """Refresh an Anthropic OAuth token without mutating local credential files."""
     import time
     import urllib.parse
@@ -985,7 +985,7 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
     raise ValueError("Anthropic token refresh failed")
 
 
-def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
+def _refresh_oauth_token(creds: dict[str, Any]) -> Optional[str]:
     """Attempt to refresh an expired Claude Code OAuth token."""
     refresh_token = creds.get("refreshToken", "")
     if not refresh_token:
@@ -1027,7 +1027,7 @@ def _write_claude_code_credentials(
         if cred_path.exists():
             existing = json.loads(cred_path.read_text(encoding="utf-8"))
 
-        oauth_data: Dict[str, Any] = {
+        oauth_data: dict[str, Any] = {
             "accessToken": access_token,
             "refreshToken": refresh_token,
             "expiresAt": expires_at_ms,
@@ -1074,7 +1074,7 @@ def _write_claude_code_credentials(
         logger.debug("Failed to write refreshed credentials: %s", e)
 
 
-def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def _resolve_claude_code_token_from_credentials(creds: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Resolve a token from Claude Code credential files, refreshing if needed."""
     creds = creds or read_claude_code_credentials()
     if creds and is_claude_code_token_valid(creds):
@@ -1089,7 +1089,7 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     return None
 
 
-def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
+def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[dict[str, Any]]) -> Optional[str]:
     """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
 
     Hermes historically persisted setup tokens into ANTHROPIC_TOKEN. That makes
@@ -1219,7 +1219,7 @@ def _generate_pkce() -> tuple:
     return verifier, challenge
 
 
-def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
+def run_hermes_oauth_login_pure() -> Optional[dict[str, Any]]:
     """Run Hermes-native OAuth PKCE flow and return credential state."""
     import secrets
     import time
@@ -1324,7 +1324,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     }
 
 
-def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
+def read_hermes_oauth_credentials() -> Optional[dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
     if _HERMES_OAUTH_FILE.exists():
         try:
@@ -1403,7 +1403,7 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
-def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
+def _normalize_tool_input_schema(schema: Any) -> dict[str, Any]:
     """Normalize tool schemas before sending them to Anthropic.
 
     Anthropic's tool schema validator rejects nullable unions such as
@@ -1444,7 +1444,7 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     return normalized
 
 
-def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
+def convert_tools_to_anthropic(tools: list[dict]) -> list[dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
         return []
@@ -1465,7 +1465,7 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
             continue
         if name:
             seen_names.add(name)
-        anthropic_tool: Dict[str, Any] = {
+        anthropic_tool: dict[str, Any] = {
             "name": name,
             "description": fn.get("description", ""),
             "input_schema": _normalize_tool_input_schema(
@@ -1482,7 +1482,7 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
-def _image_source_from_openai_url(url: str) -> Dict[str, str]:
+def _image_source_from_openai_url(url: str) -> dict[str, str]:
     """Convert an OpenAI-style image URL/data URL into Anthropic image source."""
     url = str(url or "").strip()
     if not url:
@@ -1504,7 +1504,7 @@ def _image_source_from_openai_url(url: str) -> Dict[str, str]:
     return {"type": "url", "url": url}
 
 
-def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
+def _convert_content_part_to_anthropic(part: Any) -> Optional[dict[str, Any]]:
     """Convert a single OpenAI-style content part to Anthropic format."""
     if part is None:
         return None
@@ -1516,7 +1516,7 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
     ptype = part.get("type")
 
     if ptype == "input_text":
-        block: Dict[str, Any] = {"type": "text", "text": part.get("text", "")}
+        block: dict[str, Any] = {"type": "text", "text": part.get("text", "")}
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
@@ -1575,13 +1575,13 @@ def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) 
     return value
 
 
-def _extract_preserved_thinking_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _extract_preserved_thinking_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
     """Return Anthropic thinking blocks previously preserved on the message."""
     raw_details = message.get("reasoning_details")
     if not isinstance(raw_details, list):
         return []
 
-    preserved: List[Dict[str, Any]] = []
+    preserved: list[dict[str, Any]] = []
     for detail in raw_details:
         if not isinstance(detail, dict):
             continue
@@ -1605,7 +1605,7 @@ def _convert_content_to_anthropic(content: Any) -> Any:
     return converted
 
 
-def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
+def _content_parts_to_anthropic_blocks(parts: Any) -> list[dict[str, Any]]:
     """Convert OpenAI-style tool-message content parts → Anthropic tool_result inner blocks.
 
     Used for multimodal tool results (e.g. computer_use screenshots). Each
@@ -1614,7 +1614,7 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
     """
     if not isinstance(parts, list):
         return []
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for part in parts:
         block = _convert_content_part_to_anthropic(part)
         if not block:
@@ -1631,7 +1631,7 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
     return out
 
 
-def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
+def _convert_assistant_message(m: dict[str, Any]) -> dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
     Handles thinking blocks, regular content, tool calls, and
@@ -1694,7 +1694,7 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _convert_tool_message_to_result(
-    result: List[Dict[str, Any]], m: Dict[str, Any]
+    result: list[dict[str, Any]], m: dict[str, Any]
 ) -> None:
     """Convert a tool message to an Anthropic tool_result, merging consecutive
     results into one user message.
@@ -1703,7 +1703,7 @@ def _convert_tool_message_to_result(
     the trailing user message's tool_result list.
     """
     content = m.get("content", "")
-    multimodal_blocks: Optional[List[Dict[str, Any]]] = None
+    multimodal_blocks: Optional[list[dict[str, Any]]] = None
     if isinstance(content, dict) and content.get("_multimodal"):
         multimodal_blocks = _content_parts_to_anthropic_blocks(
             content.get("content") or []
@@ -1755,7 +1755,7 @@ def _convert_tool_message_to_result(
         result.append({"role": "user", "content": [tool_result]})
 
 
-def _convert_user_message(content: Any) -> Dict[str, Any]:
+def _convert_user_message(content: Any) -> dict[str, Any]:
     """Validate and convert a user message to anthropic format."""
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
@@ -1772,7 +1772,7 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
         return {"role": "user", "content": content}
 
 
-def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
+def _strip_orphaned_tool_blocks(result: list[dict[str, Any]]) -> None:
     """Strip tool_use blocks with no matching tool_result, and vice versa.
 
     Context compression or session truncation can remove either side of a
@@ -1815,7 +1815,7 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
                 m["content"] = [{"type": "text", "text": "(tool result removed)"}]
 
 
-def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _merge_consecutive_roles(result: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge consecutive same-role messages to enforce Anthropic alternation.
 
     Returns a new list (caller must rebind ``result``).
@@ -1864,7 +1864,7 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 def _manage_thinking_signatures(
-    result: List[Dict[str, Any]], base_url: str | None, model: str | None
+    result: list[dict[str, Any]], base_url: str | None, model: str | None
 ) -> None:
     """Strip or preserve thinking blocks based on endpoint type.
 
@@ -1951,7 +1951,7 @@ def _manage_thinking_signatures(
                 b.pop("cache_control", None)
 
 
-def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
+def _evict_old_screenshots(result: list[dict[str, Any]]) -> None:
     """Keep only the most recent ``_MAX_KEEP_IMAGES`` computer-use screenshots.
 
     Base64 images cost ~1,465 tokens each and accumulate across tool calls.
@@ -1987,10 +1987,10 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
 
 
 def convert_messages_to_anthropic(
-    messages: List[Dict],
+    messages: list[dict],
     base_url: str | None = None,
     model: str | None = None,
-) -> Tuple[Optional[Any], List[Dict]]:
+) -> tuple[Optional[Any], list[dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
     Returns (system_prompt, anthropic_messages).
@@ -2009,7 +2009,7 @@ def convert_messages_to_anthropic(
     if empty.
     """
     system = None
-    result: List[Dict[str, Any]] = []
+    result: list[dict[str, Any]] = []
 
     for m in messages:
         role = m.get("role", "user")
@@ -2052,10 +2052,10 @@ def convert_messages_to_anthropic(
 
 def build_anthropic_kwargs(
     model: str,
-    messages: List[Dict],
-    tools: Optional[List[Dict]],
+    messages: list[dict],
+    tools: Optional[list[dict]],
     max_tokens: Optional[int],
-    reasoning_config: Optional[Dict[str, Any]],
+    reasoning_config: Optional[dict[str, Any]],
     tool_choice: Optional[str] = None,
     is_oauth: bool = False,
     preserve_dots: bool = False,
@@ -2063,7 +2063,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
     Naming note — two distinct concepts, easily confused:
@@ -2168,7 +2168,7 @@ def build_anthropic_kwargs(
                         elif block.get("type") == "tool_result" and "tool_use_id" in block:
                             pass  # tool_result uses ID, not name
 
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "model": model,
         "messages": anthropic_messages,
         "max_tokens": effective_max_tokens,

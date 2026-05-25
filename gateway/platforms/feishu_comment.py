@@ -100,7 +100,7 @@ async def _exec_request(client, method, uri, paths=None, queries=None, body=None
 # ---------------------------------------------------------------------------
 
 
-def parse_drive_comment_event(data: Any) -> Optional[Dict[str, Any]]:
+def parse_drive_comment_event(data: Any) -> Optional[dict[str, Any]]:
     """Extract structured fields from a ``drive.notice.comment_add_v1`` payload.
 
     *data* may be a ``CustomizedEvent`` (WebSocket) whose ``.event`` is a dict,
@@ -257,7 +257,7 @@ _ADD_COMMENT_URI = "/open-apis/drive/v1/files/:file_token/new_comments"
 
 async def query_document_meta(
     client: Any, file_token: str, file_type: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Fetch document title and URL via batch_query meta API.
 
     Returns ``{"title": "...", "url": "...", "doc_type": "..."}`` or empty dict.
@@ -303,7 +303,7 @@ _COMMENT_RETRY_DELAY_S = 1.0
 
 async def batch_query_comment(
     client: Any, file_token: str, file_type: str, comment_id: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Fetch comment details via batch_query comment API.
 
     Retries up to 6 times on failure (handles eventual consistency).
@@ -354,10 +354,10 @@ async def batch_query_comment(
 
 async def list_whole_comments(
     client: Any, file_token: str, file_type: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """List all whole-document comments (paginated, up to 500)."""
     logger.debug("[Feishu-Comment] list_whole_comments: file_token=%s", file_token)
-    all_comments: List[Dict[str, Any]] = []
+    all_comments: list[dict[str, Any]] = []
     page_token = ""
 
     for _ in range(5):  # max 5 pages
@@ -398,7 +398,7 @@ async def list_whole_comments(
 async def list_comment_replies(
     client: Any, file_token: str, file_type: str, comment_id: str,
     *, expect_reply_id: str = "",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """List all replies in a comment thread (paginated, up to 500).
 
     If *expect_reply_id* is set and not found in the first fetch,
@@ -407,7 +407,7 @@ async def list_comment_replies(
     logger.debug("[Feishu-Comment] list_comment_replies: file_token=%s comment_id=%s", file_token, comment_id)
 
     for attempt in range(_COMMENT_RETRY_LIMIT):
-        all_replies: List[Dict[str, Any]] = []
+        all_replies: list[dict[str, Any]] = []
         page_token = ""
         fetch_ok = True
 
@@ -469,7 +469,7 @@ def _sanitize_comment_text(text: str) -> str:
 
 async def reply_to_comment(
     client: Any, file_token: str, file_type: str, comment_id: str, text: str,
-) -> Tuple[bool, int]:
+) -> tuple[bool, int]:
     """Post a reply to a local comment thread.
 
     Returns ``(success, code)``.
@@ -533,7 +533,7 @@ async def add_whole_comment(
 _REPLY_CHUNK_SIZE = 4000
 
 
-def _chunk_text(text: str, limit: int = _REPLY_CHUNK_SIZE) -> List[str]:
+def _chunk_text(text: str, limit: int = _REPLY_CHUNK_SIZE) -> list[str]:
     """Split text into chunks for delivery, preferring line breaks."""
     if len(text) <= limit:
         return [text]
@@ -599,7 +599,7 @@ async def deliver_comment_reply(
 # ---------------------------------------------------------------------------
 
 
-def _extract_reply_text(reply: Dict[str, Any]) -> str:
+def _extract_reply_text(reply: dict[str, Any]) -> str:
     """Extract plain text from a comment reply's content structure."""
     content = reply.get("content", {})
     if isinstance(content, str):
@@ -623,7 +623,7 @@ def _extract_reply_text(reply: Dict[str, Any]) -> str:
     return "".join(parts)
 
 
-def _get_reply_user_id(reply: Dict[str, Any]) -> str:
+def _get_reply_user_id(reply: dict[str, Any]) -> str:
     """Extract user_id from a reply dict."""
     user_id = reply.get("user_id", "")
     if isinstance(user_id, dict):
@@ -631,7 +631,7 @@ def _get_reply_user_id(reply: Dict[str, Any]) -> str:
     return str(user_id)
 
 
-def _extract_semantic_text(reply: Dict[str, Any], self_open_id: str = "") -> str:
+def _extract_semantic_text(reply: dict[str, Any], self_open_id: str = "") -> str:
     """Extract semantic text from a reply, stripping self @mentions and extra whitespace."""
     content = reply.get("content", {})
     if isinstance(content, str):
@@ -675,7 +675,7 @@ _FEISHU_DOC_URL_RE = _re.compile(
 _WIKI_GET_NODE_URI = "/open-apis/wiki/v2/spaces/get_node"
 
 
-def _extract_docs_links(replies: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+def _extract_docs_links(replies: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Extract unique document links from a list of comment replies.
 
     Returns list of ``{"url": "...", "doc_type": "...", "token": "..."}`` dicts.
@@ -731,8 +731,8 @@ async def _reverse_lookup_wiki_token(
 
 async def _resolve_wiki_nodes(
     client: Any,
-    links: List[Dict[str, str]],
-) -> List[Dict[str, str]]:
+    links: list[dict[str, str]],
+) -> list[dict[str, str]]:
     """Resolve wiki links to their underlying document type and token.
 
     Mutates entries in *links* in-place: replaces ``doc_type`` and ``token``
@@ -768,7 +768,7 @@ async def _resolve_wiki_nodes(
 
 
 def _format_referenced_docs(
-    links: List[Dict[str, str]], current_file_token: str = "",
+    links: list[dict[str, str]], current_file_token: str = "",
 ) -> str:
     """Format resolved document links for prompt embedding."""
     if not links:
@@ -800,9 +800,9 @@ def _truncate(text: str, limit: int = _PROMPT_TEXT_LIMIT) -> str:
 
 
 def _select_local_timeline(
-    timeline: List[Tuple[str, str, bool]],
+    timeline: list[tuple[str, str, bool]],
     target_index: int,
-) -> List[Tuple[str, str, bool]]:
+) -> list[tuple[str, str, bool]]:
     """Select up to _LOCAL_TIMELINE_LIMIT entries centered on target_index.
 
     Always keeps first, target, and last entries.
@@ -831,10 +831,10 @@ def _select_local_timeline(
 
 
 def _select_whole_timeline(
-    timeline: List[Tuple[str, str, bool]],
+    timeline: list[tuple[str, str, bool]],
     current_index: int,
     nearest_self_index: int,
-) -> List[Tuple[str, str, bool]]:
+) -> list[tuple[str, str, bool]]:
     """Select up to _WHOLE_TIMELINE_LIMIT entries for whole-doc comments.
 
     Prioritizes current entry and nearest self reply.
@@ -891,7 +891,7 @@ def build_local_comment_prompt(
     quote_text: str,
     root_comment_text: str,
     target_reply_text: str,
-    timeline: List[Tuple[str, str, bool]],  # [(user_id, text, is_self)]
+    timeline: list[tuple[str, str, bool]],  # [(user_id, text, is_self)]
     self_open_id: str,
     target_index: int = -1,
     referenced_docs: str = "",
@@ -933,7 +933,7 @@ def build_whole_comment_prompt(
     file_token: str,
     file_type: str,
     comment_text: str,
-    timeline: List[Tuple[str, str, bool]],  # [(user_id, text, is_self)]
+    timeline: list[tuple[str, str, bool]],  # [(user_id, text, is_self)]
     self_open_id: str,
     current_index: int = -1,
     nearest_self_index: int = -1,
@@ -972,7 +972,7 @@ def build_whole_comment_prompt(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_model_and_runtime() -> Tuple[str, dict]:
+def _resolve_model_and_runtime() -> tuple[str, dict]:
     """Resolve model and provider credentials, same as gateway message handling."""
     from gateway.run import _load_gateway_config, _resolve_gateway_model
 
@@ -1004,14 +1004,14 @@ _SESSION_MAX_MESSAGES = 50  # keep last N messages per document session
 _SESSION_TTL_S = 3600       # expire sessions after 1 hour of inactivity
 
 _session_cache_lock = threading.Lock()
-_session_cache: Dict[str, Dict] = {}  # key -> {"messages": [...], "last_access": float}
+_session_cache: dict[str, dict] = {}  # key -> {"messages": [...], "last_access": float}
 
 
 def _session_key(file_type: str, file_token: str) -> str:
     return f"comment-doc:{file_type}:{file_token}"
 
 
-def _load_session_history(key: str) -> List[Dict[str, Any]]:
+def _load_session_history(key: str) -> list[dict[str, Any]]:
     """Load conversation history for a document session."""
     with _session_cache_lock:
         entry = _session_cache.get(key)
@@ -1026,7 +1026,7 @@ def _load_session_history(key: str) -> List[Dict[str, Any]]:
         return list(entry["messages"])
 
 
-def _save_session_history(key: str, messages: List[Dict[str, Any]]) -> None:
+def _save_session_history(key: str, messages: list[dict[str, Any]]) -> None:
     """Save conversation history for a document session (keeps last N messages)."""
     # Only keep user/assistant messages (strip system messages and tool internals)
     cleaned = [
@@ -1220,7 +1220,7 @@ async def handle_drive_comment_event(
         logger.info("[Feishu-Comment] Fetching whole-document comments for timeline...")
         whole_comments = await list_whole_comments(client, file_token, file_type)
 
-        timeline: List[Tuple[str, str, bool]] = []
+        timeline: list[tuple[str, str, bool]] = []
         current_text = ""
         current_index = -1
         nearest_self_index = -1

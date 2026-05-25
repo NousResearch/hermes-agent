@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # gateway returns 409 "already in progress" on retried POSTs; we forward the
 # original idempotency key so the gateway can deduplicate. Cleared on
 # success or terminal failure.
-_pending_create_keys: Dict[str, str] = {}
+_pending_create_keys: dict[str, str] = {}
 _pending_create_keys_lock = threading.Lock()
 
 _BASE_URL = "https://api.browser-use.com/api/v3"
@@ -125,7 +125,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
     # Config resolution (direct API key OR managed Nous gateway)
     # ------------------------------------------------------------------
 
-    def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
+    def _get_config_or_none(self) -> Optional[dict[str, Any]]:
         # Import here to avoid a hard dependency at module-import time —
         # managed_tool_gateway pulls in the Nous auth stack which can be
         # heavy and is not needed for direct-API-key users.
@@ -152,7 +152,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
             "managed_mode": True,
         }
 
-    def _get_config(self) -> Dict[str, Any]:
+    def _get_config(self) -> dict[str, Any]:
         from tools.tool_backend_helpers import managed_nous_tools_enabled
 
         config = self._get_config_or_none()
@@ -172,13 +172,13 @@ class BrowserUseBrowserProvider(BrowserProvider):
     # Session lifecycle
     # ------------------------------------------------------------------
 
-    def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+    def _headers(self, config: dict[str, Any]) -> dict[str, str]:
         return {
             "Content-Type": "application/json",
             "X-Browser-Use-API-Key": config["api_key"],
         }
 
-    def create_session(self, task_id: str) -> Dict[str, object]:
+    def create_session(self, task_id: str) -> dict[str, object]:
         config = self._get_config()
         managed_mode = bool(config.get("managed_mode"))
 
@@ -294,7 +294,7 @@ class BrowserUseBrowserProvider(BrowserProvider):
                 "Emergency cleanup failed for Browser Use session %s: %s", session_id, e
             )
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "Browser Use",
             "badge": "paid",

@@ -38,12 +38,12 @@ class HermesOverlay:
     transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
-    extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
+    extra_env_vars: tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
 
 
-HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+HERMES_OVERLAYS: dict[str, HermesOverlay] = {
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -224,7 +224,7 @@ class ProviderDef:
     id: str
     name: str
     transport: str                        # openai_chat | anthropic_messages | codex_responses
-    api_key_env_vars: Tuple[str, ...]     # all env vars to check for API key
+    api_key_env_vars: tuple[str, ...]     # all env vars to check for API key
     base_url: str = ""
     base_url_env_var: str = ""
     is_aggregator: bool = False
@@ -237,7 +237,7 @@ class ProviderDef:
 # Maps human-friendly / legacy names to canonical provider IDs.
 # Uses models.dev IDs where possible.
 
-ALIASES: Dict[str, str] = {
+ALIASES: dict[str, str] = {
     # openrouter
     "openai": "openrouter",     # bare "openai" → route through aggregator
 
@@ -369,7 +369,7 @@ ALIASES: Dict[str, str] = {
 # Built dynamically from models.dev + overlays.  Fallback for providers
 # not in the catalog.
 
-_LABEL_OVERRIDES: Dict[str, str] = {
+_LABEL_OVERRIDES: dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
@@ -387,7 +387,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 
 # -- Transport → API mode mapping ---------------------------------------------
 
-TRANSPORT_TO_API_MODE: Dict[str, str] = {
+TRANSPORT_TO_API_MODE: dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
@@ -545,7 +545,7 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
 
 # -- Provider from user config ------------------------------------------------
 
-def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[ProviderDef]:
+def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[ProviderDef]:
     """Resolve a provider from the user's config.yaml ``providers:`` section.
 
     Args:
@@ -568,7 +568,7 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     key_env = entry.get("key_env", "") or ""
     transport = entry.get("transport", "openai_chat") or "openai_chat"
 
-    env_vars: List[str] = []
+    env_vars: list[str] = []
     if key_env:
         env_vars.append(key_env)
 
@@ -596,7 +596,7 @@ def custom_provider_slug(display_name: str) -> str:
 
 def resolve_custom_provider(
     name: str,
-    custom_providers: Optional[List[Dict[str, Any]]],
+    custom_providers: Optional[list[dict[str, Any]]],
 ) -> Optional[ProviderDef]:
     """Resolve a provider from the user's config.yaml ``custom_providers`` list."""
     if not custom_providers or not isinstance(custom_providers, list):
@@ -665,8 +665,8 @@ def resolve_custom_provider(
 
 def resolve_provider_full(
     name: str,
-    user_providers: Optional[Dict[str, Any]] = None,
-    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    user_providers: Optional[dict[str, Any]] = None,
+    custom_providers: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[ProviderDef]:
     """Full resolution chain: built-in → models.dev → user config.
 

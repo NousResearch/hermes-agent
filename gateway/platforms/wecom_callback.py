@@ -59,16 +59,16 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._host = str(extra.get("host") or DEFAULT_HOST)
         self._port = int(extra.get("port") or DEFAULT_PORT)
         self._path = str(extra.get("path") or DEFAULT_PATH)
-        self._apps: List[Dict[str, Any]] = self._normalize_apps(extra)
+        self._apps: list[dict[str, Any]] = self._normalize_apps(extra)
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
         self._app: Optional[web.Application] = None
         self._http_client: Optional[httpx.AsyncClient] = None
         self._message_queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
         self._poll_task: Optional[asyncio.Task] = None
-        self._seen_messages: Dict[str, float] = {}
-        self._user_app_map: Dict[str, str] = {}
-        self._access_tokens: Dict[str, Dict[str, Any]] = {}
+        self._seen_messages: dict[str, float] = {}
+        self._user_app_map: dict[str, str] = {}
+        self._access_tokens: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # App normalisation
@@ -79,7 +79,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return f"{corp_id}:{user_id}" if corp_id else user_id
 
     @staticmethod
-    def _normalize_apps(extra: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _normalize_apps(extra: dict[str, Any]) -> list[dict[str, Any]]:
         apps = extra.get("apps")
         if isinstance(apps, list) and apps:
             return [dict(app) for app in apps if isinstance(app, dict)]
@@ -182,7 +182,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         app = self._resolve_app_for_chat(chat_id)
         touser = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
@@ -222,7 +222,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
-    def _resolve_app_for_chat(self, chat_id: str) -> Dict[str, Any]:
+    def _resolve_app_for_chat(self, chat_id: str) -> dict[str, Any]:
         """Pick the app associated with *chat_id*, falling back sensibly."""
         app_name = self._user_app_map.get(chat_id)
         if not app_name and ":" not in chat_id:
@@ -233,7 +233,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         app = self._get_app_by_name(app_name) if app_name else None
         return app or self._apps[0]
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
     # ------------------------------------------------------------------
@@ -319,7 +319,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _decrypt_request(
-        self, app: Dict[str, Any], body: str,
+        self, app: dict[str, Any], body: str,
         msg_signature: str, timestamp: str, nonce: str,
     ) -> str:
         root = ET.fromstring(body)
@@ -327,7 +327,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         crypt = self._crypt_for_app(app)
         return crypt.decrypt(msg_signature, timestamp, nonce, encrypt).decode("utf-8")
 
-    def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
+    def _build_event(self, app: dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
         root = ET.fromstring(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
         # Silently acknowledge lifecycle events.
@@ -363,14 +363,14 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             message_id=msg_id,
         )
 
-    def _crypt_for_app(self, app: Dict[str, Any]) -> WXBizMsgCrypt:
+    def _crypt_for_app(self, app: dict[str, Any]) -> WXBizMsgCrypt:
         return WXBizMsgCrypt(
             token=str(app.get("token") or ""),
             encoding_aes_key=str(app.get("encoding_aes_key") or ""),
             receive_id=str(app.get("corp_id") or ""),
         )
 
-    def _get_app_by_name(self, name: Optional[str]) -> Optional[Dict[str, Any]]:
+    def _get_app_by_name(self, name: Optional[str]) -> Optional[dict[str, Any]]:
         if not name:
             return None
         for app in self._apps:
@@ -382,14 +382,14 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     # Access-token management
     # ------------------------------------------------------------------
 
-    async def _get_access_token(self, app: Dict[str, Any]) -> str:
+    async def _get_access_token(self, app: dict[str, Any]) -> str:
         cached = self._access_tokens.get(app["name"])
         now = time.time()
         if cached and cached.get("expires_at", 0) > now + 60:
             return cached["token"]
         return await self._refresh_access_token(app)
 
-    async def _refresh_access_token(self, app: Dict[str, Any]) -> str:
+    async def _refresh_access_token(self, app: dict[str, Any]) -> str:
         resp = await self._http_client.get(
             "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
             params={

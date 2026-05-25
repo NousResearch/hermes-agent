@@ -37,8 +37,8 @@ def matrix_env(tmp_path, monkeypatch):
     monkeypatch.setenv("FAL_KEY", "test-key")
     monkeypatch.setenv("XAI_API_KEY", "test-key")
 
-    fal_calls: List[Dict[str, Any]] = []
-    xai_calls: List[Dict[str, Any]] = []
+    fal_calls: list[dict[str, Any]] = []
+    xai_calls: list[dict[str, Any]] = []
 
     # fal_client stub
     fake_fal = types.ModuleType("fal_client")

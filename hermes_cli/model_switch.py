@@ -1051,7 +1051,7 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
-) -> List[dict]:
+) -> list[dict]:
     """Detect which providers have credentials and list their curated models.
 
     Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
@@ -1082,7 +1082,7 @@ def list_authenticated_providers(
         get_curated_nous_model_ids,
     )
 
-    results: List[dict] = []
+    results: list[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
     # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
@@ -1746,7 +1746,7 @@ def list_picker_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
-) -> List[dict]:
+) -> list[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
     Post-processes the base list so the ``/model`` picker (Telegram/Discord
@@ -1777,7 +1777,7 @@ def list_picker_providers(
         current_model=current_model,
     )
 
-    filtered: List[dict] = []
+    filtered: list[dict] = []
     for p in providers:
         slug = str(p.get("slug", "")).lower()
         if slug == "openrouter":

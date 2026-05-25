@@ -477,7 +477,7 @@ class RetainDBMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         return bool(os.environ.get("RETAINDB_API_KEY"))
 
-    def get_config_schema(self) -> List[Dict[str, Any]]:
+    def get_config_schema(self) -> list[dict[str, Any]]:
         return [
             {"key": "api_key", "description": "RetainDB API key", "secret": True, "required": True, "env_var": "RETAINDB_API_KEY", "url": "https://retaindb.com"},
             {"key": "base_url", "description": "API endpoint", "default": _DEFAULT_BASE_URL},
@@ -640,7 +640,7 @@ class RetainDBMemoryProvider(MemoryProvider):
 
     # ── Tools ──────────────────────────────────────────────────────────────
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [
             PROFILE_SCHEMA, SEARCH_SCHEMA, CONTEXT_SCHEMA,
             REMEMBER_SCHEMA, FORGET_SCHEMA,

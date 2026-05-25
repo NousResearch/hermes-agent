@@ -47,7 +47,7 @@ from typing import Any, FrozenSet, Iterable, Optional, Tuple
 # their own ``user_allowed_commands`` (this set is only the implicit
 # fallback floor — anything in ``user_allowed_commands`` overrides it
 # additively, never restrictively).
-_ALWAYS_ALLOWED_FOR_USERS: FrozenSet[str] = frozenset({
+_ALWAYS_ALLOWED_FOR_USERS: frozenset[str] = frozenset({
     "help",
     "whoami",
 })
@@ -63,8 +63,8 @@ class SlashAccessPolicy:
     """
 
     enabled: bool                      # gating active for this scope?
-    admin_user_ids: FrozenSet[str]
-    user_allowed_commands: FrozenSet[str]
+    admin_user_ids: frozenset[str]
+    user_allowed_commands: frozenset[str]
 
     def is_admin(self, user_id: Optional[str]) -> bool:
         if not self.enabled:
@@ -91,7 +91,7 @@ class SlashAccessPolicy:
 _DM_CHAT_TYPES = frozenset({"dm", "direct", "private", ""})
 
 
-def _coerce_id_list(raw: Any) -> FrozenSet[str]:
+def _coerce_id_list(raw: Any) -> frozenset[str]:
     """Normalize a YAML-loaded admin/user list into a frozenset of strings.
 
     Accepts ``None``, list, tuple, or comma-separated string. Stringifies
@@ -114,7 +114,7 @@ def _coerce_id_list(raw: Any) -> FrozenSet[str]:
     return frozenset(out)
 
 
-def _coerce_command_list(raw: Any) -> FrozenSet[str]:
+def _coerce_command_list(raw: Any) -> frozenset[str]:
     """Normalize a slash command allowlist.
 
     Strips leading slashes so YAML can read either ``["help", "status"]``
@@ -160,7 +160,7 @@ def _platform_extra(platform_config: Any) -> dict:
     return {}
 
 
-def _keys_for_scope(scope: str) -> Tuple[str, str]:
+def _keys_for_scope(scope: str) -> tuple[str, str]:
     """Return (admin_key, user_cmd_key) names for a scope."""
     if scope == "group":
         return ("group_allow_admin_from", "group_user_allowed_commands")

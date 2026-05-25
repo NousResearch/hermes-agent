@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Endpoints inference-api.nousresearch.com actually serves. Anything else
 # the proxy will reject with 404 — keeps stray clients from leaking weird
 # requests to the upstream.
-_ALLOWED_PATHS: FrozenSet[str] = frozenset(
+_ALLOWED_PATHS: frozenset[str] = frozenset(
     {
         "/chat/completions",
         "/completions",
@@ -65,7 +65,7 @@ class NousPortalAdapter(UpstreamAdapter):
         return "Nous Portal"
 
     @property
-    def allowed_paths(self) -> FrozenSet[str]:
+    def allowed_paths(self) -> frozenset[str]:
         return _ALLOWED_PATHS
 
     def is_authenticated(self) -> bool:
@@ -155,7 +155,7 @@ class NousPortalAdapter(UpstreamAdapter):
     # to hermes_cli.auth to avoid expanding that module's public surface.
     # ------------------------------------------------------------------
 
-    def _read_state(self) -> Optional[Dict[str, Any]]:
+    def _read_state(self) -> Optional[dict[str, Any]]:
         try:
             with _auth_store_lock():
                 store = _load_auth_store()
@@ -170,7 +170,7 @@ class NousPortalAdapter(UpstreamAdapter):
 
     def _save_state(
         self,
-        state: Dict[str, Any],
+        state: dict[str, Any],
         *,
         quarantine_error: Optional[AuthError] = None,
         quarantine_reason: Optional[str] = None,

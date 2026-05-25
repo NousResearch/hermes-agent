@@ -1775,13 +1775,13 @@ class ExtractContentMiddleware(InboundMiddleware):
         return text
 
     @staticmethod
-    def _extract_inbound_media_refs(msg_body: list) -> List[Dict[str, str]]:
+    def _extract_inbound_media_refs(msg_body: list) -> list[dict[str, str]]:
         """Extract inbound image/file references from TIM msg_body.
 
         Return example:
           [{"kind": "image", "url": "https://..."}, {"kind": "file", "url": "...", "name": "a.pdf"}]
         """
-        refs: List[Dict[str, str]] = []
+        refs: list[dict[str, str]] = []
         for elem in msg_body or []:
             if not isinstance(elem, dict):
                 continue
@@ -1813,7 +1813,7 @@ class ExtractContentMiddleware(InboundMiddleware):
                     or str(content.get("filename") or "").strip()
                 )
                 if file_url:
-                    ref: Dict[str, str] = {"kind": "file", "url": file_url}
+                    ref: dict[str, str] = {"kind": "file", "url": file_url}
                     if file_name:
                         ref["name"] = file_name
                     refs.append(ref)
@@ -1915,7 +1915,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
         msg_body: list,
         chat_type: str,
         from_account: str,
-    ) -> Tuple[Optional[str], Optional[str], bool]:
+    ) -> tuple[Optional[str], Optional[str], bool]:
         """Identify allowlisted slash commands and determine sender identity.
 
         Returns (cmd, cmd_line, is_owner):
@@ -2178,7 +2178,7 @@ class QuoteContextMiddleware(InboundMiddleware):
     name = "quote-context"
 
     @staticmethod
-    def _extract_quote_context(cloud_custom_data: str) -> Tuple[Optional[str], Optional[str], list]:
+    def _extract_quote_context(cloud_custom_data: str) -> tuple[Optional[str], Optional[str], list]:
         """Extract quote context, mapping to MessageEvent.reply_to_*.
 
         Returns:
@@ -2327,7 +2327,7 @@ class MediaResolveMiddleware(InboundMiddleware):
     async def _download_and_cache(
         cls, adapter, *, fetch_url: str, kind: str,
         file_name: Optional[str] = None, log_tag: str = "",
-    ) -> Optional[Tuple[str, str]]:
+    ) -> Optional[tuple[str, str]]:
         """Download a Yuanbao resource and cache locally. Returns ``(local_path, mime)`` or ``None``."""
         try:
             file_bytes, content_type = await media_download_url(
@@ -2377,15 +2377,15 @@ class MediaResolveMiddleware(InboundMiddleware):
 
     @classmethod
     async def _resolve_media_urls(
-        cls, adapter, media_refs: List[Dict[str, str]]
-    ) -> Tuple[List[str], List[str]]:
+        cls, adapter, media_refs: list[dict[str, str]]
+    ) -> tuple[list[str], list[str]]:
         """Resolve inbound media refs: download to local cache, return (local_paths, mime_types).
 
         Yuanbao COS hostnames resolve to private IPs, tripping the SSRF guard
         in vision_tools. We download ourselves and return local cache paths.
         """
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
 
         for ref in media_refs:
             kind = str(ref.get("kind") or "").strip().lower()
@@ -2420,7 +2420,7 @@ class MediaResolveMiddleware(InboundMiddleware):
     @classmethod
     async def _collect_observed_media(
         cls, adapter, source,
-    ) -> Tuple[List[str], List[str]]:
+    ) -> tuple[list[str], list[str]]:
         """Resolve recent observed image/file anchors from transcript into ``(local_paths, mimes)``."""
         store = getattr(adapter, "_session_store", None)
         if not store:
@@ -2438,7 +2438,7 @@ class MediaResolveMiddleware(InboundMiddleware):
             return [], []
 
         start = max(0, len(history) - OBSERVED_MEDIA_BACKFILL_LOOKBACK)
-        order: List[Tuple[str, str, str]] = []  # (rid, kind, filename)
+        order: list[tuple[str, str, str]] = []  # (rid, kind, filename)
         seen: set = set()
         for msg in history[start:]:
             content = msg.get("content")
@@ -2463,8 +2463,8 @@ class MediaResolveMiddleware(InboundMiddleware):
         if not order:
             return [], []
 
-        media_paths: List[str] = []
-        mimes: List[str] = []
+        media_paths: list[str] = []
+        mimes: list[str] = []
         for rid, kind, filename in order:
             try:
                 fresh_url = await cls._resolve_by_resource_id(adapter, rid)
@@ -2573,8 +2573,8 @@ class DispatchMiddleware(InboundMiddleware):
                         media_types.append(mime)
             else:
                 # No quote — backfill observed media from recent transcript history
-                extra_img_urls: List[str] = []
-                extra_img_mimes: List[str] = []
+                extra_img_urls: list[str] = []
+                extra_img_mimes: list[str] = []
                 try:
                     extra_img_urls, extra_img_mimes = await MediaResolveMiddleware._collect_observed_media(
                         adapter, ctx.source,
@@ -2751,14 +2751,14 @@ class ConnectionManager:
         self._connect_id: Optional[str] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._recv_task: Optional[asyncio.Task] = None
-        self._pending_acks: Dict[str, asyncio.Future] = {}
+        self._pending_acks: dict[str, asyncio.Future] = {}
         self._pending_pong: Optional[asyncio.Future] = None
         self._consecutive_hb_timeouts: int = 0
         self._reconnect_attempts: int = 0
         self._reconnecting: bool = False
         # Debounce buffer for aggregating multi-part inbound messages
-        self._inbound_buffer: Dict[str, list] = {}  # key -> [raw_data_frames, ...]
-        self._inbound_timers: Dict[str, asyncio.TimerHandle] = {}  # key -> timer
+        self._inbound_buffer: dict[str, list] = {}  # key -> [raw_data_frames, ...]
+        self._inbound_timers: dict[str, asyncio.TimerHandle] = {}  # key -> timer
 
     # -- Properties --------------------------------------------------------
 
@@ -3406,7 +3406,7 @@ class MediaSendHandler(ABC):
     @abstractmethod
     async def acquire_file(
         self, adapter: "YuanbaoAdapter", **kwargs: Any,
-    ) -> Tuple[bytes, str, str]:
+    ) -> tuple[bytes, str, str]:
         """Return (file_bytes, filename, content_type).
 
         Raises:
@@ -3817,8 +3817,8 @@ class HeartbeatManager:
 
     def __init__(self, adapter: "YuanbaoAdapter") -> None:
         self._adapter = adapter
-        self._reply_heartbeat_tasks: Dict[str, asyncio.Task] = {}
-        self._reply_hb_last_active: Dict[str, float] = {}
+        self._reply_heartbeat_tasks: dict[str, asyncio.Task] = {}
+        self._reply_hb_last_active: dict[str, float] = {}
 
     async def send_heartbeat_once(self, chat_id: str, heartbeat_val: int) -> None:
         """Send a single heartbeat (RUNNING or FINISH), best effort."""
@@ -3939,7 +3939,7 @@ class SlowResponseNotifier:
     def __init__(self, adapter: "YuanbaoAdapter", sender: "MessageSender") -> None:
         self._adapter = adapter
         self._sender = sender
-        self._tasks: Dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
 
     async def start(self, chat_id: str) -> None:
         """Start a delayed task that notifies the user when the agent is slow."""
@@ -4001,7 +4001,7 @@ class MessageSender:
         self._on_send_finish: Optional[Callable[[str], Any]] = None  # send FINISH heartbeat
 
         # Media send handlers (strategy pattern)
-        self._media_handlers: Dict[str, MediaSendHandler] = {
+        self._media_handlers: dict[str, MediaSendHandler] = {
             "image_url": ImageUrlHandler(),
             "image_file": ImageFileHandler(),
             "file_url": FileUrlHandler(),
@@ -4101,8 +4101,8 @@ class MessageSender:
         self,
         chat_id: str,
         message: str,
-        media_files: Optional[List[Tuple[str, bool]]] = None,
-    ) -> Dict[str, Any]:
+        media_files: Optional[list[tuple[str, bool]]] = None,
+    ) -> dict[str, Any]:
         """Send text + media via Yuanbao (used by the ``send_message`` tool).
 
         Unlike Weixin which creates a fresh adapter per call, Yuanbao reuses
@@ -4349,7 +4349,7 @@ class MessageSender:
         content: str,
         max_length: int = 4000,
         len_fn: Optional[Callable[[str], int]] = None,
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Split a long message into chunks with table-awareness.
 
@@ -4455,8 +4455,8 @@ class OutboundManager:
 
     async def send_direct(
         self, chat_id: str, message: str,
-        media_files: Optional[List[Tuple[str, bool]]] = None,
-    ) -> Dict[str, Any]:
+        media_files: Optional[list[tuple[str, bool]]] = None,
+    ) -> dict[str, Any]:
         """Send text + media (used by send_message tool)."""
         return await self.sender.send_direct(chat_id, message, media_files)
 
@@ -4546,23 +4546,23 @@ class YuanbaoAdapter(BasePlatformAdapter):
         # Member cache: group_code -> (updated_ts, [{"user_id":..., "nickname":..., ...}, ...])
         # Populated by get_group_member_list(), used by @mention resolution.
         # Entries older than MEMBER_CACHE_TTL_S are treated as stale.
-        self._member_cache: Dict[str, Tuple[float, list]] = {}
+        self._member_cache: dict[str, tuple[float, list]] = {}
         self.MEMBER_CACHE_TTL_S: float = 300.0  # 5 minutes
 
         # Inbound message deduplication (WS reconnect / network jitter)
         self._dedup = MessageDeduplicator(ttl_seconds=300)
 
         # Group chat sequential dispatch queue (session_key → asyncio.Queue).
-        self._group_queues: Dict[str, asyncio.Queue] = {}
+        self._group_queues: dict[str, asyncio.Queue] = {}
 
         # Recall support: track which msg_id is being processed per session_key
         # so RecallGuardMiddleware can detect "currently processing" messages.
-        self._processing_msg_ids: Dict[str, str] = {}
-        self._processing_msg_texts: Dict[str, str] = {}
+        self._processing_msg_ids: dict[str, str] = {}
+        self._processing_msg_texts: dict[str, str] = {}
         # Bounded cache of msg_id → attributed content for recent messages.
         # Used by _patch_transcript as content-match fallback when transcript
         # entries lack a message_id field (agent-processed @bot messages).
-        self._msg_content_cache: Dict[str, str] = {}
+        self._msg_content_cache: dict[str, str] = {}
 
         # Reply-to dedup: inbound_msg_id -> expire_ts
         # ------------------------------------------------------------------
@@ -4664,13 +4664,13 @@ class YuanbaoAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         group_code: str = "",
     ) -> SendResult:
         """Send text message with auto-chunking. Delegates to OutboundManager."""
         return await self._outbound.send_text(chat_id, content, reply_to, group_code=group_code)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic chat metadata derived from the chat_id prefix.
 
         chat_id conventions:
@@ -4868,7 +4868,7 @@ async def send_yuanbao_direct(
     adapter: "YuanbaoAdapter",
     chat_id: str,
     message: str,
-    media_files: Optional[List[Tuple[str, bool]]] = None,
-) -> Dict[str, Any]:
+    media_files: Optional[list[tuple[str, bool]]] = None,
+) -> dict[str, Any]:
     """Delegate to ``OutboundManager.send_direct``."""
     return await adapter._outbound.send_direct(chat_id, message, media_files)

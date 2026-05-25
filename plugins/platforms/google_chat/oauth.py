@@ -153,7 +153,7 @@ def _pending_auth_path(email: Optional[str] = None) -> Path:
 # `chat.messages.create` covers BOTH `media.upload` and the subsequent
 # `messages.create` that references the attachmentDataRef. We deliberately
 # do NOT request drive.file or other scopes — least privilege.
-SCOPES: List[str] = [
+SCOPES: list[str] = [
     "https://www.googleapis.com/auth/chat.messages.create",
 ]
 
@@ -280,7 +280,7 @@ def build_user_chat_service(creds: Any) -> Any:
     return build_service("chat", "v1", credentials=creds, cache_discovery=False)
 
 
-def list_authorized_emails() -> List[str]:
+def list_authorized_emails() -> list[str]:
     """Return the set of user emails that have stored per-user tokens.
 
     Lists files in the per-user tokens dir; does NOT include the legacy
@@ -291,7 +291,7 @@ def list_authorized_emails() -> List[str]:
     d = _user_tokens_dir()
     if not d.exists():
         return []
-    out: List[str] = []
+    out: list[str] = []
     for f in d.iterdir():
         if f.is_file() and f.suffix == ".json":
             out.append(f.stem)
@@ -471,7 +471,7 @@ def _load_pending_auth(email: Optional[str] = None) -> dict:
     return data
 
 
-def _extract_code_and_state(code_or_url: str) -> Tuple[str, Optional[str]]:
+def _extract_code_and_state(code_or_url: str) -> tuple[str, Optional[str]]:
     """Accept a raw auth code OR the full failed-redirect URL the user pastes."""
     if not code_or_url.startswith("http"):
         return code_or_url, None

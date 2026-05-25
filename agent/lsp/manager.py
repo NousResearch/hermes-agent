@@ -155,10 +155,10 @@ class LSPService:
         wait_mode: str,
         wait_timeout: float,
         install_strategy: str,
-        binary_overrides: Optional[Dict[str, List[str]]] = None,
-        env_overrides: Optional[Dict[str, Dict[str, str]]] = None,
-        init_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
-        disabled_servers: Optional[List[str]] = None,
+        binary_overrides: Optional[dict[str, list[str]]] = None,
+        env_overrides: Optional[dict[str, dict[str, str]]] = None,
+        init_overrides: Optional[dict[str, dict[str, Any]]] = None,
+        disabled_servers: Optional[list[str]] = None,
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     ) -> None:
         self._enabled = enabled
@@ -176,17 +176,17 @@ class LSPService:
             self._loop.start()
 
         # Per-(server_id, workspace_root) state
-        self._clients: Dict[Tuple[str, str], LSPClient] = {}
+        self._clients: dict[tuple[str, str], LSPClient] = {}
         self._broken: set = set()
-        self._spawning: Dict[Tuple[str, str], asyncio.Future] = {}
-        self._last_used: Dict[Tuple[str, str], float] = {}
+        self._spawning: dict[tuple[str, str], asyncio.Future] = {}
+        self._last_used: dict[tuple[str, str], float] = {}
         self._state_lock = threading.Lock()
 
         # Delta baseline: file path → snapshot of diagnostics taken
         # immediately before a write.  ``get_diagnostics_sync`` filters
         # out anything in the baseline so the agent only sees errors
         # introduced by the current edit.
-        self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
+        self._delta_baseline: dict[str, list[dict[str, Any]]] = {}
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
@@ -212,9 +212,9 @@ class LSPService:
         install_strategy = lsp_cfg.get("install_strategy", "auto")
         servers_cfg = lsp_cfg.get("servers") or {}
         disabled = []
-        binary_overrides: Dict[str, List[str]] = {}
-        env_overrides: Dict[str, Dict[str, str]] = {}
-        init_overrides: Dict[str, Dict[str, Any]] = {}
+        binary_overrides: dict[str, list[str]] = {}
+        env_overrides: dict[str, dict[str, str]] = {}
+        init_overrides: dict[str, dict[str, Any]] = {}
         if isinstance(servers_cfg, dict):
             for name, sub in servers_cfg.items():
                 if not isinstance(sub, dict):
@@ -311,7 +311,7 @@ class LSPService:
         delta: bool = True,
         timeout: Optional[float] = None,
         line_shift: Optional[Callable[[int], Optional[int]]] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Synchronously open ``file_path`` in the right server, wait for
         diagnostics, return them.
 
@@ -451,7 +451,7 @@ class LSPService:
     # async internals
     # ------------------------------------------------------------------
 
-    async def _snapshot_async(self, file_path: str) -> List[Dict[str, Any]]:
+    async def _snapshot_async(self, file_path: str) -> list[dict[str, Any]]:
         client = await self._get_or_spawn(file_path)
         if client is None:
             return []
@@ -464,7 +464,7 @@ class LSPService:
         self._last_used[(client.server_id, client.workspace_root)] = time.time()
         return list(client.diagnostics_for(file_path))
 
-    async def _open_and_wait_async(self, file_path: str) -> List[Dict[str, Any]]:
+    async def _open_and_wait_async(self, file_path: str) -> list[dict[str, Any]]:
         client = await self._get_or_spawn(file_path)
         if client is None:
             return []
@@ -478,7 +478,7 @@ class LSPService:
         self._last_used[(client.server_id, client.workspace_root)] = time.time()
         return list(client.diagnostics_for(file_path))
 
-    async def _current_diags_async(self, file_path: str) -> List[Dict[str, Any]]:
+    async def _current_diags_async(self, file_path: str) -> list[dict[str, Any]]:
         ws, gated = resolve_workspace_for_file(file_path)
         srv = find_server_for_file(file_path)
         if not (ws and gated and srv):
@@ -586,7 +586,7 @@ class LSPService:
     # status / introspection (used by ``hermes lsp status``)
     # ------------------------------------------------------------------
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Return a snapshot of the service for the CLI status command."""
         with self._state_lock:
             clients = [
@@ -610,7 +610,7 @@ class LSPService:
         }
 
 
-def _diag_key(d: Dict[str, Any]) -> str:
+def _diag_key(d: dict[str, Any]) -> str:
     """Content equality key used for cross-edit delta filtering.
 
     Includes the diagnostic's position range — when used together

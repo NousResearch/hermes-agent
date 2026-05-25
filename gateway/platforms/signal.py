@@ -70,7 +70,7 @@ HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before conc
 # ---------------------------------------------------------------------------
 
 
-def _parse_comma_list(value: str) -> List[str]:
+def _parse_comma_list(value: str) -> list[str]:
     """Split a comma-separated string into a list, stripping whitespace."""
     return [v.strip() for v in value.split(",") if v.strip()]
 
@@ -215,15 +215,15 @@ class SignalAdapter(BasePlatformAdapter):
         # Background tasks
         self._sse_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
-        self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
         # Per-chat typing-indicator backoff. When signal-cli reports
         # NETWORK_FAILURE (recipient offline / unroutable), base.py's
         # _keep_typing refresh loop would otherwise hammer sendTyping every
         # ~2s indefinitely, producing WARNING-level log spam and pointless
         # RPC traffic. We track consecutive failures per chat and skip the
         # RPC during a cooldown window instead.
-        self._typing_failures: Dict[str, int] = {}
-        self._typing_skip_until: Dict[str, float] = {}
+        self._typing_failures: dict[str, int] = {}
+        self._typing_skip_until: dict[str, float] = {}
         self._running = False
         self._last_sse_activity = 0.0
         self._sse_response: Optional[httpx.Response] = None
@@ -238,8 +238,8 @@ class SignalAdapter(BasePlatformAdapter):
         # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
         # phone number to the corresponding UUID when signal-cli prefers it.
-        self._recipient_uuid_by_number: Dict[str, str] = {}
-        self._recipient_number_by_uuid: Dict[str, str] = {}
+        self._recipient_uuid_by_number: dict[str, str] = {}
+        self._recipient_number_by_uuid: dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
 
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
@@ -971,14 +971,14 @@ class SignalAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a text message with native Signal formatting."""
         await self._stop_typing_indicator(chat_id)
 
         plain_text, text_styles = self._markdown_to_signal(content)
 
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "account": self.account,
             "message": plain_text,
         }
@@ -1035,7 +1035,7 @@ class SignalAdapter(BasePlatformAdapter):
         if now < skip_until:
             return
 
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "account": self.account,
         }
 
@@ -1068,8 +1068,8 @@ class SignalAdapter(BasePlatformAdapter):
     async def send_multiple_images(
         self,
         chat_id: str,
-        images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None,
+        images: list[tuple[str, str]],
+        metadata: Optional[dict[str, Any]] = None,
         human_delay: float = 0.0,
     ) -> None:
         """Send a batch of images via chunked Signal RPC calls.
@@ -1092,7 +1092,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         await self._stop_typing_indicator(chat_id)
 
-        attachments: List[str] = []
+        attachments: list[str] = []
         skipped_download = 0
         skipped_missing = 0
         skipped_oversize = 0
@@ -1135,7 +1135,7 @@ class SignalAdapter(BasePlatformAdapter):
             len(attachments), len(images),
         )
 
-        base_params: Dict[str, Any] = {
+        base_params: dict[str, Any] = {
             "account": self.account,
             "message": "",
         }
@@ -1266,7 +1266,7 @@ class SignalAdapter(BasePlatformAdapter):
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"Image too large ({file_size} bytes)")
 
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "account": self.account,
             "message": caption or "",
             "attachments": [file_path],
@@ -1305,7 +1305,7 @@ class SignalAdapter(BasePlatformAdapter):
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"{media_label} too large ({file_size} bytes)")
 
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "account": self.account,
             "message": caption or "",
             "attachments": [file_path],
@@ -1416,7 +1416,7 @@ class SignalAdapter(BasePlatformAdapter):
             target_author: Phone number / UUID of the message author
             target_timestamp: Signal timestamp (ms) of the message to react to
         """
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "account": self.account,
             "emoji": emoji,
             "targetAuthor": target_author,
@@ -1441,7 +1441,7 @@ class SignalAdapter(BasePlatformAdapter):
         target_timestamp: int,
     ) -> bool:
         """Remove a reaction by sending an empty-string emoji."""
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "account": self.account,
             "emoji": "",
             "targetAuthor": target_author,
@@ -1527,7 +1527,7 @@ class SignalAdapter(BasePlatformAdapter):
     # Chat Info
     # ------------------------------------------------------------------
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Get information about a chat/contact."""
         if chat_id.startswith("group:"):
             return {

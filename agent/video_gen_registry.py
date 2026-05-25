@@ -30,7 +30,7 @@ from agent.video_gen_provider import VideoGenProvider
 logger = logging.getLogger(__name__)
 
 
-_providers: Dict[str, VideoGenProvider] = {}
+_providers: dict[str, VideoGenProvider] = {}
 _lock = threading.Lock()
 
 
@@ -58,7 +58,7 @@ def register_provider(provider: VideoGenProvider) -> None:
         logger.debug("Registered video gen provider '%s' (%s)", name, type(provider).__name__)
 
 
-def list_providers() -> List[VideoGenProvider]:
+def list_providers() -> list[VideoGenProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
         items = list(_providers.values())

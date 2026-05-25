@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 API_MODEL = "gpt-image-2"
 
-_MODELS: Dict[str, Dict[str, Any]] = {
+_MODELS: dict[str, dict[str, Any]] = {
     "gpt-image-2-low": {
         "display": "GPT Image 2 (Low)",
         "speed": "~15s",
@@ -80,7 +80,7 @@ _SIZES = {
 }
 
 
-def _load_openai_config() -> Dict[str, Any]:
+def _load_openai_config() -> dict[str, Any]:
     """Read ``image_gen`` from config.yaml (returns {} on any failure)."""
     try:
         from hermes_cli.config import load_config
@@ -93,7 +93,7 @@ def _load_openai_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model() -> tuple[str, dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
@@ -142,7 +142,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
             return False
         return True
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return [
             {
                 "id": model_id,
@@ -157,7 +157,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "OpenAI",
             "badge": "paid",
@@ -176,7 +176,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
 
@@ -215,7 +215,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
         # gpt-image-2 returns b64_json unconditionally and REJECTS
         # ``response_format`` as an unknown parameter. Don't send it.
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": API_MODEL,
             "prompt": prompt,
             "size": size,
@@ -292,7 +292,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        extra: dict[str, Any] = {"size": size, "quality": meta["quality"]}
         if revised_prompt:
             extra["revised_prompt"] = revised_prompt
 

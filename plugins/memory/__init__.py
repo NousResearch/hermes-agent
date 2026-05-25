@@ -64,14 +64,14 @@ def _is_memory_provider_dir(path: Path) -> bool:
         return False
 
 
-def _iter_provider_dirs() -> List[Tuple[str, Path]]:
+def _iter_provider_dirs() -> list[tuple[str, Path]]:
     """Yield ``(name, path)`` for all discovered provider directories.
 
     Scans bundled first, then user-installed.  Bundled takes precedence
     on name collisions (first-seen wins via ``seen`` set).
     """
     seen: set = set()
-    dirs: List[Tuple[str, Path]] = []
+    dirs: list[tuple[str, Path]] = []
 
     # 1. Bundled providers (plugins/memory/<name>/)
     if _MEMORY_PLUGINS_DIR.is_dir():
@@ -120,7 +120,7 @@ def find_provider_dir(name: str) -> Optional[Path]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def discover_memory_providers() -> List[Tuple[str, str, bool]]:
+def discover_memory_providers() -> list[tuple[str, str, bool]]:
     """Scan bundled and user-installed directories for available providers.
 
     Returns list of (name, description, is_available) tuples.
@@ -320,7 +320,7 @@ def _get_active_memory_provider() -> Optional[str]:
         return None
 
 
-def discover_plugin_cli_commands() -> List[dict]:
+def discover_plugin_cli_commands() -> list[dict]:
     """Return CLI commands for the **active** memory plugin only.
 
     Only one memory provider can be active at a time (set via
@@ -337,7 +337,7 @@ def discover_plugin_cli_commands() -> List[dict]:
     full plugin module.  Safe to call during argparse setup before
     any provider is loaded.
     """
-    results: List[dict] = []
+    results: list[dict] = []
     if not _MEMORY_PLUGINS_DIR.is_dir():
         return results
 

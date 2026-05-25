@@ -93,7 +93,7 @@ class NodeServer:
 
     # ----- dispatch -----------------------------------------------------
 
-    async def _handle_request(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_request(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Validate + dispatch a single decoded request envelope.
 
         Always returns a response envelope (success or error); never

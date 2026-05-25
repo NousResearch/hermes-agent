@@ -70,13 +70,13 @@ _BWS_RUN_TIMEOUT = 30
 
 # In-process cache so repeated load_hermes_dotenv() calls (CLI startup,
 # gateway hot-reload, test suites) don't re-fetch from BSM.
-_CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
-_CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
+_CacheKey = tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
+_CACHE: dict[_CacheKey, "_CachedFetch"] = {}
 
 
 @dataclass
 class _CachedFetch:
-    secrets: Dict[str, str]
+    secrets: dict[str, str]
     fetched_at: float
 
     def is_fresh(self, ttl_seconds: float) -> bool:
@@ -94,10 +94,10 @@ class _CachedFetch:
 class FetchResult:
     """Outcome of a single BSM pull."""
 
-    secrets: Dict[str, str] = field(default_factory=dict)
-    applied: List[str] = field(default_factory=list)   # set into os.environ
-    skipped: List[str] = field(default_factory=list)   # already set, not overridden
-    warnings: List[str] = field(default_factory=list)  # non-fatal issues
+    secrets: dict[str, str] = field(default_factory=dict)
+    applied: list[str] = field(default_factory=list)   # set into os.environ
+    skipped: list[str] = field(default_factory=list)   # already set, not overridden
+    warnings: list[str] = field(default_factory=list)  # non-fatal issues
     error: Optional[str] = None                        # fatal: nothing was fetched
     binary_path: Optional[Path] = None
 
@@ -318,7 +318,7 @@ def fetch_bitwarden_secrets(
     cache_ttl_seconds: float = 300,
     use_cache: bool = True,
     server_url: str = "",
-) -> Tuple[Dict[str, str], List[str]]:
+) -> tuple[dict[str, str], list[str]]:
     """Pull the secrets for ``project_id`` from Bitwarden Secrets Manager.
 
     Returns ``(secrets_dict, warnings_list)``.
@@ -361,7 +361,7 @@ def fetch_bitwarden_secrets(
 
 def _run_bws_list(
     bws: Path, access_token: str, project_id: str, server_url: str = ""
-) -> Tuple[Dict[str, str], List[str]]:
+) -> tuple[dict[str, str], list[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
     env = os.environ.copy()
     env["BWS_ACCESS_TOKEN"] = access_token
@@ -412,8 +412,8 @@ def _run_bws_list(
             f"bws returned unexpected shape: {type(payload).__name__}"
         )
 
-    secrets: Dict[str, str] = {}
-    warnings: List[str] = []
+    secrets: dict[str, str] = {}
+    warnings: list[str] = []
     for item in payload:
         if not isinstance(item, dict):
             continue

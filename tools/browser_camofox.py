@@ -98,7 +98,7 @@ def get_vnc_url() -> Optional[str]:
     return _vnc_url
 
 
-def _get_camofox_config() -> Dict[str, Any]:
+def _get_camofox_config() -> dict[str, Any]:
     """Return the ``browser.camofox`` config block, or an empty dict."""
     try:
         camofox_cfg = load_config().get("browser", {}).get("camofox", {})
@@ -120,7 +120,7 @@ def _managed_persistence_enabled() -> bool:
     return bool(_get_camofox_config().get("managed_persistence"))
 
 
-def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, Any]) -> Optional[Dict[str, str]]:
+def _camofox_identity_override(task_id: Optional[str], camofox_cfg: dict[str, Any]) -> Optional[dict[str, str]]:
     """Return an externally configured Camofox identity, if one is set.
 
     Integrations that own the visible Camofox browser can set a shared user ID
@@ -151,7 +151,7 @@ def _env_flag(name: str) -> Optional[bool]:
     return None
 
 
-def _adopt_existing_tab_enabled(camofox_cfg: Dict[str, Any]) -> bool:
+def _adopt_existing_tab_enabled(camofox_cfg: dict[str, Any]) -> bool:
     """Return whether Hermes should recover an existing Camofox tab ID."""
     env_value = _env_flag("CAMOFOX_ADOPT_EXISTING_TAB")
     if env_value is not None:
@@ -163,11 +163,11 @@ def _adopt_existing_tab_enabled(camofox_cfg: Dict[str, Any]) -> bool:
 # Session management
 # ---------------------------------------------------------------------------
 # Maps task_id -> {"user_id": str, "tab_id": str|None}
-_sessions: Dict[str, Dict[str, Any]] = {}
+_sessions: dict[str, dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 
 
-def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
+def _adopt_existing_tab(session: dict[str, Any]) -> dict[str, Any]:
     """Attach process-local state to an already-open managed Camofox tab.
 
     Some integrations own the visible Camofox tab outside Hermes. Gateway
@@ -205,7 +205,7 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
     return session
 
 
-def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
+def _get_session(task_id: Optional[str]) -> dict[str, Any]:
     """Get or create a camofox session for the given task.
 
     When managed persistence is enabled, uses a deterministic userId
@@ -248,7 +248,7 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
         return _adopt_existing_tab(session)
 
 
-def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
+def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> dict[str, Any]:
     """Ensure a tab exists for the session, creating one if needed."""
     session = _get_session(task_id)
     if session["tab_id"]:
@@ -269,7 +269,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     return session
 
 
-def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
+def _drop_session(task_id: Optional[str]) -> Optional[dict[str, Any]]:
     """Remove and return session info."""
     task_id = task_id or "default"
     with _sessions_lock:

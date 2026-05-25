@@ -1060,7 +1060,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         return chunks
 
-    def _empty_profile_hint(self, peer: str) -> Dict[str, Any]:
+    def _empty_profile_hint(self, peer: str) -> dict[str, Any]:
         """Build a diagnostic hint when honcho_profile returns an empty card.
 
         A literal "No profile facts available yet." tells the model nothing
@@ -1076,7 +1076,7 @@ class HonchoMemoryProvider(MemoryProvider):
              (honcho-ai server < 3.x)
         """
         cfg = self._config
-        reasons: List[str] = []
+        reasons: list[str] = []
 
         if cfg is not None:
             if peer == "user":
@@ -1155,7 +1155,7 @@ class HonchoMemoryProvider(MemoryProvider):
         action: str,
         target: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """Mirror built-in user profile writes as Honcho conclusions.
 
@@ -1180,7 +1180,7 @@ class HonchoMemoryProvider(MemoryProvider):
         t = threading.Thread(target=_write, daemon=True, name="honcho-memwrite")
         t.start()
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
         if self._cron_skipped:
             return
@@ -1194,7 +1194,7 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Honcho session-end flush failed: %s", e)
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         """Return tool schemas, respecting recall_mode.
 
         B1: context-only mode hides all tools.

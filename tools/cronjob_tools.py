@@ -140,7 +140,7 @@ def _scan_cron_prompt(prompt: str) -> str:
     return ""
 
 
-def _origin_from_env() -> Optional[Dict[str, str]]:
+def _origin_from_env() -> Optional[dict[str, str]]:
     from gateway.session_context import get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
@@ -160,7 +160,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     return None
 
 
-def _repeat_display(job: Dict[str, Any]) -> str:
+def _repeat_display(job: dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
     if times is None:
@@ -170,7 +170,7 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
-def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
+def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> list[str]:
     if skills is None:
         raw_items = [skill] if skill else []
     elif isinstance(skills, str):
@@ -178,7 +178,7 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
     else:
         raw_items = list(skills)
 
-    normalized: List[str] = []
+    normalized: list[str] = []
     for item in raw_items:
         text = str(item or "").strip()
         if text and text not in normalized:
@@ -188,7 +188,7 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
 
 
-def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
+def _resolve_model_override(model_obj: Optional[dict[str, Any]]) -> tuple:
     """Resolve a model override object into (provider, model) for job storage.
 
     If provider is omitted, pins the current main provider from config so the
@@ -291,7 +291,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     return None
 
 
-def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+def _format_job(job: dict[str, Any]) -> dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
@@ -340,14 +340,14 @@ def cronjob(
     deliver: Optional[str] = None,
     include_disabled: bool = False,
     skill: Optional[str] = None,
-    skills: Optional[List[str]] = None,
+    skills: Optional[list[str]] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
-    context_from: Optional[Union[str, List[str]]] = None,
-    enabled_toolsets: Optional[List[str]] = None,
+    context_from: Optional[Union[str, list[str]]] = None,
+    enabled_toolsets: Optional[list[str]] = None,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
@@ -500,7 +500,7 @@ def cronjob(
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "update":
-            updates: Dict[str, Any] = {}
+            updates: dict[str, Any] = {}
             if prompt is not None:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:

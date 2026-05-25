@@ -56,7 +56,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute a DuckDuckGo search and return normalized results."""
         try:
             from ddgs import DDGS  # type: ignore
@@ -92,7 +92,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
         logger.info("DDGS search '%s': %d results (limit %d)", query, len(web_results), limit)
         return {"success": True, "data": {"web": web_results}}
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "DuckDuckGo (ddgs)",
             "badge": "free · no key · search only",

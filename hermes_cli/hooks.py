@@ -61,7 +61,7 @@ def _cmd_list(_args) -> None:
         print("for the config schema and worked examples.")
         return
 
-    by_event: Dict[str, List] = {}
+    by_event: dict[str, list] = {}
     for spec in specs:
         by_event.setdefault(spec.event, []).append(spec)
 
@@ -238,7 +238,7 @@ def _cmd_test(args) -> None:
         print()
 
 
-def _print_run_result(result: Dict[str, Any]) -> None:
+def _print_run_result(result: dict[str, Any]) -> None:
     if result.get("error"):
         print(f"      ✗ error: {result['error']}")
         return

@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 API_MODEL = "gpt-image-2"
 
-_MODELS: Dict[str, Dict[str, Any]] = {
+_MODELS: dict[str, dict[str, Any]] = {
     "gpt-image-2-low": {
         "display": "GPT Image 2 (Low)",
         "speed": "~15s",
@@ -85,7 +85,7 @@ _CODEX_INSTRUCTIONS = (
 # ---------------------------------------------------------------------------
 
 
-def _load_image_gen_config() -> Dict[str, Any]:
+def _load_image_gen_config() -> dict[str, Any]:
     """Read ``image_gen`` from config.yaml (returns {} on any failure)."""
     try:
         from hermes_cli.config import load_config
@@ -98,7 +98,7 @@ def _load_image_gen_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model() -> tuple[str, dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
     import os
 
@@ -239,7 +239,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             return False
         return True
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return [
             {
                 "id": model_id,
@@ -254,7 +254,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
@@ -271,7 +271,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
 

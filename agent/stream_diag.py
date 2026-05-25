@@ -38,7 +38,7 @@ STREAM_DIAG_HEADERS = (
 )
 
 
-def stream_diag_init() -> Dict[str, Any]:
+def stream_diag_init() -> dict[str, Any]:
     """Return a fresh per-attempt diagnostic dict.
 
     Mutated in-place by the streaming functions and read from the retry
@@ -55,7 +55,7 @@ def stream_diag_init() -> Dict[str, Any]:
     }
 
 
-def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response: Any) -> None:
+def stream_diag_capture_response(agent: Any, diag: dict[str, Any], http_response: Any) -> None:
     """Snapshot interesting headers + HTTP status from the live stream.
 
     Called once at stream open (before iterating chunks) so the metadata
@@ -70,7 +70,7 @@ def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response
         pass
     try:
         headers = getattr(http_response, "headers", None) or {}
-        captured: Dict[str, str] = {}
+        captured: dict[str, str] = {}
         # Allow per-agent override of the headers list (back-compat).
         target_headers = getattr(agent, "_STREAM_DIAG_HEADERS", STREAM_DIAG_HEADERS)
         for name in target_headers:
@@ -96,7 +96,7 @@ def flatten_exception_chain(error: BaseException) -> str:
     died.  Walks ``__cause__`` then ``__context__`` (deduped, max 4
     deep) to surface the chain in one line.
     """
-    seen: List[BaseException] = []
+    seen: list[BaseException] = []
     link: Optional[BaseException] = error
     while link is not None and len(seen) < 4:
         if link in seen:
@@ -108,7 +108,7 @@ def flatten_exception_chain(error: BaseException) -> str:
         if nxt is None or nxt is link:
             break
         link = nxt
-    parts: List[str] = []
+    parts: list[str] = []
     for e in seen:
         msg = str(e).strip().replace("\n", " ")
         if len(msg) > 140:
@@ -125,7 +125,7 @@ def log_stream_retry(
     attempt: int,
     max_attempts: int,
     mid_tool_call: bool,
-    diag: Optional[Dict[str, Any]] = None,
+    diag: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record a transient stream-drop and retry to ``agent.log``.
 
@@ -218,7 +218,7 @@ def emit_stream_drop(
     attempt: int,
     max_attempts: int,
     mid_tool_call: bool,
-    diag: Optional[Dict[str, Any]] = None,
+    diag: Optional[dict[str, Any]] = None,
 ) -> None:
     """Emit a single user-visible line for a stream drop+retry.
 

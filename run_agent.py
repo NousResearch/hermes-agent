@@ -314,7 +314,7 @@ class _StreamErrorEvent(Exception):
         self.status_code = status_code
         # OpenAI SDK-shaped body so _extract_api_error_context /
         # _summarize_api_error / classify_api_error all pick it up.
-        self.body: Dict[str, Any] = {
+        self.body: dict[str, Any] = {
             "error": {
                 "message": message,
                 "code": code,
@@ -360,17 +360,17 @@ class AIAgent:
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
-        enabled_toolsets: List[str] = None,
-        disabled_toolsets: List[str] = None,
+        enabled_toolsets: list[str] = None,
+        disabled_toolsets: list[str] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
-        providers_allowed: List[str] = None,
-        providers_ignored: List[str] = None,
-        providers_order: List[str] = None,
+        providers_allowed: list[str] = None,
+        providers_ignored: list[str] = None,
+        providers_order: list[str] = None,
         provider_sort: str = None,
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
@@ -388,10 +388,10 @@ class AIAgent:
         tool_gen_callback: callable = None,
         status_callback: callable = None,
         max_tokens: int = None,
-        reasoning_config: Dict[str, Any] = None,
+        reasoning_config: dict[str, Any] = None,
         service_tier: str = None,
-        request_overrides: Dict[str, Any] = None,
-        prefill_messages: List[Dict[str, Any]] = None,
+        request_overrides: dict[str, Any] = None,
+        prefill_messages: list[dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
         user_name: str = None,
@@ -406,7 +406,7 @@ class AIAgent:
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
-        fallback_model: Dict[str, Any] = None,
+        fallback_model: dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
@@ -722,13 +722,13 @@ class AIAgent:
     from agent.stream_diag import STREAM_DIAG_HEADERS as _STREAM_DIAG_HEADERS  # noqa: E402
 
     @staticmethod
-    def _stream_diag_init() -> Dict[str, Any]:
+    def _stream_diag_init() -> dict[str, Any]:
         """Forwarder — see ``agent.stream_diag.stream_diag_init``."""
         from agent.stream_diag import stream_diag_init
         return stream_diag_init()
 
     def _stream_diag_capture_response(
-        self, diag: Dict[str, Any], http_response: Any
+        self, diag: dict[str, Any], http_response: Any
     ) -> None:
         """Forwarder — see ``agent.stream_diag.stream_diag_capture_response``."""
         from agent.stream_diag import stream_diag_capture_response
@@ -766,7 +766,7 @@ class AIAgent:
         attempt: int,
         max_attempts: int,
         mid_tool_call: bool,
-        diag: Optional[Dict[str, Any]] = None,
+        diag: Optional[dict[str, Any]] = None,
     ) -> None:
         """Forwarder — see ``agent.stream_diag.log_stream_retry``."""
         from agent.stream_diag import log_stream_retry
@@ -782,7 +782,7 @@ class AIAgent:
         attempt: int,
         max_attempts: int,
         mid_tool_call: bool,
-        diag: Optional[Dict[str, Any]] = None,
+        diag: Optional[dict[str, Any]] = None,
     ) -> None:
         """Forwarder — see ``agent.stream_diag.emit_stream_drop``."""
         from agent.stream_diag import emit_stream_drop
@@ -802,7 +802,7 @@ class AIAgent:
             detail = detail[:217].rstrip() + "..."
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
-    def _current_main_runtime(self) -> Dict[str, str]:
+    def _current_main_runtime(self) -> dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
         return {
             "model": getattr(self, "model", "") or "",
@@ -1075,7 +1075,7 @@ class AIAgent:
         self,
         user_message: str,
         assistant_content: str,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
     ) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.looks_like_codex_intermediate_ack``."""
         from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
@@ -1102,16 +1102,16 @@ class AIAgent:
 
     @staticmethod
     def _summarize_background_review_actions(
-        review_messages: List[Dict],
-        prior_snapshot: List[Dict],
-    ) -> List[str]:
+        review_messages: list[dict],
+        prior_snapshot: list[dict],
+    ) -> list[str]:
         """Forwarder — see ``agent.background_review.summarize_background_review_actions``."""
         from agent.background_review import summarize_background_review_actions
         return summarize_background_review_actions(review_messages, prior_snapshot)
 
     def _spawn_background_review(
         self,
-        messages_snapshot: List[Dict],
+        messages_snapshot: list[dict],
         review_memory: bool = False,
         review_skills: bool = False,
     ) -> None:
@@ -1140,7 +1140,7 @@ class AIAgent:
         execution_context: Optional[str] = None,
         task_id: Optional[str] = None,
         tool_call_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Forwarder — see ``agent.background_review.build_memory_write_metadata``."""
         from agent.background_review import build_memory_write_metadata
         return build_memory_write_metadata(
@@ -1151,7 +1151,7 @@ class AIAgent:
             tool_call_id=tool_call_id,
         )
 
-    def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
+    def _apply_persist_user_message_override(self, messages: list[dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
 
         Some call paths need an API-only user-message variant without letting
@@ -1169,7 +1169,7 @@ class AIAgent:
             if isinstance(msg, dict) and msg.get("role") == "user":
                 msg["content"] = override
 
-    def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _persist_session(self, messages: list[dict], conversation_history: list[dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
@@ -1180,7 +1180,7 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
-    def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
+    def _drop_trailing_empty_response_scaffolding(self, messages: list[dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
 
         Also rewinds past any trailing tool-result / assistant(tool_calls) pair
@@ -1233,12 +1233,12 @@ class AIAgent:
         ):
             messages.pop()
 
-    def _repair_message_sequence(self, messages: List[Dict]) -> int:
+    def _repair_message_sequence(self, messages: list[dict]) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_message_sequence``."""
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _flush_messages_to_session_db(self, messages: list[dict], conversation_history: list[dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
 
         Uses _last_flushed_db_idx to track which messages have already been
@@ -1297,7 +1297,7 @@ class AIAgent:
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
 
-    def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
+    def _get_messages_up_to_last_assistant(self, messages: list[dict]) -> list[dict]:
         """
         Get messages up to (but not including) the last assistant turn.
         
@@ -1333,12 +1333,12 @@ class AIAgent:
         from agent.system_prompt import format_tools_for_system_message
         return format_tools_for_system_message(self)
 
-    def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
+    def _convert_to_trajectory_format(self, messages: list[dict[str, Any]], user_query: str, completed: bool) -> list[dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.convert_to_trajectory_format``."""
         from agent.agent_runtime_helpers import convert_to_trajectory_format
         return convert_to_trajectory_format(self, messages, user_query, completed)
 
-    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
+    def _save_trajectory(self, messages: list[dict[str, Any]], user_query: str, completed: bool):
         """
         Save conversation trajectory to JSONL file.
         
@@ -1355,7 +1355,7 @@ class AIAgent:
 
     @staticmethod
     def _is_entitlement_failure(
-        error_context: Optional[Dict[str, Any]],
+        error_context: Optional[dict[str, Any]],
         status_code: Optional[int],
     ) -> bool:
         """Detect subscription/entitlement 403s that masquerade as auth failures.
@@ -1505,12 +1505,12 @@ class AIAgent:
         return cleaned
 
     @staticmethod
-    def _extract_api_error_context(error: Exception) -> Dict[str, Any]:
+    def _extract_api_error_context(error: Exception) -> dict[str, Any]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_api_error_context``."""
         from agent.agent_runtime_helpers import extract_api_error_context
         return extract_api_error_context(error)
 
-    def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
+    def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[dict[str, Any]]:
         """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
         if response is None:
             return None
@@ -1528,7 +1528,7 @@ class AIAgent:
 
     def _dump_api_request_debug(
         self,
-        api_kwargs: Dict[str, Any],
+        api_kwargs: dict[str, Any],
         *,
         reason: str,
         error: Optional[Exception] = None,
@@ -1577,7 +1577,7 @@ class AIAgent:
             return redacted
         return content
 
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+    def _save_session_log(self, messages: list[dict[str, Any]] = None):
         """Optional per-session JSON snapshot writer.
 
         Gated by ``sessions.write_json_snapshots`` (default False).  state.db
@@ -1819,7 +1819,7 @@ class AIAgent:
     def _record_file_mutation_result(
         self,
         tool_name: str,
-        args: Dict[str, Any],
+        args: dict[str, Any],
         result: Any,
         is_error: bool,
     ) -> None:
@@ -1883,7 +1883,7 @@ class AIAgent:
         return True  # safe default: verifier on
 
     @staticmethod
-    def _format_file_mutation_failure_footer(failed: Dict[str, Dict[str, Any]]) -> str:
+    def _format_file_mutation_failure_footer(failed: dict[str, dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
 
         Displays up to 10 paths with their first error preview, then a
@@ -2191,7 +2191,7 @@ class AIAgent:
         except Exception:
             pass
 
-    def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
+    def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.
         
@@ -2237,7 +2237,7 @@ class AIAgent:
 
 
 
-    def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
+    def _build_system_prompt_parts(self, system_message: str = None) -> dict[str, str]:
         """Forwarder — see ``agent.system_prompt.build_system_prompt_parts``."""
         from agent.system_prompt import build_system_prompt_parts
         return build_system_prompt_parts(self, system_message=system_message)
@@ -2274,13 +2274,13 @@ class AIAgent:
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
 
     @staticmethod
-    def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _sanitize_api_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.sanitize_api_messages``."""
         from agent.agent_runtime_helpers import sanitize_api_messages
         return sanitize_api_messages(messages)
 
     @staticmethod
-    def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
+    def _is_thinking_only_assistant(msg: dict[str, Any]) -> bool:
         """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
 
         "Thinking-only" means the model emitted reasoning (``reasoning`` or
@@ -2335,8 +2335,8 @@ class AIAgent:
 
     @staticmethod
     def _drop_thinking_only_and_merge_users(
-        messages: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.drop_thinking_only_and_merge_users``."""
         from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
         return drop_thinking_only_and_merge_users(messages)
@@ -2957,7 +2957,7 @@ class AIAgent:
         status_code: Optional[int],
         has_retried_429: bool,
         classified_reason: Optional[FailoverReason] = None,
-        error_context: Optional[Dict[str, Any]] = None,
+        error_context: Optional[dict[str, Any]] = None,
     ) -> tuple[bool, bool]:
         """Forwarder — see ``agent.agent_runtime_helpers.recover_with_credential_pool``."""
         from agent.agent_runtime_helpers import recover_with_credential_pool
@@ -3081,7 +3081,7 @@ class AIAgent:
         )
         return bool(streamed) and streamed == visible_content
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
+    def _emit_interim_assistant_message(self, assistant_msg: dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer."""
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None or not isinstance(assistant_msg, dict):
@@ -3324,8 +3324,8 @@ class AIAgent:
         if not self._content_has_image_parts(content):
             return content
 
-        text_parts: List[str] = []
-        image_notes: List[str] = []
+        text_parts: list[str] = []
+        image_notes: list[str] = []
         for part in content:
             if isinstance(part, str):
                 if part.strip():
@@ -3545,7 +3545,7 @@ class AIAgent:
                 continue
 
             # Salvage any text parts so the model still sees some signal.
-            text_parts: List[str] = []
+            text_parts: list[str] = []
             had_image = False
             for part in content:
                 if not isinstance(part, dict):
@@ -4093,11 +4093,11 @@ class AIAgent:
         self,
         user_message: str,
         system_message: str = None,
-        conversation_history: List[Dict[str, Any]] = None,
+        conversation_history: list[dict[str, Any]] = None,
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
         return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
@@ -4121,10 +4121,10 @@ class AIAgent:
         *,
         user_message: str,
         original_user_message: Any,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         effective_task_id: str,
         should_review_memory: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)

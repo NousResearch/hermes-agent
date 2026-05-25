@@ -66,7 +66,7 @@ class FalImageGenProvider(ImageGenProvider):
         except Exception:  # noqa: BLE001 — defensive; never break the picker
             return False
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         import tools.image_generation_tool as _it
         return [
             {
@@ -83,7 +83,7 @@ class FalImageGenProvider(ImageGenProvider):
         import tools.image_generation_tool as _it
         return _it.DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "FAL.ai",
             "badge": "paid",
@@ -102,7 +102,7 @@ class FalImageGenProvider(ImageGenProvider):
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate an image via the legacy FAL pipeline.
 
         Forwards prompt + aspect_ratio (and any forward-compat extras

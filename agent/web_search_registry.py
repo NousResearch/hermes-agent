@@ -41,7 +41,7 @@ from agent.web_search_provider import WebSearchProvider
 logger = logging.getLogger(__name__)
 
 
-_providers: Dict[str, WebSearchProvider] = {}
+_providers: dict[str, WebSearchProvider] = {}
 _lock = threading.Lock()
 
 
@@ -75,7 +75,7 @@ def register_provider(provider: WebSearchProvider) -> None:
         )
 
 
-def list_providers() -> List[WebSearchProvider]:
+def list_providers() -> list[WebSearchProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
         items = list(_providers.values())

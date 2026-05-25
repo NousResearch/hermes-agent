@@ -23,7 +23,7 @@ _LM_EFFORT_ALIASES = {"off": "none", "on": "medium"}
 
 def resolve_lmstudio_effort(
     reasoning_config: Optional[dict],
-    allowed_options: Optional[List[str]],
+    allowed_options: Optional[list[str]],
 ) -> Optional[str]:
     """Return the ``reasoning_effort`` string to send to LM Studio, or ``None``.
 

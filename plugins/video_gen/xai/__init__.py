@@ -54,7 +54,7 @@ VALID_RESOLUTIONS = {"480p", "720p"}
 MAX_REFERENCE_IMAGES = 7
 
 
-_MODELS: Dict[str, Dict[str, Any]] = {
+_MODELS: dict[str, dict[str, Any]] = {
     "grok-imagine-video": {
         "display": "Grok Imagine Video",
         "speed": "~60-240s",
@@ -70,7 +70,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 
-def _resolve_xai_credentials() -> Tuple[str, str]:
+def _resolve_xai_credentials() -> tuple[str, str]:
     """Return ``(api_key, base_url)`` from the shared xAI credential resolver.
 
     Order: runtime provider (xai-oauth pool entry) → singleton ``auth.json``
@@ -103,7 +103,7 @@ def _xai_user_agent() -> str:
         return "hermes-agent/video_gen"
 
 
-def _xai_headers(api_key: str) -> Dict[str, str]:
+def _xai_headers(api_key: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -111,7 +111,7 @@ def _xai_headers(api_key: str) -> Dict[str, str]:
     }
 
 
-def _normalize_reference_images(reference_image_urls: Optional[List[str]]):
+def _normalize_reference_images(reference_image_urls: Optional[list[str]]):
     refs = []
     for url in reference_image_urls or []:
         normalized = (url or "").strip()
@@ -133,7 +133,7 @@ def _clamp_duration(duration: Optional[int], has_reference_images: bool) -> int:
 
 async def _submit(
     client: httpx.AsyncClient,
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     *,
     api_key: str,
     base_url: str,
@@ -162,7 +162,7 @@ async def _poll(
     base_url: str,
     timeout_seconds: int,
     poll_interval: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     elapsed = 0.0
     last_status = "queued"
     while elapsed < timeout_seconds:
@@ -206,13 +206,13 @@ class XAIVideoGenProvider(VideoGenProvider):
         api_key, _ = _resolve_xai_credentials()
         return bool(api_key)
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return [{"id": mid, **meta} for mid, meta in _MODELS.items()]
 
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         # Auth resolution lives entirely in the shared ``xai_grok`` post_setup
         # hook (``hermes_cli/tools_config.py``) so the picker doesn't blindly
         # prompt for an API key when the user is already signed in via xAI
@@ -227,7 +227,7 @@ class XAIVideoGenProvider(VideoGenProvider):
             "post_setup": "xai_grok",
         }
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {
             "modalities": ["text", "image"],
             "aspect_ratios": sorted(VALID_ASPECT_RATIOS),
@@ -245,7 +245,7 @@ class XAIVideoGenProvider(VideoGenProvider):
         *,
         model: Optional[str] = None,
         image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None,
+        reference_image_urls: Optional[list[str]] = None,
         duration: Optional[int] = None,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         resolution: str = DEFAULT_RESOLUTION,
@@ -253,7 +253,7 @@ class XAIVideoGenProvider(VideoGenProvider):
         audio: Optional[bool] = None,
         seed: Optional[int] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:
             loop = asyncio.new_event_loop()
             try:
@@ -285,11 +285,11 @@ class XAIVideoGenProvider(VideoGenProvider):
         prompt: str,
         model: Optional[str],
         image_url: Optional[str],
-        reference_image_urls: Optional[List[str]],
+        reference_image_urls: Optional[list[str]],
         duration: Optional[int],
         aspect_ratio: str,
         resolution: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         api_key, base_url = _resolve_xai_credentials()
         if not api_key:
             return error_response(
@@ -339,7 +339,7 @@ class XAIVideoGenProvider(VideoGenProvider):
         if normalized_resolution not in VALID_RESOLUTIONS:
             normalized_resolution = DEFAULT_RESOLUTION
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model or DEFAULT_MODEL,
             "prompt": prompt,
             "duration": clamped_duration,
@@ -391,7 +391,7 @@ class XAIVideoGenProvider(VideoGenProvider):
                     model=body.get("model") or model or DEFAULT_MODEL,
                     prompt=prompt,
                 )
-            extra: Dict[str, Any] = {
+            extra: dict[str, Any] = {
                 "request_id": request_id,
                 "resolution": normalized_resolution,
             }

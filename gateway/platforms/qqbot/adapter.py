@@ -142,7 +142,7 @@ def check_qq_requirements() -> bool:
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
 
 
-def _coerce_list(value: Any) -> List[str]:
+def _coerce_list(value: Any) -> list[str]:
     """Coerce config values into a trimmed string list."""
     return _coerce_list_impl(value)
 
@@ -227,16 +227,16 @@ class QQAdapter(BasePlatformAdapter):
         self._heartbeat_interval: float = 30.0  # seconds, updated by Hello
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
-        self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
+        self._chat_type_map: dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
         # Request/response correlation
-        self._pending_responses: Dict[str, asyncio.Future] = {}
-        self._seen_messages: Dict[str, float] = {}
+        self._pending_responses: dict[str, asyncio.Future] = {}
+        self._seen_messages: dict[str, float] = {}
 
         # Last inbound message ID per chat — used by send_typing
-        self._last_msg_id: Dict[str, str] = {}
+        self._last_msg_id: dict[str, str] = {}
         # Typing debounce: chat_id → last send_typing timestamp
-        self._typing_sent_at: Dict[str, float] = {}
+        self._typing_sent_at: dict[str, float] = {}
 
         # Token cache
         self._access_token: Optional[str] = None
@@ -244,7 +244,7 @@ class QQAdapter(BasePlatformAdapter):
         self._token_lock = asyncio.Lock()
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
-        self._upload_cache: Dict[str, Dict[str, Any]] = {}
+        self._upload_cache: dict[str, dict[str, Any]] = {}
 
         # Inline-keyboard interaction routing. The callback (if set) is invoked
         # for every INTERACTION_CREATE event after the adapter has already
@@ -794,7 +794,7 @@ class QQAdapter(BasePlatformAdapter):
         except RuntimeError:
             return None
 
-    def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
+    def _dispatch_payload(self, payload: dict[str, Any]) -> None:
         """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""
         op = payload.get("op")
         t = payload.get("t")
@@ -886,7 +886,7 @@ class QQAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_json(raw: Any) -> Optional[Dict[str, Any]]:
+    def _parse_json(raw: Any) -> Optional[dict[str, Any]]:
         try:
             payload = json.loads(raw)
         except Exception:
@@ -1055,7 +1055,7 @@ class QQAdapter(BasePlatformAdapter):
     }
 
     @staticmethod
-    def _parse_gateway_session_key(session_key: str) -> Optional[Dict[str, str]]:
+    def _parse_gateway_session_key(session_key: str) -> Optional[dict[str, str]]:
         """Parse ``agent:main:<platform>:<chat_type>:<chat_id>[:<user_id>]``."""
         parts = str(session_key or "").split(":")
         if len(parts) < 5 or parts[0] != "agent" or parts[1] != "main":
@@ -1194,10 +1194,10 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _handle_c2c_message(
             self,
-            d: Dict[str, Any],
+            d: dict[str, Any],
             msg_id: str,
             content: str,
-            author: Dict[str, Any],
+            author: dict[str, Any],
             timestamp: str,
     ) -> None:
         """Handle a C2C (private) message event."""
@@ -1289,10 +1289,10 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _handle_group_message(
             self,
-            d: Dict[str, Any],
+            d: dict[str, Any],
             msg_id: str,
             content: str,
-            author: Dict[str, Any],
+            author: dict[str, Any],
             timestamp: str,
     ) -> None:
         """Handle a group @-message event."""
@@ -1354,10 +1354,10 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _handle_guild_message(
             self,
-            d: Dict[str, Any],
+            d: dict[str, Any],
             msg_id: str,
             content: str,
-            author: Dict[str, Any],
+            author: dict[str, Any],
             timestamp: str,
     ) -> None:
         """Handle a guild/channel message event."""
@@ -1429,10 +1429,10 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _handle_dm_message(
             self,
-            d: Dict[str, Any],
+            d: dict[str, Any],
             msg_id: str,
             content: str,
-            author: Dict[str, Any],
+            author: dict[str, Any],
             timestamp: str,
     ) -> None:
         """Handle a guild DM message event."""
@@ -1503,8 +1503,8 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _process_quoted_context(
             self,
-            d: Dict[str, Any],
-    ) -> Dict[str, Any]:
+            d: dict[str, Any],
+    ) -> dict[str, Any]:
         """Process the quoted message a user is replying to.
 
         When a user replies while quoting another message, the platform sets
@@ -1551,8 +1551,8 @@ class QQAdapter(BasePlatformAdapter):
         # msg_elements[0] carries the referenced message. Additional elements
         # (if any) are very rare in practice; we concatenate their text and
         # union their attachments for completeness.
-        quoted_text_parts: List[str] = []
-        all_attachments: List[Dict[str, Any]] = []
+        quoted_text_parts: list[str] = []
+        all_attachments: list[dict[str, Any]] = []
         for elem in elements:
             if not isinstance(elem, dict):
                 continue
@@ -1571,7 +1571,7 @@ class QQAdapter(BasePlatformAdapter):
         quoted_images = att_result.get("image_urls") or []
         quoted_image_types = att_result.get("image_media_types") or []
 
-        lines: List[str] = []
+        lines: list[str] = []
         if quoted_text_parts:
             lines.append(" ".join(quoted_text_parts))
         for t in quoted_voice:
@@ -1631,7 +1631,7 @@ class QQAdapter(BasePlatformAdapter):
     async def _process_attachments(
             self,
             attachments: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Process inbound attachments (all message types).
 
         Mirrors OpenClaw's ``processAttachments`` — handles images, voice, and
@@ -1651,10 +1651,10 @@ class QQAdapter(BasePlatformAdapter):
                 "attachment_info": "",
             }
 
-        image_urls: List[str] = []
-        image_media_types: List[str] = []
-        voice_transcripts: List[str] = []
-        other_attachments: List[str] = []
+        image_urls: list[str] = []
+        image_media_types: list[str] = []
+        voice_transcripts: list[str] = []
+        other_attachments: list[str] = []
 
         for att in attachments:
             if not isinstance(att, dict):
@@ -1808,7 +1808,7 @@ class QQAdapter(BasePlatformAdapter):
             return True
         return False
 
-    def _qq_media_headers(self) -> Dict[str, str]:
+    def _qq_media_headers(self) -> dict[str, str]:
         """Return Authorization headers for QQ multimedia CDN downloads.
 
         QQ's multimedia URLs (multimedia.nt.qq.com.cn) require the bot's
@@ -2136,7 +2136,7 @@ class QQAdapter(BasePlatformAdapter):
         )
         return wav_path
 
-    def _resolve_stt_config(self) -> Optional[Dict[str, str]]:
+    def _resolve_stt_config(self) -> Optional[dict[str, str]]:
         """Resolve STT backend configuration from config/environment.
 
         Priority:
@@ -2312,9 +2312,9 @@ class QQAdapter(BasePlatformAdapter):
             self,
             method: str,
             path: str,
-            body: Optional[Dict[str, Any]] = None,
+            body: Optional[dict[str, Any]] = None,
             timeout: float = DEFAULT_API_TIMEOUT,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Make an authenticated REST API request to QQ Bot API."""
         if not self._http_client:
             raise RuntimeError("HTTP client not initialized — not connected?")
@@ -2353,7 +2353,7 @@ class QQAdapter(BasePlatformAdapter):
             file_data: Optional[str] = None,
             srv_send_msg: bool = False,
             file_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Upload media and return file_info."""
         path = (
             f"/v2/users/{target_id}/files"
@@ -2361,7 +2361,7 @@ class QQAdapter(BasePlatformAdapter):
             else f"/v2/groups/{target_id}/files"
         )
 
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "file_type": file_type,
             "srv_send_msg": srv_send_msg,
         }
@@ -2422,7 +2422,7 @@ class QQAdapter(BasePlatformAdapter):
             chat_id: str,
             content: str,
             reply_to: Optional[str] = None,
-            metadata: Optional[Dict[str, Any]] = None,
+            metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a text or markdown message to a QQ user or group.
 
@@ -2550,7 +2550,7 @@ class QQAdapter(BasePlatformAdapter):
             self, channel_id: str, content: str, reply_to: Optional[str] = None
     ) -> SendResult:
         """Send text to a guild channel via REST API."""
-        body: Dict[str, Any] = {"content": content[: self.MAX_MESSAGE_LENGTH]}
+        body: dict[str, Any] = {"content": content[: self.MAX_MESSAGE_LENGTH]}
         if reply_to:
             body["msg_id"] = reply_to
 
@@ -2649,7 +2649,7 @@ class QQAdapter(BasePlatformAdapter):
             command: str,
             session_key: str,
             description: str = "dangerous command",
-            metadata: Optional[Dict[str, Any]] = None,
+            metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
 
@@ -2684,7 +2684,7 @@ class QQAdapter(BasePlatformAdapter):
             prompt: str,
             default: str = "",
             session_key: str = "",
-            metadata: Optional[Dict[str, Any]] = None,
+            metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Yes/No update-confirmation prompt with inline buttons.
 
@@ -2710,12 +2710,12 @@ class QQAdapter(BasePlatformAdapter):
 
     def _build_text_body(
             self, content: str, reply_to: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build the message body for C2C/group text sending."""
         msg_seq = self._next_msg_seq(reply_to or "default")
 
         if self._markdown_support:
-            body: Dict[str, Any] = {
+            body: dict[str, Any] = {
                 "markdown": {"content": content[: self.MAX_MESSAGE_LENGTH]},
                 "msg_type": MSG_TYPE_MARKDOWN,
                 "msg_seq": msg_seq,
@@ -2744,7 +2744,7 @@ class QQAdapter(BasePlatformAdapter):
             image_url: str,
             caption: Optional[str] = None,
             reply_to: Optional[str] = None,
-            metadata: Optional[Dict[str, Any]] = None,
+            metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively via QQ Bot API upload."""
         del metadata
@@ -2897,7 +2897,7 @@ class QQAdapter(BasePlatformAdapter):
 
             # Send media message
             msg_seq = self._next_msg_seq(chat_id)
-            body: Dict[str, Any] = {
+            body: dict[str, Any] = {
                 "msg_type": MSG_TYPE_MEDIA,
                 "media": {"file_info": file_info},
                 "msg_seq": msg_seq,
@@ -2960,7 +2960,7 @@ class QQAdapter(BasePlatformAdapter):
             media_source: str,
             file_type: int,
             file_name: Optional[str],
-    ) -> Tuple[str, Dict[str, Any]]:
+    ) -> tuple[str, dict[str, Any]]:
         """Chunked-upload a local file and return ``(resolved_name, complete_response)``.
 
         The returned ``complete_response`` contains the ``file_info`` token
@@ -3003,7 +3003,7 @@ class QQAdapter(BasePlatformAdapter):
 
     async def _load_media(
             self, source: str, file_name: Optional[str] = None
-    ) -> Tuple[str, str, str]:
+    ) -> tuple[str, str, str]:
         """Load media from URL or local path. Returns (base64_or_url, content_type, filename)."""
         source = str(source).strip()
         if not source:
@@ -3101,7 +3101,7 @@ class QQAdapter(BasePlatformAdapter):
     # Chat info
     # ------------------------------------------------------------------
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return chat info based on chat type heuristics."""
         chat_type = self._guess_chat_type(chat_id)
         return {
@@ -3147,7 +3147,7 @@ class QQAdapter(BasePlatformAdapter):
         return True
 
     @staticmethod
-    def _entry_matches(entries: List[str], target: str) -> bool:
+    def _entry_matches(entries: list[str], target: str) -> bool:
         normalized_target = str(target).strip().lower()
         for entry in entries:
             normalized = str(entry).strip().lower()

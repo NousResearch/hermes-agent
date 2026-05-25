@@ -114,7 +114,7 @@ class DeliveryRouter:
     messages to the right platform adapters.
     """
     
-    def __init__(self, config: GatewayConfig, adapters: Dict[Platform, Any] = None):
+    def __init__(self, config: GatewayConfig, adapters: dict[Platform, Any] = None):
         """
         Initialize the delivery router.
         
@@ -129,11 +129,11 @@ class DeliveryRouter:
     async def deliver(
         self,
         content: str,
-        targets: List[DeliveryTarget],
+        targets: list[DeliveryTarget],
         job_id: Optional[str] = None,
         job_name: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        metadata: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
         """
         Deliver content to all specified targets.
         
@@ -173,8 +173,8 @@ class DeliveryRouter:
         content: str,
         job_id: Optional[str],
         job_name: Optional[str],
-        metadata: Optional[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        metadata: Optional[dict[str, Any]]
+    ) -> dict[str, Any]:
         """Save content to local files."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -227,8 +227,8 @@ class DeliveryRouter:
         self,
         target: DeliveryTarget,
         content: str,
-        metadata: Optional[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        metadata: Optional[dict[str, Any]]
+    ) -> dict[str, Any]:
         """Deliver content to a messaging platform."""
         adapter = self.adapters.get(target.platform)
         

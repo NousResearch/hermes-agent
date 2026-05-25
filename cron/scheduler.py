@@ -449,7 +449,7 @@ def _normalize_deliver_value(deliver) -> str:
 _ROUTING_TOKENS = frozenset({"all"})
 
 
-def _expand_routing_tokens(part: str) -> List[str]:
+def _expand_routing_tokens(part: str) -> list[str]:
     """Expand a routing-intent token to concrete platform names.
 
     ``all`` expands to every platform in ``_iter_home_target_platforms()``
@@ -460,14 +460,14 @@ def _expand_routing_tokens(part: str) -> List[str]:
     token = part.lower()
     if token not in _ROUTING_TOKENS:
         return [part]
-    expanded: List[str] = []
+    expanded: list[str] = []
     for platform_name in _iter_home_target_platforms():
         if _get_home_target_chat_id(platform_name):
             expanded.append(platform_name)
     return expanded
 
 
-def _resolve_delivery_targets(job: dict) -> List[dict]:
+def _resolve_delivery_targets(job: dict) -> list[dict]:
     """Resolve all concrete auto-delivery targets for a cron job.
 
     Accepts the legacy comma-separated ``deliver`` string plus the
@@ -484,7 +484,7 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     raw_parts = [p.strip() for p in deliver.split(",") if p.strip()]
 
     # Expand routing intents.
-    parts: List[str] = []
+    parts: list[str] = []
     for raw in raw_parts:
         parts.extend(_expand_routing_tokens(raw))
 

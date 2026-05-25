@@ -21,7 +21,7 @@ class ResponsesApiTransport(ProviderTransport):
     def api_mode(self) -> str:
         return "codex_responses"
 
-    def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
+    def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
         return _chat_messages_to_responses_input(
@@ -29,7 +29,7 @@ class ResponsesApiTransport(ProviderTransport):
             is_xai_responses=bool(kwargs.get("is_xai_responses")),
         )
 
-    def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
+    def convert_tools(self, tools: list[dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
         from agent.codex_responses_adapter import _responses_tools
         return _responses_tools(tools)
@@ -37,10 +37,10 @@ class ResponsesApiTransport(ProviderTransport):
     def build_kwargs(
         self,
         model: str,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **params,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build Responses API kwargs.
 
         Calls convert_messages and convert_tools internally.
@@ -148,7 +148,7 @@ class ResponsesApiTransport(ProviderTransport):
             cache_scope_id = str(prompt_cache_key or session_id or "").strip()
             if cache_scope_id:
                 existing_extra_headers = kwargs.get("extra_headers")
-                merged_extra_headers: Dict[str, str] = {}
+                merged_extra_headers: dict[str, str] = {}
                 if isinstance(existing_extra_headers, dict):
                     merged_extra_headers.update(
                         {
@@ -167,7 +167,7 @@ class ResponsesApiTransport(ProviderTransport):
 
         if is_xai_responses and session_id:
             existing_extra_headers = kwargs.get("extra_headers")
-            merged_extra_headers: Dict[str, str] = {}
+            merged_extra_headers: dict[str, str] = {}
             if isinstance(existing_extra_headers, dict):
                 merged_extra_headers.update(
                     {
@@ -184,7 +184,7 @@ class ResponsesApiTransport(ProviderTransport):
             # Sent via extra_body (not the typed kwarg) so it survives openai
             # SDK builds whose Responses.stream() signature has dropped the field.
             existing_extra_body = kwargs.get("extra_body")
-            merged_extra_body: Dict[str, Any] = {}
+            merged_extra_body: dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
             merged_extra_body.setdefault("prompt_cache_key", session_id)

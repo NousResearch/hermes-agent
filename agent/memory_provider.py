@@ -119,7 +119,7 @@ class MemoryProvider(ABC):
         """
 
     @abstractmethod
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         """Return tool schemas this provider exposes.
 
         Each schema follows the OpenAI function calling format:
@@ -128,7 +128,7 @@ class MemoryProvider(ABC):
         Return empty list if this provider has no tools (context-only).
         """
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         """Handle a tool call for one of this provider's tools.
 
         Must return a JSON string (the tool result).
@@ -150,7 +150,7 @@ class MemoryProvider(ABC):
         Providers use what they need; extras are ignored.
         """
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """Called when a session ends (explicit exit or timeout).
 
         Use for end-of-session fact extraction, summarization, etc.
@@ -199,7 +199,7 @@ class MemoryProvider(ABC):
         Default is no-op for backward compatibility.
         """
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """Called before context compression discards old messages.
 
         Use to extract insights from messages about to be compressed.
@@ -224,7 +224,7 @@ class MemoryProvider(ABC):
         child_session_id: the subagent's session_id
         """
 
-    def get_config_schema(self) -> List[Dict[str, Any]]:
+    def get_config_schema(self) -> list[dict[str, Any]]:
         """Return config fields this provider needs for setup.
 
         Used by 'hermes memory setup' to walk the user through configuration.
@@ -242,7 +242,7 @@ class MemoryProvider(ABC):
         """
         return []
 
-    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+    def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
         """Write non-secret config to the provider's native location.
 
         Called by 'hermes memory setup' after collecting user inputs.
@@ -264,7 +264,7 @@ class MemoryProvider(ABC):
         action: str,
         target: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """Called when the built-in memory tool writes an entry.
 

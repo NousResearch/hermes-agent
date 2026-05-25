@@ -401,7 +401,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         _fixed_temp = None
 
     # Provider preferences (OpenRouter-style)
-    _prefs: Dict[str, Any] = {}
+    _prefs: dict[str, Any] = {}
     if agent.providers_allowed:
         _prefs["only"] = agent.providers_allowed
     if agent.providers_ignored:

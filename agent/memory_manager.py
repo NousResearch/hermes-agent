@@ -249,8 +249,8 @@ class MemoryManager:
     """
 
     def __init__(self) -> None:
-        self._providers: List[MemoryProvider] = []
-        self._tool_to_provider: Dict[str, MemoryProvider] = {}
+        self._providers: list[MemoryProvider] = []
+        self._tool_to_provider: dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
 
     # -- Registration --------------------------------------------------------
@@ -302,7 +302,7 @@ class MemoryManager:
         )
 
     @property
-    def providers(self) -> List[MemoryProvider]:
+    def providers(self) -> list[MemoryProvider]:
         """All registered providers in order."""
         return list(self._providers)
 
@@ -381,7 +381,7 @@ class MemoryManager:
 
     # -- Tools ---------------------------------------------------------------
 
-    def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_all_tool_schemas(self) -> list[dict[str, Any]]:
         """Collect tool schemas from all providers."""
         schemas = []
         seen = set()
@@ -408,7 +408,7 @@ class MemoryManager:
         return tool_name in self._tool_to_provider
 
     def handle_tool_call(
-        self, tool_name: str, args: Dict[str, Any], **kwargs
+        self, tool_name: str, args: dict[str, Any], **kwargs
     ) -> str:
         """Route a tool call to the correct provider.
 
@@ -443,7 +443,7 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """Notify all providers of session end."""
         for provider in self._providers:
             try:
@@ -489,7 +489,7 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """Notify all providers before context compression.
 
         Returns combined text from providers to include in the compression
@@ -539,7 +539,7 @@ class MemoryManager:
         action: str,
         target: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """Notify external providers when the built-in memory tool writes.
 

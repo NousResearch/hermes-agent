@@ -25,9 +25,9 @@ def _patch_oauth_flow(
     monkeypatch,
     *,
     callback_code: str,
-    token_response: Dict[str, Any] | None = None,
-    capture_token_request: Dict[str, Any] | None = None,
-    capture_auth_url: Dict[str, str] | None = None,
+    token_response: dict[str, Any] | None = None,
+    capture_token_request: dict[str, Any] | None = None,
+    capture_auth_url: dict[str, str] | None = None,
 ) -> None:
     """Wire up monkeypatches that let ``run_hermes_oauth_login_pure()`` run
     end-to-end without touching a real browser, stdin, or HTTP endpoint.
@@ -87,8 +87,8 @@ def test_authorization_url_state_is_not_pkce_verifier(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    captured_url: Dict[str, str] = {}
-    captured_token: Dict[str, Any] = {}
+    captured_url: dict[str, str] = {}
+    captured_token: dict[str, Any] = {}
     _patch_oauth_flow(
         monkeypatch,
         # state echoed back unchanged so the CSRF guard passes
@@ -153,7 +153,7 @@ def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    captured_token: Dict[str, Any] = {}
+    captured_token: dict[str, Any] = {}
     _patch_oauth_flow(
         monkeypatch,
         callback_code="attacker-code#attacker-state-does-not-match",

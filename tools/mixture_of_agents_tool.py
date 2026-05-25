@@ -87,7 +87,7 @@ Responses from models:"""
 _debug = DebugSession("moa_tools", env_var="MOA_TOOLS_DEBUG")
 
 
-def _construct_aggregator_prompt(system_prompt: str, responses: List[str]) -> str:
+def _construct_aggregator_prompt(system_prompt: str, responses: list[str]) -> str:
     """
     Construct the final system prompt for the aggregator including all model responses.
     
@@ -235,7 +235,7 @@ async def _run_aggregator_model(
 
 async def mixture_of_agents_tool(
     user_prompt: str,
-    reference_models: Optional[List[str]] = None,
+    reference_models: Optional[list[str]] = None,
     aggregator_model: Optional[str] = None
 ) -> str:
     """
@@ -420,7 +420,7 @@ def check_moa_requirements() -> bool:
 
 
 
-def get_moa_configuration() -> Dict[str, Any]:
+def get_moa_configuration() -> dict[str, Any]:
     """
     Get the current MoA configuration settings.
     

@@ -74,7 +74,7 @@ _CORR_PREFIX = "hermes-"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _parse_comma_list(value: str) -> List[str]:
+def _parse_comma_list(value: str) -> list[str]:
     """Split a comma-separated string into a stripped list."""
     return [v.strip() for v in value.split(",") if v.strip()]
 
@@ -130,7 +130,7 @@ class SimplexAdapter(BasePlatformAdapter):
         self._ws = None  # websockets connection
         self._ws_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
-        self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
         self._running = False
         self._last_ws_activity = 0.0
 
@@ -371,8 +371,8 @@ class SimplexAdapter(BasePlatformAdapter):
         text = msg_content.get("text") or ""
 
         # Media attachments
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
         file_info = chat_item.get("file") or {}
         if file_info and file_info.get("fileStatus") not in {"cancelled", "error"}:
             file_id = file_info.get("fileId")
@@ -499,7 +499,7 @@ class SimplexAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a text message to a contact or group."""
         corr_id = self._make_corr_id()
@@ -528,7 +528,7 @@ class SimplexAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image (URL) as a message with optional caption.
 
@@ -612,9 +612,9 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[list[str]] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Open an ephemeral WebSocket to the daemon, send, and close.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway

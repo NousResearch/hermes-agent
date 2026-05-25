@@ -257,7 +257,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
-) -> Tuple[list, str]:
+) -> tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
     Args:

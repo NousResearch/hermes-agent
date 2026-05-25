@@ -74,7 +74,7 @@ def _infer_ecosystem(command: str) -> Optional[str]:
 
 def _parse_package_from_args(
     args: list, ecosystem: str
-) -> Tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str]]:
     """Extract package name and optional version from command args.
 
     Returns (package_name, version) or (None, None) if not parseable.
@@ -102,7 +102,7 @@ def _parse_package_from_args(
     return package_token, None
 
 
-def _parse_npm_package(token: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_npm_package(token: str) -> tuple[Optional[str], Optional[str]]:
     """Parse npm package: @scope/name@version or name@version."""
     if token.startswith("@"):
         # Scoped: @scope/name@version
@@ -119,7 +119,7 @@ def _parse_npm_package(token: str) -> Tuple[Optional[str], Optional[str]]:
     return token, None
 
 
-def _parse_pypi_package(token: str) -> Tuple[Optional[str], Optional[str]]:
+def _parse_pypi_package(token: str) -> tuple[Optional[str], Optional[str]]:
     """Parse PyPI package: name==version or name[extras]==version."""
     # Strip extras: name[extra1,extra2]==version
     match = re.match(r"^([a-zA-Z0-9._-]+)(?:\[[^\]]*\])?(?:==(.+))?$", token)

@@ -54,7 +54,7 @@ def _module_registers_tools(module_path: Path) -> bool:
     return any(_is_registry_register_call(stmt) for stmt in tree.body)
 
 
-def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
+def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
     """Import built-in self-registering tool modules and return their module names."""
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
     module_names = [
@@ -64,7 +64,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
         and _module_registers_tools(path)
     ]
 
-    imported: List[str] = []
+    imported: list[str] = []
     for mod_name in module_names:
         try:
             importlib.import_module(mod_name)
@@ -119,7 +119,7 @@ class ToolEntry:
 # ---------------------------------------------------------------------------
 
 _CHECK_FN_TTL_SECONDS = 30.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_cache: dict[Callable, tuple[float, bool]] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
@@ -152,9 +152,9 @@ class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
     def __init__(self):
-        self._tools: Dict[str, ToolEntry] = {}
-        self._toolset_checks: Dict[str, Callable] = {}
-        self._toolset_aliases: Dict[str, str] = {}
+        self._tools: dict[str, ToolEntry] = {}
+        self._toolset_checks: dict[str, Callable] = {}
+        self._toolset_aliases: dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
@@ -166,16 +166,16 @@ class ToolRegistry:
         # long as the generation hasn't changed.
         self._generation: int = 0
 
-    def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
+    def _snapshot_state(self) -> tuple[list[ToolEntry], dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
         with self._lock:
             return list(self._tools.values()), dict(self._toolset_checks)
 
-    def _snapshot_entries(self) -> List[ToolEntry]:
+    def _snapshot_entries(self) -> list[ToolEntry]:
         """Return a stable snapshot of registered tool entries."""
         return self._snapshot_state()[0]
 
-    def _snapshot_toolset_checks(self) -> Dict[str, Callable]:
+    def _snapshot_toolset_checks(self) -> dict[str, Callable]:
         """Return a stable snapshot of toolset availability checks."""
         return self._snapshot_state()[1]
 
@@ -194,11 +194,11 @@ class ToolRegistry:
         with self._lock:
             return self._tools.get(name)
 
-    def get_registered_toolset_names(self) -> List[str]:
+    def get_registered_toolset_names(self) -> list[str]:
         """Return sorted unique toolset names present in the registry."""
         return sorted({entry.toolset for entry in self._snapshot_entries()})
 
-    def get_tool_names_for_toolset(self, toolset: str) -> List[str]:
+    def get_tool_names_for_toolset(self, toolset: str) -> list[str]:
         """Return sorted tool names registered under a given toolset."""
         return sorted(
             entry.name for entry in self._snapshot_entries()
@@ -217,7 +217,7 @@ class ToolRegistry:
             self._toolset_aliases[alias] = toolset
             self._generation += 1
 
-    def get_registered_toolset_aliases(self) -> Dict[str, str]:
+    def get_registered_toolset_aliases(self) -> dict[str, str]:
         """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
         with self._lock:
             return dict(self._toolset_aliases)
@@ -334,7 +334,7 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(self, tool_names: set[str], quiet: bool = False) -> list[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -349,7 +349,7 @@ class ToolRegistry:
         # Per-call cache on top of the 30 s TTL — handles repeat probes of the
         # same check_fn within one definitions pass without re-reading the
         # TTL clock.
-        check_results: Dict[Callable, bool] = {}
+        check_results: dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
@@ -429,7 +429,7 @@ class ToolRegistry:
         from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
         return DEFAULT_RESULT_SIZE_CHARS
 
-    def get_all_tool_names(self) -> List[str]:
+    def get_all_tool_names(self) -> list[str]:
         """Return sorted list of all registered tool names."""
         return sorted(entry.name for entry in self._snapshot_entries())
 
@@ -452,7 +452,7 @@ class ToolRegistry:
         entry = self.get_entry(name)
         return (entry.emoji if entry and entry.emoji else default)
 
-    def get_tool_to_toolset_map(self) -> Dict[str, str]:
+    def get_tool_to_toolset_map(self) -> dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
         return {entry.name: entry.toolset for entry in self._snapshot_entries()}
 
@@ -466,7 +466,7 @@ class ToolRegistry:
             check = self._toolset_checks.get(toolset)
         return self._evaluate_toolset_check(toolset, check)
 
-    def check_toolset_requirements(self) -> Dict[str, bool]:
+    def check_toolset_requirements(self) -> dict[str, bool]:
         """Return ``{toolset: available_bool}`` for every toolset."""
         entries, toolset_checks = self._snapshot_state()
         toolsets = sorted({entry.toolset for entry in entries})
@@ -475,9 +475,9 @@ class ToolRegistry:
             for toolset in toolsets
         }
 
-    def get_available_toolsets(self) -> Dict[str, dict]:
+    def get_available_toolsets(self) -> dict[str, dict]:
         """Return toolset metadata for UI display."""
-        toolsets: Dict[str, dict] = {}
+        toolsets: dict[str, dict] = {}
         entries, toolset_checks = self._snapshot_state()
         for entry in entries:
             ts = entry.toolset
@@ -497,9 +497,9 @@ class ToolRegistry:
                         toolsets[ts]["requirements"].append(env)
         return toolsets
 
-    def get_toolset_requirements(self) -> Dict[str, dict]:
+    def get_toolset_requirements(self) -> dict[str, dict]:
         """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
-        result: Dict[str, dict] = {}
+        result: dict[str, dict] = {}
         entries, toolset_checks = self._snapshot_state()
         for entry in entries:
             ts = entry.toolset

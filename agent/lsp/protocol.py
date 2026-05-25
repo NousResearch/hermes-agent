@@ -158,7 +158,7 @@ def make_error_response(req_id: Any, code: int, message: str, data: Any = None) 
     return {"jsonrpc": "2.0", "id": req_id, "error": err}
 
 
-def classify_message(msg: dict) -> Tuple[str, Any]:
+def classify_message(msg: dict) -> tuple[str, Any]:
     """Return ``(kind, key)`` where kind is one of ``request``,
     ``response``, ``notification``, ``invalid``.
 

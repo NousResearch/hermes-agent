@@ -174,7 +174,7 @@ def resolve_workspace_for_file(
     file_path: str,
     *,
     cwd: Optional[str] = None,
-) -> Tuple[Optional[str], bool]:
+) -> tuple[Optional[str], bool]:
     """Resolve the workspace root for a file.
 
     Returns ``(workspace_root, gated_in)`` where ``gated_in`` is True

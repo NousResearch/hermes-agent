@@ -76,7 +76,7 @@ def _coerce_capability_bool(raw: Any) -> Optional[bool]:
 
 
 def _supports_vision_override(
-    cfg: Optional[Dict[str, Any]],
+    cfg: Optional[dict[str, Any]],
     provider: str,
     model: str,
 ) -> Optional[bool]:
@@ -98,7 +98,7 @@ def _supports_vision_override(
 
     # 1. Top-level shortcut
     model_cfg_raw = cfg.get("model")
-    model_cfg: Dict[str, Any] = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
+    model_cfg: dict[str, Any] = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
     top = _coerce_capability_bool(model_cfg.get("supports_vision"))
     if top is not None:
         return top
@@ -110,14 +110,14 @@ def _supports_vision_override(
     # both as candidate provider keys.
     config_provider = str(model_cfg.get("provider") or "").strip()
     providers_raw = cfg.get("providers")
-    providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
+    providers_cfg: dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
     for p in dict.fromkeys(filter(None, (provider, config_provider))):
         entry_raw = providers_cfg.get(p)
-        entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
+        entry: dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
         models_raw = entry.get("models")
-        models_cfg: Dict[str, Any] = models_raw if isinstance(models_raw, dict) else {}
+        models_cfg: dict[str, Any] = models_raw if isinstance(models_raw, dict) else {}
         per_model_raw = models_cfg.get(model)
-        per_model: Dict[str, Any] = per_model_raw if isinstance(per_model_raw, dict) else {}
+        per_model: dict[str, Any] = per_model_raw if isinstance(per_model_raw, dict) else {}
         coerced = _coerce_capability_bool(per_model.get("supports_vision"))
         if coerced is not None:
             return coerced
@@ -134,7 +134,7 @@ def _coerce_mode(raw: Any) -> str:
     return "auto"
 
 
-def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
+def _explicit_aux_vision_override(cfg: Optional[dict[str, Any]]) -> bool:
     """True when the user configured a specific auxiliary vision backend.
 
     An explicit override means the user *wants* the text pipeline (they're
@@ -162,7 +162,7 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
 def _lookup_supports_vision(
     provider: str,
     model: str,
-    cfg: Optional[Dict[str, Any]] = None,
+    cfg: Optional[dict[str, Any]] = None,
 ) -> Optional[bool]:
     """Return True/False if we can resolve caps, None if unknown.
 
@@ -189,7 +189,7 @@ def _lookup_supports_vision(
 def decide_image_input_mode(
     provider: str,
     model: str,
-    cfg: Optional[Dict[str, Any]],
+    cfg: Optional[dict[str, Any]],
 ) -> str:
     """Return ``"native"`` or ``"text"`` for the given turn.
 
@@ -319,8 +319,8 @@ def _file_to_data_url(path: Path) -> Optional[str]:
 
 def build_native_content_parts(
     user_text: str,
-    image_paths: List[str],
-) -> Tuple[List[Dict[str, Any]], List[str]]:
+    image_paths: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Build an OpenAI-style ``content`` list for a user turn.
 
     Shape:
@@ -345,9 +345,9 @@ def build_native_content_parts(
     Returns (content_parts, skipped_paths). Skipped paths are files that
     couldn't be read from disk and are NOT advertised in the path hints.
     """
-    skipped: List[str] = []
-    image_parts: List[Dict[str, Any]] = []
-    attached_paths: List[str] = []
+    skipped: list[str] = []
+    image_parts: list[dict[str, Any]] = []
+    attached_paths: list[str] = []
 
     for raw_path in image_paths:
         p = Path(raw_path)
@@ -374,7 +374,7 @@ def build_native_content_parts(
             f"[Image attached at: {p}]" for p in attached_paths
         )
         combined_text = f"{base_text}\n\n{path_hints}"
-        parts: List[Dict[str, Any]] = [{"type": "text", "text": combined_text}]
+        parts: list[dict[str, Any]] = [{"type": "text", "text": combined_text}]
         parts.extend(image_parts)
         return parts, skipped
 

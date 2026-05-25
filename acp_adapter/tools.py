@@ -18,7 +18,7 @@ from acp.schema import (
 # Map hermes tool names -> ACP ToolKind
 # ---------------------------------------------------------------------------
 
-TOOL_KIND_MAP: Dict[str, ToolKind] = {
+TOOL_KIND_MAP: dict[str, ToolKind] = {
     # File operations
     "read_file": "read",
     "write_file": "edit",
@@ -88,7 +88,7 @@ def make_tool_call_id() -> str:
     return f"tc-{uuid.uuid4().hex[:12]}"
 
 
-def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
+def build_tool_title(tool_name: str, args: dict[str, Any]) -> str:
     """Build a human-readable title for a tool call."""
     if tool_name == "terminal":
         cmd = args.get("command", "")
@@ -285,7 +285,7 @@ def _format_todo_result(result: Optional[str]) -> Optional[str]:
     return "\n".join(lines)
 
 
-def _format_read_file_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_read_file_result(result: Optional[str], args: Optional[dict[str, Any]]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
@@ -432,7 +432,7 @@ def _format_skill_view_result(result: Optional[str]) -> Optional[str]:
     return "\n".join(lines)
 
 
-def _format_skill_manage_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_skill_manage_result(result: Optional[str], args: Optional[dict[str, Any]]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
@@ -513,7 +513,7 @@ def _format_web_extract_result(result: Optional[str]) -> Optional[str]:
     return "\n".join(lines)
 
 
-def _format_process_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_process_result(result: Optional[str], args: Optional[dict[str, Any]]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return result if isinstance(result, str) and result.strip() else None
@@ -637,7 +637,7 @@ def _format_session_search_result(result: Optional[str]) -> Optional[str]:
     return _truncate_text("\n".join(lines), limit=7000)
 
 
-def _format_memory_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_memory_result(result: Optional[str], args: Optional[dict[str, Any]]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
@@ -664,7 +664,7 @@ def _format_memory_result(result: Optional[str], args: Optional[Dict[str, Any]])
     return "\n".join(lines)
 
 
-def _format_edit_result(tool_name: str, result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_edit_result(tool_name: str, result: Optional[str], args: Optional[dict[str, Any]]) -> Optional[str]:
     data = _json_loads_maybe(result)
     path = str((args or {}).get("path") or "file").strip()
     if isinstance(data, dict):
@@ -687,7 +687,7 @@ def _format_edit_result(tool_name: str, result: Optional[str], args: Optional[Di
     return f"✅ {tool_name} completed" + (f" for `{path}`" if path else "")
 
 
-def _format_browser_result(tool_name: str, result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_browser_result(tool_name: str, result: Optional[str], args: Optional[dict[str, Any]]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return result if isinstance(result, str) and result.strip() else None
@@ -733,7 +733,7 @@ def _format_structured_value(
     indent: int = 0,
     max_depth: int = 3,
     max_items: int = 8,
-) -> List[str]:
+) -> list[str]:
     """Render nested JSON-ish values as compact Markdown bullets, not inline blobs."""
     prefix = "  " * indent
     bullet = f"{prefix}- "
@@ -871,8 +871,8 @@ def _format_generic_structured_result(
 def _build_polished_completion_content(
     tool_name: str,
     result: Optional[str],
-    function_args: Optional[Dict[str, Any]],
-) -> Optional[List[Any]]:
+    function_args: Optional[dict[str, Any]],
+) -> Optional[list[Any]]:
     formatter = {
         "todo": lambda: _format_todo_result(result),
         "read_file": lambda: _format_read_file_result(result, function_args),
@@ -907,7 +907,7 @@ def _build_polished_completion_content(
     return [_text(text)]
 
 
-def _build_patch_mode_content(patch_text: str) -> List[Any]:
+def _build_patch_mode_content(patch_text: str) -> list[Any]:
     """Parse V4A patch mode input into ACP diff blocks when possible."""
     if not patch_text:
         return [acp.tool_content(acp.text_block(""))]
@@ -919,7 +919,7 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
         if error or not operations:
             return [acp.tool_content(acp.text_block(patch_text))]
 
-        content: List[Any] = []
+        content: list[Any] = []
         for op in operations:
             if op.operation == OperationType.UPDATE:
                 old_chunks: list[str] = []
@@ -980,12 +980,12 @@ def _strip_diff_prefix(path: str) -> str:
     return raw
 
 
-def _parse_unified_diff_content(diff_text: str) -> List[Any]:
+def _parse_unified_diff_content(diff_text: str) -> list[Any]:
     """Convert unified diff text into ACP diff content blocks."""
     if not diff_text:
         return []
 
-    content: List[Any] = []
+    content: list[Any] = []
     current_old_path: Optional[str] = None
     current_new_path: Optional[str] = None
     old_lines: list[str] = []
@@ -1043,9 +1043,9 @@ def _build_tool_complete_content(
     tool_name: str,
     result: Optional[str],
     *,
-    function_args: Optional[Dict[str, Any]] = None,
+    function_args: Optional[dict[str, Any]] = None,
     snapshot: Any = None,
-) -> List[Any]:
+) -> list[Any]:
     """Build structured ACP completion content, falling back to plain text."""
     display_result = result or ""
     if len(display_result) > 5000:
@@ -1083,7 +1083,7 @@ def _build_tool_complete_content(
 def build_tool_start(
     tool_call_id: str,
     tool_name: str,
-    arguments: Dict[str, Any],
+    arguments: dict[str, Any],
     *,
     edit_diff: Any = None,
 ) -> ToolCallStart:
@@ -1316,7 +1316,7 @@ def build_tool_complete(
     tool_call_id: str,
     tool_name: str,
     result: Optional[str] = None,
-    function_args: Optional[Dict[str, Any]] = None,
+    function_args: Optional[dict[str, Any]] = None,
     snapshot: Any = None,
 ) -> ToolCallProgress:
     """Create a ToolCallUpdate (progress) event for a completed tool call."""
@@ -1346,10 +1346,10 @@ def build_tool_complete(
 
 
 def extract_locations(
-    arguments: Dict[str, Any],
-) -> List[ToolCallLocation]:
+    arguments: dict[str, Any],
+) -> list[ToolCallLocation]:
     """Extract file-system locations from tool arguments."""
-    locations: List[ToolCallLocation] = []
+    locations: list[ToolCallLocation] = []
     path = arguments.get("path")
     if path:
         line = arguments.get("offset") or arguments.get("line")

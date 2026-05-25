@@ -30,10 +30,10 @@ def run_codex_app_server_turn(
     *,
     user_message: str,
     original_user_message: Any,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     effective_task_id: str,
     should_review_memory: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
     messages list so memory/skill review keep working.

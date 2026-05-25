@@ -195,7 +195,7 @@ def strip_markdown_preserving_urls(text: str) -> str:
     return text
 
 
-def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> List[str]:
+def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> list[str]:
     """Split ``text`` into LINE-sized bubbles, preferring paragraph/line breaks.
 
     Returns at most ``LINE_MAX_MESSAGES_PER_CALL`` chunks; longer text is
@@ -207,7 +207,7 @@ def split_for_line(text: str, max_chars: int = LINE_SAFE_BUBBLE_CHARS) -> List[s
     if len(text) <= max_chars:
         return [text]
 
-    chunks: List[str] = []
+    chunks: list[str] = []
     remaining = text
     while remaining and len(chunks) < LINE_MAX_MESSAGES_PER_CALL:
         if len(remaining) <= max_chars:
@@ -295,7 +295,7 @@ class RequestCache:
         ttl_seconds: int = 3600,
         pending_ttl_seconds: int = 86400,
     ) -> None:
-        self._entries: Dict[str, _CacheEntry] = {}
+        self._entries: dict[str, _CacheEntry] = {}
         self._ttl = ttl_seconds
         self._pending_ttl = pending_ttl_seconds
 
@@ -360,7 +360,7 @@ class _MessageDeduplicator:
     """Bounded LRU of LINE webhook event IDs to ignore at-least-once retries."""
 
     def __init__(self, max_size: int = 1000) -> None:
-        self._seen: Dict[str, float] = {}
+        self._seen: dict[str, float] = {}
         self._max = max_size
 
     def is_duplicate(self, event_id: str) -> bool:
@@ -380,7 +380,7 @@ class _MessageDeduplicator:
 # Source / chat-id resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_chat(source: Dict[str, Any]) -> Tuple[str, str]:
+def _resolve_chat(source: dict[str, Any]) -> tuple[str, str]:
     """Return ``(chat_id, chat_type)`` from a LINE event ``source`` block.
 
     LINE sources are one of:
@@ -401,12 +401,12 @@ def _resolve_chat(source: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def _allowed_for_source(
-    source: Dict[str, Any],
+    source: dict[str, Any],
     *,
     allow_all: bool,
-    user_ids: Set[str],
-    group_ids: Set[str],
-    room_ids: Set[str],
+    user_ids: set[str],
+    group_ids: set[str],
+    room_ids: set[str],
 ) -> bool:
     """Three-list gate — credit PR #18153."""
     if allow_all:
@@ -444,7 +444,7 @@ class _LineClient:
             "Content-Type": "application/json",
         }
 
-    async def reply(self, reply_token: str, messages: List[Dict[str, Any]]) -> None:
+    async def reply(self, reply_token: str, messages: list[dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
@@ -457,7 +457,7 @@ class _LineClient:
                     body = await resp.text()
                     raise RuntimeError(f"LINE reply {resp.status}: {body[:200]}")
 
-    async def push(self, chat_id: str, messages: List[Dict[str, Any]]) -> None:
+    async def push(self, chat_id: str, messages: list[dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
@@ -518,14 +518,14 @@ class _LineClient:
 # Message builders
 # ---------------------------------------------------------------------------
 
-def _text_message(text: str) -> Dict[str, Any]:
+def _text_message(text: str) -> dict[str, Any]:
     """Build a LINE text message object, capped to per-bubble max."""
     if len(text) > LINE_PER_BUBBLE_CHARS:
         text = text[: LINE_PER_BUBBLE_CHARS - 1] + "…"
     return {"type": "text", "text": text}
 
 
-def _image_message(original_url: str, preview_url: Optional[str] = None) -> Dict[str, Any]:
+def _image_message(original_url: str, preview_url: Optional[str] = None) -> dict[str, Any]:
     return {
         "type": "image",
         "originalContentUrl": original_url,
@@ -533,7 +533,7 @@ def _image_message(original_url: str, preview_url: Optional[str] = None) -> Dict
     }
 
 
-def _audio_message(url: str, duration_ms: int = 1000) -> Dict[str, Any]:
+def _audio_message(url: str, duration_ms: int = 1000) -> dict[str, Any]:
     return {
         "type": "audio",
         "originalContentUrl": url,
@@ -541,7 +541,7 @@ def _audio_message(url: str, duration_ms: int = 1000) -> Dict[str, Any]:
     }
 
 
-def _video_message(url: str, preview_url: str) -> Dict[str, Any]:
+def _video_message(url: str, preview_url: str) -> dict[str, Any]:
     return {
         "type": "video",
         "originalContentUrl": url,
@@ -551,7 +551,7 @@ def _video_message(url: str, preview_url: str) -> Dict[str, Any]:
 
 def build_postback_button_message(
     text: str, button_label: str, request_id: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Template Buttons message — the slow-LLM postback bubble.
 
     From PR #18153 (leepoweii). Template Buttons stay tappable from chat
@@ -586,7 +586,7 @@ def build_postback_button_message(
 # steered). When the postback cache has a PENDING entry we *bypass* the
 # cache for these so they reach the user as visible bubbles instead of
 # being silently swallowed. From PR #18153.
-_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = (
+_SYSTEM_BYPASS_PREFIXES: tuple[str, ...] = (
     "⚡ Interrupting",
     "⏳ Queued",
     "⏩ Steered",
@@ -604,7 +604,7 @@ def _is_system_bypass(content: str) -> bool:
 # Configuration helpers
 # ---------------------------------------------------------------------------
 
-def _csv_set(value: str) -> Set[str]:
+def _csv_set(value: str) -> set[str]:
     if not value:
         return set()
     return {x.strip() for x in value.split(",") if x.strip()}
@@ -707,20 +707,20 @@ class LineAdapter(BasePlatformAdapter):
         self._app = None  # aiohttp.web.Application
         self._runner = None  # aiohttp.web.AppRunner
         self._site = None  # aiohttp.web.TCPSite
-        self._reply_tokens: Dict[str, Tuple[str, float]] = {}  # chat_id → (token, expiry)
+        self._reply_tokens: dict[str, tuple[str, float]] = {}  # chat_id → (token, expiry)
         self._cache = RequestCache()
         self._dedup = _MessageDeduplicator()
         self._bot_user_id: Optional[str] = None
         self._lock_key: Optional[str] = None
 
         # Media state
-        self._media_tokens: Dict[str, Tuple[str, float]] = {}  # token → (path, expiry)
-        self._media_temp_paths: Set[str] = set()
+        self._media_tokens: dict[str, tuple[str, float]] = {}  # token → (path, expiry)
+        self._media_temp_paths: set[str] = set()
         self._media_ttl = MEDIA_TOKEN_TTL_SECONDS
 
         # Pending-button slot per chat — ensures one outstanding postback
         # button per chat at a time. Postback cache request_id keyed by chat_id.
-        self._pending_buttons: Dict[str, str] = {}
+        self._pending_buttons: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -880,7 +880,7 @@ class LineAdapter(BasePlatformAdapter):
 
         return web.Response(status=200, text="ok")
 
-    async def _dispatch_event(self, event: Dict[str, Any]) -> None:
+    async def _dispatch_event(self, event: dict[str, Any]) -> None:
         event_type = event.get("type")
         source = event.get("source") or {}
         webhook_event_id = event.get("webhookEventId", "") or ""
@@ -915,7 +915,7 @@ class LineAdapter(BasePlatformAdapter):
         else:
             logger.debug("LINE: ignoring event type %r", event_type)
 
-    async def _handle_message_event(self, event: Dict[str, Any]) -> None:
+    async def _handle_message_event(self, event: dict[str, Any]) -> None:
         msg = event.get("message") or {}
         msg_type = msg.get("type", "")
         message_id = msg.get("id", "")
@@ -933,8 +933,8 @@ class LineAdapter(BasePlatformAdapter):
 
         # Handle media inbound — fetch the binary, cache it, and surface a
         # vision-tool-friendly local path on the MessageEvent.
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
         text = ""
 
         if msg_type == "text":
@@ -979,7 +979,7 @@ class LineAdapter(BasePlatformAdapter):
 
         await self.handle_message(event_obj)
 
-    async def _handle_postback_event(self, event: Dict[str, Any]) -> None:
+    async def _handle_postback_event(self, event: dict[str, Any]) -> None:
         """User tapped the slow-LLM postback button — deliver cached payload."""
         postback = event.get("postback") or {}
         data = postback.get("data", "") or ""
@@ -1067,7 +1067,7 @@ class LineAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
@@ -1118,7 +1118,7 @@ class LineAdapter(BasePlatformAdapter):
             logger.error("LINE: push send failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    def _consume_reply_token(self, chat_id: str) -> Tuple[str, bool]:
+    def _consume_reply_token(self, chat_id: str) -> tuple[str, bool]:
         """Consume a stashed reply token if present and unexpired.
 
         Returns ``(token, used_reply)``.
@@ -1136,7 +1136,7 @@ class LineAdapter(BasePlatformAdapter):
         if self._client and chat_id:
             await self._client.loading(chat_id)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Best-effort chat info derived from the chat_id prefix.
 
         LINE's chat-info APIs are limited and per-source-type — instead of
@@ -1308,7 +1308,7 @@ class LineAdapter(BasePlatformAdapter):
         chat_id: str,
         image_path: str,
         caption: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         path = Path(image_path)
         if not path.exists() or not path.is_file():
@@ -1328,7 +1328,7 @@ class LineAdapter(BasePlatformAdapter):
         url = self._media_url(token, path.name)
         if not url.lower().startswith("https://"):
             return SendResult(success=False, error=f"LINE image URL must be HTTPS: {url}")
-        msgs: List[Dict[str, Any]] = [_image_message(url)]
+        msgs: list[dict[str, Any]] = [_image_message(url)]
         if caption:
             msgs.append(_text_message(caption))
         return await self._send_messages(chat_id, msgs)
@@ -1338,7 +1338,7 @@ class LineAdapter(BasePlatformAdapter):
         chat_id: str,
         audio_path: str,
         duration_ms: int = 1000,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         path = Path(audio_path)
         if not path.exists() or not path.is_file():
@@ -1362,7 +1362,7 @@ class LineAdapter(BasePlatformAdapter):
         chat_id: str,
         video_path: str,
         preview_path: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         path = Path(video_path)
         if not path.exists() or not path.is_file():
@@ -1405,7 +1405,7 @@ class LineAdapter(BasePlatformAdapter):
     async def _send_messages(
         self,
         chat_id: str,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
     ) -> SendResult:
         """Send already-built message objects, batched at 5/call."""
         if not self._client:
@@ -1492,7 +1492,7 @@ def is_connected(config) -> bool:
     return validate_config(config)
 
 
-def _env_enablement() -> Optional[Dict[str, Any]]:
+def _env_enablement() -> Optional[dict[str, Any]]:
     """Auto-seed PlatformConfig.extra from env-only setups.
 
     Lets ``hermes status`` reflect a LINE configuration that lives entirely
@@ -1501,7 +1501,7 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     """
     if not (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") and os.getenv("LINE_CHANNEL_SECRET")):
         return None
-    seeded: Dict[str, Any] = {}
+    seeded: dict[str, Any] = {}
     if os.getenv("LINE_PORT"):
         try:
             seeded["port"] = int(os.environ["LINE_PORT"])
@@ -1522,9 +1522,9 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[list[str]] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Out-of-process push delivery for cron jobs running detached from the gateway.
 
     Without this hook ``deliver=line`` cron jobs fail with ``no live adapter``

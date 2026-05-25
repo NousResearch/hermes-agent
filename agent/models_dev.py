@@ -35,7 +35,7 @@ MODELS_DEV_URL = "https://models.dev/api.json"
 _MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory
 
 # In-memory cache
-_models_dev_cache: Dict[str, Any] = {}
+_models_dev_cache: dict[str, Any] = {}
 _models_dev_cache_time: float = 0
 
 
@@ -61,8 +61,8 @@ class ModelInfo:
     open_weights: bool = False
 
     # Modalities
-    input_modalities: Tuple[str, ...] = ()    # ("text", "image", "pdf", ...)
-    output_modalities: Tuple[str, ...] = ()
+    input_modalities: tuple[str, ...] = ()    # ("text", "image", "pdf", ...)
+    output_modalities: tuple[str, ...] = ()
 
     # Limits
     context_window: int = 0
@@ -128,7 +128,7 @@ class ProviderInfo:
 
     id: str                         # models.dev provider ID
     name: str                       # display name
-    env: Tuple[str, ...]            # env var names for API key
+    env: tuple[str, ...]            # env var names for API key
     api: str                        # base URL
     doc: str = ""                   # documentation URL
     model_count: int = 0
@@ -139,7 +139,7 @@ class ProviderInfo:
 # ---------------------------------------------------------------------------
 
 # Hermes provider names → models.dev provider IDs
-PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
+PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "openrouter": "openrouter",
     "novita": "novita-ai",
     "anthropic": "anthropic",
@@ -181,7 +181,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
 }
 
 # Reverse mapping: models.dev → Hermes (built lazily)
-_MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
+_MODELS_DEV_TO_PROVIDER: Optional[dict[str, str]] = None
 
 
 
@@ -191,7 +191,7 @@ def _get_cache_path() -> Path:
     return get_hermes_home() / "models_dev_cache.json"
 
 
-def _load_disk_cache() -> Dict[str, Any]:
+def _load_disk_cache() -> dict[str, Any]:
     """Load models.dev data from disk cache."""
     try:
         cache_path = _get_cache_path()
@@ -229,7 +229,7 @@ def _disk_cache_age_seconds() -> Optional[float]:
         return None
 
 
-def _save_disk_cache(data: Dict[str, Any]) -> None:
+def _save_disk_cache(data: dict[str, Any]) -> None:
     """Save models.dev data to disk cache atomically."""
     try:
         cache_path = _get_cache_path()
@@ -238,7 +238,7 @@ def _save_disk_cache(data: Dict[str, Any]) -> None:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 
 
-def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
+def fetch_models_dev(force_refresh: bool = False) -> dict[str, Any]:
     """Fetch models.dev registry. Cache hierarchy: in-mem → disk → network.
 
     Returns the full registry dict keyed by provider ID, or empty dict on failure.
@@ -378,7 +378,7 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     return None
 
 
-def _extract_context(entry: Dict[str, Any]) -> Optional[int]:
+def _extract_context(entry: dict[str, Any]) -> Optional[int]:
     """Extract context_length from a models.dev model entry.
 
     Returns None for invalid/zero values (some audio/image models have context=0).
@@ -411,7 +411,7 @@ class ModelCapabilities:
     model_family: str = ""
 
 
-def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
+def _get_provider_models(provider: str) -> Optional[dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict from models.dev.
 
     Returns the models dict or None if the provider is unknown or has no data.
@@ -432,7 +432,7 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
     return models
 
 
-def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
+def _find_model_entry(models: dict[str, Any], model: str) -> Optional[dict[str, Any]]:
     """Find a model entry by exact match, then case-insensitive fallback."""
     # Exact match
     entry = models.get(model)
@@ -509,7 +509,7 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
     )
 
 
-def list_provider_models(provider: str) -> List[str]:
+def list_provider_models(provider: str) -> list[str]:
     """Return all model IDs for a provider from models.dev.
 
     Returns an empty list if the provider is unknown or has no data.
@@ -573,7 +573,7 @@ def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
     return False
 
 
-def list_agentic_models(provider: str) -> List[str]:
+def list_agentic_models(provider: str) -> list[str]:
     """Return model IDs suitable for agentic use from models.dev.
 
     Filters for tool_call=True and excludes noise (TTS, embedding,
@@ -603,7 +603,7 @@ def list_agentic_models(provider: str) -> List[str]:
 # Rich dataclass constructors — parse raw models.dev JSON into dataclasses
 # ---------------------------------------------------------------------------
 
-def _parse_model_info(model_id: str, raw: Dict[str, Any], provider_id: str) -> ModelInfo:
+def _parse_model_info(model_id: str, raw: dict[str, Any], provider_id: str) -> ModelInfo:
     """Convert a raw models.dev model entry dict into a ModelInfo dataclass."""
     limit = raw.get("limit") or {}
     if not isinstance(limit, dict):
@@ -654,7 +654,7 @@ def _parse_model_info(model_id: str, raw: Dict[str, Any], provider_id: str) -> M
     )
 
 
-def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
+def _parse_provider_info(provider_id: str, raw: dict[str, Any]) -> ProviderInfo:
     """Convert a raw models.dev provider entry dict into a ProviderInfo."""
     env = raw.get("env") or []
     models = raw.get("models") or {}

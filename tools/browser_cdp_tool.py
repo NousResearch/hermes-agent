@@ -94,10 +94,10 @@ def _resolve_cdp_endpoint() -> str:
 async def _cdp_call(
     ws_url: str,
     method: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     target_id: Optional[str],
     timeout: float,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Make a single CDP call, optionally attaching to a target first.
 
     When ``target_id`` is provided, we call ``Target.attachToTarget`` with
@@ -157,7 +157,7 @@ async def _cdp_call(
         # --- Step 2: dispatch the real method ---
         call_id = next_id
         next_id += 1
-        req: Dict[str, Any] = {
+        req: dict[str, Any] = {
             "id": call_id,
             "method": method,
             "params": params or {},
@@ -191,7 +191,7 @@ def _browser_cdp_via_supervisor(
     task_id: str,
     frame_id: str,
     method: str,
-    params: Optional[Dict[str, Any]],
+    params: Optional[dict[str, Any]],
     timeout: float,
 ) -> str:
     """Route a CDP call through the live supervisor session for an OOPIF frame.
@@ -222,7 +222,7 @@ def _browser_cdp_via_supervisor(
     snap = supervisor.snapshot()
     # Search both the top frame and the children for the requested id.
     top = snap.frame_tree.get("top")
-    frame_info: Optional[Dict[str, Any]] = None
+    frame_info: Optional[dict[str, Any]] = None
     if top and top.get("frame_id") == frame_id:
         frame_info = top
     else:
@@ -288,7 +288,7 @@ def _browser_cdp_via_supervisor(
             cdp_docs=CDP_DOCS_URL,
         )
 
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "success": True,
         "method": method,
         "frame_id": frame_id,
@@ -300,7 +300,7 @@ def _browser_cdp_via_supervisor(
 
 def browser_cdp(
     method: str,
-    params: Optional[Dict[str, Any]] = None,
+    params: Optional[dict[str, Any]] = None,
     target_id: Optional[str] = None,
     frame_id: Optional[str] = None,
     timeout: float = 30.0,
@@ -372,7 +372,7 @@ def browser_cdp(
             "browser is actually listening on the debug port."
         )
 
-    call_params: Dict[str, Any] = params or {}
+    call_params: dict[str, Any] = params or {}
     if not isinstance(call_params, dict):
         return tool_error(
             f"'params' must be an object/dict, got {type(call_params).__name__}"
@@ -410,7 +410,7 @@ def browser_cdp(
             method=method,
         )
 
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "success": True,
         "method": method,
         "result": result,
@@ -425,7 +425,7 @@ def browser_cdp(
 # ---------------------------------------------------------------------------
 
 
-BROWSER_CDP_SCHEMA: Dict[str, Any] = {
+BROWSER_CDP_SCHEMA: dict[str, Any] = {
     "name": "browser_cdp",
     "description": (
         "Send a raw Chrome DevTools Protocol (CDP) command. Escape hatch for "

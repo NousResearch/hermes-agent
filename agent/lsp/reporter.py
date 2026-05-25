@@ -19,7 +19,7 @@ MAX_PER_FILE = 20
 MAX_TOTAL_CHARS = 4000
 
 
-def format_diagnostic(d: Dict[str, Any]) -> str:
+def format_diagnostic(d: dict[str, Any]) -> str:
     """One-line representation of a single diagnostic."""
     sev = SEVERITY_NAMES.get(d.get("severity") or 1, "ERROR")
     rng = d.get("range") or {}
@@ -36,7 +36,7 @@ def format_diagnostic(d: Dict[str, Any]) -> str:
 
 def report_for_file(
     file_path: str,
-    diagnostics: List[Dict[str, Any]],
+    diagnostics: list[dict[str, Any]],
     *,
     severities: frozenset = DEFAULT_SEVERITIES,
     max_per_file: int = MAX_PER_FILE,

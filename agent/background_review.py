@@ -235,9 +235,9 @@ _COMBINED_REVIEW_PROMPT = (
 
 
 def summarize_background_review_actions(
-    review_messages: List[Dict],
-    prior_snapshot: List[Dict],
-) -> List[str]:
+    review_messages: list[dict],
+    prior_snapshot: list[dict],
+) -> list[str]:
     """Build the human-facing action summary for a background review pass.
 
     Walks the review agent's session messages and collects "successful tool
@@ -262,7 +262,7 @@ def summarize_background_review_actions(
             if isinstance(content, str):
                 existing_tool_contents.add(content)
 
-    actions: List[str] = []
+    actions: list[str] = []
     for msg in review_messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
@@ -304,9 +304,9 @@ def build_memory_write_metadata(
     execution_context: Optional[str] = None,
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build provenance metadata for external memory-provider mirrors."""
-    metadata: Dict[str, Any] = {
+    metadata: dict[str, Any] = {
         "write_origin": write_origin or getattr(agent, "_memory_write_origin", "assistant_tool"),
         "execution_context": (
             execution_context
@@ -326,7 +326,7 @@ def build_memory_write_metadata(
 
 def _run_review_in_thread(
     agent: Any,
-    messages_snapshot: List[Dict],
+    messages_snapshot: list[dict],
     prompt: str,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
@@ -356,7 +356,7 @@ def _run_review_in_thread(
         pass
 
     review_agent = None
-    review_messages: List[Dict] = []
+    review_messages: list[dict] = []
     try:
         with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
@@ -557,7 +557,7 @@ def _run_review_in_thread(
 
 def spawn_background_review_thread(
     agent: Any,
-    messages_snapshot: List[Dict],
+    messages_snapshot: list[dict],
     review_memory: bool = False,
     review_skills: bool = False,
 ):

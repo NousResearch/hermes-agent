@@ -264,7 +264,7 @@ class MiniSWERunner:
                 self.env.stop()
             self.env = None
     
-    def _execute_command(self, command: str, timeout: int = None) -> Dict[str, Any]:
+    def _execute_command(self, command: str, timeout: int = None) -> dict[str, Any]:
         """
         Execute a command in the environment.
         
@@ -307,10 +307,10 @@ class MiniSWERunner:
     
     def _convert_to_hermes_format(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         user_query: str,
         completed: bool
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Convert internal message format to Hermes trajectory format.
         
@@ -415,7 +415,7 @@ class MiniSWERunner:
         
         return trajectory
     
-    def run_task(self, task: str) -> Dict[str, Any]:
+    def run_task(self, task: str) -> dict[str, Any]:
         """
         Run a single task and return the result with trajectory.
         
@@ -582,9 +582,9 @@ Complete the user's task step by step."""
     
     def run_batch(
         self,
-        prompts: List[str],
+        prompts: list[str],
         output_file: str
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Run multiple tasks and save trajectories to a JSONL file.
         

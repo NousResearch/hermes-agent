@@ -21,7 +21,7 @@ class AnthropicTransport(ProviderTransport):
     def api_mode(self) -> str:
         return "anthropic_messages"
 
-    def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
+    def convert_messages(self, messages: list[dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI messages to Anthropic (system, messages) tuple.
 
         kwargs:
@@ -32,7 +32,7 @@ class AnthropicTransport(ProviderTransport):
         base_url = kwargs.get("base_url")
         return convert_messages_to_anthropic(messages, base_url=base_url)
 
-    def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
+    def convert_tools(self, tools: list[dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Anthropic input_schema format."""
         from agent.anthropic_adapter import convert_tools_to_anthropic
 
@@ -41,10 +41,10 @@ class AnthropicTransport(ProviderTransport):
     def build_kwargs(
         self,
         model: str,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
         **params,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build Anthropic messages.create() kwargs.
 
         Calls convert_messages and convert_tools internally.
@@ -157,7 +157,7 @@ class AnthropicTransport(ProviderTransport):
             return getattr(response, "stop_reason", None) == "end_turn"
         return True
 
-    def extract_cache_stats(self, response: Any) -> Optional[Dict[str, int]]:
+    def extract_cache_stats(self, response: Any) -> Optional[dict[str, int]]:
         """Extract Anthropic cache_read and cache_creation token counts."""
         usage = getattr(response, "usage", None)
         if usage is None:

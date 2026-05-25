@@ -84,7 +84,7 @@ _DURATIONS_FILE = "test_durations.json"
 
 
 def _count_tests(
-    files: List[Path], repo_root: Path, pytest_passthrough: List[str]
+    files: list[Path], repo_root: Path, pytest_passthrough: list[str]
 ) -> dict[Path, int]:
     """Run ``pytest --co -q`` once to count individual tests per file.
 
@@ -104,7 +104,7 @@ def _count_tests(
     # Build --ignore flags for skipped dirs so the --co collection
     # mirrors what we'll actually run (not what pytest might find via
     # conftest walking or directory traversal).
-    ignore_args: List[str] = []
+    ignore_args: list[str] = []
     for root in [repo_root / p for p in _DEFAULT_ROOTS]:
         for part in _SKIP_PARTS:
             d = root / part
@@ -141,7 +141,7 @@ def _count_tests(
     return counts
 
 
-def _discover_files(roots: List[Path]) -> List[Path]:
+def _discover_files(roots: list[Path]) -> list[Path]:
     """Return every ``test_*.py`` under the given roots (sorted).
 
     Roots may be directories (recursed for ``test_*.py``) or explicit
@@ -156,7 +156,7 @@ def _discover_files(roots: List[Path]) -> List[Path]:
     the sharded matrix from blowing up, not to block targeted runs.
     """
     seen: set[Path] = set()
-    out: List[Path] = []
+    out: list[Path] = []
     for root in roots:
         if not root.exists():
             continue
@@ -248,10 +248,10 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
 
 def _run_one_file(
     file: Path,
-    pytest_args: List[str],
+    pytest_args: list[str],
     repo_root: Path,
     file_timeout: float,
-) -> Tuple[Path, int, str, dict[str, int], float]:
+) -> tuple[Path, int, str, dict[str, int], float]:
     """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
 
     Returns (file, returncode, captured_combined_output, summary_counts, subprocess_wall_seconds).
@@ -467,7 +467,7 @@ def _print_progress(
 
 
 def _print_inline_failure(
-    file: Path, output: str, repo_root: Path, pytest_passthrough: List[str]
+    file: Path, output: str, repo_root: Path, pytest_passthrough: list[str]
 ) -> None:
     """Print a compact failure summary immediately when a file fails.
 
@@ -514,7 +514,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
 
 
 def _save_durations(
-    file_times: List[Tuple[Path, float]],
+    file_times: list[tuple[Path, float]],
     repo_root: Path,
 ) -> None:
     """Write the duration cache so future ``--slice`` runs can use it.
@@ -533,12 +533,12 @@ def _save_durations(
 
 
 def _slice_files(
-    files: List[Path],
+    files: list[Path],
     slice_index: int,
     slice_count: int,
     durations: dict[str, float],
     repo_root: Path,
-) -> List[Path]:
+) -> list[Path]:
     """Return the subset of *files* belonging to slice *slice_index*.
 
     Uses **Longest Processing Time first** (LPT) distribution: sort files
@@ -565,7 +565,7 @@ def _slice_files(
 
     # Build (file, estimated_duration) pairs.
     default_dur = 2.0
-    file_durs: List[Tuple[Path, float]] = []
+    file_durs: list[tuple[Path, float]] = []
     for f in files:
         rel = _format_file(f, repo_root)
         dur = durations.get(rel, default_dur)
@@ -576,8 +576,8 @@ def _slice_files(
 
     # Greedy assignment: for each file, add it to the slice with the
     # smallest current total.
-    bucket_files: List[List[Path]] = [[] for _ in range(slice_count)]
-    bucket_totals: List[float] = [0.0] * slice_count
+    bucket_files: list[list[Path]] = [[] for _ in range(slice_count)]
+    bucket_totals: list[float] = [0.0] * slice_count
 
     for f, dur in file_durs:
         # Find the least-loaded bucket.
@@ -723,8 +723,8 @@ def main() -> int:
 
     # Capture and print on completion (out-of-order is fine — keeps the
     # terminal clean rather than interleaving N parallel pytest outputs).
-    failures: List[Tuple[Path, str, Dict[str, int]]] = []
-    file_times: List[Tuple[Path, float]] = []  # (file, subprocess_wall) for distribution
+    failures: list[tuple[Path, str, dict[str, int]]] = []
+    file_times: list[tuple[Path, float]] = []  # (file, subprocess_wall) for distribution
     started = time.monotonic()
     files_done = 0
     tests_done = 0
@@ -734,7 +734,7 @@ def main() -> int:
     tests_failed = 0
     lock = threading.Lock()
 
-    def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, dict[str, int], float]]") -> None:
+    def _on_done(file: Path, started_at: float, fut: "Future[tuple[Path, int, str, dict[str, int], float]]") -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed
         n_tests = test_counts.get(file, 0)
         try:
@@ -777,7 +777,7 @@ def main() -> int:
                 _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures: List[Future] = []
+        futures: list[Future] = []
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(

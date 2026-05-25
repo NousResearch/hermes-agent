@@ -58,7 +58,7 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 
-VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
+VIDEO_GENERATE_SCHEMA: dict[str, Any] = {
     "name": "video_generate",
     # Placeholder — the real description is built dynamically at
     # get_tool_definitions() time so it reflects the active backend's
@@ -165,7 +165,7 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 
-def _read_video_gen_section() -> Dict[str, Any]:
+def _read_video_gen_section() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
 
@@ -293,21 +293,21 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def _normalize_reference_images(value: Any) -> Optional[List[str]]:
+def _normalize_reference_images(value: Any) -> Optional[list[str]]:
     if value is None:
         return None
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, (list, tuple)):
         return None
-    out: List[str] = []
+    out: list[str] = []
     for item in value:
         if isinstance(item, str) and item.strip():
             out.append(item.strip())
     return out or None
 
 
-def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
+def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
@@ -334,7 +334,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # Resolve model: explicit arg wins, then config, then provider default.
     model = model_override or _read_configured_video_model() or provider.default_model()
 
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "model": model,
         "image_url": image_url,
         "reference_image_urls": reference_image_urls,
@@ -425,15 +425,15 @@ _GENERIC_DESCRIPTION = (
 
 
 def _format_model_caveats(
-    model_meta: Dict[str, Any],
-    backend_caps: Dict[str, Any],
-) -> List[str]:
+    model_meta: dict[str, Any],
+    backend_caps: dict[str, Any],
+) -> list[str]:
     """Pull human-readable caveats out of one model's catalog metadata.
 
     Only surfaces things that meaningfully differ from the backend's
     overall capabilities — repeating defaults is noise.
     """
-    caveats: List[str] = []
+    caveats: list[str] = []
 
     modalities = set(model_meta.get("modalities") or [])
     modality = model_meta.get("modality")  # FAL's plugin uses this key for single-modality entries
@@ -453,7 +453,7 @@ def _format_model_caveats(
     return caveats
 
 
-def _build_dynamic_video_schema() -> Dict[str, Any]:
+def _build_dynamic_video_schema() -> dict[str, Any]:
     """Build a description that reflects the active backend's actual surface.
 
     Cheap: reads config (already memoized by the caller), asks the active
@@ -461,7 +461,7 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     and formats a few lines of prose. Falls back to the generic
     description when no provider is configured or registered.
     """
-    parts: List[str] = [_GENERIC_DESCRIPTION]
+    parts: list[str] = [_GENERIC_DESCRIPTION]
 
     configured = _read_configured_video_provider()
     configured_model = _read_configured_video_model()

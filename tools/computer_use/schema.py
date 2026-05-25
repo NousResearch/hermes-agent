@@ -13,7 +13,7 @@ from typing import Any, Dict
 
 # One consolidated tool with an `action` discriminator. Keeps the schema
 # compact and the per-turn token cost low.
-COMPUTER_USE_SCHEMA: Dict[str, Any] = {
+COMPUTER_USE_SCHEMA: dict[str, Any] = {
     "name": "computer_use",
     "description": (
         "Drive the macOS desktop in the background — screenshots, mouse, "
@@ -208,6 +208,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
 }
 
 
-def get_computer_use_schema() -> Dict[str, Any]:
+def get_computer_use_schema() -> dict[str, Any]:
     """Return the generic OpenAI function-calling schema."""
     return COMPUTER_USE_SCHEMA

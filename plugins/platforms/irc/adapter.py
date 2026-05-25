@@ -258,7 +258,7 @@ class IRCAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ):
         if not self._writer or self._writer.is_closing():
             return SendResult(success=False, error="Not connected")
@@ -280,7 +280,7 @@ class IRCAdapter(BasePlatformAdapter):
         """IRC has no typing indicator — no-op."""
         pass
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         is_channel = chat_id.startswith("#") or chat_id.startswith("&")
         return {
             "name": chat_id,
@@ -289,7 +289,7 @@ class IRCAdapter(BasePlatformAdapter):
 
     # ── Message splitting ─────────────────────────────────────────────────
 
-    def _split_message(self, content: str, target: str) -> List[str]:
+    def _split_message(self, content: str, target: str) -> list[str]:
         """Split a long message into IRC-safe chunks.
 
         IRC has a ~512 byte line limit.  After accounting for protocol
@@ -302,7 +302,7 @@ class IRCAdapter(BasePlatformAdapter):
         max_bytes = 510 - overhead
         user_limit = self.max_message_length
 
-        lines: List[str] = []
+        lines: list[str] = []
         for paragraph in content.split("\n"):
             if not paragraph.strip():
                 continue
@@ -720,9 +720,9 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[list[str]] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Open an ephemeral IRC connection, send a PRIVMSG, and quit.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway

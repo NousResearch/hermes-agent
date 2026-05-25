@@ -112,7 +112,7 @@ MEDIA_VIDEO = 2
 MEDIA_FILE = 3
 MEDIA_VOICE = 4
 
-_LIVE_ADAPTERS: Dict[str, Any] = {}
+_LIVE_ADAPTERS: dict[str, Any] = {}
 
 
 def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
@@ -167,7 +167,7 @@ def _safe_id(value: Optional[str], keep: int = 8) -> str:
     return raw[:keep]
 
 
-def _json_dumps(payload: Dict[str, Any]) -> str:
+def _json_dumps(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -203,11 +203,11 @@ def _random_wechat_uin() -> str:
     return base64.b64encode(str(value).encode("utf-8")).decode("ascii")
 
 
-def _base_info() -> Dict[str, Any]:
+def _base_info() -> dict[str, Any]:
     return {"channel_version": CHANNEL_VERSION}
 
 
-def _headers(token: Optional[str], body: str) -> Dict[str, str]:
+def _headers(token: Optional[str], body: str) -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",
         "AuthorizationType": "ilink_bot_token",
@@ -254,7 +254,7 @@ def save_weixin_account(
         pass
 
 
-def load_weixin_account(hermes_home: str, account_id: str) -> Optional[Dict[str, Any]]:
+def load_weixin_account(hermes_home: str, account_id: str) -> Optional[dict[str, Any]]:
     """Load persisted account credentials."""
     path = _account_file(hermes_home, account_id)
     if not path.exists():
@@ -270,7 +270,7 @@ class ContextTokenStore:
 
     def __init__(self, hermes_home: str):
         self._root = _account_dir(hermes_home)
-        self._cache: Dict[str, str] = {}
+        self._cache: dict[str, str] = {}
 
     def _path(self, account_id: str) -> Path:
         return self._root / f"{account_id}.context-tokens.json"
@@ -320,7 +320,7 @@ class TypingTicketCache:
 
     def __init__(self, ttl_seconds: float = 600.0):
         self._ttl_seconds = ttl_seconds
-        self._cache: Dict[str, Tuple[str, float]] = {}
+        self._cache: dict[str, tuple[str, float]] = {}
 
     def get(self, user_id: str) -> Optional[str]:
         entry = self._cache.get(user_id)
@@ -358,7 +358,7 @@ def _parse_aes_key(aes_key_b64: str) -> bytes:
     raise ValueError(f"unexpected aes_key format ({len(decoded)} decoded bytes)")
 
 
-def _guess_chat_type(message: Dict[str, Any], account_id: str) -> Tuple[str, str]:
+def _guess_chat_type(message: dict[str, Any], account_id: str) -> tuple[str, str]:
     room_id = str(message.get("room_id") or message.get("chat_room_id") or "").strip()
     to_user_id = str(message.get("to_user_id") or "").strip()
     is_group = bool(room_id) or (to_user_id and account_id and to_user_id != account_id and message.get("msg_type") == 1)
@@ -372,10 +372,10 @@ async def _api_post(
     *,
     base_url: str,
     endpoint: str,
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     token: Optional[str],
     timeout_ms: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     body = _json_dumps({**payload, "base_info": _base_info()})
     url = f"{base_url.rstrip('/')}/{endpoint}"
     timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
@@ -392,7 +392,7 @@ async def _api_get(
     base_url: str,
     endpoint: str,
     timeout_ms: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}/{endpoint}"
     headers = {
         "iLink-App-Id": ILINK_APP_ID,
@@ -413,7 +413,7 @@ async def _get_updates(
     token: str,
     sync_buf: str,
     timeout_ms: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     try:
         return await _api_post(
             session,
@@ -436,7 +436,7 @@ async def _send_message(
     text: str,
     context_token: Optional[str],
     client_id: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Send a text message via iLink sendmessage API.
 
     Returns the raw API response dict (may contain error codes like
@@ -444,7 +444,7 @@ async def _send_message(
     """
     if not text or not text.strip():
         raise ValueError("_send_message: text must not be empty")
-    message: Dict[str, Any] = {
+    message: dict[str, Any] = {
         "from_user_id": "",
         "to_user_id": to,
         "client_id": client_id,
@@ -494,8 +494,8 @@ async def _get_config(
     token: str,
     user_id: str,
     context_token: Optional[str],
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"ilink_user_id": user_id}
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"ilink_user_id": user_id}
     if context_token:
         payload["context_token"] = context_token
     return await _api_post(
@@ -520,7 +520,7 @@ async def _get_upload_url(
     rawfilemd5: str,
     filesize: int,
     aeskey_hex: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return await _api_post(
         session,
         base_url=base_url,
@@ -616,7 +616,7 @@ def _assert_weixin_cdn_url(url: str) -> None:
         )
 
 
-def _media_reference(item: Dict[str, Any], key: str) -> Dict[str, Any]:
+def _media_reference(item: dict[str, Any], key: str) -> dict[str, Any]:
     return (item.get(key) or {}).get("media") or {}
 
 
@@ -649,7 +649,7 @@ def _mime_from_filename(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
 
-def _split_table_row(line: str) -> List[str]:
+def _split_table_row(line: str) -> list[str]:
     row = line.strip()
     if row.startswith("|"):
         row = row[1:]
@@ -669,7 +669,7 @@ def _rewrite_headers_for_weixin(line: str) -> str:
     return f"**{title}**"
 
 
-def _rewrite_table_block_for_weixin(lines: List[str]) -> str:
+def _rewrite_table_block_for_weixin(lines: list[str]) -> str:
     if len(lines) < 2:
         return "\n".join(lines)
     headers = _split_table_row(lines[0])
@@ -677,7 +677,7 @@ def _rewrite_table_block_for_weixin(lines: List[str]) -> str:
     if not headers or not body_rows:
         return "\n".join(lines)
 
-    formatted_rows: List[str] = []
+    formatted_rows: list[str] = []
     for row in body_rows:
         pairs = []
         for idx, header in enumerate(headers):
@@ -706,7 +706,7 @@ def _rewrite_table_block_for_weixin(lines: List[str]) -> str:
 
 def _normalize_markdown_blocks(content: str) -> str:
     lines = content.splitlines()
-    result: List[str] = []
+    result: list[str] = []
     in_code_block = False
     blank_run = 0
 
@@ -739,7 +739,7 @@ def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
     if not content:
         return content
 
-    wrapped: List[str] = []
+    wrapped: list[str] = []
     in_code_block = False
 
     for raw_line in content.splitlines():
@@ -774,13 +774,13 @@ def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
     return "\n".join(wrapped).strip()
 
 
-def _split_markdown_blocks(content: str) -> List[str]:
+def _split_markdown_blocks(content: str) -> list[str]:
     if not content:
         return []
 
-    blocks: List[str] = []
+    blocks: list[str] = []
     lines = content.splitlines()
-    current: List[str] = []
+    current: list[str] = []
     in_code_block = False
 
     for raw_line in lines:
@@ -812,7 +812,7 @@ def _split_markdown_blocks(content: str) -> List[str]:
     return [block for block in blocks if block]
 
 
-def _split_delivery_units_for_weixin(content: str) -> List[str]:
+def _split_delivery_units_for_weixin(content: str) -> list[str]:
     """Split formatted content into chat-friendly delivery units.
 
     Weixin can render Markdown, but chat readability is better when top-level
@@ -820,14 +820,14 @@ def _split_delivery_units_for_weixin(content: str) -> List[str]:
     attach indented continuation lines to the previous top-level line so nested
     list items do not get torn apart.
     """
-    units: List[str] = []
+    units: list[str] = []
 
     for block in _split_markdown_blocks(content):
         if _FENCE_RE.match(block.splitlines()[0].strip()):
             units.append(block)
             continue
 
-        current: List[str] = []
+        current: list[str] = []
         for raw_line in block.splitlines():
             line = raw_line.rstrip()
             if not line.strip():
@@ -891,11 +891,11 @@ def _should_split_short_chat_block_for_weixin(block: str) -> bool:
     return all(_looks_like_chatty_line_for_weixin(line) for line in lines)
 
 
-def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:
+def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> list[str]:
     if len(content) <= max_length:
         return [content]
 
-    packed: List[str] = []
+    packed: list[str] = []
     current = ""
     for block in _split_markdown_blocks(content):
         candidate = block if not current else f"{current}\n\n{block}"
@@ -916,7 +916,7 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
 
 def _split_text_for_weixin_delivery(
     content: str, max_length: int, split_per_line: bool = False,
-) -> List[str]:
+) -> list[str]:
     """Split content into sequential Weixin messages.
 
     *compact* (default): Keep everything in a single message whenever it fits
@@ -938,7 +938,7 @@ def _split_text_for_weixin_delivery(
         # Legacy: one message per top-level delivery unit.
         if len(content) <= max_length and "\n" not in content:
             return [content]
-        chunks: List[str] = []
+        chunks: list[str] = []
         for unit in _split_delivery_units_for_weixin(content):
             if len(unit) <= max_length:
                 chunks.append(unit)
@@ -976,7 +976,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
-def _extract_text(item_list: List[Dict[str, Any]]) -> str:
+def _extract_text(item_list: list[dict[str, Any]]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
@@ -988,7 +988,7 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
                 prefix = f"[引用媒体: {title}]\n" if title else "[引用媒体]\n"
                 return f"{prefix}{text}".strip()
             if ref_item:
-                parts: List[str] = []
+                parts: list[str] = []
                 if ref.get("title"):
                     parts.append(str(ref["title"]))
                 ref_text = _extract_text([ref_item])
@@ -1005,7 +1005,7 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
     return ""
 
 
-def _message_type_from_media(media_types: List[str], text: str) -> MessageType:
+def _message_type_from_media(media_types: list[str], text: str) -> MessageType:
     if any(m.startswith("image/") for m in media_types):
         return MessageType.PHOTO
     if any(m.startswith("video/") for m in media_types):
@@ -1043,7 +1043,7 @@ async def qr_login(
     *,
     bot_type: str = "3",
     timeout_seconds: int = 480,
-) -> Optional[Dict[str, str]]:
+) -> Optional[dict[str, str]]:
     """
     Run the interactive iLink QR login flow.
 
@@ -1233,7 +1233,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
 
     @staticmethod
-    def _coerce_list(value: Any) -> List[str]:
+    def _coerce_list(value: Any) -> list[str]:
         if value is None:
             return []
         if isinstance(value, str):
@@ -1370,13 +1370,13 @@ class WeixinAdapter(BasePlatformAdapter):
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     consecutive_failures = 0
 
-    async def _process_message_safe(self, message: Dict[str, Any]) -> None:
+    async def _process_message_safe(self, message: dict[str, Any]) -> None:
         try:
             await self._process_message(message)
         except Exception as exc:
             logger.error("[%s] unhandled inbound error from=%s: %s", self.name, _safe_id(message.get("from_user_id")), exc, exc_info=True)
 
-    async def _process_message(self, message: Dict[str, Any]) -> None:
+    async def _process_message(self, message: dict[str, Any]) -> None:
         assert self._poll_session is not None
         sender_id = str(message.get("from_user_id") or "").strip()
         if not sender_id:
@@ -1411,8 +1411,8 @@ class WeixinAdapter(BasePlatformAdapter):
             self._token_store.set(self._account_id, sender_id, context_token)
         asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
-        media_paths: List[str] = []
-        media_types: List[str] = []
+        media_paths: list[str] = []
+        media_types: list[str] = []
 
         for item in item_list:
             await self._collect_media(item, media_paths, media_types)
@@ -1450,7 +1450,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return sender_id in self._allow_from
         return True
 
-    async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
+    async def _collect_media(self, item: dict[str, Any], media_paths: list[str], media_types: list[str]) -> None:
         item_type = item.get("type")
         if item_type == ITEM_IMAGE:
             path = await self._download_image(item)
@@ -1473,7 +1473,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 media_paths.append(voice_path)
                 media_types.append("audio/silk")
 
-    async def _download_image(self, item: Dict[str, Any]) -> Optional[str]:
+    async def _download_image(self, item: dict[str, Any]) -> Optional[str]:
         media = _media_reference(item, "image_item")
         try:
             data = await _download_and_decrypt_media(
@@ -1491,7 +1491,7 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.warning("[%s] image download failed: %s", self.name, exc)
             return None
 
-    async def _download_video(self, item: Dict[str, Any]) -> Optional[str]:
+    async def _download_video(self, item: dict[str, Any]) -> Optional[str]:
         media = _media_reference(item, "video_item")
         try:
             data = await _download_and_decrypt_media(
@@ -1507,7 +1507,7 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.warning("[%s] video download failed: %s", self.name, exc)
             return None
 
-    async def _download_file(self, item: Dict[str, Any]) -> Tuple[Optional[str], str]:
+    async def _download_file(self, item: dict[str, Any]) -> tuple[Optional[str], str]:
         file_item = item.get("file_item") or {}
         media = file_item.get("media") or {}
         filename = str(file_item.get("file_name") or "document.bin")
@@ -1526,7 +1526,7 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.warning("[%s] file download failed: %s", self.name, exc)
             return None, mime
 
-    async def _download_voice(self, item: Dict[str, Any]) -> Optional[str]:
+    async def _download_voice(self, item: dict[str, Any]) -> Optional[str]:
         voice_item = item.get("voice_item") or {}
         media = voice_item.get("media") or {}
         if voice_item.get("text"):
@@ -1564,7 +1564,7 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] getConfig failed for %s: %s", self.name, _safe_id(user_id), exc)
 
-    def _split_text(self, content: str) -> List[str]:
+    def _split_text(self, content: str) -> list[str]:
         return _split_text_for_weixin_delivery(
             content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages,
         )
@@ -1670,7 +1670,7 @@ class WeixinAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
@@ -1732,7 +1732,7 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
 
-    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:
             return
         typing_ticket = self._typing_cache.get(chat_id)
@@ -1774,7 +1774,7 @@ class WeixinAdapter(BasePlatformAdapter):
         image_url: str,
         caption: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         if image_url.startswith(("http://", "https://")):
             file_path = await self._download_remote_media(image_url)
@@ -1799,7 +1799,7 @@ class WeixinAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         del reply_to, kwargs
@@ -1817,7 +1817,7 @@ class WeixinAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         del file_name, reply_to, metadata, kwargs
@@ -1836,7 +1836,7 @@ class WeixinAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
@@ -1853,7 +1853,7 @@ class WeixinAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
@@ -2060,7 +2060,7 @@ class WeixinAdapter(BasePlatformAdapter):
             },
         }
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         chat_type = "group" if chat_id.endswith("@chatroom") else "dm"
         return {"name": chat_id, "type": chat_type, "chat_id": chat_id}
 
@@ -2072,12 +2072,12 @@ class WeixinAdapter(BasePlatformAdapter):
 
 async def send_weixin_direct(
     *,
-    extra: Dict[str, Any],
+    extra: dict[str, Any],
     token: Optional[str],
     chat_id: str,
     message: str,
-    media_files: Optional[List[Tuple[str, bool]]] = None,
-) -> Dict[str, Any]:
+    media_files: Optional[list[tuple[str, bool]]] = None,
+) -> dict[str, Any]:
     """
     One-shot send helper for ``send_message`` and cron delivery.
 

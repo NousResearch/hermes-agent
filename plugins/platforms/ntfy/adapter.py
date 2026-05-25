@@ -83,7 +83,7 @@ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 STREAM_TIMEOUT_SECONDS = 90  # ntfy keepalive default is 55s; give margin
 
 
-def _build_auth_header(token: str) -> Dict[str, str]:
+def _build_auth_header(token: str) -> dict[str, str]:
     """Build an ``Authorization`` header from an ntfy token.
 
     Shared by :class:`NtfyAdapter._auth_headers` and :func:`_standalone_send`
@@ -178,7 +178,7 @@ class NtfyAdapter(BasePlatformAdapter):
         self._http_client: Optional["httpx.AsyncClient"] = None
 
         # Message deduplication: msg_id -> timestamp
-        self._seen_messages: Dict[str, float] = {}
+        self._seen_messages: dict[str, float] = {}
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -234,7 +234,7 @@ class NtfyAdapter(BasePlatformAdapter):
             await asyncio.sleep(delay)
             backoff_idx += 1
 
-    async def _consume_stream(self, url: str, headers: Dict[str, str]) -> None:
+    async def _consume_stream(self, url: str, headers: dict[str, str]) -> None:
         """Open an HTTP streaming connection and dispatch events."""
         # poll=false keeps a persistent streaming connection alive with keepalive events
         params = {"poll": "false"}
@@ -304,7 +304,7 @@ class NtfyAdapter(BasePlatformAdapter):
 
     # -- Inbound message processing -----------------------------------------
 
-    async def _on_message(self, event: Dict[str, Any]) -> None:
+    async def _on_message(self, event: dict[str, Any]) -> None:
         """Process an incoming ntfy message event."""
         msg_id = event.get("id") or uuid.uuid4().hex
         if self._is_duplicate(msg_id):
@@ -376,7 +376,7 @@ class NtfyAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Publish a message to the configured publish topic."""
         metadata = metadata or {}
@@ -422,13 +422,13 @@ class NtfyAdapter(BasePlatformAdapter):
         """ntfy does not support typing indicators."""
         pass
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about an ntfy topic."""
         return {"name": chat_id, "type": "dm"}
 
     # -- Helpers ------------------------------------------------------------
 
-    def _auth_headers(self) -> Dict[str, str]:
+    def _auth_headers(self) -> dict[str, str]:
         """Build Authorization header if a token is configured."""
         return _build_auth_header(self._token)
 
@@ -482,9 +482,9 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[list[str]] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Out-of-process publish for cron / send_message_tool fallbacks.
 
     Used by ``tools/send_message_tool._send_via_adapter`` and the cron

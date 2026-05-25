@@ -138,11 +138,11 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
 
 
 def _expand_acp_enabled_toolsets(
-    toolsets: List[str] | None = None,
-    mcp_server_names: List[str] | None = None,
-) -> List[str]:
+    toolsets: list[str] | None = None,
+    mcp_server_names: list[str] | None = None,
+) -> list[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
-    expanded: List[str] = []
+    expanded: list[str] = []
     for name in list(toolsets or ["hermes-acp"]):
         if name and name not in expanded:
             expanded.append(name)
@@ -174,10 +174,10 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
-    history: List[Dict[str, Any]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
-    queued_prompts: List[str] = field(default_factory=list)
+    queued_prompts: list[str] = field(default_factory=list)
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
@@ -200,7 +200,7 @@ class SessionManager:
             db:            Optional SessionDB instance. When omitted, the default
                            SessionDB (``~/.hermes/state.db``) is lazily created.
         """
-        self._sessions: Dict[str, SessionState] = {}
+        self._sessions: dict[str, SessionState] = {}
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
@@ -280,7 +280,7 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
+    def list_sessions(self, cwd: str | None = None) -> list[dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
         normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
         db = self._get_db()

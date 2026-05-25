@@ -53,7 +53,7 @@ class HunkLine:
 class Hunk:
     """A group of changes within a file."""
     context_hint: Optional[str] = None
-    lines: List[HunkLine] = field(default_factory=list)
+    lines: list[HunkLine] = field(default_factory=list)
 
 
 @dataclass
@@ -62,11 +62,11 @@ class PatchOperation:
     operation: OperationType
     file_path: str
     new_path: Optional[str] = None  # For move operations
-    hunks: List[Hunk] = field(default_factory=list)
+    hunks: list[Hunk] = field(default_factory=list)
     content: Optional[str] = None  # For add file operations
 
 
-def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
+def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], Optional[str]]:
     """
     Parse a V4A format patch.
     
@@ -79,7 +79,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
         - If failed: ([], error_description)
     """
     lines = patch_content.split('\n')
-    operations: List[PatchOperation] = []
+    operations: list[PatchOperation] = []
     
     # Find patch boundaries
     start_idx = None
@@ -209,7 +209,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
         # Empty patch is not an error — callers get [] and can decide
         return operations, None
 
-    parse_errors: List[str] = []
+    parse_errors: list[str] = []
     for op in operations:
         if not op.file_path:
             parse_errors.append("Operation with empty file path")
@@ -238,9 +238,9 @@ def _count_occurrences(text: str, pattern: str) -> int:
 
 
 def _validate_operations(
-    operations: List[PatchOperation],
+    operations: list[PatchOperation],
     file_ops: Any,
-) -> List[str]:
+) -> list[str]:
     """Validate all operations without writing any files.
 
     Returns a list of error strings; an empty list means all operations
@@ -252,7 +252,7 @@ def _validate_operations(
     # Deferred import: breaks the patch_parser ↔ fuzzy_match circular dependency
     from tools.fuzzy_match import fuzzy_find_and_replace
 
-    errors: List[str] = []
+    errors: list[str] = []
 
     for op in operations:
         if op.operation == OperationType.UPDATE:
@@ -328,7 +328,7 @@ def _validate_operations(
     return errors
 
 
-def apply_v4a_operations(operations: List[PatchOperation],
+def apply_v4a_operations(operations: list[PatchOperation],
                           file_ops: Any) -> 'PatchResult':
     """Apply V4A patch operations using a file operations interface.
 
@@ -368,7 +368,7 @@ def apply_v4a_operations(operations: List[PatchOperation],
     # write_file and patch_replace use, so without explicit propagation
     # the LSP tier's output gets silently dropped — see
     # ``PatchResult.lsp_diagnostics`` aggregation below.
-    lsp_blocks: List[str] = []
+    lsp_blocks: list[str] = []
     errors = []
 
     for op in operations:
@@ -452,7 +452,7 @@ def apply_v4a_operations(operations: List[PatchOperation],
     )
 
 
-def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optional[str]]:
+def _apply_add(op: PatchOperation, file_ops: Any) -> tuple[bool, str, Optional[str]]:
     """Apply an add file operation.
 
     Returns ``(success, diff_or_error, lsp_diagnostics)``.  The third
@@ -480,7 +480,7 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optional[s
     return True, diff, getattr(result, "lsp_diagnostics", None)
 
 
-def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_delete(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     """Apply a delete file operation."""
     # Read before deleting so we can produce a real unified diff.
     # Validation already confirmed existence; this guards against races.
@@ -501,7 +501,7 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff or f"# Deleted: {op.file_path}"
 
 
-def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
+def _apply_move(op: PatchOperation, file_ops: Any) -> tuple[bool, str]:
     """Apply a move file operation."""
     result = file_ops.move_file(op.file_path, op.new_path)
     if result.error:
@@ -511,7 +511,7 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     return True, diff
 
 
-def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optional[str]]:
+def _apply_update(op: PatchOperation, file_ops: Any) -> tuple[bool, str, Optional[str]]:
     """Apply an update file operation.
 
     Returns ``(success, diff_or_error, lsp_diagnostics)`` — see

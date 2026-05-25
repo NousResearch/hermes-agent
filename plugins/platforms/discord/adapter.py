@@ -175,15 +175,15 @@ class VoiceReceiver:
         self._bot_ssrc: int = 0
 
         # SSRC -> user_id mapping (populated from SPEAKING events)
-        self._ssrc_to_user: Dict[int, int] = {}
+        self._ssrc_to_user: dict[int, int] = {}
         self._lock = threading.Lock()
 
         # Per-user audio buffers
-        self._buffers: Dict[int, bytearray] = defaultdict(bytearray)
-        self._last_packet_time: Dict[int, float] = {}
+        self._buffers: dict[int, bytearray] = defaultdict(bytearray)
+        self._last_packet_time: dict[int, float] = {}
 
         # Opus decoder per SSRC (each user needs own decoder state)
-        self._decoders: Dict[int, object] = {}
+        self._decoders: dict[int, object] = {}
 
         # Pause flag: don't capture while bot is playing TTS
         self._paused = False
@@ -559,19 +559,19 @@ class DiscordAdapter(BasePlatformAdapter):
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
-        self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
-        self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
+        self._voice_clients: dict[int, Any] = {}  # guild_id -> VoiceClient
+        self._voice_locks: dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
-        self._pending_text_batches: Dict[str, MessageEvent] = {}
-        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
-        self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
-        self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
-        self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._pending_text_batches: dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: dict[str, asyncio.Task] = {}
+        self._voice_text_channels: dict[int, int] = {}  # guild_id -> text_channel_id
+        self._voice_sources: dict[int, dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
+        self._voice_timeout_tasks: dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         # Phase 2: voice listening
-        self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
-        self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
+        self._voice_receivers: dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
+        self._voice_listen_tasks: dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Track threads where the bot has participated so follow-up messages
@@ -580,7 +580,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._threads = ThreadParticipationTracker("discord")
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
-        self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_tasks: dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
@@ -593,7 +593,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
-        self._last_self_message_id: Dict[str, str] = {}
+        self._last_self_message_id: dict[str, str] = {}
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1148,7 +1148,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         return "safe"
 
-    def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _canonicalize_app_command_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Reduce command payloads to the semantic fields Hermes manages."""
         contexts = payload.get("contexts")
         integration_types = payload.get("integration_types")
@@ -1180,7 +1180,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return str(value)
 
-    def _existing_command_to_payload(self, command: Any) -> Dict[str, Any]:
+    def _existing_command_to_payload(self, command: Any) -> dict[str, Any]:
         """Build a canonical-ready dict from an AppCommand.
 
         discord.py's AppCommand.to_dict() does NOT include nsfw,
@@ -1203,7 +1203,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         return payload
 
-    def _canonicalize_app_command_option(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _canonicalize_app_command_option(self, payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "type": int(payload.get("type", 0) or 0),
             "name": str(payload.get("name", "") or ""),
@@ -1230,7 +1230,7 @@ class DiscordAdapter(BasePlatformAdapter):
             ],
         }
 
-    def _patchable_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _patchable_app_command_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Fields supported by discord.py's edit_global_command route."""
         canonical = self._canonicalize_app_command_payload(payload)
         return {
@@ -1239,7 +1239,7 @@ class DiscordAdapter(BasePlatformAdapter):
             "options": canonical["options"],
         }
 
-    async def _safe_sync_slash_commands(self) -> Dict[str, int]:
+    async def _safe_sync_slash_commands(self) -> dict[str, int]:
         """Diff existing global commands and only mutate the commands that changed."""
         if not self._client:
             return {
@@ -1373,7 +1373,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[dict[str, Any]] = None
     ) -> SendResult:
         """Send a message to a Discord channel or thread.
 
@@ -1526,7 +1526,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.warning("[%s] %s", self.name, warning)
                 warnings.append(warning)
 
-        raw_response: Dict[str, Any] = {"message_ids": message_ids, "thread_id": thread_id}
+        raw_response: dict[str, Any] = {"message_ids": message_ids, "thread_id": thread_id}
         if warnings:
             raw_response["warnings"] = warnings
 
@@ -1566,7 +1566,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     hint = getattr(files[0], "filename", "") or ""
             thread_name = _derive_forum_thread_name(hint) if hint.strip() else "New Post"
 
-        kwargs: Dict[str, Any] = {"name": thread_name}
+        kwargs: dict[str, Any] = {"name": thread_name}
         if content:
             kwargs["content"] = content
         if file is not None:
@@ -1657,8 +1657,8 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_multiple_images(
         self,
         chat_id: str,
-        images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None,
+        images: list[tuple[str, str]],
+        metadata: Optional[dict[str, Any]] = None,
         human_delay: float = 0.0,
     ) -> None:
         """Send a batch of images as a single Discord message with multiple attachments.
@@ -1702,8 +1702,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
 
-            files: List[Any] = []
-            captions: List[str] = []
+            files: list[Any] = []
+            captions: list[str] = []
             aiohttp_session = None
             try:
                 for image_url, alt_text in chunk:
@@ -1806,7 +1806,7 @@ class DiscordAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send audio as a Discord file attachment."""
@@ -2039,7 +2039,7 @@ class DiscordAdapter(BasePlatformAdapter):
         vc = self._voice_clients.get(guild_id)
         return vc is not None and vc.is_connected()
 
-    def get_voice_channel_info(self, guild_id: int) -> Optional[Dict[str, Any]]:
+    def get_voice_channel_info(self, guild_id: int) -> Optional[dict[str, Any]]:
         """Return voice channel awareness info for the given guild.
 
         Returns None if the bot is not in a voice channel.  Otherwise
@@ -2293,7 +2293,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _evaluate_slash_authorization(
         self, interaction: "discord.Interaction",
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> tuple[bool, Optional[str]]:
         """Evaluate slash authorization without producing any response.
 
         Returns ``(allowed, reason)``. ``reason`` is populated only when
@@ -2509,7 +2509,7 @@ class DiscordAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         try:
@@ -2526,7 +2526,7 @@ class DiscordAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image natively as a Discord file attachment."""
         if not self._client:
@@ -2605,7 +2605,7 @@ class DiscordAdapter(BasePlatformAdapter):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an animated GIF natively as a Discord file attachment."""
         if not self._client:
@@ -2674,7 +2674,7 @@ class DiscordAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         try:
@@ -2692,7 +2692,7 @@ class DiscordAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         try:
@@ -2767,7 +2767,7 @@ class DiscordAdapter(BasePlatformAdapter):
             except (asyncio.CancelledError, Exception):
                 pass
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Get information about a Discord channel."""
         if not self._client:
             return {"name": "Unknown", "type": "dm"}
@@ -3839,7 +3839,7 @@ class DiscordAdapter(BasePlatformAdapter):
         name: str,
         message: str = "",
         auto_archive_duration: int = 1440,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Create a thread in the current Discord channel.
 
         Tries ``parent_channel.create_thread()`` first.  If Discord rejects
@@ -4117,7 +4117,7 @@ class DiscordAdapter(BasePlatformAdapter):
         choices: Optional[list],
         clarify_id: str,
         session_key: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Render a clarify prompt with one Discord button per choice.
 
@@ -4191,7 +4191,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive button-based update prompt (Yes / No).
 
@@ -4230,7 +4230,7 @@ class DiscordAdapter(BasePlatformAdapter):
         current_provider: str,
         session_key: str,
         on_model_selected,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive select-menu model picker.
 
@@ -5535,7 +5535,7 @@ def _define_discord_view_classes() -> None:
 
         def __init__(
             self,
-            choices: List[str],
+            choices: list[str],
             clarify_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
@@ -5718,7 +5718,7 @@ if DISCORD_AVAILABLE:
 # Process-local cache for Discord channel-type probes.  Avoids re-probing the
 # same channel on every send when the directory cache has no entry (e.g. fresh
 # install, or channel created after the last directory build).
-_DISCORD_CHANNEL_TYPE_PROBE_CACHE: Dict[str, bool] = {}
+_DISCORD_CHANNEL_TYPE_PROBE_CACHE: dict[str, bool] = {}
 
 
 def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
@@ -5763,7 +5763,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Send via Discord REST API without a live gateway adapter.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway

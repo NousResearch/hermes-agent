@@ -22,7 +22,7 @@ MAX_CHOICES = 4
 
 def clarify_tool(
     question: str,
-    choices: Optional[List[str]] = None,
+    choices: Optional[list[str]] = None,
     callback: Optional[Callable] = None,
 ) -> str:
     """

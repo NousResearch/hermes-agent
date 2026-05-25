@@ -101,7 +101,7 @@ def _log(message: str) -> None:
 # tracked.json — atomic read/write, backup scoped to tracked.json only
 # ---------------------------------------------------------------------------
 
-def load_tracked() -> List[Dict[str, Any]]:
+def load_tracked() -> list[dict[str, Any]]:
     """Load tracked.json.  Restores from ``.bak`` on corruption."""
     tf = get_tracked_file()
     tf.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,7 @@ def load_tracked() -> List[Dict[str, Any]]:
         return []
 
 
-def save_tracked(tracked: List[Dict[str, Any]]) -> None:
+def save_tracked(tracked: list[dict[str, Any]]) -> None:
     """Atomic write: ``.tmp`` → backup old → rename."""
     tf = get_tracked_file()
     tf.parent.mkdir(parents=True, exist_ok=True)
@@ -210,13 +210,13 @@ def forget(path_str: str) -> int:
 # Dry run
 # ---------------------------------------------------------------------------
 
-def dry_run() -> Tuple[List[Dict], List[Dict]]:
+def dry_run() -> tuple[list[dict], list[dict]]:
     """Return (auto_delete_list, needs_prompt_list) without touching files."""
     tracked = load_tracked()
     now = datetime.now(timezone.utc)
 
-    auto: List[Dict] = []
-    prompt: List[Dict] = []
+    auto: list[dict] = []
+    prompt: list[dict] = []
 
     for item in tracked:
         p = Path(item["path"])
@@ -246,7 +246,7 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
 # Quick cleanup
 # ---------------------------------------------------------------------------
 
-def quick() -> Dict[str, Any]:
+def quick() -> dict[str, Any]:
     """Safe deterministic cleanup — no prompts.
 
     Returns: ``{"deleted": N, "empty_dirs": N, "freed": bytes,
@@ -256,8 +256,8 @@ def quick() -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     deleted = 0
     freed = 0
-    new_tracked: List[Dict] = []
-    errors: List[str] = []
+    new_tracked: list[dict] = []
+    errors: list[str] = []
 
     for item in tracked:
         p = Path(item["path"])
@@ -341,7 +341,7 @@ def quick() -> Dict[str, Any]:
 
 def deep(
     confirm: Optional[callable] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Deep cleanup.
 
     Runs :func:`quick` first, then asks the *confirm* callable for each
@@ -378,7 +378,7 @@ def deep(
     old_research = research[10:]
 
     freed, count = 0, 0
-    to_remove: List[Dict] = []
+    to_remove: list[dict] = []
 
     for group in (old_research, chrome, large):
         for item in group:
@@ -410,10 +410,10 @@ def deep(
 # Status
 # ---------------------------------------------------------------------------
 
-def status() -> Dict[str, Any]:
+def status() -> dict[str, Any]:
     """Return per-category breakdown and top 10 largest tracked files."""
     tracked = load_tracked()
-    cats: Dict[str, Dict] = {}
+    cats: dict[str, dict] = {}
     for item in tracked:
         c = item["category"]
         cats.setdefault(c, {"count": 0, "size": 0})
@@ -433,7 +433,7 @@ def status() -> Dict[str, Any]:
     }
 
 
-def format_status(s: Dict[str, Any]) -> str:
+def format_status(s: dict[str, Any]) -> str:
     """Human-readable status string (for slash command output)."""
     lines = [f"{'Category':<20} {'Files':>6}  {'Size':>10}", "-" * 40]
     cats = s["categories"]

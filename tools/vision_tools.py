@@ -481,7 +481,7 @@ def _build_native_vision_tool_result(
     question: str,
     image_data_url: str,
     image_size_bytes: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build the multimodal tool-result envelope returned by the fast path.
 
     Shape:
@@ -1026,7 +1026,7 @@ VISION_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> Awaitable[str]:
     image_url = args.get("image_url", "")
     question = args.get("question", "")
 
@@ -1413,7 +1413,7 @@ VIDEO_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
+def _handle_video_analyze(args: dict[str, Any], **kw: Any) -> Awaitable[str]:
     video_url = args.get("video_url", "")
     question = args.get("question", "")
     full_prompt = (

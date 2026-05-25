@@ -441,7 +441,7 @@ def _bws_version(binary: Path) -> str:
 
 def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
-) -> Optional[List[dict]]:
+) -> Optional[list[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
     env = os.environ.copy()
     env["BWS_ACCESS_TOKEN"] = token

@@ -65,7 +65,7 @@ class FirecrawlBrowserProvider(BrowserProvider):
     def _api_url(self) -> str:
         return os.environ.get("FIRECRAWL_API_URL", _BASE_URL)
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         api_key = os.environ.get("FIRECRAWL_API_KEY")
         if not api_key:
             raise ValueError(
@@ -77,10 +77,10 @@ class FirecrawlBrowserProvider(BrowserProvider):
             "Authorization": f"Bearer {api_key}",
         }
 
-    def create_session(self, task_id: str) -> Dict[str, object]:
+    def create_session(self, task_id: str) -> dict[str, object]:
         ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
 
-        body: Dict[str, object] = {"ttl": ttl}
+        body: dict[str, object] = {"ttl": ttl}
 
         try:
             response = requests.post(
@@ -152,7 +152,7 @@ class FirecrawlBrowserProvider(BrowserProvider):
                 "Emergency cleanup failed for Firecrawl session %s: %s", session_id, e
             )
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "Firecrawl",
             "badge": "paid",

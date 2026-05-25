@@ -127,7 +127,7 @@ def _get_direct_firecrawl_config() -> Optional[tuple]:
     if not api_key and not api_url:
         return None
 
-    kwargs: Dict[str, str] = {}
+    kwargs: dict[str, str] = {}
     if api_key:
         kwargs["api_key"] = api_key
     if api_url:
@@ -298,12 +298,12 @@ def _to_plain_object(value: Any) -> Any:
     return value
 
 
-def _normalize_result_list(values: Any) -> List[Dict[str, Any]]:
+def _normalize_result_list(values: Any) -> list[dict[str, Any]]:
     """Normalize mixed SDK/list payloads into a list of dicts."""
     if not isinstance(values, list):
         return []
 
-    normalized: List[Dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
     for item in values:
         plain = _to_plain_object(item)
         if isinstance(plain, dict):
@@ -311,7 +311,7 @@ def _normalize_result_list(values: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _extract_web_search_results(response: Any) -> List[Dict[str, Any]]:
+def _extract_web_search_results(response: Any) -> list[dict[str, Any]]:
     """Extract Firecrawl search results across SDK/direct/gateway response shapes."""
     response_plain = _to_plain_object(response)
 
@@ -342,7 +342,7 @@ def _extract_web_search_results(response: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _extract_scrape_payload(scrape_result: Any) -> Dict[str, Any]:
+def _extract_scrape_payload(scrape_result: Any) -> dict[str, Any]:
     """Normalize Firecrawl scrape payload shape across SDK and gateway variants."""
     result_plain = _to_plain_object(scrape_result)
     if not isinstance(result_plain, dict):
@@ -384,7 +384,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
     def supports_crawl(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute a Firecrawl search.
 
         Sync; matches the legacy ``_get_firecrawl_client().search(...)``
@@ -416,7 +416,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             logger.warning("Firecrawl search error: %s", exc)
             return {"success": False, "error": f"Firecrawl search failed: {exc}"}
 
-    async def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+    async def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Extract content from one or more URLs via Firecrawl.
 
         Async; each URL is scraped in a background thread with a 60s
@@ -437,7 +437,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
         format = kwargs.get("format")
-        formats: List[str] = []
+        formats: list[str] = []
         if format == "markdown":
             formats = ["markdown"]
         elif format == "html":
@@ -449,7 +449,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         # module level (lazy-friendly because the website_policy import is
         # cheap) so monkeypatching it in tests works as expected.
 
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
 
         for url in urls:
             if _is_interrupted():
@@ -575,7 +575,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
         return results
 
-    async def crawl(self, url: str, **kwargs: Any) -> Dict[str, Any]:
+    async def crawl(self, url: str, **kwargs: Any) -> dict[str, Any]:
         """Crawl a seed URL via Firecrawl's ``/crawl`` endpoint.
 
         Sync SDK call wrapped in ``asyncio.to_thread`` because the dispatcher
@@ -634,7 +634,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             )
 
             # CrawlJob normalization across SDK + direct + gateway shapes.
-            data_list: List[Any] = []
+            data_list: list[Any] = []
             if hasattr(crawl_result, "data"):
                 data_list = crawl_result.data if crawl_result.data else []
                 logger.info(
@@ -650,7 +650,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                     type(crawl_result).__name__,
                 )
 
-            pages: List[Dict[str, Any]] = []
+            pages: list[dict[str, Any]] = []
             for item in data_list:
                 # Pydantic model | typed object | dict — handle all shapes.
                 content_markdown = None
@@ -755,7 +755,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                 ]
             }
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "Firecrawl",
             "badge": "paid · optional gateway",

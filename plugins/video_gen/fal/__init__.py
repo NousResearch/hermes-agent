@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 #   audio          : True if generate_audio is supported
 #   negative       : True if negative_prompt is supported
 
-FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
+FAL_FAMILIES: dict[str, dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
     "ltx-2.3": {
         "display": "LTX 2.3 (22B)",
@@ -172,7 +172,7 @@ def _is_duration_range(durations: Any) -> bool:
     return durations[1] - durations[0] > 1
 
 
-def _clamp_duration(family: Dict[str, Any], duration: Optional[int]) -> Optional[int]:
+def _clamp_duration(family: dict[str, Any], duration: Optional[int]) -> Optional[int]:
     durations = family.get("durations")
     if not durations:
         return duration
@@ -192,7 +192,7 @@ def _clamp_duration(family: Dict[str, Any], duration: Optional[int]) -> Optional
 # ---------------------------------------------------------------------------
 
 
-def _load_video_gen_section() -> Dict[str, Any]:
+def _load_video_gen_section() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
 
@@ -204,9 +204,9 @@ def _load_video_gen_section() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+def _resolve_family(explicit: Optional[str]) -> tuple[str, dict[str, Any]]:
     """Decide which FAL family to use. Returns ``(family_id, meta)``."""
-    candidates: List[Optional[str]] = []
+    candidates: list[Optional[str]] = []
     candidates.append(explicit)
     candidates.append(os.environ.get("FAL_VIDEO_MODEL"))
 
@@ -232,7 +232,7 @@ def _resolve_family(explicit: Optional[str]) -> Tuple[str, Dict[str, Any]]:
 
 
 def _build_payload(
-    family: Dict[str, Any],
+    family: dict[str, Any],
     *,
     prompt: str,
     image_url: Optional[str],
@@ -242,9 +242,9 @@ def _build_payload(
     negative_prompt: Optional[str],
     audio: Optional[bool],
     seed: Optional[int],
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a family-specific payload, dropping keys the family doesn't declare."""
-    payload: Dict[str, Any] = {}
+    payload: dict[str, Any] = {}
 
     if prompt:
         payload["prompt"] = prompt
@@ -331,10 +331,10 @@ class FALVideoGenProvider(VideoGenProvider):
             return False
         return True
 
-    def list_models(self) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
+    def list_models(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         for fid, meta in FAL_FAMILIES.items():
-            modalities: List[str] = []
+            modalities: list[str] = []
             if meta.get("text_endpoint"):
                 modalities.append("text")
             if meta.get("image_endpoint"):
@@ -353,7 +353,7 @@ class FALVideoGenProvider(VideoGenProvider):
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "FAL",
             "badge": "paid",
@@ -367,7 +367,7 @@ class FALVideoGenProvider(VideoGenProvider):
             ],
         }
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {
             "modalities": ["text", "image"],
             "aspect_ratios": ["16:9", "9:16", "1:1"],
@@ -385,7 +385,7 @@ class FALVideoGenProvider(VideoGenProvider):
         *,
         model: Optional[str] = None,
         image_url: Optional[str] = None,
-        reference_image_urls: Optional[List[str]] = None,
+        reference_image_urls: Optional[list[str]] = None,
         duration: Optional[int] = None,
         aspect_ratio: str = "16:9",
         resolution: str = "720p",
@@ -393,7 +393,7 @@ class FALVideoGenProvider(VideoGenProvider):
         audio: Optional[bool] = None,
         seed: Optional[int] = None,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not os.environ.get("FAL_KEY", "").strip():
             return error_response(
                 error=(
@@ -498,7 +498,7 @@ class FALVideoGenProvider(VideoGenProvider):
                 provider="fal", model=family_id, prompt=prompt,
             )
 
-        extra: Dict[str, Any] = {"endpoint": endpoint}
+        extra: dict[str, Any] = {"endpoint": endpoint}
         if isinstance(video, dict):
             if video.get("file_size"):
                 extra["file_size"] = video["file_size"]

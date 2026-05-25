@@ -62,7 +62,7 @@ def _pad_to_width(s: str, target: int) -> str:
     return s + " " * max(0, target - _disp_width(s))
 
 
-def split_table_row(row: str) -> List[str]:
+def split_table_row(row: str) -> list[str]:
     """Split ``| a | b | c |`` into ``["a", "b", "c"]`` with trims."""
 
     s = row.strip()
@@ -102,7 +102,7 @@ def looks_like_table_row(row: str) -> bool:
     return stripped.count("|") >= 2
 
 
-def _render_block(rows: List[List[str]], available_width: int | None = None) -> List[str]:
+def _render_block(rows: list[list[str]], available_width: int | None = None) -> list[str]:
     """Render ``rows`` (header + body, divider implied) at uniform widths.
 
     If ``available_width`` is given and the rebuilt horizontal table
@@ -128,7 +128,7 @@ def _render_block(rows: List[List[str]], available_width: int | None = None) -> 
     if available_width is not None and horizontal_width > max(available_width, 20):
         return _render_vertical(rows, ncols, available_width)
 
-    def _row(cells: List[str]) -> str:
+    def _row(cells: list[str]) -> str:
         return (
             "| "
             + " | ".join(_pad_to_width(c, widths[k]) for k, c in enumerate(cells))
@@ -142,7 +142,7 @@ def _render_block(rows: List[List[str]], available_width: int | None = None) -> 
     return out
 
 
-def _wrap_to_width(text: str, width: int) -> List[str]:
+def _wrap_to_width(text: str, width: int) -> list[str]:
     """Soft-wrap ``text`` at word boundaries to fit ``width`` display cells.
 
     Falls back to hard-breaking the longest word if a single token is
@@ -157,12 +157,12 @@ def _wrap_to_width(text: str, width: int) -> List[str]:
     if not words:
         return [""]
 
-    lines: List[str] = []
+    lines: list[str] = []
     current = ""
     current_w = 0
 
-    def _hard_break(word: str, w: int) -> List[str]:
-        out: List[str] = []
+    def _hard_break(word: str, w: int) -> list[str]:
+        out: list[str] = []
         buf = ""
         bw = 0
         for ch in word:
@@ -209,8 +209,8 @@ def _wrap_to_width(text: str, width: int) -> List[str]:
 
 
 def _render_vertical(
-    rows: List[List[str]], ncols: int, available_width: int
-) -> List[str]:
+    rows: list[list[str]], ncols: int, available_width: int
+) -> list[str]:
     """Render a too-wide table as vertical ``Header: value`` rows.
 
     Mirrors Claude Code's narrow-terminal fallback in
@@ -234,7 +234,7 @@ def _render_vertical(
     indent = "  "
     indent_w = _disp_width(indent)
 
-    out: List[str] = []
+    out: list[str] = []
     for ri, row in enumerate(body):
         if ri > 0:
             out.append(separator)
@@ -277,7 +277,7 @@ def realign_markdown_tables(text: str, available_width: int | None = None) -> st
         return text
 
     lines = text.split("\n")
-    out: List[str] = []
+    out: list[str] = []
     i = 0
     n = len(lines)
 
@@ -290,7 +290,7 @@ def realign_markdown_tables(text: str, available_width: int | None = None) -> st
             and is_table_divider(lines[i + 1])
         ):
             header = split_table_row(line)
-            body: List[List[str]] = []
+            body: list[list[str]] = []
             j = i + 2
             while j < n and "|" in lines[j] and lines[j].strip():
                 if is_table_divider(lines[j]):

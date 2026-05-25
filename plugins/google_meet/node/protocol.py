@@ -31,9 +31,9 @@ VALID_REQUEST_TYPES = frozenset({
 def make_request(
     type: str,
     token: str,
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     req_id: str | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Construct a request envelope.
 
     ``req_id`` is auto-generated (uuid4 hex) when not supplied so callers
@@ -55,7 +55,7 @@ def make_request(
     }
 
 
-def make_response(req_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def make_response(req_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Build a success response. The caller supplies the *request* type;
     we suffix it with ``_res`` so clients can assert they got the right
     reply.
@@ -68,16 +68,16 @@ def make_response(req_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": "response", "id": req_id, "payload": payload}
 
 
-def make_error(req_id: str, error: str) -> Dict[str, Any]:
+def make_error(req_id: str, error: str) -> dict[str, Any]:
     return {"type": "error", "id": req_id, "error": str(error)}
 
 
-def encode(msg: Dict[str, Any]) -> str:
+def encode(msg: dict[str, Any]) -> str:
     """Serialize a message envelope to a JSON string."""
     return json.dumps(msg, separators=(",", ":"), ensure_ascii=False)
 
 
-def decode(raw: str) -> Dict[str, Any]:
+def decode(raw: str) -> dict[str, Any]:
     """Parse a JSON envelope, raising ValueError on anything malformed.
 
     Minimal type validation: must be an object, must contain ``type`` and
@@ -97,7 +97,7 @@ def decode(raw: str) -> Dict[str, Any]:
     return obj
 
 
-def validate_request(msg: Dict[str, Any], expected_token: str) -> Tuple[bool, str]:
+def validate_request(msg: dict[str, Any], expected_token: str) -> tuple[bool, str]:
     """Check a decoded request against the server's shared token.
 
     Returns ``(True, "")`` when the envelope is acceptable or

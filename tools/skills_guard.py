@@ -74,7 +74,7 @@ class ScanResult:
     source: str
     trust_level: str    # "builtin" | "trusted" | "community"
     verdict: str        # "safe" | "caution" | "dangerous"
-    findings: List[Finding] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
 
@@ -531,7 +531,7 @@ INVISIBLE_CHARS = {
 # Scanning functions
 # ---------------------------------------------------------------------------
 
-def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
+def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
 
@@ -615,7 +615,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     skill_name = skill_path.name
     trust_level = _resolve_trust_level(source)
 
-    all_findings: List[Finding] = []
+    all_findings: list[Finding] = []
 
     if skill_path.is_dir():
         # Structural checks first
@@ -643,7 +643,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     )
 
 
-def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool, str]:
+def should_allow_install(result: ScanResult, force: bool = False) -> tuple[bool, str]:
     """
     Determine whether a skill should be installed based on scan result and trust.
 
@@ -754,7 +754,7 @@ def content_hash(skill_path: Path) -> str:
 # Structural checks
 # ---------------------------------------------------------------------------
 
-def _check_structure(skill_dir: Path) -> List[Finding]:
+def _check_structure(skill_dir: Path) -> list[Finding]:
     """
     Check the skill directory for structural anomalies:
     - Too many files
@@ -927,7 +927,7 @@ def _resolve_trust_level(source: str) -> str:
     return "community"
 
 
-def _determine_verdict(findings: List[Finding]) -> str:
+def _determine_verdict(findings: list[Finding]) -> str:
     """Determine the overall verdict from a list of findings."""
     if not findings:
         return "safe"
@@ -943,7 +943,7 @@ def _determine_verdict(findings: List[Finding]) -> str:
     return "safe"
 
 
-def _build_summary(name: str, source: str, trust: str, verdict: str, findings: List[Finding]) -> str:
+def _build_summary(name: str, source: str, trust: str, verdict: str, findings: list[Finding]) -> str:
     """Build a one-line summary of the scan result."""
     if not findings:
         return f"{name}: clean scan, no threats detected"

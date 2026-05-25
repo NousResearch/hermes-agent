@@ -349,7 +349,7 @@ class _ThreadCountStore:
 
     def __init__(self, path: _Path):
         self._path = path
-        self._counts: Dict[str, Dict[str, int]] = {}
+        self._counts: dict[str, dict[str, int]] = {}
         self._loaded = False
 
     def load(self) -> None:
@@ -380,12 +380,12 @@ class _ThreadCountStore:
             self._counts = {}
             return
         # Validate shape — anything off-schema gets dropped silently.
-        clean: Dict[str, Dict[str, int]] = {}
+        clean: dict[str, dict[str, int]] = {}
         if isinstance(data, dict):
             for chat_id, threads in data.items():
                 if not isinstance(chat_id, str) or not isinstance(threads, dict):
                     continue
-                clean_threads: Dict[str, int] = {}
+                clean_threads: dict[str, int] = {}
                 for thread_name, count in threads.items():
                     if isinstance(thread_name, str) and isinstance(count, int):
                         clean_threads[thread_name] = count
@@ -485,14 +485,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._user_chat_api: Optional[Any] = None
         self._user_credentials: Optional[Any] = None
         # Per-email caches. Populated lazily by ``_get_user_chat_for_chat``.
-        self._user_creds_by_email: Dict[str, Any] = {}
-        self._user_chat_api_by_email: Dict[str, Any] = {}
+        self._user_creds_by_email: dict[str, Any] = {}
+        self._user_chat_api_by_email: dict[str, Any] = {}
         # chat_id → most-recent inbound sender's email. Populated in
         # ``_build_message_event`` whenever the inbound event carries a
         # non-empty ``sender.email``. Drives the per-user token lookup
         # in ``_send_file`` so the bot uploads as the user who triggered
         # the request, not as some other authorized user.
-        self._last_sender_by_chat: Dict[str, str] = {}
+        self._last_sender_by_chat: dict[str, str] = {}
         self._credentials: Optional[Any] = None
         self._project_id: Optional[str] = None
         self._subscription_path: Optional[str] = None
@@ -501,9 +501,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._bot_user_id: Optional[str] = None  # users/{id}
         self._dedup = MessageDeduplicator()
-        self._typing_messages: Dict[str, str] = {}
+        self._typing_messages: dict[str, str] = {}
         self._shutting_down = False
-        self._rate_limit_hits: Dict[str, int] = {}
+        self._rate_limit_hits: dict[str, int] = {}
         # Last-seen inbound thread name per chat_id (space). Google Chat
         # DMs create a NEW thread per top-level user message but the user
         # views them as one logical conversation. We:
@@ -513,7 +513,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         #   (b) cache the most recent inbound thread name here so outbound
         #       replies still land in the right visual thread without
         #       re-coupling sessions to threads.
-        self._last_inbound_thread: Dict[str, str] = {}
+        self._last_inbound_thread: dict[str, str] = {}
         # Inbound message count per (chat_id, thread_name). Drives the
         # DM main-flow vs side-thread heuristic in _build_message_event
         # and the outbound thread routing in _resolve_thread_id.
@@ -533,12 +533,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # an Event here BEFORE starting the API call so concurrent calls
         # from base.py's _keep_typing wait instead of duplicating cards.
         # Cleared in the create_and_record finally.
-        self._typing_card_inflight: Dict[str, asyncio.Event] = {}
+        self._typing_card_inflight: dict[str, asyncio.Event] = {}
         # Orphaned typing cards (created by background tasks that lost a
         # race with send() / another concurrent create). Cleaned up at
         # end-of-turn by on_processing_complete via patch-to-empty so
         # they don't sit in the chat forever as "Hermes is thinking…".
-        self._orphan_typing_messages: Dict[str, List[str]] = {}
+        self._orphan_typing_messages: dict[str, list[str]] = {}
         # FlowControl knobs (env-configurable).
         self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
         self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
@@ -619,7 +619,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         )
         return credentials
 
-    def _validate_config(self) -> Tuple[str, str]:
+    def _validate_config(self) -> tuple[str, str]:
         """Return (project_id, subscription_path) after validation.
 
         Raises ValueError with a sanitized message on any config problem.
@@ -721,7 +721,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         filtering ``sender.type == 'BOT'`` (which is still safe but less
         precise — own messages and other bots look alike).
         """
-        candidate_spaces: List[str] = []
+        candidate_spaces: list[str] = []
         if self.config.home_channel and self.config.home_channel.chat_id:
             candidate_spaces.append(self.config.home_channel.chat_id)
         # Env-configured allowed spaces (comma-separated). Optional.
@@ -1017,8 +1017,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     @staticmethod
     def _extract_message_payload(
-        envelope: Dict[str, Any], ce_type: str = ""
-    ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any], str]]:
+        envelope: dict[str, Any], ce_type: str = ""
+    ) -> Optional[tuple[dict[str, Any], dict[str, Any], str]]:
         """Detect Pub/Sub envelope format and return ``(message, space, format_name)``.
 
         Three known formats are accepted. Returns ``None`` when the envelope
@@ -1105,7 +1105,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             sender_type = str(sender_type_raw).strip().upper() or "HUMAN"
             if sender_type not in {"HUMAN", "BOT"}:
                 sender_type = "HUMAN"
-            msg: Dict[str, Any] = {
+            msg: dict[str, Any] = {
                 "name": envelope.get("message_name", "") or "",
                 "sender": {
                     "name": sender_name_surrogate,
@@ -1256,7 +1256,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-    async def _dispatch_message(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> None:
+    async def _dispatch_message(self, msg: dict[str, Any], envelope: dict[str, Any]) -> None:
         """Translate a Chat message payload to a MessageEvent and hand off.
 
         Intercepts the ``/setup-files`` admin command BEFORE the agent
@@ -1335,7 +1335,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         arg = parts[1].strip() if len(parts) > 1 else ""
 
         async def _reply(text: str) -> None:
-            body: Dict[str, Any] = {"text": text}
+            body: dict[str, Any] = {"text": text}
             if thread_id:
                 body["thread"] = {"name": thread_id}
             try:
@@ -1519,7 +1519,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return True
 
     async def _build_message_event(
-        self, msg: Dict[str, Any], envelope: Dict[str, Any]
+        self, msg: dict[str, Any], envelope: dict[str, Any]
     ) -> Optional[MessageEvent]:
         """Parse a Chat API message into a hermes MessageEvent."""
         space = envelope.get("space") or msg.get("space") or {}
@@ -1552,8 +1552,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 text = f"/cmd_{command_id} {text}".strip()
 
         # Attachments: download and cache.
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
         message_type = MessageType.TEXT
         attachments = msg.get("attachment") or []
         for att in attachments:
@@ -1645,8 +1645,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         )
 
     async def _download_attachment(
-        self, attachment: Dict[str, Any]
-    ) -> Tuple[Optional[str], Optional[str]]:
+        self, attachment: dict[str, Any]
+    ) -> tuple[Optional[str], Optional[str]]:
         """Download an inbound attachment to the local cache; return (path, mime).
 
         Priority for bot Service Accounts:
@@ -1767,7 +1767,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a text message.
 
@@ -1806,7 +1806,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             patched_typing = False
 
             for idx, chunk in enumerate(chunks):
-                body: Dict[str, Any] = {"text": chunk}
+                body: dict[str, Any] = {"text": chunk}
                 # Only set thread on new-message create path. Patch inherits.
                 if thread_id and (idx > 0 or not typing_msg_name):
                     body["thread"] = {"name": thread_id}
@@ -1947,7 +1947,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return False
 
     async def _patch_message(
-        self, message_name: str, body: Dict[str, Any]
+        self, message_name: str, body: dict[str, Any]
     ) -> SendResult:
         """Update a message's text (and optionally cards) in-place."""
         update_mask_fields = []
@@ -1960,7 +1960,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Patch body cannot carry thread (immutable).
         patch_body = {k: v for k, v in body.items() if k not in {"thread",}}
 
-        def _do_patch() -> Dict[str, Any]:
+        def _do_patch() -> dict[str, Any]:
             return (
                 self._chat_api.spaces()
                 .messages()
@@ -1971,12 +1971,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         resp = await asyncio.to_thread(_do_patch)
         return SendResult(success=True, message_id=resp.get("name", message_name))
 
-    def _chunk_text(self, text: str) -> List[str]:
+    def _chunk_text(self, text: str) -> list[str]:
         if not text:
             return []
         if len(text) <= _MAX_TEXT_LENGTH:
             return [text]
-        chunks: List[str] = []
+        chunks: list[str] = []
         remaining = text
         while remaining:
             if len(remaining) <= _MAX_TEXT_LENGTH:
@@ -2032,7 +2032,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return content
 
         text = content
-        placeholders: Dict[str, str] = {}
+        placeholders: dict[str, str] = {}
         counter = [0]
 
         def _ph(value: str) -> str:
@@ -2094,7 +2094,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     def _resolve_thread_id(
         self,
         reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]],
+        metadata: Optional[dict[str, Any]],
         chat_id: Optional[str] = None,
     ) -> Optional[str]:
         """Return the Google Chat thread resource name to reply under, or None.
@@ -2185,7 +2185,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         raise RuntimeError(f"{op_name}: retry loop exited without result")
 
     async def _create_message(
-        self, chat_id: str, body: Dict[str, Any]
+        self, chat_id: str, body: dict[str, Any]
     ) -> SendResult:
         """POST spaces/{space}/messages via REST, returning SendResult.
 
@@ -2199,7 +2199,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         See https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/create
         """
-        kwargs: Dict[str, Any] = {"parent": chat_id, "body": body}
+        kwargs: dict[str, Any] = {"parent": chat_id, "body": body}
         thread_meta = body.get("thread") or {}
         if thread_meta.get("name"):
             # FALLBACK_TO_NEW_THREAD: try the requested thread; if Chat
@@ -2209,7 +2209,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # but possible.
             kwargs["messageReplyOption"] = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
 
-        def _do_create() -> Dict[str, Any]:
+        def _do_create() -> dict[str, Any]:
             return (
                 self._chat_api.spaces()
                 .messages()
@@ -2290,7 +2290,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         thread_id = self._resolve_thread_id(
             reply_to=None, metadata=metadata, chat_id=chat_id,
         )
-        body: Dict[str, Any] = {"text": "Hermes is thinking…"}
+        body: dict[str, Any] = {"text": "Hermes is thinking…"}
         if thread_id:
             body["thread"] = {"name": thread_id}
 
@@ -2470,7 +2470,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an inline image via attachment URL (no upload).
 
@@ -2479,7 +2479,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         ``send()``. Otherwise create a new message.
         """
         thread_id = self._resolve_thread_id(reply_to, metadata, chat_id=chat_id)
-        text_parts: List[str] = []
+        text_parts: list[str] = []
         if caption:
             text_parts.append(caption)
         text_parts.append(image_url)
@@ -2489,7 +2489,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             patched = await self._consume_typing_card_with_text(chat_id, text)
             if patched is not None:
                 return patched
-            body: Dict[str, Any] = {"text": text}
+            body: dict[str, Any] = {"text": text}
             if thread_id:
                 body["thread"] = {"name": thread_id}
             return await self._create_message(chat_id, body)
@@ -2560,7 +2560,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Google Chat has no native animation type; fall back to send_image."""
         return await self.send_image(
@@ -2654,7 +2654,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     async def _acquire_user_chat_api(
         self, sender_email: Optional[str]
-    ) -> Tuple[Optional[Any], Optional[str]]:
+    ) -> tuple[Optional[Any], Optional[str]]:
         """Resolve the user-authed Chat client for an outbound attachment.
 
         Lookup order:
@@ -2775,7 +2775,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
 
-        def _upload() -> Dict[str, Any]:
+        def _upload() -> dict[str, Any]:
             media = MediaFileUpload(path, mimetype=mime, resumable=False)
             return (
                 chat_api.media()
@@ -2816,7 +2816,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 error="upload returned no attachmentDataRef",
             )
 
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "attachment": [{"attachmentDataRef": attachment_ref}],
         }
         if caption:
@@ -2829,13 +2829,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # uploading principal). messageReplyOption is required for the
         # thread.name in body to actually be honored — see
         # _create_message docstring for the API quirk.
-        create_kwargs: Dict[str, Any] = {"parent": chat_id, "body": body}
+        create_kwargs: dict[str, Any] = {"parent": chat_id, "body": body}
         if thread_id:
             create_kwargs["messageReplyOption"] = (
                 "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
             )
 
-        def _create_with_attachment() -> Dict[str, Any]:
+        def _create_with_attachment() -> dict[str, Any]:
             return (
                 chat_api.spaces()
                 .messages()
@@ -2891,7 +2891,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
             f"Mientras tanto el archivo está en el host: `{path}`",
         ])
-        body: Dict[str, Any] = {"text": "\n".join(lines)}
+        body: dict[str, Any] = {"text": "\n".join(lines)}
         if thread_id:
             body["thread"] = {"name": thread_id}
         try:
@@ -2910,7 +2910,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Metadata
     # ------------------------------------------------------------------
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return {name, type, chat_id} for a space."""
         try:
             info = await asyncio.to_thread(
@@ -2979,7 +2979,7 @@ def _is_connected(config: PlatformConfig) -> bool:
     return bool(getattr(config, "enabled", False)) and _validate_config(config)
 
 
-def _env_enablement() -> Optional[Dict[str, Any]]:
+def _env_enablement() -> Optional[dict[str, Any]]:
     """Seed ``PlatformConfig.extra`` from env vars during
     ``_apply_env_overrides``.
 
@@ -3003,7 +3003,7 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     )
     if not (project and subscription):
         return None
-    seed: Dict[str, Any] = {
+    seed: dict[str, Any] = {
         "project_id": project,
         "subscription_name": subscription,
     }
@@ -3127,9 +3127,9 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[list[str]] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """POST a single Google Chat message via the REST API without the SDK.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
@@ -3235,7 +3235,7 @@ async def _standalone_send(
     if not token:
         return {"error": "Google Chat standalone send: refreshed credentials have no token"}
 
-    body: Dict[str, Any] = {"text": message}
+    body: dict[str, Any] = {"text": message}
     if thread_id:
         body["thread"] = {"name": thread_id}
 

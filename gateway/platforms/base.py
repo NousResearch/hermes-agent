@@ -841,7 +841,7 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
 )
 
 
-def _media_delivery_allowed_roots() -> List[Path]:
+def _media_delivery_allowed_roots() -> list[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
     extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")
@@ -1057,8 +1057,8 @@ class MessageEvent:
     
     # Media attachments
     # media_urls: local file paths (for vision tool access)
-    media_urls: List[str] = field(default_factory=list)
-    media_types: List[str] = field(default_factory=list)
+    media_urls: list[str] = field(default_factory=list)
+    media_types: list[str] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None
@@ -1214,7 +1214,7 @@ class EphemeralReply(str):
 
 
 def merge_pending_message_event(
-    pending_messages: Dict[str, MessageEvent],
+    pending_messages: dict[str, MessageEvent],
     session_key: str,
     event: MessageEvent,
     *,
@@ -1414,9 +1414,9 @@ class BasePlatformAdapter(ABC):
         # right task and release the adapter-level guard deterministically.
         # Without the owner-task map, an old task's finally block could delete
         # a newer task's guard, leaving stale busy state.
-        self._active_sessions: Dict[str, asyncio.Event] = {}
-        self._pending_messages: Dict[str, MessageEvent] = {}
-        self._session_tasks: Dict[str, asyncio.Task] = {}
+        self._active_sessions: dict[str, asyncio.Event] = {}
+        self._pending_messages: dict[str, MessageEvent] = {}
+        self._session_tasks: dict[str, asyncio.Task] = {}
         self._busy_text_mode: str = (
             os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue").strip().lower()
             or "queue"
@@ -1437,7 +1437,7 @@ class BasePlatformAdapter(ABC):
         # a ``(generation, callback)`` tuple so GatewayRunner can make deferred
         # deliveries generation-aware and avoid stale runs clearing callbacks
         # registered by a fresher run for the same session.
-        self._post_delivery_callbacks: Dict[str, Any] = {}
+        self._post_delivery_callbacks: dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
@@ -1471,7 +1471,7 @@ class BasePlatformAdapter(ABC):
     def supports_draft_streaming(
         self,
         chat_type: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> bool:
         """Whether this adapter supports native streaming-draft updates.
 
@@ -1492,7 +1492,7 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         draft_id: int,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send or update an animated streaming-draft preview.
 
@@ -1690,7 +1690,7 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[dict[str, Any]] = None
     ) -> SendResult:
         """
         Send a message to a chat.
@@ -1856,7 +1856,7 @@ class BasePlatformAdapter(ABC):
         message: str,
         session_key: str,
         confirm_id: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a three-option slash-command confirmation prompt.
 
@@ -1891,7 +1891,7 @@ class BasePlatformAdapter(ABC):
         choices: Optional[list],
         clarify_id: str,
         session_key: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a clarify prompt to the user.
 
@@ -1947,7 +1947,7 @@ class BasePlatformAdapter(ABC):
         user_id: Optional[str],
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a notice privately when the platform supports it.
 
@@ -1981,8 +1981,8 @@ class BasePlatformAdapter(ABC):
     async def send_multiple_images(
         self,
         chat_id: str,
-        images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None,
+        images: list[tuple[str, str]],
+        metadata: Optional[dict[str, Any]] = None,
         human_delay: float = 0.0,
     ) -> None:
         """Send a batch of images.
@@ -2041,7 +2041,7 @@ class BasePlatformAdapter(ABC):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an image natively via the platform API.
@@ -2060,7 +2060,7 @@ class BasePlatformAdapter(ABC):
         animation_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """
         Send an animated GIF natively via the platform API.
@@ -2078,7 +2078,7 @@ class BasePlatformAdapter(ABC):
         return lower.endswith('.gif')
 
     @staticmethod
-    def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
+    def extract_images(content: str) -> tuple[list[tuple[str, str]], str]:
         """
         Extract image URLs from markdown and HTML image tags in a response.
         
@@ -2131,7 +2131,7 @@ class BasePlatformAdapter(ABC):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -2173,7 +2173,7 @@ class BasePlatformAdapter(ABC):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -2194,7 +2194,7 @@ class BasePlatformAdapter(ABC):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -2214,7 +2214,7 @@ class BasePlatformAdapter(ABC):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """
@@ -2235,9 +2235,9 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
+    def filter_media_delivery_paths(media_files) -> list[tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths."""
-        safe_media: List[Tuple[str, bool]] = []
+        safe_media: list[tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             safe_path = validate_media_delivery_path(str(media_path))
             if safe_path:
@@ -2247,9 +2247,9 @@ class BasePlatformAdapter(ABC):
         return safe_media
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths) -> List[str]:
+    def filter_local_delivery_paths(file_paths) -> list[str]:
         """Drop unsafe bare local file paths and normalize accepted paths."""
-        safe_paths: List[str] = []
+        safe_paths: list[str] = []
         for file_path in file_paths or []:
             safe_path = validate_media_delivery_path(str(file_path))
             if safe_path:
@@ -2259,7 +2259,7 @@ class BasePlatformAdapter(ABC):
         return safe_paths
 
     @staticmethod
-    def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
+    def extract_media(content: str) -> tuple[list[tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
 
@@ -2316,7 +2316,7 @@ class BasePlatformAdapter(ABC):
         return media, cleaned
 
     @staticmethod
-    def extract_local_files(content: str) -> Tuple[List[str], str]:
+    def extract_local_files(content: str) -> tuple[list[str], str]:
         """
         Detect bare local file paths in response text for native delivery.
 
@@ -2635,7 +2635,7 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
-    def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
+    def _unwrap_ephemeral(self, response: Any) -> tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).
 
         Accepts a plain string, ``None``, or an :class:`EphemeralReply`.
@@ -3972,7 +3972,7 @@ class BasePlatformAdapter(ABC):
         )
     
     @abstractmethod
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """
         Get information about a chat/channel.
         
@@ -3998,7 +3998,7 @@ class BasePlatformAdapter(ABC):
         content: str,
         max_length: int = 4096,
         len_fn: Optional["Callable[[str], int]"] = None,
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Split a long message into chunks, preserving code block boundaries.
 
@@ -4025,7 +4025,7 @@ class BasePlatformAdapter(ABC):
         INDICATOR_RESERVE = 10   # room for " (XX/XX)"
         FENCE_CLOSE = "\n```"
 
-        chunks: List[str] = []
+        chunks: list[str] = []
         remaining = content
         # When the previous chunk ended mid-code-block, this holds the
         # language tag (possibly "") so we can reopen the fence.

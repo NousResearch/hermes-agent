@@ -45,15 +45,15 @@ class TraceState:
     trace_id: str
     root_ctx: Any
     root_span: Any
-    generations: Dict[str, Any] = field(default_factory=dict)
-    tools: Dict[str, Any] = field(default_factory=dict)
-    pending_tools_by_name: Dict[str, list] = field(default_factory=dict)
+    generations: dict[str, Any] = field(default_factory=dict)
+    tools: dict[str, Any] = field(default_factory=dict)
+    pending_tools_by_name: dict[str, list] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     last_updated_at: float = field(default_factory=time.time)
 
 
 _STATE_LOCK = threading.Lock()
-_TRACE_STATE: Dict[str, TraceState] = {}
+_TRACE_STATE: dict[str, TraceState] = {}
 _LANGFUSE_CLIENT = None
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
@@ -65,7 +65,7 @@ _READ_FILE_TAIL_LINES = 15
 # leftover template value and would cause the SDK to silently accept the
 # credentials at construction time but drop every trace at flush time.
 # See #23823 — the silent-failure bug this guard fixes.
-_LANGFUSE_KEY_PREFIXES: Dict[str, str] = {
+_LANGFUSE_KEY_PREFIXES: dict[str, str] = {
     "HERMES_LANGFUSE_PUBLIC_KEY": "pk-lf-",
     "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-",
 }
@@ -194,7 +194,7 @@ def _get_langfuse() -> Optional[Langfuse]:
     release = _env("HERMES_LANGFUSE_RELEASE") or _env("LANGFUSE_RELEASE")
     sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")
 
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "public_key": public_key,
         "secret_key": secret_key,
         "base_url": base_url,
@@ -478,8 +478,8 @@ def _serialize_assistant_message(message: Any) -> dict[str, Any]:
 
 
 def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, base_url: str) -> tuple[dict[str, int], dict[str, float]]:
-    usage_details: Dict[str, int] = {}
-    cost_details: Dict[str, float] = {}
+    usage_details: dict[str, int] = {}
+    cost_details: dict[str, float] = {}
     raw_usage = getattr(response, "usage", None)
     if not raw_usage:
         return usage_details, cost_details
@@ -553,7 +553,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     }
 
     # session_id must be passed in trace_context for Langfuse session grouping.
-    trace_ctx: Dict[str, Any] = {"trace_id": trace_id}
+    trace_ctx: dict[str, Any] = {"trace_id": trace_id}
     if session_id:
         trace_ctx["session_id"] = session_id
 
@@ -621,7 +621,7 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
     if observation is None:
         return
     try:
-        update_kwargs: Dict[str, Any] = {}
+        update_kwargs: dict[str, Any] = {}
         if output is not None:
             update_kwargs["output"] = output
         if metadata:
@@ -899,7 +899,7 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
         usage_details, cost_details = {}, {}
 
     tool_count = len(output.get("tool_calls", [])) or assistant_tool_call_count
-    gen_metadata: Dict[str, Any] = {"tool_call_count": tool_count}
+    gen_metadata: dict[str, Any] = {"tool_call_count": tool_count}
     if api_duration and api_duration > 0:
         gen_metadata["api_duration_s"] = round(api_duration, 3)
     if finish_reason:

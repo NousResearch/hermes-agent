@@ -59,7 +59,7 @@ _BUILTIN_NAMES = frozenset({
 })
 
 
-_providers: Dict[str, TTSProvider] = {}
+_providers: dict[str, TTSProvider] = {}
 _lock = threading.Lock()
 
 
@@ -108,7 +108,7 @@ def register_provider(provider: TTSProvider) -> None:
         )
 
 
-def list_providers() -> List[TTSProvider]:
+def list_providers() -> list[TTSProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
         items = list(_providers.values())

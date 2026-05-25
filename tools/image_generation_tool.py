@@ -93,7 +93,7 @@ logger = logging.getLogger(__name__)
 #
 # ``upscale`` controls whether to chain Clarity Upscaler after generation.
 
-FAL_MODELS: Dict[str, Dict[str, Any]] = {
+FAL_MODELS: dict[str, dict[str, Any]] = {
     "fal-ai/flux-2/klein/9b": {
         "display": "FLUX 2 Klein 9B",
         "speed": "<1s",
@@ -381,7 +381,7 @@ def _get_managed_fal_client(managed_gateway):
         return _managed_fal_client
 
 
-def _submit_fal_request(model: str, arguments: Dict[str, Any]):
+def _submit_fal_request(model: str, arguments: dict[str, Any]):
     """Submit a FAL request using direct credentials or the managed queue gateway."""
     # Trigger the lazy import on first call. Idempotent.
     _load_fal_client()
@@ -457,8 +457,8 @@ def _build_fal_payload(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     seed: Optional[int] = None,
-    overrides: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    overrides: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Build a FAL request payload for `model_id` from unified inputs.
 
     Translates aspect_ratio into the model's native size spec (preset enum,
@@ -473,7 +473,7 @@ def _build_fal_payload(
     if aspect not in sizes:
         aspect = DEFAULT_ASPECT_RATIO
 
-    payload: Dict[str, Any] = dict(meta.get("defaults", {}))
+    payload: dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
 
     if size_style in {"image_size_preset", "gpt_literal"}:
@@ -498,7 +498,7 @@ def _build_fal_payload(
 # ---------------------------------------------------------------------------
 # Upscaler
 # ---------------------------------------------------------------------------
-def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, Any]]:
+def _upscale_image(image_url: str, original_prompt: str) -> Optional[dict[str, Any]]:
     """Upscale an image using FAL.ai's Clarity Upscaler.
 
     Returns upscaled image dict, or None on failure (caller falls back to
@@ -602,7 +602,7 @@ def image_generate_tool(
             )
             aspect_lc = DEFAULT_ASPECT_RATIO
 
-        overrides: Dict[str, Any] = {}
+        overrides: dict[str, Any] = {}
         if num_inference_steps is not None:
             overrides["num_inference_steps"] = num_inference_steps
         if guidance_scale is not None:

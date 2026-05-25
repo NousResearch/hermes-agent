@@ -137,7 +137,7 @@ def _clone_all_copytree_ignore(source_dir: Path):
     source_resolved = source_dir.resolve()
     is_default_source = source_resolved == _get_default_hermes_home().resolve()
 
-    def _ignore(directory: str, names: List[str]) -> List[str]:
+    def _ignore(directory: str, names: list[str]) -> list[str]:
         ignored: list[str] = []
         for entry in names:
             # Universal exclusions at any depth.
@@ -573,7 +573,7 @@ def write_profile_meta(
 # CRUD operations
 # ---------------------------------------------------------------------------
 
-def list_profiles() -> List[ProfileInfo]:
+def list_profiles() -> list[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
     wrapper_dir = _get_wrapper_dir()
@@ -1288,7 +1288,7 @@ def export_profile(name: str, output_path: str) -> Path:
         return Path(result)
 
 
-def _normalize_profile_archive_parts(member_name: str) -> List[str]:
+def _normalize_profile_archive_parts(member_name: str) -> list[str]:
     """Return safe path parts for a profile archive member."""
     normalized_name = member_name.replace("\\", "/")
     posix_path = PurePosixPath(normalized_name)

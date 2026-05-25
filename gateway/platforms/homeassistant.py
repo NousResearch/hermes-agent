@@ -80,14 +80,14 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._hass_token: str = token
 
         # Event filtering
-        self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
-        self._watch_entities: Set[str] = set(extra.get("watch_entities", []))
-        self._ignore_entities: Set[str] = set(extra.get("ignore_entities", []))
+        self._watch_domains: set[str] = set(extra.get("watch_domains", []))
+        self._watch_entities: set[str] = set(extra.get("watch_entities", []))
+        self._ignore_entities: set[str] = set(extra.get("ignore_entities", []))
         self._watch_all: bool = bool(extra.get("watch_all", False))
         self._cooldown_seconds: int = int(extra.get("cooldown_seconds", 30))
 
         # Cooldown tracking: entity_id -> last_event_timestamp
-        self._last_event_time: Dict[str, float] = {}
+        self._last_event_time: dict[str, float] = {}
 
     def _next_id(self) -> int:
         """Return the next WebSocket message ID."""
@@ -259,7 +259,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             elif ws_msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 break
 
-    async def _handle_ha_event(self, event: Dict[str, Any]) -> None:
+    async def _handle_ha_event(self, event: dict[str, Any]) -> None:
         """Process a state_changed event from Home Assistant."""
         event_data = event.get("data", {})
         entity_id: str = event_data.get("entity_id", "")
@@ -320,8 +320,8 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     @staticmethod
     def _format_state_change(
         entity_id: str,
-        old_state: Dict[str, Any],
-        new_state: Dict[str, Any],
+        old_state: dict[str, Any],
+        new_state: dict[str, Any],
     ) -> Optional[str]:
         """Convert a state_changed event into a human-readable description."""
         if not new_state:
@@ -388,7 +388,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a notification via HA REST API (persistent_notification.create).
 
@@ -440,7 +440,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """No typing indicator for Home Assistant."""
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about the HA event channel."""
         return {
             "name": "Home Assistant Events",

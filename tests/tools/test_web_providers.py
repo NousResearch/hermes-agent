@@ -56,7 +56,7 @@ class TestWebProviderABCs:
             def supports_search(self) -> bool:
                 return True
 
-            def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+            def search(self, query: str, limit: int = 5) -> dict[str, Any]:
                 return {"success": True, "data": {"web": []}}
 
         d = Dummy()
@@ -92,13 +92,13 @@ class TestWebProviderABCs:
             def supports_crawl(self) -> bool:
                 return True
 
-            def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+            def search(self, query: str, limit: int = 5) -> dict[str, Any]:
                 return {"success": True, "data": {"web": []}}
 
-            def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+            def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
                 return [{"url": urls[0], "content": "x"}]
 
-            def crawl(self, url: str, **kwargs: Any) -> Dict[str, Any]:
+            def crawl(self, url: str, **kwargs: Any) -> dict[str, Any]:
                 return {"results": [{"url": url, "content": "x"}]}
 
         d = Dummy()
@@ -127,7 +127,7 @@ class TestWebProviderABCs:
             def supports_search(self) -> bool:
                 return True
 
-            def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+            def search(self, query: str, limit: int = 5) -> dict[str, Any]:
                 return {"success": True, "data": {"web": []}}
 
         # Should instantiate fine — extract/crawl have default

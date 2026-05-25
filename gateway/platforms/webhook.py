@@ -105,10 +105,10 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: str = config.extra.get("host", DEFAULT_HOST)
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
-        self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
-        self._dynamic_routes: Dict[str, dict] = {}
+        self._static_routes: dict[str, dict] = config.extra.get("routes", {})
+        self._dynamic_routes: dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
-        self._routes: Dict[str, dict] = dict(self._static_routes)
+        self._routes: dict[str, dict] = dict(self._static_routes)
         self._runner = None
 
         # Delivery info keyed by session chat_id.
@@ -120,19 +120,19 @@ class WebhookAdapter(BasePlatformAdapter):
         # context-pressure warnings) will consume the entry before the
         # final response arrives, causing the response to silently fall
         # back to the "log" deliver type.
-        self._delivery_info: Dict[str, dict] = {}
-        self._delivery_info_created: Dict[str, float] = {}
+        self._delivery_info: dict[str, dict] = {}
+        self._delivery_info_created: dict[str, float] = {}
 
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
 
         # Idempotency: TTL cache of recently processed delivery IDs.
         # Prevents duplicate agent runs when webhook providers retry.
-        self._seen_deliveries: Dict[str, float] = {}
+        self._seen_deliveries: dict[str, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
 
         # Rate limiting: per-route timestamps in a fixed window.
-        self._rate_counts: Dict[str, List[float]] = {}
+        self._rate_counts: dict[str, list[float]] = {}
         self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
 
         # Body size limit (auth-before-body pattern)
@@ -224,7 +224,7 @@ class WebhookAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Deliver the agent's response to the configured destination.
 
@@ -281,7 +281,7 @@ class WebhookAdapter(BasePlatformAdapter):
             self._delivery_info.pop(k, None)
             self._delivery_info_created.pop(k, None)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
     # ------------------------------------------------------------------
@@ -314,7 +314,7 @@ class WebhookAdapter(BasePlatformAdapter):
             # Reject any dynamic route whose effective secret is empty —
             # an empty secret would cause _handle_webhook to skip HMAC
             # validation entirely, letting unauthenticated callers in.
-            new_dynamic: Dict[str, dict] = {}
+            new_dynamic: dict[str, dict] = {}
             for k, v in data.items():
                 if k in self._static_routes:
                     continue
@@ -785,7 +785,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self, extra: dict, payload: dict
     ) -> dict:
         """Render delivery_extra template values with payload data."""
-        rendered: Dict[str, Any] = {}
+        rendered: dict[str, Any] = {}
         for key, value in extra.items():
             if isinstance(value, str):
                 rendered[key] = self._render_prompt(value, payload, "", "")

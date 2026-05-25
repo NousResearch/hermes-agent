@@ -61,7 +61,7 @@ _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 # ---------------------------------------------------------------------------
 
 
-def _load_xai_web_config() -> Dict[str, Any]:
+def _load_xai_web_config() -> dict[str, Any]:
     """Read ``web.xai`` from config.yaml (returns {} on miss)."""
     try:
         from hermes_cli.config import load_config
@@ -75,11 +75,11 @@ def _load_xai_web_config() -> Dict[str, Any]:
         return {}
 
 
-def _coerce_domain_list(value: Any) -> List[str]:
+def _coerce_domain_list(value: Any) -> list[str]:
     """Coerce a config value to a clean list of <=5 domain strings."""
     if not isinstance(value, list):
         return []
-    cleaned: List[str] = []
+    cleaned: list[str] = []
     for item in value:
         if isinstance(item, str) and item.strip():
             cleaned.append(item.strip())
@@ -148,7 +148,7 @@ class XAIWebSearchProvider(WebSearchProvider):
 
     # -- Search -----------------------------------------------------------
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute a Grok-backed web search.
 
         Returns ``{"success": True, "data": {"web": [{title, url, description, position}, ...]}}``
@@ -206,7 +206,7 @@ class XAIWebSearchProvider(WebSearchProvider):
                 ),
             }
 
-        web_search_tool: Dict[str, Any] = {"type": "web_search"}
+        web_search_tool: dict[str, Any] = {"type": "web_search"}
         if allowed:
             web_search_tool["filters"] = {"allowed_domains": allowed}
         elif excluded:
@@ -214,7 +214,7 @@ class XAIWebSearchProvider(WebSearchProvider):
 
         prompt = self._build_prompt(query, limit)
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model,
             "input": [{"role": "user", "content": prompt}],
             "tools": [web_search_tool],
@@ -363,10 +363,10 @@ class XAIWebSearchProvider(WebSearchProvider):
     @classmethod
     def _extract_results(
         cls,
-        response_data: Dict[str, Any],
+        response_data: dict[str, Any],
         *,
         limit: int,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Pull a ``[{title, url, description, position}, ...]`` list out of a
         Responses-API reply.
 
@@ -419,11 +419,11 @@ class XAIWebSearchProvider(WebSearchProvider):
 
     @staticmethod
     def _collect_output_text(
-        response_data: Dict[str, Any],
-    ) -> tuple[List[str], List[Dict[str, Any]]]:
+        response_data: dict[str, Any],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
         """Return (text_blocks, annotations) extracted from ``response.output``."""
-        text_blocks: List[str] = []
-        annotations: List[Dict[str, Any]] = []
+        text_blocks: list[str] = []
+        annotations: list[dict[str, Any]] = []
         output = response_data.get("output")
         if not isinstance(output, list):
             return text_blocks, annotations
@@ -452,7 +452,7 @@ class XAIWebSearchProvider(WebSearchProvider):
         text: str,
         *,
         limit: int,
-    ) -> Optional[List[Dict[str, Any]]]:
+    ) -> Optional[list[dict[str, Any]]]:
         """Parse a JSON object with a ``results`` array out of ``text``.
 
         Returns the normalized result list on success, ``None`` when the
@@ -476,7 +476,7 @@ class XAIWebSearchProvider(WebSearchProvider):
             results = parsed.get("results")
             if not isinstance(results, list):
                 continue
-            normalized: List[Dict[str, Any]] = []
+            normalized: list[dict[str, Any]] = []
             for row in results[:limit]:
                 if not isinstance(row, dict):
                     continue
@@ -500,11 +500,11 @@ class XAIWebSearchProvider(WebSearchProvider):
 
     @staticmethod
     def _results_from_annotations(
-        annotations: List[Dict[str, Any]],
+        annotations: list[dict[str, Any]],
         joined_text: str,
         *,
         limit: int,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Best-effort fallback when JSON parsing fails.
 
         Uses each ``url_citation`` annotation's ``url`` (the citation
@@ -512,7 +512,7 @@ class XAIWebSearchProvider(WebSearchProvider):
         slices ~200 characters of surrounding text as the description.
         """
         seen: set[str] = set()
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for ann in annotations:
             if ann.get("type") != "url_citation":
                 continue
@@ -544,7 +544,7 @@ class XAIWebSearchProvider(WebSearchProvider):
 
     # -- Setup picker -----------------------------------------------------
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         # Auth resolution is delegated to the shared ``xai_grok`` post_setup
         # hook (same one image_gen.xai and tts.xai use) so users see the
         # familiar OAuth-or-API-key prompt for every xAI service.

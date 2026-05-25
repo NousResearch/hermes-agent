@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 #       "handler":    Callable[[str], Awaitable[Optional[str]]],
 #       "created_at": float,                     # time.time()
 #   }
-_pending: Dict[str, Dict[str, Any]] = {}
+_pending: dict[str, dict[str, Any]] = {}
 _lock = threading.RLock()
 
 # Default timeout — a pending confirm older than this is discarded when
@@ -68,7 +68,7 @@ def register(
         }
 
 
-def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
+def get_pending(session_key: str) -> Optional[dict[str, Any]]:
     """Return the pending confirm dict for a session, or None."""
     with _lock:
         entry = _pending.get(session_key)

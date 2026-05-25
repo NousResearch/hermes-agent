@@ -24,7 +24,7 @@ PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
-def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
+def get_disabled_skills(config: dict, platform: Optional[str] = None) -> set[str]:
     """Return disabled skill names. Platform-specific list falls back to global."""
     skills_cfg = config.get("skills", {})
     global_disabled = set(skills_cfg.get("disabled", []))
@@ -36,7 +36,7 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
     return set(platform_disabled)
 
 
-def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
+def save_disabled_skills(config: dict, disabled: set[str], platform: Optional[str] = None):
     """Persist disabled skill names to config."""
     config.setdefault("skills", {})
     if platform is None:
@@ -49,7 +49,7 @@ def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[st
 
 # ─── Skill Discovery ─────────────────────────────────────────────────────────
 
-def _list_all_skills() -> List[dict]:
+def _list_all_skills() -> list[dict]:
     """Return all installed skills (ignoring disabled state)."""
     try:
         from tools.skills_tool import _find_all_skills
@@ -58,7 +58,7 @@ def _list_all_skills() -> List[dict]:
         return []
 
 
-def _get_categories(skills: List[dict]) -> List[str]:
+def _get_categories(skills: list[dict]) -> list[str]:
     """Return sorted unique category names (None -> 'uncategorized')."""
     return sorted({s["category"] or "uncategorized" for s in skills})
 
@@ -91,7 +91,7 @@ def _select_platform() -> Optional[str]:
 
 # ─── Category Toggle ─────────────────────────────────────────────────────────
 
-def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
+def _toggle_by_category(skills: list[dict], disabled: set[str]) -> set[str]:
     """Toggle all skills in a category at once."""
     from hermes_cli.curses_ui import curses_checklist
 

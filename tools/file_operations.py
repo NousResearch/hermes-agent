@@ -62,7 +62,7 @@ def _strip_terminal_fence_leaks(text: str) -> str:
     if not text:
         return text
 
-    cleaned_lines: List[str] = []
+    cleaned_lines: list[str] = []
     for line in text.splitlines(keepends=True):
         had_terminal_wrapper = "__HERMES_FENCE_" in line or "\x1b]" in line
         cleaned = _OSC_SEQUENCE_RE.sub("", line)
@@ -108,7 +108,7 @@ class ReadResult:
     mime_type: Optional[str] = None
     dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
     error: Optional[str] = None
-    similar_files: List[str] = field(default_factory=list)
+    similar_files: list[str] = field(default_factory=list)
     
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None and v != []}
@@ -119,7 +119,7 @@ class WriteResult:
     """Result from writing a file."""
     bytes_written: int = 0
     dirs_created: bool = False
-    lint: Optional[Dict[str, Any]] = None
+    lint: Optional[dict[str, Any]] = None
     # Semantic diagnostics from the LSP layer, when applicable.  Kept in
     # its own field (not folded into ``lint``) so the model and any
     # downstream parsers can read syntax errors and semantic errors as
@@ -139,10 +139,10 @@ class PatchResult:
     """Result from patching a file."""
     success: bool = False
     diff: str = ""
-    files_modified: List[str] = field(default_factory=list)
-    files_created: List[str] = field(default_factory=list)
-    files_deleted: List[str] = field(default_factory=list)
-    lint: Optional[Dict[str, Any]] = None
+    files_modified: list[str] = field(default_factory=list)
+    files_created: list[str] = field(default_factory=list)
+    files_deleted: list[str] = field(default_factory=list)
+    lint: Optional[dict[str, Any]] = None
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
@@ -178,9 +178,9 @@ class SearchMatch:
 @dataclass
 class SearchResult:
     """Result from searching."""
-    matches: List[SearchMatch] = field(default_factory=list)
-    files: List[str] = field(default_factory=list)
-    counts: Dict[str, int] = field(default_factory=dict)
+    matches: list[SearchMatch] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
     total_count: int = 0
     truncated: bool = False
     error: Optional[str] = None
@@ -579,7 +579,7 @@ class ShellFileOperations(FileOperations):
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
 
         # Cache for command availability checks
-        self._command_cache: Dict[str, bool] = {}
+        self._command_cache: dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:

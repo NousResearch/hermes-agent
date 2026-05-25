@@ -443,9 +443,9 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._active = False
         # Multi-container support
         self._enable_custom_containers = False
-        self._custom_containers: List[str] = []
+        self._custom_containers: list[str] = []
         self._custom_container_instructions = ""
-        self._allowed_containers: List[str] = []
+        self._allowed_containers: list[str] = []
 
     @property
     def name(self) -> str:
@@ -592,7 +592,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._sync_thread = threading.Thread(target=_run, daemon=True, name="supermemory-sync")
         self._sync_thread.start()
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         if not self._active or not self._write_enabled or not self._client or not self._session_id:
             return
         cleaned = []
@@ -663,7 +663,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             )
         return sanitized
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         if not self._enable_custom_containers:
             return [STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA]
 
@@ -773,7 +773,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         except Exception as exc:
             return tool_error(f"Profile failed: {exc}")
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         if not self._active or not self._client:
             return tool_error("Supermemory is not configured")
         if tool_name == "supermemory_store":

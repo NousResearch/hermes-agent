@@ -54,7 +54,7 @@ def _ra():
 
 
 
-def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
+def convert_to_trajectory_format(agent, messages: list[dict[str, Any]], user_query: str, completed: bool) -> list[dict[str, Any]]:
     """
     Convert internal message format to trajectory format for saving.
     
@@ -335,7 +335,7 @@ def sanitize_tool_call_arguments(
 
 
 
-def repair_message_sequence(agent, messages: List[Dict]) -> int:
+def repair_message_sequence(agent, messages: list[dict]) -> int:
     """Collapse malformed role-alternation left in the live history.
 
     Providers (OpenAI, OpenRouter, Anthropic) expect strict alternation:
@@ -374,7 +374,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
     # on each assistant message.
     known_tool_ids: set = set()
-    filtered: List[Dict] = []
+    filtered: list[dict] = []
     for msg in messages:
         if not isinstance(msg, dict):
             filtered.append(msg)
@@ -403,7 +403,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
 
     # Pass 2: merge consecutive user messages. Preserves all user input
     # so nothing the user typed is lost.
-    merged: List[Dict] = []
+    merged: list[dict] = []
     for msg in filtered:
         if (
             merged
@@ -539,7 +539,7 @@ def recover_with_credential_pool(
     status_code: Optional[int],
     has_retried_429: bool,
     classified_reason: Optional[FailoverReason] = None,
-    error_context: Optional[Dict[str, Any]] = None,
+    error_context: Optional[dict[str, Any]] = None,
 ) -> tuple[bool, bool]:
     """Attempt credential recovery via pool rotation.
 
@@ -755,8 +755,8 @@ def try_recover_primary_transport(
 
 
 def drop_thinking_only_and_merge_users(
-    messages: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
 
     Runs on the per-call ``api_messages`` copy only. The stored
@@ -783,7 +783,7 @@ def drop_thinking_only_and_merge_users(
         return messages
 
     # Pass 2: merge any newly-adjacent user messages.
-    merged: List[Dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []
     merges = 0
     for m in kept:
         prev = merged[-1] if merged else None
@@ -815,7 +815,7 @@ def drop_thinking_only_and_merge_users(
                 else:
                     prev_copy["content"] = list(prev_content)
             elif isinstance(prev_content, str) and isinstance(cur_content, list):
-                new_blocks: List[Dict[str, Any]] = []
+                new_blocks: list[dict[str, Any]] = []
                 if prev_content:
                     new_blocks.append({"type": "text", "text": prev_content})
                 new_blocks.extend(cur_content)
@@ -1020,7 +1020,7 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
 
 def dump_api_request_debug(
     agent,
-    api_kwargs: Dict[str, Any],
+    api_kwargs: dict[str, Any],
     *,
     reason: str,
     error: Optional[Exception] = None,
@@ -1043,7 +1043,7 @@ def dump_api_request_debug(
         except Exception as e:
             _ra().logger.debug("Could not extract API key for debug dump: %s", e)
 
-        dump_payload: Dict[str, Any] = {
+        dump_payload: dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
             "session_id": agent.session_id,
             "reason": reason,
@@ -1059,7 +1059,7 @@ def dump_api_request_debug(
         }
 
         if error is not None:
-            error_info: Dict[str, Any] = {
+            error_info: dict[str, Any] = {
                 "type": type(error).__name__,
                 "message": str(error),
             }
@@ -1685,7 +1685,7 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
 
 
-def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def sanitize_api_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
     Runs unconditionally — not gated on whether the context compressor
@@ -1735,7 +1735,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     # 2. Inject stub results for calls whose result was dropped
     missing_results = surviving_call_ids - result_call_ids
     if missing_results:
-        patched: List[Dict[str, Any]] = []
+        patched: list[dict[str, Any]] = []
         for msg in messages:
             patched.append(msg)
             if msg.get("role") == "assistant":
@@ -1761,7 +1761,7 @@ def looks_like_codex_intermediate_ack(
     agent,
     user_message: str,
     assistant_content: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn."""
     if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
@@ -2018,9 +2018,9 @@ def cleanup_dead_connections(agent) -> bool:
 
 
 
-def extract_api_error_context(error: Exception) -> Dict[str, Any]:
+def extract_api_error_context(error: Exception) -> dict[str, Any]:
     """Extract structured rate-limit details from provider errors."""
-    context: Dict[str, Any] = {}
+    context: dict[str, Any] = {}
 
     body = getattr(error, "body", None)
     payload = None

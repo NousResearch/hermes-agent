@@ -184,7 +184,7 @@ def _is_transient_network_error(exc: BaseException) -> bool:
 
 
 def _gateway_loop_exception_handler(
-    loop: "asyncio.AbstractEventLoop", context: Dict[str, Any]
+    loop: "asyncio.AbstractEventLoop", context: dict[str, Any]
 ) -> None:
     """Loop-level safety net for transient network errors.
 
@@ -507,7 +507,7 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
 )
 
 
-def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[str, Any]:
+def _build_replay_entry(role: str, content: Any, msg: dict[str, Any]) -> dict[str, Any]:
     """Build a replay entry for a non-tool-calling message, preserving the
     assistant fields the agent's API builders rely on for multi-turn fidelity.
 
@@ -524,7 +524,7 @@ def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[st
     all on the next turn, which can cause HTTP 400 from strict thinking
     providers.
     """
-    entry: Dict[str, Any] = {"role": role, "content": content}
+    entry: dict[str, Any] = {"role": role, "content": content}
     if role == "assistant":
         for _rkey in _ASSISTANT_REPLAY_FIELDS:
             if _rkey not in msg:
@@ -560,10 +560,10 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
 
 
 def _build_gateway_agent_history(
-    history: List[Dict[str, Any]],
+    history: list[dict[str, Any]],
     *,
     channel_prompt: Optional[str] = None,
-) -> tuple[List[Dict[str, Any]], Optional[str]]:
+) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
     Observed Telegram group rows are returned as API-only context for the
@@ -573,8 +573,8 @@ def _build_gateway_agent_history(
     the current message behind ``history_offset`` during persistence.
     """
 
-    agent_history: List[Dict[str, Any]] = []
-    observed_group_context: List[str] = []
+    agent_history: list[dict[str, Any]] = []
+    observed_group_context: list[str] = []
     separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
 
     for msg in history or []:
@@ -643,7 +643,7 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
     return message
 
 
-def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
+def _last_transcript_timestamp(history: Optional[list[dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable transcript row, if any.
 
     Skips metadata-only rows (``session_meta``, system injections) that are
@@ -1633,7 +1633,7 @@ class GatewayRunner:
 
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
-    _running_agents_ts: Dict[str, float] = {}
+    _running_agents_ts: dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -1644,13 +1644,13 @@ class GatewayRunner:
     _restart_detached: bool = False
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
-    _session_model_overrides: Dict[str, Dict[str, str]] = {}
-    _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _session_model_overrides: dict[str, dict[str, str]] = {}
+    _session_reasoning_overrides: dict[str, dict[str, Any]] = {}
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
         self.config = config or load_gateway_config()
-        self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        self.adapters: dict[Platform, BasePlatformAdapter] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -1690,9 +1690,9 @@ class GatewayRunner:
         
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
-        self._running_agents: Dict[str, Any] = {}
-        self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
-        self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._running_agents: dict[str, Any] = {}
+        self._running_agents_ts: dict[str, float] = {}  # start timestamp per session
+        self._pending_messages: dict[str, str] = {}  # Queued messages during interrupt
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -1702,10 +1702,10 @@ class GatewayRunner:
         # are promoted one-at-a-time after each run's drain.  Cleared on
         # /new and /reset.  /model and other mid-session operations
         # preserve the queue.
-        self._queued_events: Dict[str, List[MessageEvent]] = {}
-        self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
-        self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
-        self._session_run_generation: Dict[str, int] = {}
+        self._queued_events: dict[str, list[MessageEvent]] = {}
+        self._pending_native_image_paths_by_session: dict[str, list[str]] = {}
+        self._busy_ack_ts: dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
+        self._session_run_generation: dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
@@ -1730,25 +1730,25 @@ class GatewayRunner:
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        self._session_model_overrides: dict[str, dict[str, str]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
-        self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        self._session_reasoning_overrides: dict[str, dict[str, Any]] = {}
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
-        self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+        self._pending_approvals: dict[str, dict[str, Any]] = {}
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
-        self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
+        self._failed_platforms: dict[Platform, dict[str, Any]] = {}
 
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
-        self._update_prompt_pending: Dict[str, bool] = {}
+        self._update_prompt_pending: dict[str, bool] = {}
 
         # Slash-confirm state lives in tools.slash_confirm (module-level),
         # so platform adapters can resolve callbacks without a backref to
@@ -1831,11 +1831,11 @@ class GatewayRunner:
         self.hooks = HookRegistry()
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
-        self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        self._voice_mode: dict[str, str] = self._load_voice_modes()
         # Recent voice transcripts per (guild,user) for duplicate suppression.
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
-        self._recent_voice_transcripts: Dict[tuple[int, int], List[tuple[float, str]]] = {}
+        self._recent_voice_transcripts: dict[tuple[int, int], list[tuple[float, str]]] = {}
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
@@ -1890,7 +1890,7 @@ class GatewayRunner:
             return
 
         raw_volumes = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
-        volumes: List[str] = []
+        volumes: list[str] = []
         if raw_volumes:
             try:
                 parsed = json.loads(raw_volumes)
@@ -1939,7 +1939,7 @@ class GatewayRunner:
         """Return a platform-namespaced key for voice mode state."""
         return f"{platform.value}:{chat_id}"
 
-    def _load_voice_modes(self) -> Dict[str, str]:
+    def _load_voice_modes(self) -> dict[str, str]:
         try:
             data = json.loads(self._VOICE_MODE_PATH.read_text())
         except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -2753,7 +2753,7 @@ class GatewayRunner:
         return True
 
     @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
+    def _load_prefill_messages() -> list[dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
         
         Checks HERMES_PREFILL_MESSAGES_FILE env var first, then falls back to
@@ -3006,7 +3006,7 @@ class GatewayRunner:
             pass
         return None
 
-    def _snapshot_running_agents(self) -> Dict[str, Any]:
+    def _snapshot_running_agents(self) -> dict[str, Any]:
         return {
             session_key: agent
             for session_key, agent in self._running_agents.items()
@@ -3229,7 +3229,7 @@ class GatewayRunner:
 
         return True
 
-    async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
+    async def _drain_active_agents(self, timeout: float) -> tuple[dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
         last_active_count = self._running_agent_count()
         last_status_at = 0.0
@@ -3416,7 +3416,7 @@ class GatewayRunner:
                     e,
                 )
 
-    def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
+    def _finalize_shutdown_agents(self, active_agents: dict[str, Any]) -> None:
         for agent in active_agents.values():
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -4351,7 +4351,7 @@ class GatewayRunner:
                 logger.debug("Handoff watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
-    async def _process_handoff(self, row: Dict[str, Any]) -> None:
+    async def _process_handoff(self, row: dict[str, Any]) -> None:
         """Execute one handoff row. Raises on failure (caller marks failed)."""
         from gateway.config import Platform
         from gateway.session import SessionSource, build_session_key
@@ -4503,7 +4503,7 @@ class GatewayRunner:
         # Send the agent's reply to the destination. Route to the new
         # thread if we created one; otherwise the configured home channel
         # (which may itself carry a thread_id).
-        send_metadata: Dict[str, Any] = {}
+        send_metadata: dict[str, Any] = {}
         if effective_thread_id:
             send_metadata["thread_id"] = effective_thread_id
         try:
@@ -7729,7 +7729,7 @@ class GatewayRunner:
         *,
         event: MessageEvent,
         source: SessionSource,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
     ) -> Optional[str]:
         """Prepare inbound event text for the agent.
 
@@ -7961,7 +7961,7 @@ class GatewayRunner:
 
         return message_text
 
-    def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
+    def _consume_pending_native_image_paths(self, session_key: str) -> list[str]:
         pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
         if not pending_native:
             return []
@@ -11305,7 +11305,7 @@ class GatewayRunner:
                     thread_meta["notify"] = True
                 else:
                     thread_meta = {"notify": True}
-                send_kwargs: Dict[str, Any] = {
+                send_kwargs: dict[str, Any] = {
                     "chat_id": event.source.chat_id,
                     "audio_path": actual_path,
                     "reply_to": reply_anchor,
@@ -11537,8 +11537,8 @@ class GatewayRunner:
         source: "SessionSource",
         task_id: str,
         event_message_id: Optional[str] = None,
-        media_urls: Optional[List[str]] = None,
-        media_types: Optional[List[str]] = None,
+        media_urls: Optional[list[str]] = None,
+        media_types: Optional[list[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
@@ -13542,7 +13542,7 @@ class GatewayRunner:
         # Text fallback — return the prompt message as the direct reply.
         return message
 
-    def _read_user_config(self) -> Dict[str, Any]:
+    def _read_user_config(self) -> dict[str, Any]:
         """Read the user's raw config.yaml (cached) for gate lookups.
 
         Used by slash-confirm gates that must reflect on-disk state changes
@@ -13559,12 +13559,12 @@ class GatewayRunner:
         self,
         source,
         reply_to_message_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         thread_id = getattr(source, "thread_id", None)
         if thread_id is None:
             return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
+        metadata: dict[str, Any] = {"thread_id": thread_id}
         if (
             getattr(source, "platform", None) == Platform.TELEGRAM
             and getattr(source, "chat_type", None) == "dm"
@@ -14386,7 +14386,7 @@ class GatewayRunner:
     async def _enrich_message_with_vision(
         self,
         user_text: str,
-        image_paths: List[str],
+        image_paths: list[str],
     ) -> str:
         """
         Auto-analyze user-attached images with the vision tool and prepend
@@ -14455,7 +14455,7 @@ class GatewayRunner:
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
-        audio_paths: List[str],
+        audio_paths: list[str],
     ) -> str:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -14857,7 +14857,7 @@ class GatewayRunner:
         schemas at construction time, so a registry generation change must
         rebuild the agent before the next turn.
         """
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
             section_val = cfg.get(section)
@@ -15205,7 +15205,7 @@ class GatewayRunner:
         # temporarily over cap; it will re-check on the next insert,
         # after active turns have finished.
         excess = max(0, len(_cache) - _AGENT_CACHE_MAX_SIZE)
-        evict_plan: List[tuple] = []  # [(key, agent), ...]
+        evict_plan: list[tuple] = []  # [(key, agent), ...]
         if excess > 0:
             ordered_keys = list(_cache.keys())
             for key in ordered_keys[:excess]:
@@ -15255,7 +15255,7 @@ class GatewayRunner:
         if _cache is None or _lock is None:
             return 0
         now = time.time()
-        to_evict: List[tuple] = []
+        to_evict: list[tuple] = []
         running_ids = {
             id(a)
             for a in getattr(self, "_running_agents", {}).values()
@@ -15311,13 +15311,13 @@ class GatewayRunner:
         self,
         message: str,
         context_prompt: str,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         source: "SessionSource",
         session_id: str,
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
 
@@ -15367,7 +15367,7 @@ class GatewayRunner:
         # We always include the current message.  For history, send a
         # compact version (text-only user/assistant turns) — the remote
         # handles tool replay and system prompts.
-        api_messages: List[Dict[str, str]] = []
+        api_messages: list[dict[str, str]] = []
 
         if context_prompt:
             api_messages.append({"role": "system", "content": context_prompt})
@@ -15381,7 +15381,7 @@ class GatewayRunner:
         api_messages.append({"role": "user", "content": message})
 
         # HTTP headers ---------------------------------------------------
-        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {"Content-Type": "application/json"}
         if proxy_key:
             headers["Authorization"] = f"Bearer {proxy_key}"
         if session_id:
@@ -15412,7 +15412,7 @@ class GatewayRunner:
             else bool(_plat_streaming)
         )
 
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _thread_metadata: Optional[dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
         if _streaming_enabled:
             try:
@@ -15597,7 +15597,7 @@ class GatewayRunner:
         self,
         message: str,
         context_prompt: str,
-        history: List[Dict[str, Any]],
+        history: list[dict[str, Any]],
         source: SessionSource,
         session_id: str,
         session_key: str = None,
@@ -15605,7 +15605,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Run the agent with the given message and context.
         
@@ -15724,7 +15724,7 @@ class GatewayRunner:
             # Adapter doesn't support deletion — silently disable.
             _cleanup_progress = False
             _cleanup_adapter = None
-        _cleanup_msg_ids: List[str] = []
+        _cleanup_msg_ids: list[str] = []
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
@@ -16238,7 +16238,7 @@ class GatewayRunner:
             # sent via the reply API with reply_in_thread=true. Status/interim,
             # approval, and stream-consumer paths usually only receive metadata,
             # so carry the triggering message id as a Feishu-specific fallback.
-            _status_thread_metadata: Optional[Dict[str, Any]] = {
+            _status_thread_metadata: Optional[dict[str, Any]] = {
                 "thread_id": _progress_thread_id,
                 "reply_to_message_id": event_message_id,
             }

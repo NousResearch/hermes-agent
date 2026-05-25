@@ -96,7 +96,7 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 # Skills scanning
 # =========================================================================
 
-def get_available_skills() -> Dict[str, List[str]]:
+def get_available_skills() -> dict[str, list[str]]:
     """Return skills grouped by category, filtered by platform and disabled state.
 
     Delegates to ``_find_all_skills()`` from ``tools/skills_tool`` which already
@@ -109,7 +109,7 @@ def get_available_skills() -> Dict[str, List[str]]:
     except Exception:
         return {}
 
-    skills_by_category: Dict[str, List[str]] = {}
+    skills_by_category: dict[str, list[str]] = {}
     for skill in all_skills:
         category = skill.get("category") or "general"
         skills_by_category.setdefault(category, []).append(skill["name"])
@@ -448,8 +448,8 @@ def _display_toolset_name(toolset_name: str) -> str:
 
 
 def build_welcome_banner(console: Console, model: str, cwd: str,
-                         tools: List[dict] = None,
-                         enabled_toolsets: List[str] = None,
+                         tools: list[dict] = None,
+                         enabled_toolsets: list[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
                          context_length: int = None):
@@ -522,7 +522,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     left_content = "\n".join(left_lines)
 
     right_lines = [f"[bold {accent}]Available Tools[/]"]
-    toolsets_dict: Dict[str, list] = {}
+    toolsets_dict: dict[str, list] = {}
 
     for tool in tools:
         tool_name = tool["function"]["name"]

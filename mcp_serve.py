@@ -146,7 +146,7 @@ def _extract_message_content(msg: dict) -> str:
     return str(content) if content else ""
 
 
-def _extract_attachments(msg: dict) -> List[dict]:
+def _extract_attachments(msg: dict) -> list[dict]:
     """Extract non-text attachments from a message.
 
     Finds: multi-part image/file content blocks, MEDIA: tags in text,
@@ -210,15 +210,15 @@ class EventBridge:
     """
 
     def __init__(self):
-        self._queue: List[QueueEvent] = []
+        self._queue: list[QueueEvent] = []
         self._cursor = 0
         self._lock = threading.Lock()
         self._new_event = threading.Event()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
+        self._last_poll_timestamps: dict[str, float] = {}  # session_key -> unix timestamp
         # In-memory approval tracking (populated from events)
-        self._pending_approvals: Dict[str, dict] = {}
+        self._pending_approvals: dict[str, dict] = {}
         # mtime cache — skip expensive work when files haven't changed
         self._sessions_json_mtime: float = 0.0
         self._state_db_mtime: float = 0.0
@@ -293,7 +293,7 @@ class EventBridge:
 
         return None
 
-    def list_pending_approvals(self) -> List[dict]:
+    def list_pending_approvals(self) -> list[dict]:
         """List approval requests observed during this bridge session."""
         with self._lock:
             return sorted(

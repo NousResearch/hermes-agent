@@ -155,7 +155,7 @@ class SmsAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         import aiohttp
 
@@ -206,7 +206,7 @@ class SmsAdapter(BasePlatformAdapter):
 
         return last_result
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
     # ------------------------------------------------------------------

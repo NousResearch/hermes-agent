@@ -45,7 +45,7 @@ from agent.browser_provider import BrowserProvider
 logger = logging.getLogger(__name__)
 
 
-_providers: Dict[str, BrowserProvider] = {}
+_providers: dict[str, BrowserProvider] = {}
 _lock = threading.Lock()
 
 
@@ -79,7 +79,7 @@ def register_provider(provider: BrowserProvider) -> None:
         )
 
 
-def list_providers() -> List[BrowserProvider]:
+def list_providers() -> list[BrowserProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
         items = list(_providers.values())

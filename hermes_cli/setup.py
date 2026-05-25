@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 _DOCS_BASE = "https://hermes-agent.nousresearch.com/docs"
 
 
-def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
+def _model_config_dict(config: dict[str, Any]) -> dict[str, Any]:
     current_model = config.get("model")
     if isinstance(current_model, dict):
         return dict(current_model)
@@ -43,12 +43,12 @@ def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def _get_credential_pool_strategies(config: Dict[str, Any]) -> Dict[str, str]:
+def _get_credential_pool_strategies(config: dict[str, Any]) -> dict[str, str]:
     strategies = config.get("credential_pool_strategies")
     return dict(strategies) if isinstance(strategies, dict) else {}
 
 
-def _set_credential_pool_strategy(config: Dict[str, Any], provider: str, strategy: str) -> None:
+def _set_credential_pool_strategy(config: dict[str, Any], provider: str, strategy: str) -> None:
     if not provider:
         return
     strategies = _get_credential_pool_strategies(config)
@@ -113,14 +113,14 @@ _DEFAULT_PROVIDER_MODELS = {
 }
 
 
-def _current_reasoning_effort(config: Dict[str, Any]) -> str:
+def _current_reasoning_effort(config: dict[str, Any]) -> str:
     agent_cfg = config.get("agent")
     if isinstance(agent_cfg, dict):
         return str(agent_cfg.get("reasoning_effort") or "").strip().lower()
     return ""
 
 
-def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
+def _set_reasoning_effort(config: dict[str, Any], effort: str) -> None:
     agent_cfg = config.get("agent")
     if not isinstance(agent_cfg, dict):
         agent_cfg = {}

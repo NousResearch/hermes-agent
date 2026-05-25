@@ -246,7 +246,7 @@ def _credentials_lock(timeout_seconds: float = LOCK_TIMEOUT_SECONDS):
 # Client ID resolution
 # =============================================================================
 
-_scraped_creds_cache: Dict[str, str] = {}
+_scraped_creds_cache: dict[str, str] = {}
 
 
 def _locate_gemini_cli_oauth_js() -> Optional[Path]:
@@ -301,7 +301,7 @@ def _locate_gemini_cli_oauth_js() -> Optional[Path]:
     return None
 
 
-def _scrape_client_credentials() -> Tuple[str, str]:
+def _scrape_client_credentials() -> tuple[str, str]:
     """Extract client_id + client_secret from the local gemini-cli install."""
     if _scraped_creds_cache.get("resolved"):
         return _scraped_creds_cache.get("client_id", ""), _scraped_creds_cache.get("client_secret", "")
@@ -377,7 +377,7 @@ def _require_client_id() -> str:
 # PKCE
 # =============================================================================
 
-def _generate_pkce_pair() -> Tuple[str, str]:
+def _generate_pkce_pair() -> tuple[str, str]:
     """Generate a (verifier, challenge) pair using S256."""
     verifier = secrets.token_urlsafe(64)
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -427,7 +427,7 @@ class GoogleCredentials:
     project_id: str = ""
     managed_project_id: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "refresh": RefreshParts(
                 refresh_token=self.refresh_token,
@@ -440,7 +440,7 @@ class GoogleCredentials:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "GoogleCredentials":
+    def from_dict(cls, data: dict[str, Any]) -> "GoogleCredentials":
         refresh_packed = str(data.get("refresh", "") or "")
         parts = RefreshParts.parse(refresh_packed)
         return cls(
@@ -536,7 +536,7 @@ def clear_credentials() -> None:
 # HTTP helpers
 # =============================================================================
 
-def _post_form(url: str, data: Dict[str, str], timeout: float) -> Dict[str, Any]:
+def _post_form(url: str, data: dict[str, str], timeout: float) -> dict[str, Any]:
     """POST x-www-form-urlencoded and return parsed JSON response."""
     body = urllib.parse.urlencode(data).encode("ascii")
     request = urllib.request.Request(
@@ -581,7 +581,7 @@ def exchange_code(
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
     timeout: float = TOKEN_REQUEST_TIMEOUT_SECONDS,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Exchange authorization code for access + refresh tokens."""
     cid = client_id if client_id is not None else _get_client_id()
     csecret = client_secret if client_secret is not None else _get_client_secret()
@@ -603,7 +603,7 @@ def refresh_access_token(
     client_id: Optional[str] = None,
     client_secret: Optional[str] = None,
     timeout: float = TOKEN_REQUEST_TIMEOUT_SECONDS,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Refresh the access token."""
     if not refresh_token:
         raise GoogleOAuthError(
@@ -642,7 +642,7 @@ def _fetch_user_email(access_token: str, timeout: float = TOKEN_REQUEST_TIMEOUT_
 # In-flight refresh deduplication
 # =============================================================================
 
-_refresh_inflight: Dict[str, threading.Event] = {}
+_refresh_inflight: dict[str, threading.Event] = {}
 _refresh_inflight_lock = threading.Lock()
 
 
@@ -811,7 +811,7 @@ h1 {{ color: #b42318; }} p {{ color: #555; }}
 """
 
 
-def _bind_callback_server(preferred_port: int = DEFAULT_REDIRECT_PORT) -> Tuple[http.server.HTTPServer, int]:
+def _bind_callback_server(preferred_port: int = DEFAULT_REDIRECT_PORT) -> tuple[http.server.HTTPServer, int]:
     try:
         server = http.server.HTTPServer((REDIRECT_HOST, preferred_port), _OAuthCallbackHandler)
         return server, preferred_port
@@ -1001,7 +1001,7 @@ def _prompt_paste_fallback() -> Optional[str]:
 
 
 def _persist_token_response(
-    token_resp: Dict[str, Any],
+    token_resp: dict[str, Any],
     *,
     project_id: str = "",
 ) -> GoogleCredentials:
@@ -1030,7 +1030,7 @@ def _persist_token_response(
 # Pool-compatible variant
 # =============================================================================
 
-def run_gemini_oauth_login_pure() -> Dict[str, Any]:
+def run_gemini_oauth_login_pure() -> dict[str, Any]:
     """Run the login flow and return a dict matching the credential pool shape."""
     creds = start_oauth_flow(force_relogin=True)
     return {

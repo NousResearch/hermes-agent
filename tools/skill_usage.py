@@ -121,7 +121,7 @@ def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
     return parsed
 
 
-def latest_activity_at(record: Dict[str, Any]) -> Optional[str]:
+def latest_activity_at(record: dict[str, Any]) -> Optional[str]:
     """Return the newest actual activity timestamp for a usage record.
 
     "Activity" means a skill was used, viewed, or patched. Creation time is
@@ -141,7 +141,7 @@ def latest_activity_at(record: Dict[str, Any]) -> Optional[str]:
     return latest_raw
 
 
-def activity_count(record: Dict[str, Any]) -> int:
+def activity_count(record: dict[str, Any]) -> int:
     """Return the total observed activity count across use/view/patch events."""
     total = 0
     for key in ("use_count", "view_count", "patch_count"):
@@ -156,7 +156,7 @@ def activity_count(record: Dict[str, Any]) -> int:
 # Provenance — which skills are agent-created (and thus eligible for curation)
 # ---------------------------------------------------------------------------
 
-def _read_bundled_manifest_names() -> Set[str]:
+def _read_bundled_manifest_names() -> set[str]:
     """Return the set of skill names that were seeded from the bundled repo.
 
     Reads ~/.hermes/skills/.bundled_manifest (format: "name:hash" per line).
@@ -165,7 +165,7 @@ def _read_bundled_manifest_names() -> Set[str]:
     manifest = _skills_dir() / ".bundled_manifest"
     if not manifest.exists():
         return set()
-    names: Set[str] = set()
+    names: set[str] = set()
     try:
         for line in manifest.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -179,7 +179,7 @@ def _read_bundled_manifest_names() -> Set[str]:
     return names
 
 
-def _read_hub_installed_names() -> Set[str]:
+def _read_hub_installed_names() -> set[str]:
     """Return the set of skill names installed via the Skills Hub.
 
     Reads ~/.hermes/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
@@ -217,7 +217,7 @@ def _read_hub_installed_names() -> Set[str]:
     return set()
 
 
-def list_agent_created_skill_names() -> List[str]:
+def list_agent_created_skill_names() -> list[str]:
     """Enumerate skills explicitly authored by the agent.
 
     The curator operates exclusively on this set. Skills are only eligible
@@ -234,7 +234,7 @@ def list_agent_created_skill_names() -> List[str]:
     off_limits = bundled | hub
     usage = load_usage()
 
-    names: List[str] = []
+    names: list[str] = []
     # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
     for skill_md in base.rglob("SKILL.md"):
         # Skip Hermes metadata, VCS, virtualenv/dependency, and cache dirs
@@ -253,7 +253,7 @@ def list_agent_created_skill_names() -> List[str]:
     return sorted(set(names))
 
 
-def list_archived_skill_names() -> List[str]:
+def list_archived_skill_names() -> list[str]:
     """Enumerate skills in ``~/.hermes/skills/.archive/``.
 
     Archive layout is flat (``.archive/<skill>/``) as set by ``archive_skill``,
@@ -304,7 +304,7 @@ def _is_curator_managed_record(record: Any) -> bool:
 # Sidecar I/O
 # ---------------------------------------------------------------------------
 
-def _empty_record() -> Dict[str, Any]:
+def _empty_record() -> dict[str, Any]:
     return {
         "created_by": None,
         "use_count": 0,
@@ -320,7 +320,7 @@ def _empty_record() -> Dict[str, Any]:
     }
 
 
-def load_usage() -> Dict[str, Dict[str, Any]]:
+def load_usage() -> dict[str, dict[str, Any]]:
     """Read the entire .usage.json map. Returns empty dict on missing/corrupt."""
     path = _usage_file()
     if not path.exists():
@@ -333,14 +333,14 @@ def load_usage() -> Dict[str, Dict[str, Any]]:
     if not isinstance(data, dict):
         return {}
     # Defensive: coerce any non-dict values to a fresh empty record
-    clean: Dict[str, Dict[str, Any]] = {}
+    clean: dict[str, dict[str, Any]] = {}
     for k, v in data.items():
         if isinstance(v, dict):
             clean[str(k)] = v
     return clean
 
 
-def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
+def save_usage(data: dict[str, dict[str, Any]]) -> None:
     """Write the usage map atomically. Best-effort — errors are logged, not raised."""
     path = _usage_file()
     try:
@@ -364,7 +364,7 @@ def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
         logger.debug("Failed to write %s: %s", path, e, exc_info=True)
 
 
-def get_record(skill_name: str) -> Dict[str, Any]:
+def get_record(skill_name: str) -> dict[str, Any]:
     """Return the record for *skill_name*, creating a fresh one if missing."""
     data = load_usage()
     rec = data.get(skill_name)
@@ -407,7 +407,7 @@ def _mutate(skill_name: str, mutator) -> None:
 
 def bump_view(skill_name: str) -> None:
     """Bump view_count and last_viewed_at. Called from skill_view()."""
-    def _apply(rec: Dict[str, Any]) -> None:
+    def _apply(rec: dict[str, Any]) -> None:
         rec["view_count"] = int(rec.get("view_count") or 0) + 1
         rec["last_viewed_at"] = _now_iso()
     _mutate(skill_name, _apply)
@@ -416,7 +416,7 @@ def bump_view(skill_name: str) -> None:
 def bump_use(skill_name: str) -> None:
     """Bump use_count and last_used_at. Called when a skill is actively used
     (e.g. loaded into the prompt path or referenced from an assistant turn)."""
-    def _apply(rec: Dict[str, Any]) -> None:
+    def _apply(rec: dict[str, Any]) -> None:
         rec["use_count"] = int(rec.get("use_count") or 0) + 1
         rec["last_used_at"] = _now_iso()
     _mutate(skill_name, _apply)
@@ -424,7 +424,7 @@ def bump_use(skill_name: str) -> None:
 
 def bump_patch(skill_name: str) -> None:
     """Bump patch_count and last_patched_at. Called from skill_manage (patch/edit)."""
-    def _apply(rec: Dict[str, Any]) -> None:
+    def _apply(rec: dict[str, Any]) -> None:
         rec["patch_count"] = int(rec.get("patch_count") or 0) + 1
         rec["last_patched_at"] = _now_iso()
     _mutate(skill_name, _apply)
@@ -436,7 +436,7 @@ def mark_agent_created(skill_name: str) -> None:
     Viewing or invoking a manually authored skill may still create telemetry,
     but only this explicit marker makes it eligible for automatic curation.
     """
-    def _apply(rec: Dict[str, Any]) -> None:
+    def _apply(rec: dict[str, Any]) -> None:
         rec["created_by"] = "agent"
     _mutate(skill_name, _apply)
 
@@ -446,7 +446,7 @@ def set_state(skill_name: str, state: str) -> None:
     if state not in _VALID_STATES:
         logger.debug("set_state: invalid state %r for %s", state, skill_name)
         return
-    def _apply(rec: Dict[str, Any]) -> None:
+    def _apply(rec: dict[str, Any]) -> None:
         rec["state"] = state
         if state == STATE_ARCHIVED:
             rec["archived_at"] = _now_iso()
@@ -456,7 +456,7 @@ def set_state(skill_name: str, state: str) -> None:
 
 
 def set_pinned(skill_name: str, pinned: bool) -> None:
-    def _apply(rec: Dict[str, Any]) -> None:
+    def _apply(rec: dict[str, Any]) -> None:
         rec["pinned"] = bool(pinned)
     _mutate(skill_name, _apply)
 
@@ -479,7 +479,7 @@ def forget(skill_name: str) -> None:
 # Archive / restore
 # ---------------------------------------------------------------------------
 
-def archive_skill(skill_name: str) -> Tuple[bool, str]:
+def archive_skill(skill_name: str) -> tuple[bool, str]:
     """Move an agent-created skill directory to ~/.hermes/skills/.archive/.
 
     Returns (ok, message). Never archives bundled or hub skills — callers are
@@ -518,7 +518,7 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     return True, f"archived to {dest}"
 
 
-def restore_skill(skill_name: str) -> Tuple[bool, str]:
+def restore_skill(skill_name: str) -> tuple[bool, str]:
     """Move an archived skill back to ~/.hermes/skills/. Restores to the flat
     top-level layout; original category nesting is NOT reconstructed.
 
@@ -588,12 +588,12 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
 # Reporting — for the curator CLI / slash command
 # ---------------------------------------------------------------------------
 
-def agent_created_report() -> List[Dict[str, Any]]:
+def agent_created_report() -> list[dict[str, Any]]:
     """Return a list of {name, state, pinned, last_activity_at, ...}
     records for every agent-created skill. Missing usage records are backfilled
     with defaults so callers can always index fields."""
     data = load_usage()
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for name in list_agent_created_skill_names():
         rec = data.get(name)
         if not isinstance(rec, dict):

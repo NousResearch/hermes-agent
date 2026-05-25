@@ -49,7 +49,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
+def _explicit_aux_vision_override(cfg: Optional[dict[str, Any]]) -> bool:
     """True when ``auxiliary.vision`` carries a non-default user override.
 
     Mirrors ``agent.image_routing._explicit_aux_vision_override`` so the
@@ -118,7 +118,7 @@ def _provider_accepts_multimodal_tool_result(provider: str, model: str) -> Optio
 def should_route_capture_to_aux_vision(
     provider: str,
     model: str,
-    cfg: Optional[Dict[str, Any]],
+    cfg: Optional[dict[str, Any]],
 ) -> bool:
     """Return True iff the captured screenshot should be pre-analysed via aux vision.
 

@@ -68,7 +68,7 @@ ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
 
 
-def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
+def _normalize_tool_stats(tool_stats: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
     """
     Normalize tool_stats to include all possible tools with consistent schema.
     
@@ -98,7 +98,7 @@ def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Di
     return normalized
 
 
-def _normalize_tool_error_counts(tool_error_counts: Dict[str, int]) -> Dict[str, int]:
+def _normalize_tool_error_counts(tool_error_counts: dict[str, int]) -> dict[str, int]:
     """
     Normalize tool_error_counts to include all possible tools.
     
@@ -122,7 +122,7 @@ def _normalize_tool_error_counts(tool_error_counts: Dict[str, int]) -> Dict[str,
     return normalized
 
 
-def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+def _extract_tool_stats(messages: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     """
     Extract tool usage statistics from message history.
     
@@ -205,7 +205,7 @@ def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
     return tool_stats
 
 
-def _extract_reasoning_stats(messages: List[Dict[str, Any]]) -> Dict[str, int]:
+def _extract_reasoning_stats(messages: list[dict[str, Any]]) -> dict[str, int]:
     """
     Count how many assistant turns have reasoning vs no reasoning.
     
@@ -243,10 +243,10 @@ def _extract_reasoning_stats(messages: List[Dict[str, Any]]) -> Dict[str, int]:
 
 def _process_single_prompt(
     prompt_index: int,
-    prompt_data: Dict[str, Any],
+    prompt_data: dict[str, Any],
     batch_num: int,
-    config: Dict[str, Any]
-) -> Dict[str, Any]:
+    config: dict[str, Any]
+) -> dict[str, Any]:
     """
     Process a single prompt with the agent.
     
@@ -397,7 +397,7 @@ def _process_single_prompt(
         }
 
 
-def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
+def _process_batch_worker(args: tuple) -> dict[str, Any]:
     """
     Worker function to process a single batch of prompts.
     
@@ -543,14 +543,14 @@ class BatchRunner:
         verbose: bool = False,
         ephemeral_system_prompt: str = None,
         log_prefix_chars: int = 100,
-        providers_allowed: List[str] = None,
-        providers_ignored: List[str] = None,
-        providers_order: List[str] = None,
+        providers_allowed: list[str] = None,
+        providers_ignored: list[str] = None,
+        providers_order: list[str] = None,
         provider_sort: str = None,
         openrouter_min_coding_score: Optional[float] = None,
         max_tokens: int = None,
-        reasoning_config: Dict[str, Any] = None,
-        prefill_messages: List[Dict[str, Any]] = None,
+        reasoning_config: dict[str, Any] = None,
+        prefill_messages: list[dict[str, Any]] = None,
         max_samples: int = None,
     ):
         """
@@ -639,7 +639,7 @@ class BatchRunner:
             prompt_preview = self.ephemeral_system_prompt[:60] + "..." if len(self.ephemeral_system_prompt) > 60 else self.ephemeral_system_prompt
             print(f"   🔒 Ephemeral system prompt: '{prompt_preview}'")
     
-    def _load_dataset(self) -> List[Dict[str, Any]]:
+    def _load_dataset(self) -> list[dict[str, Any]]:
         """
         Load dataset from JSONL file.
         
@@ -671,7 +671,7 @@ class BatchRunner:
         
         return dataset
     
-    def _create_batches(self) -> List[List[Tuple[int, Dict[str, Any]]]]:
+    def _create_batches(self) -> list[list[tuple[int, dict[str, Any]]]]:
         """
         Split dataset into batches with indices.
         
@@ -685,7 +685,7 @@ class BatchRunner:
         
         return batches
     
-    def _load_checkpoint(self) -> Dict[str, Any]:
+    def _load_checkpoint(self) -> dict[str, Any]:
         """
         Load checkpoint data if it exists.
         
@@ -712,7 +712,7 @@ class BatchRunner:
                 "last_updated": None
             }
     
-    def _save_checkpoint(self, checkpoint_data: Dict[str, Any], lock: Optional[Lock] = None):
+    def _save_checkpoint(self, checkpoint_data: dict[str, Any], lock: Optional[Lock] = None):
         """
         Save checkpoint data.
         
@@ -773,7 +773,7 @@ class BatchRunner:
         
         return completed_prompts
     
-    def _filter_dataset_by_completed(self, completed_prompts: set) -> Tuple[List[Dict], List[int]]:
+    def _filter_dataset_by_completed(self, completed_prompts: set) -> tuple[list[dict], list[int]]:
         """
         Filter the dataset to exclude prompts that have already been completed.
         

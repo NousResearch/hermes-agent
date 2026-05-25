@@ -52,7 +52,7 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     return iv
 
 
-def get_tool_output_limits() -> Dict[str, int]:
+def get_tool_output_limits() -> dict[str, int]:
     """Return resolved tool-output limits, reading ``tool_output`` from config.
 
     Keys: ``max_bytes``, ``max_lines``, ``max_line_length``. Missing or

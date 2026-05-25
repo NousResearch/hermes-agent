@@ -70,8 +70,8 @@ class RemovalResult:
             seeded from anywhere external.
     """
 
-    cleaned: List[str] = field(default_factory=list)
-    hints: List[str] = field(default_factory=list)
+    cleaned: list[str] = field(default_factory=list)
+    hints: list[str] = field(default_factory=list)
     suppress: bool = True
 
 
@@ -109,7 +109,7 @@ class RemovalStep:
         return source == self.source_id
 
 
-_REGISTRY: List[RemovalStep] = []
+_REGISTRY: list[RemovalStep] = []
 
 
 def register(step: RemovalStep) -> RemovalStep:

@@ -60,14 +60,14 @@ class SubdirectoryHintTracker:
 
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
-        self._loaded_dirs: Set[Path] = set()
+        self._loaded_dirs: set[Path] = set()
         # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
 
     def check_tool_call(
         self,
         tool_name: str,
-        tool_args: Dict[str, Any],
+        tool_args: dict[str, Any],
     ) -> Optional[str]:
         """Check tool call arguments for new directories and load any hint files.
 
@@ -89,10 +89,10 @@ class SubdirectoryHintTracker:
         return "\n\n" + "\n\n".join(all_hints)
 
     def _extract_directories(
-        self, tool_name: str, args: Dict[str, Any]
+        self, tool_name: str, args: dict[str, Any]
     ) -> list:
         """Extract directory paths from tool call arguments."""
-        candidates: Set[Path] = set()
+        candidates: set[Path] = set()
 
         # Direct path arguments
         for key in _PATH_ARG_KEYS:
@@ -108,7 +108,7 @@ class SubdirectoryHintTracker:
 
         return list(candidates)
 
-    def _add_path_candidate(self, raw_path: str, candidates: Set[Path]):
+    def _add_path_candidate(self, raw_path: str, candidates: set[Path]):
         """Resolve a raw path and add its directory + ancestors to candidates.
 
         Walks up from the resolved directory toward the filesystem root,
@@ -138,7 +138,7 @@ class SubdirectoryHintTracker:
         except (OSError, ValueError):
             pass
 
-    def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
+    def _extract_paths_from_command(self, cmd: str, candidates: set[Path]):
         """Extract path-like tokens from a shell command string."""
         try:
             tokens = shlex.split(cmd)

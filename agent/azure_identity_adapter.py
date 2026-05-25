@@ -153,14 +153,14 @@ class EntraIdentityConfig:
         scope = str(self.scope or "").strip() or SCOPE_AI_AZURE_DEFAULT
         object.__setattr__(self, "scope", scope)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "scope": self.scope,
             "exclude_interactive_browser": self.exclude_interactive_browser,
         }
 
     @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]],
+    def from_dict(cls, data: Optional[dict[str, Any]],
                   *, default_scope: Optional[str] = None) -> "EntraIdentityConfig":
         data = data or {}
         scope = str(data.get("scope") or "").strip() or default_scope or SCOPE_AI_AZURE_DEFAULT
@@ -182,7 +182,7 @@ def _build_default_credential(config: EntraIdentityConfig) -> Any:
     ``~/.hermes/.env`` or the deployment environment.
     """
     ai = _require_azure_identity()
-    kwargs: Dict[str, Any] = {}
+    kwargs: dict[str, Any] = {}
     # SDK default is True (browser excluded); only pass when the user
     # explicitly opts in to interactive browser auth.
     if not config.exclude_interactive_browser:
@@ -317,7 +317,7 @@ def describe_active_credential(config: Optional[EntraIdentityConfig] = None,
                                scope: Optional[str] = None,
                                timeout_seconds: float = 10.0,
                                allow_install: bool = True,
-                               **overrides: Any) -> Dict[str, Any]:
+                               **overrides: Any) -> dict[str, Any]:
     """Return diagnostic info about the active credential chain.
 
     Best-effort: runs ``get_token()`` and inspects what came back.
@@ -336,7 +336,7 @@ def describe_active_credential(config: Optional[EntraIdentityConfig] = None,
     class name. Users wanting the precise class can run with
     ``AZURE_LOG_LEVEL=DEBUG``.
     """
-    info: Dict[str, Any] = {"ok": False}
+    info: dict[str, Any] = {"ok": False}
     if not has_azure_identity_installed():
         if not allow_install:
             info["error"] = "azure-identity not installed"
@@ -379,7 +379,7 @@ def describe_active_credential(config: Optional[EntraIdentityConfig] = None,
     info["env_sources"] = env_sources
 
     # Now try minting.
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
 
     def _probe() -> None:
         try:

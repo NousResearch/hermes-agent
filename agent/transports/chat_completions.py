@@ -45,7 +45,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if effort == "none":
         return {"includeThoughts": False}
 
-    thinking_config: Dict[str, Any] = {"includeThoughts": True}
+    thinking_config: dict[str, Any] = {"includeThoughts": True}
 
     # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hermes'
     # coarse effort levels. ``includeThoughts`` alone is enough to surface
@@ -80,7 +80,7 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     if not isinstance(config, dict) or not config:
         return None
 
-    translated: Dict[str, Any] = {}
+    translated: dict[str, Any] = {}
     if isinstance(config.get("includeThoughts"), bool):
         translated["include_thoughts"] = config["includeThoughts"]
     if isinstance(config.get("thinkingLevel"), str) and config["thinkingLevel"].strip():
@@ -599,7 +599,7 @@ class ChatCompletionsTransport(ProviderTransport):
             if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
                 reasoning_content = model_extra["reasoning_content"]
 
-        provider_data: Dict[str, Any] = {}
+        provider_data: dict[str, Any] = {}
         if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content
         rd = getattr(msg, "reasoning_details", None)

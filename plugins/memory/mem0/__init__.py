@@ -209,11 +209,11 @@ class Mem0MemoryProvider(MemoryProvider):
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
 
-    def _read_filters(self) -> Dict[str, Any]:
+    def _read_filters(self) -> dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""
         return {"user_id": self._user_id}
 
-    def _write_filters(self) -> Dict[str, Any]:
+    def _write_filters(self) -> dict[str, Any]:
         """Filters for add — scoped to user + agent for attribution."""
         return {"user_id": self._user_id, "agent_id": self._agent_id}
 
@@ -294,7 +294,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
         self._sync_thread.start()
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:

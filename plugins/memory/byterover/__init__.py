@@ -75,7 +75,7 @@ def _resolve_brv_path() -> Optional[str]:
     return found
 
 
-def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
+def _run_brv(args: list[str], timeout: int = _QUERY_TIMEOUT,
              cwd: str = None) -> dict:
     """Run a brv CLI command. Returns {success, output, error}."""
     brv_path = _resolve_brv_path()
@@ -279,7 +279,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
         t = threading.Thread(target=_write, daemon=True, name="brv-memwrite")
         t.start()
 
-    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """Extract insights before context compression discards turns."""
         if not messages:
             return ""
@@ -311,7 +311,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
         t.start()
         return ""
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [QUERY_SCHEMA, CURATE_SCHEMA, STATUS_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:

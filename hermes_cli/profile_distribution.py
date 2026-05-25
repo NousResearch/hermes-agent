@@ -84,7 +84,7 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 # Default distribution-owned paths (relative to profile root).  Authors may
 # override via ``distribution_owned:`` in the manifest.  config.yaml is
 # distribution-owned but treated specially on update (see _is_config_like).
-DEFAULT_DIST_OWNED: Tuple[str, ...] = (
+DEFAULT_DIST_OWNED: tuple[str, ...] = (
     "SOUL.md",
     "config.yaml",
     "mcp.json",
@@ -156,8 +156,8 @@ class EnvRequirement:
             default=data.get("default"),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"name": self.name, "description": self.description}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": self.name, "description": self.description}
         if not self.required:
             out["required"] = False
         if self.default is not None:
@@ -173,8 +173,8 @@ class DistributionManifest:
     hermes_requires: str = ""
     author: str = ""
     license: str = ""
-    env_requires: List[EnvRequirement] = field(default_factory=list)
-    distribution_owned: List[str] = field(default_factory=list)
+    env_requires: list[EnvRequirement] = field(default_factory=list)
+    distribution_owned: list[str] = field(default_factory=list)
     # Tracked after install — where we pulled from, so ``update`` can re-pull.
     source: str = ""
     # ISO-8601 UTC timestamp written on install / update, so ``info`` and
@@ -212,8 +212,8 @@ class DistributionManifest:
             installed_at=str(data.get("installed_at") or ""),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "name": self.name,
             "version": self.version,
         }
@@ -235,7 +235,7 @@ class DistributionManifest:
             out["installed_at"] = self.installed_at
         return out
 
-    def owned_paths(self) -> List[str]:
+    def owned_paths(self) -> list[str]:
         """Resolve which paths count as distribution-owned."""
         if self.distribution_owned:
             return list(self.distribution_owned)
@@ -282,7 +282,7 @@ def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
 _VERSION_OP_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 
 
-def _parse_semver(v: str) -> Tuple[int, int, int]:
+def _parse_semver(v: str) -> tuple[int, int, int]:
     """Very small semver parser — major.minor.patch only.  Extra labels stripped."""
     s = str(v).strip().lstrip("v")
     # Strip any pre-release / build metadata (e.g. "0.12.0-rc1+abc")
@@ -389,7 +389,7 @@ def _git_clone(url: str, dest: Path) -> None:
         raise DistributionError(f"git clone failed: {stderr.strip()}") from exc
 
 
-def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
+def _stage_source(source: str, workdir: Path) -> tuple[Path, str]:
     """Resolve *source* to a local directory containing distribution.yaml.
 
     Returns ``(staged_dir, provenance)`` where ``provenance`` is stored in the
@@ -683,7 +683,7 @@ def update_distribution(
 # ---------------------------------------------------------------------------
 
 
-def describe_distribution(profile_name: str) -> Dict[str, Any]:
+def describe_distribution(profile_name: str) -> dict[str, Any]:
     """Return a structured view of a profile's distribution metadata.
 
     Returns an empty dict if the profile exists but has no manifest.

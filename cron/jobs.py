@@ -46,7 +46,7 @@ OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
 
-def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
+def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> list[str]:
     """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
     if skills is None:
         raw_items = [skill] if skill else []
@@ -55,7 +55,7 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     else:
         raw_items = list(skills)
 
-    normalized: List[str] = []
+    normalized: list[str] = []
     for item in raw_items:
         text = str(item or "").strip()
         if text and text not in normalized:
@@ -63,7 +63,7 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     return normalized
 
 
-def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_skill_fields(job: dict[str, Any]) -> dict[str, Any]:
     """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
     normalized = dict(job)
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
@@ -79,7 +79,7 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     return str(value)
 
 
-def _schedule_display_for_job(job: Dict[str, Any]) -> str:
+def _schedule_display_for_job(job: dict[str, Any]) -> str:
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
         return display
@@ -96,7 +96,7 @@ def _schedule_display_for_job(job: Dict[str, Any]) -> str:
     return "?"
 
 
-def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_job_record(job: dict[str, Any]) -> dict[str, Any]:
     """Return a read-safe cron job shape for UI/API/tool/scheduler consumers.
 
     Older or hand-edited jobs can have nullable fields like ``prompt``,
@@ -184,7 +184,7 @@ def parse_duration(s: str) -> int:
     return value * multipliers[unit]
 
 
-def parse_schedule(schedule: str) -> Dict[str, Any]:
+def parse_schedule(schedule: str) -> dict[str, Any]:
     """
     Parse schedule string into structured format.
     
@@ -293,7 +293,7 @@ def _ensure_aware(dt: datetime) -> datetime:
 
 
 def _recoverable_oneshot_run_at(
-    schedule: Dict[str, Any],
+    schedule: dict[str, Any],
     now: datetime,
     *,
     last_run_at: Optional[str] = None,
@@ -351,7 +351,7 @@ def _compute_grace_seconds(schedule: dict) -> int:
     return MIN_GRACE
 
 
-def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
+def compute_next_run(schedule: dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
 
@@ -401,7 +401,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # Job CRUD Operations
 # =============================================================================
 
-def load_jobs() -> List[Dict[str, Any]]:
+def load_jobs() -> list[dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
     if not JOBS_FILE.exists():
@@ -430,7 +430,7 @@ def load_jobs() -> List[Dict[str, Any]]:
         raise RuntimeError(f"Failed to read cron database: {e}") from e
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
+def save_jobs(jobs: list[dict[str, Any]]):
     """Save all jobs to storage."""
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
@@ -512,19 +512,19 @@ def create_job(
     name: Optional[str] = None,
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
-    origin: Optional[Dict[str, Any]] = None,
+    origin: Optional[dict[str, Any]] = None,
     skill: Optional[str] = None,
-    skills: Optional[List[str]] = None,
+    skills: Optional[list[str]] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
-    context_from: Optional[Union[str, List[str]]] = None,
-    enabled_toolsets: Optional[List[str]] = None,
+    context_from: Optional[Union[str, list[str]]] = None,
+    enabled_toolsets: Optional[list[str]] = None,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Create a new cron job.
 
@@ -671,7 +671,7 @@ def create_job(
     return job
 
 
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+def get_job(job_id: str) -> Optional[dict[str, Any]]:
     """Get a job by ID."""
     jobs = load_jobs()
     for job in jobs:
@@ -683,7 +683,7 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
 class AmbiguousJobReference(LookupError):
     """Raised when a job name matches more than one job."""
 
-    def __init__(self, ref: str, matches: List[Dict[str, Any]]):
+    def __init__(self, ref: str, matches: list[dict[str, Any]]):
         self.ref = ref
         self.matches = matches
         ids = ", ".join(m["id"] for m in matches)
@@ -693,7 +693,7 @@ class AmbiguousJobReference(LookupError):
         )
 
 
-def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
+def resolve_job_ref(ref: str) -> Optional[dict[str, Any]]:
     """Resolve a job reference (ID or name) to a job record.
 
     - Exact ID match wins (works even if a different job's name equals this ID).
@@ -718,7 +718,7 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     return _normalize_job_record(name_matches[0])
 
 
-def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
+def list_jobs(include_disabled: bool = False) -> list[dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
     jobs = [_normalize_job_record(j) for j in load_jobs()]
     if not include_disabled:
@@ -726,7 +726,7 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     return jobs
 
 
-def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     jobs = load_jobs()
     for i, job in enumerate(jobs):
@@ -783,7 +783,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return None
 
 
-def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[dict[str, Any]]:
     """Pause a job without deleting it. Accepts a job ID or name."""
     job = resolve_job_ref(job_id)
     if not job:
@@ -799,7 +799,7 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
     )
 
 
-def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
+def resume_job(job_id: str) -> Optional[dict[str, Any]]:
     """Resume a paused job and compute the next future run from now. Accepts a job ID or name."""
     job = resolve_job_ref(job_id)
     if not job:
@@ -818,7 +818,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     )
 
 
-def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
+def trigger_job(job_id: str) -> Optional[dict[str, Any]]:
     """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
     job = resolve_job_ref(job_id)
     if not job:
@@ -956,7 +956,7 @@ def advance_next_run(job_id: str) -> bool:
         return False
 
 
-def get_due_jobs() -> List[Dict[str, Any]]:
+def get_due_jobs() -> list[dict[str, Any]]:
     """Get all jobs that are due to run now.
 
     For recurring jobs (cron/interval), if the scheduled time is stale
@@ -968,7 +968,7 @@ def get_due_jobs() -> List[Dict[str, Any]]:
         return _get_due_jobs_locked()
 
 
-def _get_due_jobs_locked() -> List[Dict[str, Any]]:
+def _get_due_jobs_locked() -> list[dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
@@ -1091,9 +1091,9 @@ def save_job_output(job_id: str, output: str):
 # =============================================================================
 
 def rewrite_skill_refs(
-    consolidated: Optional[Dict[str, str]] = None,
-    pruned: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    consolidated: Optional[dict[str, str]] = None,
+    pruned: Optional[list[str]] = None,
+) -> dict[str, Any]:
     """Rewrite cron job skill references after a curator consolidation pass.
 
     When the curator consolidates a skill X into umbrella Y (or archives X
@@ -1151,7 +1151,7 @@ def rewrite_skill_refs(
 
     with _jobs_file_lock:
         jobs = load_jobs()
-        rewrites: List[Dict[str, Any]] = []
+        rewrites: list[dict[str, Any]] = []
         changed = False
 
         for job in jobs:
@@ -1159,9 +1159,9 @@ def rewrite_skill_refs(
             if not skills_before:
                 continue
 
-            mapped: Dict[str, str] = {}
-            dropped: List[str] = []
-            new_skills: List[str] = []
+            mapped: dict[str, str] = {}
+            dropped: list[str] = []
+            new_skills: list[str] = []
 
             for name in skills_before:
                 if name in consolidated:

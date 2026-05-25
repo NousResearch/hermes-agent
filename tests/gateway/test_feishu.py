@@ -3503,7 +3503,7 @@ class TestBotNameResolution(unittest.TestCase):
     """Tests for the bot branch of _resolve_sender_name_from_api (basic_batch API + shared cache)."""
 
     @staticmethod
-    def _batch_payload(bots: Dict[str, str]):
+    def _batch_payload(bots: dict[str, str]):
         import json as _json
         body = {
             oid: {"bot_id": oid, "name": name, "i18n_names": {"en_us": name}}
@@ -3511,7 +3511,7 @@ class TestBotNameResolution(unittest.TestCase):
         }
         return _json.dumps({"code": 0, "msg": "", "data": {"bots": body, "failed_bots": {}}}).encode()
 
-    def _build_adapter_with_bots(self, bots: Dict[str, str]):
+    def _build_adapter_with_bots(self, bots: dict[str, str]):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 

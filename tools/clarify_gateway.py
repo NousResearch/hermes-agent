@@ -50,12 +50,12 @@ class _ClarifyEntry:
     clarify_id: str
     session_key: str
     question: str
-    choices: Optional[List[str]]
+    choices: Optional[list[str]]
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
 
-    def signature(self) -> Dict[str, object]:
+    def signature(self) -> dict[str, object]:
         return {
             "clarify_id": self.clarify_id,
             "session_key": self.session_key,
@@ -66,9 +66,9 @@ class _ClarifyEntry:
 
 _lock = threading.RLock()
 # clarify_id → _ClarifyEntry  (primary lookup for button callbacks)
-_entries: Dict[str, _ClarifyEntry] = {}
+_entries: dict[str, _ClarifyEntry] = {}
 # session_key → list[clarify_id]  (FIFO; for text-fallback intercept and session cleanup)
-_session_index: Dict[str, List[str]] = {}
+_session_index: dict[str, list[str]] = {}
 
 
 # =========================================================================
@@ -79,7 +79,7 @@ def register(
     clarify_id: str,
     session_key: str,
     question: str,
-    choices: Optional[List[str]],
+    choices: Optional[list[str]],
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
@@ -255,7 +255,7 @@ def get_clarify_timeout() -> int:
 # callback bridges sync→async (runs on the agent thread; schedules the
 # adapter ``send_clarify`` call on the event loop).
 
-_notify_cbs: Dict[str, Callable[[_ClarifyEntry], None]] = {}
+_notify_cbs: dict[str, Callable[[_ClarifyEntry], None]] = {}
 
 
 def register_notify(session_key: str, cb: Callable[[_ClarifyEntry], None]) -> None:

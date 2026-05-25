@@ -17,7 +17,7 @@ _POOL_PROVIDER = "xai-oauth"
 # xAI's public API is OpenAI-compatible for the endpoints Hermes commonly
 # uses. The Responses endpoint is included because Hermes' native xAI runtime
 # uses codex_responses mode.
-_ALLOWED_PATHS: FrozenSet[str] = frozenset(
+_ALLOWED_PATHS: frozenset[str] = frozenset(
     {
         "/responses",
         "/chat/completions",
@@ -46,7 +46,7 @@ class XAIGrokAdapter(UpstreamAdapter):
         return "xAI Grok OAuth"
 
     @property
-    def allowed_paths(self) -> FrozenSet[str]:
+    def allowed_paths(self) -> frozenset[str]:
         return _ALLOWED_PATHS
 
     def is_authenticated(self) -> bool:

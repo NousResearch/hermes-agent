@@ -79,7 +79,7 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     return ""
 
 
-def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
+def _format_extra_metadata_lines(extra: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     if not extra:
         return lines
@@ -161,7 +161,7 @@ def _is_valid_installed_skill_name(name: str) -> bool:
     return bool(_VALID_NAME_RE.match(candidate))
 
 
-def _existing_categories() -> List[str]:
+def _existing_categories() -> list[str]:
     """Return sorted subdirectory names under ``~/.hermes/skills/`` that look
     like category buckets (contain at least one ``SKILL.md`` somewhere below).
 
@@ -169,7 +169,7 @@ def _existing_categories() -> List[str]:
     URL. Hidden dirs (``.hub``, ``.trash``) are skipped.
     """
     from tools.skills_hub import SKILLS_DIR
-    out: List[str] = []
+    out: list[str] = []
     try:
         for entry in SKILLS_DIR.iterdir():
             if not entry.is_dir() or entry.name.startswith("."):
@@ -218,7 +218,7 @@ def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[
     return answer
 
 
-def _prompt_for_category(c: Console, existing: List[str]) -> str:
+def _prompt_for_category(c: Console, existing: list[str]) -> str:
     """Prompt interactively for a category. Empty/None input means flat install."""
     c.print()
     if existing:

@@ -271,13 +271,13 @@ def _git_env(
 
 
 def _run_git(
-    args: List[str],
+    args: list[str],
     store: Path,
     working_dir: str,
     timeout: int = _GIT_TIMEOUT,
-    allowed_returncodes: Optional[Set[int]] = None,
+    allowed_returncodes: Optional[set[int]] = None,
     index_file: Optional[Path] = None,
-) -> Tuple[bool, str, str]:
+) -> tuple[bool, str, str]:
     """Run a git command against the shared store.  Returns (ok, stdout, stderr).
 
     ``allowed_returncodes`` suppresses error logging for known/expected non-zero
@@ -455,7 +455,7 @@ def _register_project(store: Path, working_dir: str) -> None:
     dir_hash = _project_hash(working_dir)
     meta_path = _project_meta_path(store, dir_hash)
     now = time.time()
-    meta: Dict = {"workdir": str(_normalize_path(working_dir)),
+    meta: dict = {"workdir": str(_normalize_path(working_dir)),
                   "created_at": now, "last_touch": now}
     if meta_path.exists():
         try:
@@ -493,12 +493,12 @@ def _touch_project(store: Path, working_dir: str) -> None:
         logger.debug("Could not update project metadata %s: %s", meta_path, exc)
 
 
-def _list_projects(store: Path) -> List[Dict]:
+def _list_projects(store: Path) -> list[dict]:
     """Return all registered projects under the store."""
     projects_dir = store / _PROJECTS_DIRNAME
     if not projects_dir.exists():
         return []
-    out: List[Dict] = []
+    out: list[dict] = []
     for meta_path in projects_dir.glob("*.json"):
         dir_hash = meta_path.stem
         try:
@@ -605,7 +605,7 @@ class CheckpointManager:
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
-        self._checkpointed_dirs: Set[str] = set()
+        self._checkpointed_dirs: set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
 
     # ------------------------------------------------------------------
@@ -654,7 +654,7 @@ class CheckpointManager:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
 
-    def list_checkpoints(self, working_dir: str) -> List[Dict]:
+    def list_checkpoints(self, working_dir: str) -> list[dict]:
         """List available checkpoints for a directory (most recent first)."""
         abs_dir = str(_normalize_path(working_dir))
         store = _store_path(CHECKPOINT_BASE)
@@ -672,7 +672,7 @@ class CheckpointManager:
         if not ok or not stdout:
             return []
 
-        results: List[Dict] = []
+        results: list[dict] = []
         for line in stdout.splitlines():
             parts = line.split("|", 3)
             if len(parts) == 4:
@@ -696,7 +696,7 @@ class CheckpointManager:
         return results
 
     @staticmethod
-    def _parse_shortstat(stat_line: str, entry: Dict) -> None:
+    def _parse_shortstat(stat_line: str, entry: dict) -> None:
         """Parse git --shortstat output into entry dict."""
         m = re.search(r'(\d+) file', stat_line)
         if m:
@@ -708,7 +708,7 @@ class CheckpointManager:
         if m:
             entry["deletions"] = int(m.group(1))
 
-    def diff(self, working_dir: str, commit_hash: str) -> Dict:
+    def diff(self, working_dir: str, commit_hash: str) -> dict:
         """Show diff between a checkpoint and the current working tree."""
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
@@ -758,7 +758,7 @@ class CheckpointManager:
             "diff": diff_out if ok_diff else "",
         }
 
-    def restore(self, working_dir: str, commit_hash: str, file_path: str = None) -> Dict:
+    def restore(self, working_dir: str, commit_hash: str, file_path: str = None) -> dict:
         """Restore files to a checkpoint state."""
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
@@ -992,7 +992,7 @@ class CheckpointManager:
         # whitespace but that leaves NULs alone; rebuild list.
         paths = [p for p in stdout.split("\x00") if p]
         abs_workdir = _normalize_path(working_dir)
-        oversize: List[str] = []
+        oversize: list[str] = []
         for rel in paths:
             try:
                 size = (abs_workdir / rel).stat().st_size
@@ -1171,7 +1171,7 @@ class CheckpointManager:
         )
 
 
-def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
+def format_checkpoint_list(checkpoints: list[dict], directory: str) -> str:
     """Format checkpoint list for display to user."""
     if not checkpoints:
         return f"No checkpoints found for {directory}"
@@ -1225,7 +1225,7 @@ def prune_checkpoints(
     delete_orphans: bool = True,
     checkpoint_base: Optional[Path] = None,
     max_total_size_mb: int = 0,
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Delete stale/orphan checkpoints and reclaim store space.
 
     A project entry is deleted when either:
@@ -1465,7 +1465,7 @@ def maybe_auto_prune_checkpoints(
     delete_orphans: bool = True,
     checkpoint_base: Optional[Path] = None,
     max_total_size_mb: int = 0,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """Idempotent wrapper around ``prune_checkpoints`` for startup hooks.
 
     Writes ``CHECKPOINT_BASE/.last_prune`` on completion so subsequent
@@ -1475,7 +1475,7 @@ def maybe_auto_prune_checkpoints(
     "error": optional str}``.
     """
     base = checkpoint_base or CHECKPOINT_BASE
-    out: Dict[str, object] = {"skipped": False}
+    out: dict[str, object] = {"skipped": False}
 
     try:
         if not base.exists():
@@ -1530,7 +1530,7 @@ def maybe_auto_prune_checkpoints(
 # Public helpers for `hermes checkpoints` CLI
 # ---------------------------------------------------------------------------
 
-def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
+def store_status(checkpoint_base: Optional[Path] = None) -> dict:
     """Return a summary of the shadow store.
 
     ``{"base": path, "store_size_bytes": N, "legacy_size_bytes": N,
@@ -1538,7 +1538,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
        "legacy_archives": [...]}``
     """
     base = checkpoint_base or CHECKPOINT_BASE
-    out: Dict = {
+    out: dict = {
         "base": str(base),
         "store_size_bytes": 0,
         "legacy_size_bytes": 0,
@@ -1597,7 +1597,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     return out
 
 
-def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+def clear_all(checkpoint_base: Optional[Path] = None) -> dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
 
     Returns ``{"bytes_freed": N, "deleted": bool}``.
@@ -1616,7 +1616,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     return out
 
 
-def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+def clear_legacy(checkpoint_base: Optional[Path] = None) -> dict[str, int]:
     """Delete all ``legacy-*`` archive directories.
 
     Returns ``{"bytes_freed": N, "deleted": count}``.

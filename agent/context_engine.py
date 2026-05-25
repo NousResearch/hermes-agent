@@ -68,7 +68,7 @@ class ContextEngine(ABC):
     # -- Core interface ----------------------------------------------------
 
     @abstractmethod
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         """Update tracked token usage from an API response.
 
         Called after every LLM call with the usage dict from the response.
@@ -81,10 +81,10 @@ class ContextEngine(ABC):
     @abstractmethod
     def compress(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         current_tokens: int = None,
         focus_topic: str = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Compact the message list and return the new message list.
 
         This is the main entry point. The engine receives the full message
@@ -102,7 +102,7 @@ class ContextEngine(ABC):
 
     # -- Optional: pre-flight check ----------------------------------------
 
-    def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
+    def should_compress_preflight(self, messages: list[dict[str, Any]]) -> bool:
         """Quick rough check before the API call (no real token count yet).
 
         Default returns False (skip pre-flight). Override if your engine
@@ -112,7 +112,7 @@ class ContextEngine(ABC):
 
     # -- Optional: manual /compress preflight ------------------------------
 
-    def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
+    def has_content_to_compress(self, messages: list[dict[str, Any]]) -> bool:
         """Quick check: is there anything in ``messages`` that can be compacted?
 
         Used by the gateway ``/compress`` command as a preflight guard —
@@ -134,7 +134,7 @@ class ContextEngine(ABC):
         kwargs may include hermes_home, platform, model, etc.
         """
 
-    def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, session_id: str, messages: list[dict[str, Any]]) -> None:
         """Called at real session boundaries (CLI exit, /reset, gateway expiry).
 
         Use this to flush state, close DB connections, etc.
@@ -153,7 +153,7 @@ class ContextEngine(ABC):
 
     # -- Optional: tools ---------------------------------------------------
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         """Return tool schemas this engine provides to the agent.
 
         Default returns empty list (no tools). LCM would return schemas
@@ -161,7 +161,7 @@ class ContextEngine(ABC):
         """
         return []
 
-    def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs) -> str:
+    def handle_tool_call(self, name: str, args: dict[str, Any], **kwargs) -> str:
         """Handle a tool call from the agent.
 
         Only called for tool names returned by get_tool_schemas().
@@ -175,7 +175,7 @@ class ContextEngine(ABC):
 
     # -- Optional: status / display ----------------------------------------
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Return status dict for display/logging.
 
         Default returns the standard fields run_agent.py expects.

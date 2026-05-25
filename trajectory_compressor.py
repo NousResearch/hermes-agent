@@ -202,7 +202,7 @@ class TrajectoryMetrics:
     summarization_api_calls: int = 0
     summarization_errors: int = 0
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "original_tokens": self.original_tokens,
             "compressed_tokens": self.compressed_tokens,
@@ -245,9 +245,9 @@ class AggregateMetrics:
     total_summarization_errors: int = 0
     
     # Distribution stats
-    compression_ratios: List[float] = field(default_factory=list)
-    tokens_saved_list: List[int] = field(default_factory=list)
-    turns_removed_list: List[int] = field(default_factory=list)
+    compression_ratios: list[float] = field(default_factory=list)
+    tokens_saved_list: list[int] = field(default_factory=list)
+    turns_removed_list: list[int] = field(default_factory=list)
     
     processing_start_time: str = ""
     processing_end_time: str = ""
@@ -277,7 +277,7 @@ class AggregateMetrics:
         if metrics.still_over_limit:
             self.trajectories_still_over_limit += 1
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         avg_compression_ratio = (
             sum(self.compression_ratios) / len(self.compression_ratios) 
             if self.compression_ratios else 1.0
@@ -471,15 +471,15 @@ class TrajectoryCompressor:
             # Fallback to character estimate
             return len(text) // 4
     
-    def count_trajectory_tokens(self, trajectory: List[Dict[str, str]]) -> int:
+    def count_trajectory_tokens(self, trajectory: list[dict[str, str]]) -> int:
         """Count total tokens in a trajectory."""
         return sum(self.count_tokens(turn.get("value", "")) for turn in trajectory)
     
-    def count_turn_tokens(self, trajectory: List[Dict[str, str]]) -> List[int]:
+    def count_turn_tokens(self, trajectory: list[dict[str, str]]) -> list[int]:
         """Count tokens for each turn in a trajectory."""
         return [self.count_tokens(turn.get("value", "")) for turn in trajectory]
     
-    def _find_protected_indices(self, trajectory: List[Dict[str, str]]) -> Tuple[set, int, int]:
+    def _find_protected_indices(self, trajectory: list[dict[str, str]]) -> tuple[set, int, int]:
         """
         Find indices of protected turns.
         
@@ -527,7 +527,7 @@ class TrajectoryCompressor:
         
         return protected, compressible_start, compressible_end
     
-    def _extract_turn_content_for_summary(self, trajectory: List[Dict[str, str]], start: int, end: int) -> str:
+    def _extract_turn_content_for_summary(self, trajectory: list[dict[str, str]], start: int, end: int) -> str:
         """
         Extract content from turns to be summarized.
         
@@ -708,8 +708,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
     
     def compress_trajectory(
         self,
-        trajectory: List[Dict[str, str]]
-    ) -> Tuple[List[Dict[str, str]], TrajectoryMetrics]:
+        trajectory: list[dict[str, str]]
+    ) -> tuple[list[dict[str, str]], TrajectoryMetrics]:
         """
         Compress a single trajectory to fit within target token budget.
         
@@ -828,8 +828,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
     
     async def compress_trajectory_async(
         self,
-        trajectory: List[Dict[str, str]]
-    ) -> Tuple[List[Dict[str, str]], TrajectoryMetrics]:
+        trajectory: list[dict[str, str]]
+    ) -> tuple[list[dict[str, str]], TrajectoryMetrics]:
         """
         Compress a single trajectory to fit within target token budget (async version).
         
@@ -924,7 +924,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         return compressed, metrics
     
-    async def process_entry_async(self, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], TrajectoryMetrics]:
+    async def process_entry_async(self, entry: dict[str, Any]) -> tuple[dict[str, Any], TrajectoryMetrics]:
         """
         Process a single JSONL entry (async version).
         """
@@ -945,7 +945,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         return result, metrics
     
-    def process_entry(self, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], TrajectoryMetrics]:
+    def process_entry(self, entry: dict[str, Any]) -> tuple[dict[str, Any], TrajectoryMetrics]:
         """
         Process a single JSONL entry.
         
@@ -1043,7 +1043,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         # Track timeouts separately
         timeout_count = 0
         
-        async def process_single(file_path: Path, entry_idx: int, entry: Dict, 
+        async def process_single(file_path: Path, entry_idx: int, entry: dict, 
                                   progress, main_task, status_task):
             """Process a single entry with semaphore rate limiting and timeout."""
             nonlocal compressed_count, skipped_count, api_calls, in_flight, timeout_count

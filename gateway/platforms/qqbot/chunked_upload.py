@@ -143,12 +143,12 @@ class _PreparePart:
 class _PrepareResult:
     upload_id: str
     block_size: int
-    parts: List[_PreparePart]
+    parts: list[_PreparePart]
     concurrency: int = _DEFAULT_CONCURRENT_PARTS
     retry_timeout: float = 0.0
 
 
-def _parse_prepare_response(raw: Dict[str, Any]) -> _PrepareResult:
+def _parse_prepare_response(raw: dict[str, Any]) -> _PrepareResult:
     """Parse the upload_prepare API response into a normalized shape.
 
     The API may return the response directly or wrapped in ``data``.
@@ -165,7 +165,7 @@ def _parse_prepare_response(raw: Dict[str, Any]) -> _PrepareResult:
         raise ValueError(
             f"upload_prepare response missing parts: {str(raw)[:200]}"
         )
-    parts: List[_PreparePart] = []
+    parts: list[_PreparePart] = []
     for p in raw_parts:
         if not isinstance(p, dict):
             continue
@@ -189,7 +189,7 @@ def _parse_prepare_response(raw: Dict[str, Any]) -> _PrepareResult:
 
 # ── Chunked upload driver ────────────────────────────────────────────
 
-ApiRequestFn = Callable[..., Awaitable[Dict[str, Any]]]
+ApiRequestFn = Callable[..., Awaitable[dict[str, Any]]]
 """Signature of the adapter's ``_api_request`` callable.
 
 We pass the bound method in rather than importing the adapter, to avoid
@@ -225,7 +225,7 @@ class ChunkedUploader:
         file_path: str,
         file_type: int,
         file_name: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run the full chunked upload and return the ``complete_upload`` response.
 
         :param chat_type: ``'c2c'`` or ``'group'``.
@@ -278,7 +278,7 @@ class ChunkedUploader:
         )
 
         # Step 3: PUT each part + notify.
-        tasks: List[Callable[[], Awaitable[None]]] = [
+        tasks: list[Callable[[], Awaitable[None]]] = [
             functools.partial(
                 self._upload_one_part,
                 chat_type=chat_type,
@@ -314,7 +314,7 @@ class ChunkedUploader:
         file_type: int,
         file_name: str,
         file_size: int,
-        hashes: Dict[str, str],
+        hashes: dict[str, str],
     ) -> _PrepareResult:
         base = "/v2/users" if chat_type == "c2c" else "/v2/groups"
         path = f"{base}/{target_id}/upload_prepare"
@@ -496,7 +496,7 @@ class ChunkedUploader:
         chat_type: str,
         target_id: str,
         upload_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Call ``complete_upload`` with retry.
 
         This reuses the ``/files`` endpoint (same as the simple URL-based upload)
@@ -556,7 +556,7 @@ def _read_file_chunk(file_path: str, offset: int, length: int) -> bytes:
         return data
 
 
-def _compute_file_hashes(file_path: str, file_size: int) -> Dict[str, str]:
+def _compute_file_hashes(file_path: str, file_size: int) -> dict[str, str]:
     """Compute md5, sha1, and md5_10m in a single pass."""
     md5 = hashlib.md5()
     sha1 = hashlib.sha1()
@@ -588,7 +588,7 @@ def _compute_file_hashes(file_path: str, file_size: int) -> Dict[str, str]:
 
 
 async def _run_with_concurrency(
-    tasks: List[Callable[[], Awaitable[None]]],
+    tasks: list[Callable[[], Awaitable[None]]],
     concurrency: int,
 ) -> None:
     """Run a list of thunks with a bounded number in flight at once."""

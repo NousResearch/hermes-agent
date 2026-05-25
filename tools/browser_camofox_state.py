@@ -24,7 +24,7 @@ def get_camofox_state_dir() -> Path:
     return get_hermes_home() / CAMOFOX_STATE_DIR_NAME / CAMOFOX_STATE_SUBDIR
 
 
-def get_camofox_identity(task_id: Optional[str] = None) -> Dict[str, str]:
+def get_camofox_identity(task_id: Optional[str] = None) -> dict[str, str]:
     """Return the stable Hermes-managed Camofox identity for this profile.
 
     The user identity is profile-scoped (same Hermes profile = same userId).

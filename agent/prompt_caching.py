@@ -38,19 +38,19 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
             last["cache_control"] = cache_marker
 
 
-def _build_marker(ttl: str) -> Dict[str, str]:
+def _build_marker(ttl: str) -> dict[str, str]:
     """Build a cache_control marker dict for the given TTL ('5m' or '1h')."""
-    marker: Dict[str, str] = {"type": "ephemeral"}
+    marker: dict[str, str] = {"type": "ephemeral"}
     if ttl == "1h":
         marker["ttl"] = "1h"
     return marker
 
 
 def apply_anthropic_cache_control(
-    api_messages: List[Dict[str, Any]],
+    api_messages: list[dict[str, Any]],
     cache_ttl: str = "5m",
     native_anthropic: bool = False,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Apply system_and_3 caching strategy to messages for Anthropic models.
 
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system

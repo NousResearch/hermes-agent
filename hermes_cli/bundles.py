@@ -87,7 +87,7 @@ def _cmd_show(args) -> None:
 def _cmd_create(args) -> None:
     c = _console()
     name = args.name
-    skills: List[str] = list(args.skill or [])
+    skills: list[str] = list(args.skill or [])
     description = args.description or ""
     instruction = args.instruction or ""
     overwrite = bool(args.force)

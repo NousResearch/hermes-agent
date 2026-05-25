@@ -152,7 +152,7 @@ _spawn_paused: bool = False
 _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
-_active_subagents: Dict[str, Dict[str, Any]] = {}
+_active_subagents: dict[str, dict[str, Any]] = {}
 
 
 def set_spawn_paused(paused: bool) -> bool:
@@ -172,7 +172,7 @@ def is_spawn_paused() -> bool:
         return _spawn_paused
 
 
-def _register_subagent(record: Dict[str, Any]) -> None:
+def _register_subagent(record: dict[str, Any]) -> None:
     sid = record.get("subagent_id")
     if not sid:
         return
@@ -208,7 +208,7 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
-def list_active_subagents() -> List[Dict[str, Any]]:
+def list_active_subagents() -> list[dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 
     Each record: {subagent_id, parent_id, depth, goal, model, started_at,
@@ -222,11 +222,11 @@ def list_active_subagents() -> List[Dict[str, Any]]:
 
 
 def _extract_output_tail(
-    result: Dict[str, Any],
+    result: dict[str, Any],
     *,
     max_entries: int = 12,
     max_chars: int = 8000,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Pull the last N tool-call results from a child's conversation.
 
     Powers the overlay's "Output" section — the cc-swarm-parity feature.
@@ -239,8 +239,8 @@ def _extract_output_tail(
         return []
 
     # Walk in reverse to build a tail; stop when we have enough.
-    tail: List[Dict[str, Any]] = []
-    pending_call_by_id: Dict[str, str] = {}
+    tail: list[dict[str, Any]] = []
+    pending_call_by_id: dict[str, str] = {}
 
     # First pass (forward): build tool_call_id -> tool_name map
     for msg in messages:
@@ -499,8 +499,8 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
 
 
 def _preserve_parent_mcp_toolsets(
-    child_toolsets: List[str], parent_toolsets: set[str]
-) -> List[str]:
+    child_toolsets: list[str], parent_toolsets: set[str]
+) -> list[str]:
     """Append any parent MCP toolsets that are missing from a narrowed child."""
     preserved = list(child_toolsets)
     for toolset_name in sorted(parent_toolsets):
@@ -552,7 +552,7 @@ class DelegateEvent(str, enum.Enum):
 
 # Legacy event strings → DelegateEvent mapping.
 # Incoming child-agent events use the old names; the callback normalises them.
-_LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
+_LEGACY_EVENT_MAP: dict[str, DelegateEvent] = {
     "_thinking": DelegateEvent.TASK_THINKING,
     "reasoning.available": DelegateEvent.TASK_THINKING,
     "tool.started": DelegateEvent.TASK_TOOL_STARTED,
@@ -669,7 +669,7 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
-def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
+def _strip_blocked_tools(toolsets: list[str]) -> list[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
         "delegation",
@@ -690,7 +690,7 @@ def _build_child_progress_callback(
     parent_id: Optional[str] = None,
     depth: Optional[int] = None,
     model: Optional[str] = None,
-    toolsets: Optional[List[str]] = None,
+    toolsets: Optional[list[str]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -719,11 +719,11 @@ def _build_child_progress_callback(
 
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
-    _batch: List[str] = []
+    _batch: list[str] = []
     _tool_count = [0]  # per-subagent running counter (list for closure mutation)
 
-    def _identity_kwargs() -> Dict[str, Any]:
-        kw: Dict[str, Any] = {
+    def _identity_kwargs() -> dict[str, Any]:
+        kw: dict[str, Any] = {
             "task_index": task_index,
             "task_count": task_count,
             "goal": goal_label,
@@ -871,7 +871,7 @@ def _build_child_agent(
     task_index: int,
     goal: str,
     context: Optional[str],
-    toolsets: Optional[List[str]],
+    toolsets: Optional[list[str]],
     model: Optional[str],
     max_iterations: int,
     task_count: int,
@@ -883,7 +883,7 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
-    override_acp_args: Optional[List[str]] = None,
+    override_acp_args: Optional[list[str]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1211,7 +1211,7 @@ def _dump_subagent_timeout_diagnostic(
         ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         dump_path = logs_dir / f"subagent-timeout-{subagent_id}-{ts}.log"
 
-        lines: List[str] = []
+        lines: list[str] = []
         def _w(line: str = "") -> None:
             lines.append(line)
 
@@ -1324,7 +1324,7 @@ def _run_single_child(
     child=None,
     parent_agent=None,
     **_kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run a pre-built child agent. Called from within a thread.
     Returns a structured result dict.
@@ -1500,7 +1500,7 @@ def _run_single_child(
         )
         # Capture the worker thread so the timeout diagnostic can dump its
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
-        _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
+        _worker_thread_holder: dict[str, Optional[threading.Thread]] = {"t": None}
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
@@ -1634,8 +1634,8 @@ def _run_single_child(
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.
-        tool_trace: list[Dict[str, Any]] = []
-        trace_by_id: Dict[str, Dict[str, Any]] = {}
+        tool_trace: list[dict[str, Any]] = []
+        trace_by_id: dict[str, dict[str, Any]] = {}
         messages = result.get("messages") or []
         if isinstance(messages, list):
             for msg in messages:
@@ -1681,7 +1681,7 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "task_index": task_index,
             "status": status,
             "summary": summary,
@@ -1780,7 +1780,7 @@ def _run_single_child(
 
         _output_tail = _extract_output_tail(result, max_entries=8, max_chars=600)
 
-        complete_kwargs: Dict[str, Any] = {
+        complete_kwargs: dict[str, Any] = {
             "preview": summary[:160] if summary else entry.get("error", ""),
             "status": status,
             "duration_seconds": duration,
@@ -1894,7 +1894,7 @@ def _run_single_child(
 
 def _recover_tasks_from_json_string(
     tasks: Any,
-) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
     if not isinstance(tasks, str):
         return None, None
     raw = tasks.strip()
@@ -1918,11 +1918,11 @@ def _recover_tasks_from_json_string(
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
-    toolsets: Optional[List[str]] = None,
-    tasks: Optional[List[Dict[str, Any]]] = None,
+    toolsets: Optional[list[str]] = None,
+    tasks: Optional[list[dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
-    acp_args: Optional[List[str]] = None,
+    acp_args: Optional[list[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
 ) -> str:

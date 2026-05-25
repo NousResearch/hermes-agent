@@ -49,7 +49,7 @@ def _get_bundled_dir() -> Path:
     return get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
 
 
-def _read_manifest() -> Dict[str, str]:
+def _read_manifest() -> dict[str, str]:
     """
     Read the manifest as a dict of {skill_name: origin_hash}.
 
@@ -76,7 +76,7 @@ def _read_manifest() -> Dict[str, str]:
         return {}
 
 
-def _write_manifest(entries: Dict[str, str]):
+def _write_manifest(entries: dict[str, str]):
     """Write the manifest file atomically in v2 format (name:hash).
 
     Uses a temp file + os.replace() to avoid corruption if the process
@@ -130,7 +130,7 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
     return fallback
 
 
-def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
+def _discover_bundled_skills(bundled_dir: Path) -> list[tuple[str, Path]]:
     """
     Find all SKILL.md files in the bundled directory.
     Returns list of (skill_name, skill_directory_path) tuples.

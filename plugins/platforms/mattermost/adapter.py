@@ -103,13 +103,13 @@ class MattermostAdapter(BasePlatformAdapter):
     # HTTP helpers
     # ------------------------------------------------------------------
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._token}",
             "Content-Type": "application/json",
         }
 
-    async def _api_get(self, path: str) -> Dict[str, Any]:
+    async def _api_get(self, path: str) -> dict[str, Any]:
         """GET /api/v4/{path}."""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
@@ -125,8 +125,8 @@ class MattermostAdapter(BasePlatformAdapter):
             return {}
 
     async def _api_post(
-        self, path: str, payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """POST /api/v4/{path} with JSON body."""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
@@ -145,8 +145,8 @@ class MattermostAdapter(BasePlatformAdapter):
             return {}
 
     async def _api_put(
-        self, path: str, payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """PUT /api/v4/{path} with JSON body."""
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
@@ -271,7 +271,7 @@ class MattermostAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a message (or multiple chunks) to a channel."""
         if not content:
@@ -282,7 +282,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         last_id = None
         for chunk in chunks:
-            payload: Dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "channel_id": chat_id,
                 "message": chunk,
             }
@@ -300,7 +300,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         return SendResult(success=True, message_id=last_id)
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return channel name and type."""
         data = await self._api_get(f"channels/{chat_id}")
         if not data:
@@ -315,7 +315,7 @@ class MattermostAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def send_typing(
-        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
+        self, chat_id: str, metadata: Optional[dict[str, Any]] = None
     ) -> None:
         """Send a typing indicator."""
         await self._api_post(
@@ -342,7 +342,7 @@ class MattermostAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Download an image and upload it as a file attachment."""
         return await self._send_url_as_file(
@@ -355,7 +355,7 @@ class MattermostAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local image file."""
         return await self._send_local_file(
@@ -369,7 +369,7 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local file as a document."""
         return await self._send_local_file(
@@ -382,7 +382,7 @@ class MattermostAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Upload an audio file."""
         return await self._send_local_file(
@@ -395,7 +395,7 @@ class MattermostAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a video file."""
         return await self._send_local_file(
@@ -465,7 +465,7 @@ class MattermostAdapter(BasePlatformAdapter):
         if not file_id:
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
@@ -504,7 +504,7 @@ class MattermostAdapter(BasePlatformAdapter):
         if not file_id:
             return SendResult(success=False, error="File upload failed")
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "channel_id": chat_id,
             "message": caption or "",
             "file_ids": [file_id],
@@ -520,8 +520,8 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_multiple_images(
         self,
         chat_id: str,
-        images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None,
+        images: list[tuple[str, str]],
+        metadata: Optional[dict[str, Any]] = None,
         human_delay: float = 0.0,
     ) -> None:
         """Send a batch of images as a single Mattermost post with multiple attachments.
@@ -546,8 +546,8 @@ class MattermostAdapter(BasePlatformAdapter):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
 
-            file_ids: List[str] = []
-            caption_parts: List[str] = []
+            file_ids: list[str] = []
+            caption_parts: list[str] = []
             try:
                 for image_url, alt_text in chunk:
                     if alt_text:
@@ -591,7 +591,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 if not file_ids:
                     continue
 
-                payload: Dict[str, Any] = {
+                payload: dict[str, Any] = {
                     "channel_id": chat_id,
                     "message": "\n".join(caption_parts),
                     "file_ids": file_ids,
@@ -688,7 +688,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
                 break
 
-    async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
+    async def _handle_ws_event(self, event: dict[str, Any]) -> None:
         """Process a single WebSocket event."""
         event_type = event.get("event")
         if event_type != "posted":
@@ -797,8 +797,8 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Download file attachments immediately (URLs require auth headers
         # that downstream tools won't have).
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
         for fid in file_ids:
             try:
                 file_info = await self._api_get(f"files/{fid}/info")
@@ -886,7 +886,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Send via the Mattermost v4 REST API without a live gateway adapter.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
@@ -944,7 +944,7 @@ async def _standalone_send(
             **_sess_kw,
         ) as session:
             # 1. Upload media (if any) and collect file_ids.
-            file_ids: List[str] = []
+            file_ids: list[str] = []
             for media in media_files:
                 file_path = media.get("path") if isinstance(media, dict) else media
                 if not file_path or not os.path.exists(file_path):
@@ -979,7 +979,7 @@ async def _standalone_send(
                             file_ids.append(info["id"])
 
             # 2. Post the message (with thread root + attached file_ids).
-            payload: Dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "channel_id": chat_id,
                 "message": message,
             }

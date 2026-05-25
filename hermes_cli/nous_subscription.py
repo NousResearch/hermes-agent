@@ -52,7 +52,7 @@ class NousSubscriptionFeatures:
     subscribed: bool
     nous_auth_present: bool
     provider_is_nous: bool
-    features: Dict[str, NousFeatureState]
+    features: dict[str, NousFeatureState]
 
     @property
     def web(self) -> NousFeatureState:
@@ -80,7 +80,7 @@ class NousSubscriptionFeatures:
             yield self.features[key]
 
 
-def _model_config_dict(config: Dict[str, object]) -> Dict[str, object]:
+def _model_config_dict(config: dict[str, object]) -> dict[str, object]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         return dict(model_cfg)
@@ -89,7 +89,7 @@ def _model_config_dict(config: Dict[str, object]) -> Dict[str, object]:
     return {}
 
 
-def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
+def _toolset_enabled(config: dict[str, object], toolset_key: str) -> bool:
     from toolsets import resolve_toolset
 
     platform_toolsets = config.get("platform_toolsets")
@@ -111,7 +111,7 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
             if default_toolset:
                 toolset_names = [default_toolset]
 
-        available_tools: Set[str] = set()
+        available_tools: set[str] = set()
         for toolset_name in toolset_names:
             if not isinstance(toolset_name, str) or not toolset_name:
                 continue
@@ -226,7 +226,7 @@ def _resolve_browser_feature_state(
 
 
 def get_nous_subscription_features(
-    config: Optional[Dict[str, object]] = None,
+    config: Optional[dict[str, object]] = None,
 ) -> NousSubscriptionFeatures:
     if config is None:
         config = load_config() or {}
@@ -490,7 +490,7 @@ def get_nous_subscription_features(
 
 
 def apply_nous_managed_defaults(
-    config: Dict[str, object],
+    config: dict[str, object],
     *,
     enabled_toolsets: Optional[Iterable[str]] = None,
 ) -> set[str]:
@@ -560,7 +560,7 @@ _GATEWAY_TOOL_LABELS = {
 }
 
 
-def _get_gateway_direct_credentials() -> Dict[str, bool]:
+def _get_gateway_direct_credentials() -> dict[str, bool]:
     """Return a dict of tool_key -> has_direct_credentials."""
     return {
         "web": bool(
@@ -593,7 +593,7 @@ _ALL_GATEWAY_KEYS = ("web", "image_gen", "tts", "browser")
 
 
 def get_gateway_eligible_tools(
-    config: Optional[Dict[str, object]] = None,
+    config: Optional[dict[str, object]] = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Return (unconfigured, has_direct, already_managed) tool key lists.
 
@@ -642,7 +642,7 @@ def get_gateway_eligible_tools(
 
 
 def apply_gateway_defaults(
-    config: Dict[str, object],
+    config: dict[str, object],
     tool_keys: list[str],
 ) -> set[str]:
     """Apply Tool Gateway config for the given tool keys.
@@ -695,7 +695,7 @@ def apply_gateway_defaults(
     return changed
 
 
-def prompt_enable_tool_gateway(config: Dict[str, object]) -> set[str]:
+def prompt_enable_tool_gateway(config: dict[str, object]) -> set[str]:
     """If eligible tools exist, prompt the user to enable the Tool Gateway.
 
     Uses prompt_choice() with a description parameter so the curses TUI

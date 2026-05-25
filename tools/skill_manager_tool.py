@@ -275,7 +275,7 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
     return SKILLS_DIR / name
 
 
-def _find_skill(name: str) -> Optional[Dict[str, Any]]:
+def _find_skill(name: str) -> Optional[dict[str, Any]]:
     """
     Find a skill by name across all skill directories.
 
@@ -295,7 +295,7 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
+def _find_skill_in_other_profiles(name: str) -> list[tuple[str, Path]]:
     """Look for ``name`` under SKILL.md across OTHER Hermes profiles.
 
     Returns a list of ``(profile_name, skill_dir)`` pairs. Used to make
@@ -304,7 +304,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     when profile discovery fails — fail-quiet, the caller falls back to
     the plain "not found" error).
     """
-    matches: List[Tuple[str, Path]] = []
+    matches: list[tuple[str, Path]] = []
     try:
         from hermes_constants import get_default_hermes_root
         from agent.skill_utils import is_excluded_skill_path
@@ -319,7 +319,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     # Collect (profile_name, skills_dir) for every profile EXCEPT the
     # one whose SKILLS_DIR we already searched in _find_skill().
     active_dir = SKILLS_DIR.resolve() if SKILLS_DIR.exists() else SKILLS_DIR
-    candidates: List[Tuple[str, Path]] = []
+    candidates: list[tuple[str, Path]] = []
 
     # Default profile (~/.hermes/skills) — only consider when active is non-default.
     default_skills = root / "skills"
@@ -426,7 +426,7 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     return None
 
 
-def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Path], Optional[str]]:
+def _resolve_skill_target(skill_dir: Path, file_path: str) -> tuple[Optional[Path], Optional[str]]:
     """Resolve a supporting-file path and ensure it stays within the skill directory."""
     from tools.path_security import validate_within_dir
 
@@ -473,7 +473,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
-def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
+def _create_skill(name: str, content: str, category: str = None) -> dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
     err = _validate_name(name)
@@ -530,7 +530,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     return result
 
 
-def _edit_skill(name: str, content: str) -> Dict[str, Any]:
+def _edit_skill(name: str, content: str) -> dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
     err = _validate_frontmatter(content)
     if err:
@@ -569,7 +569,7 @@ def _patch_skill(
     new_string: str,
     file_path: str = None,
     replace_all: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Targeted find-and-replace within a skill file.
 
     Defaults to SKILL.md. Use file_path to patch a supporting file instead.
@@ -657,7 +657,7 @@ def _patch_skill(
     }
 
 
-def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
+def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, Any]:
     """Delete a skill.
 
     ``absorbed_into`` declares intent:
@@ -714,7 +714,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     }
 
 
-def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
+def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
     err = _validate_file_path(file_path)
     if err:
@@ -766,7 +766,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     }
 
 
-def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
+def _remove_file(name: str, file_path: str) -> dict[str, Any]:
     """Remove a supporting file from any skill directory."""
     err = _validate_file_path(file_path)
     if err:

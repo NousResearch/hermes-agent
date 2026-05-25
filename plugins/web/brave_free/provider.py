@@ -57,7 +57,7 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute a search against the Brave Search API.
 
         Returns ``{"success": True, "data": {"web": [{"title", "url", "description", "position"}]}}``
@@ -122,7 +122,7 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
 
         return {"success": True, "data": {"web": web_results}}
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "Brave Search (Free)",
             "badge": "free",

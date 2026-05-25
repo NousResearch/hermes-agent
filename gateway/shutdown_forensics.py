@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-_SIGNAL_NAME_BY_NUM: Dict[int, str] = {}
+_SIGNAL_NAME_BY_NUM: dict[int, str] = {}
 for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2"):
     _val = getattr(signal, _name, None)
     if _val is not None:
@@ -70,12 +70,12 @@ def _read_proc_cmdline(pid: int) -> Optional[str]:
     return data.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
 
 
-def _proc_summary(pid: int) -> Dict[str, Any]:
+def _proc_summary(pid: int) -> dict[str, Any]:
     """Compact /proc/<pid> snapshot: pid, ppid, state, uid, cmdline.
 
     Best-effort.  Missing fields are simply omitted rather than raising.
     """
-    summary: Dict[str, Any] = {"pid": pid}
+    summary: dict[str, Any] = {"pid": pid}
     if pid <= 0:
         return summary
     name = _read_proc_field(pid, "Name")
@@ -101,7 +101,7 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
     return summary
 
 
-def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
+def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
     """Fast (<10ms) snapshot of who/what is asking us to shut down.
 
     Captures:
@@ -120,7 +120,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     pid = os.getpid()
     ppid = os.getppid()
 
-    ctx: Dict[str, Any] = {
+    ctx: dict[str, Any] = {
         "ts": now,
         "ts_monotonic": monotonic,
         "signal": _signal_name(received_signal),
@@ -278,7 +278,7 @@ def spawn_async_diagnostic(
     return proc.pid
 
 
-def format_context_for_log(ctx: Dict[str, Any]) -> str:
+def format_context_for_log(ctx: dict[str, Any]) -> str:
     """Render a shutdown context dict as a single, scannable log line."""
     sig = ctx.get("signal", "?")
     parent = ctx.get("parent") or {}
@@ -288,7 +288,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     under_systemd = "yes" if ctx.get("under_systemd") else "no"
     load = ctx.get("loadavg_1m")
     load_str = f"{load:.2f}" if isinstance(load, (int, float)) else "?"
-    extras: List[str] = []
+    extras: list[str] = []
     if ctx.get("takeover_marker") is not None:
         for_self = ctx.get("takeover_marker_for_self")
         extras.append(
@@ -311,7 +311,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     )
 
 
-def context_as_json(ctx: Dict[str, Any]) -> str:
+def context_as_json(ctx: dict[str, Any]) -> str:
     """JSON-serialise a context dict for structured ingestion.  Never raises."""
     try:
         return json.dumps(ctx, default=str, sort_keys=True)
@@ -319,7 +319,7 @@ def context_as_json(ctx: Dict[str, Any]) -> str:
         return "{}"
 
 
-def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, Any]]:
+def check_systemd_timing_alignment(drain_timeout: float) -> Optional[dict[str, Any]]:
     """At startup, sanity-check that systemd's TimeoutStopSec >= drain_timeout.
 
     When the gateway is run under a stale systemd unit file (e.g. the user

@@ -308,7 +308,7 @@ def _get_cdp_override() -> str:
     return ""
 
 
-def _get_dialog_policy_config() -> Tuple[str, float]:
+def _get_dialog_policy_config() -> tuple[str, float]:
     """Read ``browser.dialog_policy`` + ``browser.dialog_timeout_s`` from config.
 
     Returns a ``(policy, timeout_s)`` tuple, falling back to the supervisor's
@@ -419,7 +419,7 @@ def _stop_cdp_supervisor(task_id: str) -> None:
 # wins. This keeps the test surface stable while letting third-party
 # plugins drop in under ``~/.hermes/plugins/browser/<vendor>/``.
 
-_PROVIDER_REGISTRY: Dict[str, type] = {
+_PROVIDER_REGISTRY: dict[str, type] = {
     "browserbase": BrowserbaseProvider,
     "browser-use": BrowserUseProvider,
     "firecrawl": FirecrawlProvider,
@@ -427,7 +427,7 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
 # Frozen copy of the import-time _PROVIDER_REGISTRY, used by
 # ``_is_legacy_provider_registry_overridden`` to detect test-time
 # monkeypatching. NEVER mutate this dict.
-_DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = dict(_PROVIDER_REGISTRY)
+_DEFAULT_PROVIDER_REGISTRY: dict[str, type] = dict(_PROVIDER_REGISTRY)
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
@@ -700,7 +700,7 @@ def _using_lightpanda_engine() -> bool:
     return _get_browser_engine() == "lightpanda"
 
 
-def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any]) -> Optional[str]:
+def _lightpanda_fallback_reason(engine: str, command: str, result: dict[str, Any]) -> Optional[str]:
     """Return the user-visible reason a Lightpanda result needs Chrome fallback.
 
     ``None`` means no fallback should run.  The returned string is copied into
@@ -752,12 +752,12 @@ def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any
     return None
 
 
-def _needs_lightpanda_fallback(engine: str, command: str, result: Dict[str, Any]) -> bool:
+def _needs_lightpanda_fallback(engine: str, command: str, result: dict[str, Any]) -> bool:
     """Check if a Lightpanda result should trigger an automatic Chrome fallback."""
     return _lightpanda_fallback_reason(engine, command, result) is not None
 
 
-def _annotate_lightpanda_fallback(result: Dict[str, Any], reason: str) -> Dict[str, Any]:
+def _annotate_lightpanda_fallback(result: dict[str, Any], reason: str) -> dict[str, Any]:
     """Add a user-visible Chrome fallback warning to a browser command result."""
     warning = (
         "⚠ Lightpanda fallback: Chrome was used for this browser action. "
@@ -784,7 +784,7 @@ def _annotate_lightpanda_fallback(result: Dict[str, Any], reason: str) -> Dict[s
     return annotated
 
 
-def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+def _copy_fallback_warning(target: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     """Copy browser fallback metadata from an internal result into a tool response."""
     if result.get("fallback_warning"):
         target["fallback_warning"] = result["fallback_warning"]
@@ -796,9 +796,9 @@ def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Di
 def _run_chrome_fallback_command(
     task_id: str,
     command: str,
-    args: List[str],
+    args: list[str],
     timeout: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run a browser command in a temporary Chrome session at the current URL.
 
     agent-browser locks the engine when a named daemon starts. Passing
@@ -864,7 +864,7 @@ def _run_chrome_fallback_command(
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
 
-    def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
+    def _run_tmp(cmd: str, cmd_args: list[str]) -> dict[str, Any]:
         full = base_args + [cmd] + cmd_args
         # Use temp-file stdout/stderr pattern (same as _run_browser_command)
         # to avoid pipe hang from agent-browser daemon inheriting fds.
@@ -960,9 +960,9 @@ def _run_chrome_fallback_command(
 
 def _chrome_fallback_screenshot(
     task_id: str,
-    args: List[str],
+    args: list[str],
     timeout: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Take a screenshot using a temporary Chrome session."""
     return _run_chrome_fallback_command(task_id, "screenshot", args, timeout)
 
@@ -1158,7 +1158,7 @@ def _socket_safe_tmpdir() -> str:
 # cleanup_browser code paths — the key is opaque to those internals.
 #
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
-_active_sessions: Dict[str, Dict[str, str]] = {}  # session_key -> {session_name, ...}
+_active_sessions: dict[str, dict[str, str]] = {}  # session_key -> {session_name, ...}
 _recording_sessions: set = set()  # session_keys with active recordings
 
 # Tracks the most recent session_key used per task_id. Set by browser_navigate()
@@ -1166,7 +1166,7 @@ _recording_sessions: set = set()  # session_keys with active recordings
 # (snapshot/click/fill/eval/...) so they target the session that served the last
 # navigation.  Without this, a task that navigated to localhost on the local
 # sidecar would fall back to the cloud session on its next snapshot call.
-_last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
+_last_active_session_key: dict[str, str] = {}  # task_id -> session_key
 _LOCAL_SUFFIX = "::local"
 
 # Flag to track if cleanup has been done
@@ -1182,7 +1182,7 @@ _cleanup_done = False
 BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
 
 # Track last activity time per session
-_session_last_activity: Dict[str, float] = {}
+_session_last_activity: dict[str, float] = {}
 
 # Background cleanup thread state
 _cleanup_thread = None
@@ -1622,7 +1622,7 @@ BROWSER_TOOL_SCHEMAS = [
 # Utility Functions
 # ============================================================================
 
-def _create_local_session(task_id: str) -> Dict[str, str]:
+def _create_local_session(task_id: str) -> dict[str, str]:
     import uuid
     session_name = f"h_{uuid.uuid4().hex[:10]}"
     logger.info("Created local browser session %s for task %s",
@@ -1635,7 +1635,7 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
     }
 
 
-def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
+def _create_cdp_session(task_id: str, cdp_url: str) -> dict[str, str]:
     """Create a session that connects to a user-supplied CDP endpoint."""
     import uuid
     session_name = f"cdp_{uuid.uuid4().hex[:10]}"
@@ -1649,7 +1649,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     }
 
 
-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
+def _get_session_info(task_id: Optional[str] = None) -> dict[str, str]:
     """
     Get or create session info for the given session key.
 
@@ -1876,10 +1876,10 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
 def _run_browser_command(
     task_id: str,
     command: str,
-    args: List[str] = None,
+    args: list[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
 
@@ -3493,7 +3493,7 @@ def cleanup_all_browsers() -> None:
 _cached_chromium_installed: Optional[bool] = None
 
 
-def _chromium_search_roots() -> List[str]:
+def _chromium_search_roots() -> list[str]:
     """Directories to scan for a Chromium / headless-shell build.
 
     Order mirrors what agent-browser and Playwright actually probe:
@@ -3505,7 +3505,7 @@ def _chromium_search_roots() -> List[str]:
     4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
        on Windows.
     """
-    roots: List[str] = []
+    roots: list[str] = []
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
     if env_path and env_path != "0":
         roots.append(env_path)

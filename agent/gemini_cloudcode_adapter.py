@@ -69,7 +69,7 @@ def _coerce_content_to_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        pieces: List[str] = []
+        pieces: list[str] = []
         for p in content:
             if isinstance(p, str):
                 pieces.append(p)
@@ -83,7 +83,7 @@ def _coerce_content_to_text(content: Any) -> str:
     return str(content)
 
 
-def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
+def _translate_tool_call_to_gemini(tool_call: dict[str, Any]) -> dict[str, Any]:
     """OpenAI tool_call -> Gemini functionCall part."""
     fn = tool_call.get("function") or {}
     args_raw = fn.get("arguments", "")
@@ -105,7 +105,7 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
+def _translate_tool_result_to_gemini(message: dict[str, Any]) -> dict[str, Any]:
     """OpenAI tool-role message -> Gemini functionResponse part.
 
     The function name isn't in the OpenAI tool message directly; it must be
@@ -131,11 +131,11 @@ def _translate_tool_result_to_gemini(message: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _build_gemini_contents(
-    messages: List[Dict[str, Any]],
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
     """Convert OpenAI messages[] to Gemini contents[] + systemInstruction."""
-    system_text_parts: List[str] = []
-    contents: List[Dict[str, Any]] = []
+    system_text_parts: list[str] = []
+    contents: list[dict[str, Any]] = []
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -155,7 +155,7 @@ def _build_gemini_contents(
             continue
 
         gemini_role = _ROLE_MAP_OPENAI_TO_GEMINI.get(role, "user")
-        parts: List[Dict[str, Any]] = []
+        parts: list[dict[str, Any]] = []
 
         text = _coerce_content_to_text(msg.get("content"))
         if text:
@@ -174,7 +174,7 @@ def _build_gemini_contents(
 
         contents.append({"role": gemini_role, "parts": parts})
 
-    system_instruction: Optional[Dict[str, Any]] = None
+    system_instruction: Optional[dict[str, Any]] = None
     joined_system = "\n".join(p for p in system_text_parts if p).strip()
     if joined_system:
         system_instruction = {
@@ -185,11 +185,11 @@ def _build_gemini_contents(
     return contents, system_instruction
 
 
-def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
+def _translate_tools_to_gemini(tools: Any) -> list[dict[str, Any]]:
     """OpenAI tools[] -> Gemini tools[].functionDeclarations[]."""
     if not isinstance(tools, list) or not tools:
         return []
-    declarations: List[Dict[str, Any]] = []
+    declarations: list[dict[str, Any]] = []
     for t in tools:
         if not isinstance(t, dict):
             continue
@@ -211,7 +211,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
     return [{"functionDeclarations": declarations}]
 
 
-def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any]]:
+def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[dict[str, Any]]:
     """OpenAI tool_choice -> Gemini toolConfig.functionCallingConfig."""
     if tool_choice is None:
         return None
@@ -235,14 +235,14 @@ def _translate_tool_choice_to_gemini(tool_choice: Any) -> Optional[Dict[str, Any
     return None
 
 
-def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
+def _normalize_thinking_config(config: Any) -> Optional[dict[str, Any]]:
     """Accept thinkingBudget / thinkingLevel / includeThoughts (+ snake_case)."""
     if not isinstance(config, dict) or not config:
         return None
     budget = config.get("thinkingBudget", config.get("thinking_budget"))
     level = config.get("thinkingLevel", config.get("thinking_level"))
     include = config.get("includeThoughts", config.get("include_thoughts"))
-    normalized: Dict[str, Any] = {}
+    normalized: dict[str, Any] = {}
     if isinstance(budget, (int, float)):
         normalized["thinkingBudget"] = int(budget)
     if isinstance(level, str) and level.strip():
@@ -254,7 +254,7 @@ def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
 
 def build_gemini_request(
     *,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     tools: Any = None,
     tool_choice: Any = None,
     temperature: Optional[float] = None,
@@ -262,11 +262,11 @@ def build_gemini_request(
     top_p: Optional[float] = None,
     stop: Any = None,
     thinking_config: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build the inner Gemini request body (goes inside ``request`` wrapper)."""
     contents, system_instruction = _build_gemini_contents(messages)
 
-    body: Dict[str, Any] = {"contents": contents}
+    body: dict[str, Any] = {"contents": contents}
     if system_instruction is not None:
         body["systemInstruction"] = system_instruction
 
@@ -277,7 +277,7 @@ def build_gemini_request(
     if tool_cfg is not None:
         body["toolConfig"] = tool_cfg
 
-    generation_config: Dict[str, Any] = {}
+    generation_config: dict[str, Any] = {}
     if isinstance(temperature, (int, float)):
         generation_config["temperature"] = float(temperature)
     if isinstance(max_tokens, int) and max_tokens > 0:
@@ -301,9 +301,9 @@ def wrap_code_assist_request(
     *,
     project_id: str,
     model: str,
-    inner_request: Dict[str, Any],
+    inner_request: dict[str, Any],
     user_prompt_id: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Wrap the inner Gemini request in the Code Assist envelope."""
     return {
         "project": project_id,
@@ -318,7 +318,7 @@ def wrap_code_assist_request(
 # =============================================================================
 
 def _translate_gemini_response(
-    resp: Dict[str, Any],
+    resp: dict[str, Any],
     model: str,
 ) -> SimpleNamespace:
     """Non-streaming Gemini response -> OpenAI-shaped SimpleNamespace.
@@ -336,9 +336,9 @@ def _translate_gemini_response(
     content_obj = cand.get("content") if isinstance(cand, dict) else {}
     parts = content_obj.get("parts") if isinstance(content_obj, dict) else []
 
-    text_pieces: List[str] = []
-    reasoning_pieces: List[str] = []
-    tool_calls: List[SimpleNamespace] = []
+    text_pieces: list[str] = []
+    reasoning_pieces: list[str] = []
+    tool_calls: list[SimpleNamespace] = []
 
     for i, part in enumerate(parts or []):
         if not isinstance(part, dict):
@@ -446,11 +446,11 @@ def _make_stream_chunk(
     *,
     model: str,
     content: str = "",
-    tool_call_delta: Optional[Dict[str, Any]] = None,
+    tool_call_delta: Optional[dict[str, Any]] = None,
     finish_reason: Optional[str] = None,
     reasoning: str = "",
 ) -> _GeminiStreamChunk:
-    delta_kwargs: Dict[str, Any] = {
+    delta_kwargs: dict[str, Any] = {
         "role": "assistant",
         "content": None,
         "tool_calls": None,
@@ -484,7 +484,7 @@ def _make_stream_chunk(
     )
 
 
-def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
+def _iter_sse_events(response: httpx.Response) -> Iterator[dict[str, Any]]:
     """Parse Server-Sent Events from an httpx streaming response."""
     buffer = ""
     for chunk in response.iter_text():
@@ -507,10 +507,10 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
 
 
 def _translate_stream_event(
-    event: Dict[str, Any],
+    event: dict[str, Any],
     model: str,
-    tool_call_counter: List[int],
-) -> List[_GeminiStreamChunk]:
+    tool_call_counter: list[int],
+) -> list[_GeminiStreamChunk]:
     """Unwrap Code Assist envelope and emit OpenAI-shaped chunk(s).
 
     ``tool_call_counter`` is a single-element list used as a mutable counter
@@ -527,7 +527,7 @@ def _translate_stream_event(
     if not isinstance(cand, dict):
         return []
 
-    chunks: List[_GeminiStreamChunk] = []
+    chunks: list[_GeminiStreamChunk] = []
 
     content = cand.get("content") or {}
     parts = content.get("parts") if isinstance(content, dict) else []
@@ -596,7 +596,7 @@ class GeminiCloudCodeClient:
         *,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        default_headers: Optional[Dict[str, str]] = None,
+        default_headers: Optional[dict[str, str]] = None,
         project_id: str = "",
         **_: Any,
     ):
@@ -666,7 +666,7 @@ class GeminiCloudCodeClient:
         self,
         *,
         model: str = "gemini-2.5-flash",
-        messages: Optional[List[Dict[str, Any]]] = None,
+        messages: Optional[list[dict[str, Any]]] = None,
         stream: bool = False,
         tools: Any = None,
         tool_choice: Any = None,
@@ -674,7 +674,7 @@ class GeminiCloudCodeClient:
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
         stop: Any = None,
-        extra_body: Optional[Dict[str, Any]] = None,
+        extra_body: Optional[dict[str, Any]] = None,
         timeout: Any = None,
         **_: Any,
     ) -> Any:
@@ -731,8 +731,8 @@ class GeminiCloudCodeClient:
         self,
         *,
         model: str,
-        wrapped: Dict[str, Any],
-        headers: Dict[str, str],
+        wrapped: dict[str, Any],
+        headers: dict[str, str],
     ) -> Iterator[_GeminiStreamChunk]:
         """Generator that yields OpenAI-shaped streaming chunks."""
         url = f"{CODE_ASSIST_ENDPOINT}/v1internal:streamGenerateContent?alt=sse"
@@ -746,7 +746,7 @@ class GeminiCloudCodeClient:
                         # Materialize error body for better diagnostics
                         response.read()
                         raise _gemini_http_error(response)
-                    tool_call_counter: List[int] = [0]
+                    tool_call_counter: list[int] = [0]
                     for event in _iter_sse_events(response):
                         for chunk in _translate_stream_event(event, model, tool_call_counter):
                             yield chunk
@@ -780,7 +780,7 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
 
     # Parse the body once, surviving any weird encodings.
     body_text = ""
-    body_json: Dict[str, Any] = {}
+    body_json: dict[str, Any] = {}
     try:
         body_text = response.text
     except Exception:
@@ -809,7 +809,7 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
     # Extract google.rpc.ErrorInfo reason + metadata.  There may be more
     # than one ErrorInfo (rare), so we pick the first one with a reason.
     error_reason = ""
-    error_metadata: Dict[str, Any] = {}
+    error_metadata: dict[str, Any] = {}
     retry_delay_seconds: Optional[float] = None
     for detail in err_details_list:
         if not isinstance(detail, dict):

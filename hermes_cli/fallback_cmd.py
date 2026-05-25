@@ -28,7 +28,7 @@ from hermes_cli.fallback_config import get_fallback_chain
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _read_chain(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the normalized fallback chain as a list of dicts.
 
     Accepts both the new list format (``fallback_providers``) and the legacy
@@ -39,7 +39,7 @@ def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     return get_fallback_chain(config)
 
 
-def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
+def _write_chain(config: dict[str, Any], chain: list[dict[str, Any]]) -> None:
     """Persist the chain to ``fallback_providers`` and clear legacy key."""
     config["fallback_providers"] = chain
     # Drop the legacy single-dict key on write so there's only one source of truth.
@@ -47,7 +47,7 @@ def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
         config.pop("fallback_model", None)
 
 
-def _format_entry(entry: Dict[str, Any]) -> str:
+def _format_entry(entry: dict[str, Any]) -> str:
     """One-line human-readable rendering of a fallback entry."""
     provider = entry.get("provider", "?")
     model = entry.get("model", "?")
@@ -56,7 +56,7 @@ def _format_entry(entry: Dict[str, Any]) -> str:
     return f"{model}  (via {provider}){suffix}"
 
 
-def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]:
+def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[dict[str, Any]]:
     """Pull the ``{provider, model, base_url?, api_mode?}`` dict from a ``config["model"]`` snapshot."""
     if not isinstance(model_cfg, dict):
         return None
@@ -65,7 +65,7 @@ def _extract_fallback_from_model_cfg(model_cfg: Any) -> Optional[Dict[str, Any]]
     model = (model_cfg.get("default") or model_cfg.get("model") or "").strip()
     if not provider or not model:
         return None
-    entry: Dict[str, Any] = {"provider": provider, "model": model}
+    entry: dict[str, Any] = {"provider": provider, "model": model}
     base_url = (model_cfg.get("base_url") or "").strip()
     if base_url:
         entry["base_url"] = base_url
@@ -132,7 +132,7 @@ def cmd_fallback_list(args) -> None:  # noqa: ARG001
     print()
 
 
-def _describe_primary(config: Dict[str, Any]) -> Optional[str]:
+def _describe_primary(config: dict[str, Any]) -> Optional[str]:
     """One-line description of the primary model for display purposes."""
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
@@ -311,7 +311,7 @@ def cmd_fallback_clear(args) -> None:  # noqa: ARG001
     print()
 
 
-def _numbered_pick(question: str, choices: List[str]) -> Optional[int]:
+def _numbered_pick(question: str, choices: list[str]) -> Optional[int]:
     """Fallback numbered-list picker when curses is unavailable."""
     print(question)
     for i, c in enumerate(choices, 1):

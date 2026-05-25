@@ -42,7 +42,7 @@ class SpotifyClient:
     def __init__(self) -> None:
         self._runtime = self._resolve_runtime(refresh_if_expiring=True)
 
-    def _resolve_runtime(self, *, force_refresh: bool = False, refresh_if_expiring: bool = True) -> Dict[str, Any]:
+    def _resolve_runtime(self, *, force_refresh: bool = False, refresh_if_expiring: bool = True) -> dict[str, Any]:
         try:
             return resolve_spotify_runtime_credentials(
                 force_refresh=force_refresh,
@@ -55,7 +55,7 @@ class SpotifyClient:
     def base_url(self) -> str:
         return str(self._runtime.get("base_url") or "").rstrip("/")
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._runtime['access_token']}",
             "Content-Type": "application/json",
@@ -66,10 +66,10 @@ class SpotifyClient:
         method: str,
         path: str,
         *,
-        params: Optional[Dict[str, Any]] = None,
-        json_body: Optional[Dict[str, Any]] = None,
+        params: Optional[dict[str, Any]] = None,
+        json_body: Optional[dict[str, Any]] = None,
         allow_retry_on_401: bool = True,
-        empty_response: Optional[Dict[str, Any]] = None,
+        empty_response: Optional[dict[str, Any]] = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
         response = httpx.request(
@@ -149,7 +149,7 @@ class SpotifyClient:
         device_id: Optional[str] = None,
         context_uri: Optional[str] = None,
         uris: Optional[list[str]] = None,
-        offset: Optional[Dict[str, Any]] = None,
+        offset: Optional[dict[str, Any]] = None,
         position_ms: Optional[int] = None,
     ) -> Any:
         return self.request(
@@ -376,7 +376,7 @@ def _friendly_spotify_error_message(
     return f"Spotify API request failed with status {status_code}."
 
 
-def _strip_none(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _strip_none(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
     if not payload:
         return {}
     return {key: value for key, value in payload.items() if value is not None}

@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 _BUNDLE_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _BUNDLE_MULTI_HYPHEN = re.compile(r"-{2,}")
 
-_bundles_cache: Dict[str, Dict[str, Any]] = {}
+_bundles_cache: dict[str, dict[str, Any]] = {}
 _bundles_cache_mtime: Optional[float] = None
 
 
@@ -82,17 +82,17 @@ def _slugify(name: str) -> str:
     return cmd
 
 
-def _iter_bundle_files() -> List[Path]:
+def _iter_bundle_files() -> list[Path]:
     base = _bundles_dir()
     if not base.exists():
         return []
-    files: List[Path] = []
+    files: list[Path] = []
     for ext in ("*.yaml", "*.yml"):
         files.extend(sorted(base.glob(ext)))
     return files
 
 
-def _max_mtime(files: List[Path]) -> float:
+def _max_mtime(files: list[Path]) -> float:
     """Highest mtime across the bundle files plus the dir itself.
 
     Watching the directory mtime catches deletions; watching individual
@@ -113,7 +113,7 @@ def _max_mtime(files: List[Path]) -> float:
     return max(mtimes) if mtimes else 0.0
 
 
-def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
+def _load_bundle_file(path: Path) -> Optional[dict[str, Any]]:
     """Parse a single bundle YAML file. Returns ``None`` on any error.
 
     Errors are logged at WARNING level. We don't raise — a broken bundle
@@ -165,7 +165,7 @@ def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
     }
 
 
-def scan_bundles() -> Dict[str, Dict[str, Any]]:
+def scan_bundles() -> dict[str, dict[str, Any]]:
     """Scan the bundles directory and rebuild the cache.
 
     Returns the same mapping as :func:`get_skill_bundles` — ``"/slug"`` →
@@ -174,7 +174,7 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
     """
     global _bundles_cache, _bundles_cache_mtime
     files = _iter_bundle_files()
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for f in files:
         info = _load_bundle_file(f)
         if not info:
@@ -192,7 +192,7 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
+def get_skill_bundles() -> dict[str, dict[str, Any]]:
     """Return the current bundle mapping, rescanning when disk changed.
 
     Cheap to call repeatedly: only rescans when the bundles directory or
@@ -218,14 +218,14 @@ def resolve_bundle_command_key(command: str) -> Optional[str]:
     return cmd_key if cmd_key in get_skill_bundles() else None
 
 
-def reload_bundles() -> Dict[str, Any]:
+def reload_bundles() -> dict[str, Any]:
     """Re-scan the bundles directory and return a diff.
 
     Mirrors :func:`agent.skill_commands.reload_skills` so callers can use
     the same display logic. Returns a dict with ``added``, ``removed``,
     ``unchanged``, and ``total`` keys.
     """
-    def _snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    def _snapshot(cmds: dict[str, dict[str, Any]]) -> dict[str, str]:
         return {k.lstrip("/"): (v or {}).get("description", "") for k, v in cmds.items()}
 
     before = _snapshot(_bundles_cache)
@@ -244,7 +244,7 @@ def reload_bundles() -> Dict[str, Any]:
     }
 
 
-def list_bundles() -> List[Dict[str, Any]]:
+def list_bundles() -> list[dict[str, Any]]:
     """Return a sorted list of bundle info dicts for display."""
     bundles = get_skill_bundles()
     return sorted(bundles.values(), key=lambda b: b["slug"])
@@ -254,7 +254,7 @@ def build_bundle_invocation_message(
     cmd_key: str,
     user_instruction: str = "",
     task_id: str | None = None,
-) -> Optional[Tuple[str, List[str], List[str]]]:
+) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message content for a bundle slash command invocation.
 
     Returns ``(message, loaded_skill_names, missing_skill_names)`` or
@@ -274,9 +274,9 @@ def build_bundle_invocation_message(
     # keep skill_bundles cheap to import in test environments.
     from agent.skill_commands import _load_skill_payload, _build_skill_message
 
-    loaded_names: List[str] = []
-    missing: List[str] = []
-    skill_blocks: List[str] = []
+    loaded_names: list[str] = []
+    missing: list[str] = []
+    skill_blocks: list[str] = []
     seen: set[str] = set()
 
     bundle_name = info["name"]
@@ -355,7 +355,7 @@ def bundle_path_for(name: str) -> Path:
 
 def save_bundle(
     name: str,
-    skills: List[str],
+    skills: list[str],
     description: str = "",
     instruction: str = "",
     overwrite: bool = False,
@@ -377,7 +377,7 @@ def save_bundle(
         raise FileExistsError(f"Bundle already exists at {path}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload: Dict[str, Any] = {"name": name, "skills": cleaned_skills}
+    payload: dict[str, Any] = {"name": name, "skills": cleaned_skills}
     if description:
         payload["description"] = description
     if instruction:
@@ -404,7 +404,7 @@ def delete_bundle(name: str) -> Path:
     return path
 
 
-def get_bundle(name: str) -> Optional[Dict[str, Any]]:
+def get_bundle(name: str) -> Optional[dict[str, Any]]:
     """Look up a bundle by name (slug-normalized)."""
     slug = _slugify(name)
     return get_skill_bundles().get(f"/{slug}")

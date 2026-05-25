@@ -25,7 +25,7 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 
-BROWSER_DIALOG_SCHEMA: Dict[str, Any] = {
+BROWSER_DIALOG_SCHEMA: dict[str, Any] = {
     "name": "browser_dialog",
     "description": (
         "Respond to a native JavaScript dialog (alert / confirm / prompt / "

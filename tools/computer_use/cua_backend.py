@@ -101,7 +101,7 @@ def cua_driver_install_hint() -> str:
     )
 
 
-def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
+def _parse_windows_from_text(text: str) -> list[dict[str, Any]]:
     """Parse window records from list_windows text output."""
     windows = []
     for m in _WINDOW_LINE_RE.finditer(text):
@@ -114,7 +114,7 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
     return windows
 
 
-def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
+def _parse_elements_from_tree(markdown: str) -> list[UIElement]:
     """Parse UIElement list from get_window_state AX tree markdown.
 
     Handles both the classic ``"label"``-quoted format and the newer
@@ -133,7 +133,7 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     return elements
 
 
-def _split_tree_text(full_text: str) -> Tuple[str, str]:
+def _split_tree_text(full_text: str) -> tuple[str, str]:
     """Split get_window_state text into (summary_line, tree_markdown)."""
     lines = full_text.split("\n", 1)
     summary = lines[0]
@@ -141,7 +141,7 @@ def _split_tree_text(full_text: str) -> Tuple[str, str]:
     return summary, tree
 
 
-def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
+def _parse_key_combo(keys: str) -> tuple[Optional[str], list[str]]:
     """Parse a key string like 'cmd+s' into (key, modifiers).
 
     Returns (key, modifiers) where key is the non-modifier key and modifiers
@@ -280,16 +280,16 @@ class _CuaDriverSession:
             finally:
                 self._started = False
 
-    async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _call_tool_async(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         result = await self._session.call_tool(name, args)
         return _extract_tool_result(result)
 
-    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+    def call_tool(self, name: str, args: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
         self._require_started()
         return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
 
 
-def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
+def _extract_tool_result(mcp_result: Any) -> dict[str, Any]:
     """Convert an mcp CallToolResult into a plain dict.
 
     cua-driver returns a mix of text parts, image parts, and structuredContent.
@@ -305,10 +305,10 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
     list_windows window arrays.
     """
     data: Any = None
-    images: List[str] = []
+    images: list[str] = []
     is_error = bool(getattr(mcp_result, "isError", False))
-    structured: Optional[Dict] = getattr(mcp_result, "structuredContent", None) or None
-    text_chunks: List[str] = []
+    structured: Optional[dict] = getattr(mcp_result, "structuredContent", None) or None
+    text_chunks: list[str] = []
     for part in getattr(mcp_result, "content", []) or []:
         ptype = getattr(part, "type", None)
         if ptype == "text":
@@ -427,7 +427,7 @@ class CuaDriverBackend(ComputerUseBackend):
 
         # Step 2: capture.
         png_b64: Optional[str] = None
-        elements: List[UIElement] = []
+        elements: list[UIElement] = []
         width = height = 0
         window_title = ""
 
@@ -489,7 +489,7 @@ class CuaDriverBackend(ComputerUseBackend):
         y: Optional[int] = None,
         button: str = "left",
         click_count: int = 1,
-        modifiers: Optional[List[str]] = None,
+        modifiers: Optional[list[str]] = None,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -504,7 +504,7 @@ class CuaDriverBackend(ComputerUseBackend):
         else:
             tool = "click"
 
-        args: Dict[str, Any] = {"pid": pid}
+        args: dict[str, Any] = {"pid": pid}
         if element is not None:
             if self._active_window_id is None:
                 return ActionResult(ok=False, action=tool,
@@ -527,16 +527,16 @@ class CuaDriverBackend(ComputerUseBackend):
         *,
         from_element: Optional[int] = None,
         to_element: Optional[int] = None,
-        from_xy: Optional[Tuple[int, int]] = None,
-        to_xy: Optional[Tuple[int, int]] = None,
+        from_xy: Optional[tuple[int, int]] = None,
+        to_xy: Optional[tuple[int, int]] = None,
         button: str = "left",
-        modifiers: Optional[List[str]] = None,
+        modifiers: Optional[list[str]] = None,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
             return ActionResult(ok=False, action="drag",
                                 message="No active window — call capture() first.")
-        args: Dict[str, Any] = {"pid": pid}
+        args: dict[str, Any] = {"pid": pid}
         if from_element is not None and to_element is not None:
             if self._active_window_id is None:
                 return ActionResult(ok=False, action="drag",
@@ -560,13 +560,13 @@ class CuaDriverBackend(ComputerUseBackend):
         element: Optional[int] = None,
         x: Optional[int] = None,
         y: Optional[int] = None,
-        modifiers: Optional[List[str]] = None,
+        modifiers: Optional[list[str]] = None,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
             return ActionResult(ok=False, action="scroll",
                                 message="No active window — call capture() first.")
-        args: Dict[str, Any] = {
+        args: dict[str, Any] = {
             "pid": pid,
             "direction": direction,
             "amount": max(1, min(50, amount)),
@@ -615,7 +615,7 @@ class CuaDriverBackend(ComputerUseBackend):
         if element is None:
             return ActionResult(ok=False, action="set_value",
                                 message="set_value requires element= (element index).")
-        args: Dict[str, Any] = {
+        args: dict[str, Any] = {
             "pid": pid,
             "window_id": window_id,
             "element_index": element,
@@ -624,7 +624,7 @@ class CuaDriverBackend(ComputerUseBackend):
         return self._action("set_value", args)
 
     # ── Introspection ──────────────────────────────────────────────
-    def list_apps(self) -> List[Dict[str, Any]]:
+    def list_apps(self) -> list[dict[str, Any]]:
         out = self._session.call_tool("list_apps", {})
         data = out["data"]
         if isinstance(data, list):
@@ -692,7 +692,7 @@ class CuaDriverBackend(ComputerUseBackend):
                             message=f"No on-screen window found for app '{app}'.")
 
     # ── Internal ───────────────────────────────────────────────────
-    def _action(self, name: str, args: Dict[str, Any]) -> ActionResult:
+    def _action(self, name: str, args: dict[str, Any]) -> ActionResult:
         try:
             out = self._session.call_tool(name, args)
         except Exception as e:
@@ -709,7 +709,7 @@ class CuaDriverBackend(ComputerUseBackend):
                             meta=data if isinstance(data, dict) else {})
 
 
-def _parse_element(d: Dict[str, Any]) -> UIElement:
+def _parse_element(d: dict[str, Any]) -> UIElement:
     bounds = d.get("bounds") or (0, 0, 0, 0)
     if isinstance(bounds, dict):
         bounds = (

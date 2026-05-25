@@ -602,7 +602,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
         self._sync_thread.start()
 
-    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         """Commit the session to trigger memory extraction.
 
         OpenViking automatically extracts 6 categories of memories:
@@ -636,7 +636,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         action: str,
         target: str,
         content: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """Mirror built-in memory writes to OpenViking via content/write."""
         if not self._client or action != "add" or not content:
@@ -662,7 +662,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         t = threading.Thread(target=_write, daemon=True, name="openviking-memwrite")
         t.start()
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
@@ -741,7 +741,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not query:
             return tool_error("query is required")
 
-        payload: Dict[str, Any] = {"query": query}
+        payload: dict[str, Any] = {"query": query}
         mode = args.get("mode", "auto")
         if mode != "auto":
             payload["mode"] = mode
@@ -918,7 +918,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if args.get("to") and args.get("parent"):
             return tool_error("Cannot specify both 'to' and 'parent'")
 
-        payload: Dict[str, Any] = {}
+        payload: dict[str, Any] = {}
         for key in ("reason", "to", "parent", "instruction", "wait", "timeout"):
             if key in args and args[key] not in {None, ""}:
                 payload[key] = args[key]

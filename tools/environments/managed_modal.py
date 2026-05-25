@@ -48,7 +48,7 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
         image: str,
         cwd: str = "/root",
         timeout: int = 60,
-        modal_sandbox_kwargs: Optional[Dict[str, Any]] = None,
+        modal_sandbox_kwargs: Optional[dict[str, Any]] = None,
         persistent_filesystem: bool = True,
         task_id: str = "default",
     ):
@@ -71,7 +71,7 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
 
     def _start_modal_exec(self, prepared: PreparedModalExec) -> ModalExecStart:
         exec_id = str(uuid.uuid4())
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "execId": exec_id,
             "command": prepared.command,
             "cwd": prepared.cwd,
@@ -227,9 +227,9 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
             )
 
     def _request(self, method: str, path: str, *,
-                 json: Dict[str, Any] | None = None,
+                 json: dict[str, Any] | None = None,
                  timeout: int = 30,
-                 extra_headers: Dict[str, str] | None = None) -> requests.Response:
+                 extra_headers: dict[str, str] | None = None) -> requests.Response:
         headers = {
             "Authorization": f"Bearer {self._nous_user_token}",
             "Content-Type": "application/json",

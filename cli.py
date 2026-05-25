@@ -279,7 +279,7 @@ def _assistant_copy_text(content: Any) -> str:
 # Configuration Loading
 # =============================================================================
 
-def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
+def _load_prefill_messages(file_path: str) -> list[dict[str, Any]]:
     """Load ephemeral prefill messages from a JSON file.
     
     The file should contain a JSON array of {role, content} dicts, e.g.:
@@ -327,7 +327,7 @@ def _parse_service_tier_config(raw: str) -> str | None:
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
-def load_cli_config() -> Dict[str, Any]:
+def load_cli_config() -> dict[str, Any]:
     """
     Load CLI configuration from config files.
     
@@ -962,7 +962,7 @@ def _run_cleanup():
 # =============================================================================
 
 # Tracks the active worktree for cleanup on exit
-_active_worktree: Optional[Dict[str, str]] = None
+_active_worktree: Optional[dict[str, str]] = None
 
 
 def _normalize_git_bash_path(p: Optional[str]) -> Optional[str]:
@@ -1024,7 +1024,7 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
-def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
+def _setup_worktree(repo_root: str = None) -> Optional[dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
     Returns a dict with worktree metadata on success, None on failure.
@@ -1183,7 +1183,7 @@ def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> boo
         return True
 
 
-def _cleanup_worktree(info: Dict[str, str] = None) -> None:
+def _cleanup_worktree(info: dict[str, str] = None) -> None:
     """Remove a worktree and its branch on exit.
 
     Preserves the worktree only if it has unpushed commits (real work
@@ -2807,7 +2807,7 @@ class HermesCLI:
     def __init__(
         self,
         model: str = None,
-        toolsets: List[str] = None,
+        toolsets: list[str] = None,
         provider: str = None,
         api_key: str = None,
         base_url: str = None,
@@ -3070,7 +3070,7 @@ class HermesCLI:
         self._app = None  # prompt_toolkit Application (set in run())
         
         # Conversation state
-        self.conversation_history: List[Dict[str, Any]] = []
+        self.conversation_history: list[dict[str, Any]] = []
         self.session_start = datetime.now()
         self._resumed = False
         # Per-prompt elapsed timer — started at the beginning of each chat turn,
@@ -3185,7 +3185,7 @@ class HermesCLI:
         self._resize_recovery_pending = False
 
         # Background task tracking: {task_id: threading.Thread}
-        self._background_tasks: Dict[str, threading.Thread] = {}
+        self._background_tasks: dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
@@ -3384,7 +3384,7 @@ class HermesCLI:
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
-    def _get_status_bar_snapshot(self) -> Dict[str, Any]:
+    def _get_status_bar_snapshot(self) -> dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
         # changes mid-session, so the TUI would show a stale name after

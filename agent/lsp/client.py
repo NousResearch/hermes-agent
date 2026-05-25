@@ -103,7 +103,7 @@ def uri_to_path(uri: str) -> str:
     return os.path.normpath(unquote(raw))
 
 
-def _end_position(text: str) -> Dict[str, int]:
+def _end_position(text: str) -> dict[str, int]:
     """Return the LSP Position at the end of ``text``.
 
     Used to construct a single-range "replace whole document" change
@@ -145,10 +145,10 @@ class LSPClient:
         *,
         server_id: str,
         workspace_root: str,
-        command: List[str],
-        env: Optional[Dict[str, str]] = None,
+        command: list[str],
+        env: Optional[dict[str, str]] = None,
         cwd: Optional[str] = None,
-        initialization_options: Optional[Dict[str, Any]] = None,
+        initialization_options: Optional[dict[str, Any]] = None,
         seed_diagnostics_on_first_push: bool = False,
     ) -> None:
         self.server_id = server_id
@@ -166,11 +166,11 @@ class LSPClient:
 
         # Request/response correlation
         self._next_id: int = 0
-        self._pending: Dict[int, asyncio.Future] = {}
+        self._pending: dict[int, asyncio.Future] = {}
 
         # Server-side request handlers (server → client requests).
         # Kept small and explicit; everything else returns method-not-found.
-        self._request_handlers: Dict[str, Callable[[Any], Awaitable[Any]]] = {
+        self._request_handlers: dict[str, Callable[[Any], Awaitable[Any]]] = {
             "window/workDoneProgress/create": self._handle_work_done_create,
             "workspace/configuration": self._handle_workspace_configuration,
             "client/registerCapability": self._handle_register_capability,
@@ -179,30 +179,30 @@ class LSPClient:
             "workspace/diagnostic/refresh": self._handle_diagnostic_refresh,
         }
         # Notifications (server → client) we care about.
-        self._notification_handlers: Dict[str, Callable[[Any], None]] = {
+        self._notification_handlers: dict[str, Callable[[Any], None]] = {
             "textDocument/publishDiagnostics": self._handle_publish_diagnostics,
             # Everything else (window/showMessage, $/progress, etc.)
             # is silently dropped by default.
         }
 
         # Tracked file state — required for didChange version bumps.
-        self._files: Dict[str, Dict[str, Any]] = {}
+        self._files: dict[str, dict[str, Any]] = {}
         # Diagnostic stores, keyed by file path (NOT URI).
-        self._push_diagnostics: Dict[str, List[Dict[str, Any]]] = {}
-        self._pull_diagnostics: Dict[str, List[Dict[str, Any]]] = {}
+        self._push_diagnostics: dict[str, list[dict[str, Any]]] = {}
+        self._pull_diagnostics: dict[str, list[dict[str, Any]]] = {}
         # Per-path "last published" time so wait-for-fresh logic works.
-        self._published: Dict[str, float] = {}
+        self._published: dict[str, float] = {}
         # Per-path version of the latest push (matches our didChange
         # version when the server respects it).
-        self._published_version: Dict[str, int] = {}
+        self._published_version: dict[str, int] = {}
         # First-push seen flag, for typescript-style seed-on-first-push.
-        self._first_push_seen: Set[str] = set()
+        self._first_push_seen: set[str] = set()
         # Capability registrations — only diagnostic ones are tracked.
-        self._diagnostic_registrations: Dict[str, Dict[str, Any]] = {}
+        self._diagnostic_registrations: dict[str, dict[str, Any]] = {}
 
         # State machine
         self._state: str = "stopped"
-        self._initialize_result: Optional[Dict[str, Any]] = None
+        self._initialize_result: Optional[dict[str, Any]] = None
         self._sync_kind: int = 1  # 1=Full, 2=Incremental
         self._stopping: bool = False
 
@@ -561,7 +561,7 @@ class LSPClient:
         if not isinstance(params, dict):
             return [None]
         items = params.get("items") or []
-        out: List[Any] = []
+        out: list[Any] = []
         for item in items:
             if not isinstance(item, dict):
                 out.append(None)
@@ -683,7 +683,7 @@ class LSPClient:
             )
             new_version = existing["version"] + 1
             old_text = existing["text"]
-            content_changes: List[Dict[str, Any]]
+            content_changes: list[dict[str, Any]]
             if self._sync_kind == 2:
                 content_changes = [
                     {
@@ -752,7 +752,7 @@ class LSPClient:
         no-ops on errors (server may not support the pull endpoint).
         """
         try:
-            params: Dict[str, Any] = {
+            params: dict[str, Any] = {
                 "textDocument": {"uri": file_uri(os.path.abspath(path))}
             }
             result = await self._send_request_with_retry(
@@ -867,7 +867,7 @@ class LSPClient:
             except asyncio.TimeoutError:
                 continue
 
-    def diagnostics_for(self, path: str) -> List[Dict[str, Any]]:
+    def diagnostics_for(self, path: str) -> list[dict[str, Any]]:
         """Return current merged + deduped diagnostics for one file.
 
         Diagnostics from push and pull stores are concatenated and
@@ -880,9 +880,9 @@ class LSPClient:
         return _dedupe(push, pull)
 
 
-def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen: Set[str] = set()
-    out: List[Dict[str, Any]] = []
+def _dedupe(*lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
     for lst in lists:
         for d in lst:
             if not isinstance(d, dict):
@@ -895,7 +895,7 @@ def _dedupe(*lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def _diagnostic_key(d: Dict[str, Any]) -> str:
+def _diagnostic_key(d: dict[str, Any]) -> str:
     """Content-equality key for a diagnostic.
 
     Matches the structural-equality used in claude-code's

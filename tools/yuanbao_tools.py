@@ -292,7 +292,7 @@ async def send_dm(
     name: str,
     message: str,
     user_id: str = "",
-    media_files: Optional[List[Tuple[str, bool]]] = None,
+    media_files: Optional[list[tuple[str, bool]]] = None,
 ) -> dict:
     """
     Send a DM (private chat message) to a group member, with optional media.

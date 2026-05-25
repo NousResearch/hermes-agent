@@ -82,7 +82,7 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
-_OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
+_OFFICIAL_DOCS_PRICING: dict[tuple[str, str], PricingEntry] = {
     # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
     # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
     # tokens for the same text).
@@ -596,7 +596,7 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
 
 
 def _pricing_entry_from_metadata(
-    metadata: Dict[str, Dict[str, Any]],
+    metadata: dict[str, dict[str, Any]],
     model_id: str,
     *,
     source_url: str,

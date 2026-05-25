@@ -113,7 +113,7 @@ class SessionSource:
         
         return ", ".join(parts)
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "platform": self.platform.value,
             "chat_id": self.chat_id,
@@ -137,7 +137,7 @@ class SessionSource:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
+    def from_dict(cls, data: dict[str, Any]) -> "SessionSource":
         return cls(
             platform=Platform(data["platform"]),
             chat_id=str(data["chat_id"]),
@@ -167,8 +167,8 @@ class SessionContext:
     - Where it can deliver scheduled task outputs
     """
     source: SessionSource
-    connected_platforms: List[Platform]
-    home_channels: Dict[Platform, HomeChannel]
+    connected_platforms: list[Platform]
+    home_channels: dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
     
     # Session metadata
@@ -177,7 +177,7 @@ class SessionContext:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "source": self.source.to_dict(),
             "connected_platforms": [p.value for p in self.connected_platforms],
@@ -491,7 +491,7 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         result = {
             "session_key": self.session_key,
             "session_id": self.session_id,
@@ -527,7 +527,7 @@ class SessionEntry:
         return result
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SessionEntry":
+    def from_dict(cls, data: dict[str, Any]) -> "SessionEntry":
         origin = None
         if "origin" in data and data["origin"]:
             origin = SessionSource.from_dict(data["origin"])
@@ -677,7 +677,7 @@ class SessionStore:
                  has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
         self.config = config
-        self._entries: Dict[str, SessionEntry] = {}
+        self._entries: dict[str, SessionEntry] = {}
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
@@ -1234,7 +1234,7 @@ class SessionStore:
 
         return new_entry
 
-    def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
+    def list_sessions(self, active_minutes: Optional[int] = None) -> list[SessionEntry]:
         """List all sessions, optionally filtered by activity."""
         with self._lock:
             self._ensure_loaded_locked()
@@ -1248,7 +1248,7 @@ class SessionStore:
 
         return entries
     
-    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+    def append_to_transcript(self, session_id: str, message: dict[str, Any], skip_db: bool = False) -> None:
         """Append a message to a session's transcript (SQLite).
 
         Args:
@@ -1282,7 +1282,7 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
     
-    def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+    def rewrite_transcript(self, session_id: str, messages: list[dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
 
         Used by /retry, /undo, and /compress to persist modified conversation
@@ -1294,7 +1294,7 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
 
-    def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
+    def load_transcript(self, session_id: str) -> list[dict[str, Any]]:
         """Load all messages from a session's transcript.
 
         state.db is the canonical store. The legacy JSONL fallback was removed

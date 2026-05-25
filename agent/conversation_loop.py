@@ -233,11 +233,11 @@ def run_conversation(
     agent,
     user_message: str,
     system_message: str = None,
-    conversation_history: List[Dict[str, Any]] = None,
+    conversation_history: list[dict[str, Any]] = None,
     task_id: str = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
 
@@ -576,7 +576,7 @@ def run_conversation(
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
-    truncated_response_parts: List[str] = []
+    truncated_response_parts: list[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
@@ -586,7 +586,7 @@ def run_conversation(
     # entry (the model recovered).  At end-of-turn, any entries still
     # present are surfaced in an advisory footer so the model cannot
     # over-claim success while the file is actually unchanged on disk.
-    agent._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
+    agent._turn_failed_file_mutations: dict[str, dict[str, Any]] = {}
     
     # Record the execution thread so interrupt()/clear_interrupt() can
     # scope the tool-level interrupt signal to THIS agent's thread only.

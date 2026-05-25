@@ -47,7 +47,7 @@ logger = logging.getLogger("agent.lsp.install")
 #     ``pkg`` in the same node_modules tree.  Used when an LSP server
 #     has a runtime peer dependency that npm doesn't auto-pull (e.g.
 #     typescript-language-server needs ``typescript``).
-INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
+INSTALL_RECIPES: dict[str, dict[str, Any]] = {
     # Python
     "pyright": {"strategy": "npm", "pkg": "pyright", "bin": "pyright-langserver"},
     # JS/TS family
@@ -105,8 +105,8 @@ INSTALL_RECIPES: Dict[str, Dict[str, Any]] = {
 }
 
 
-_install_locks: Dict[str, threading.Lock] = {}
-_install_results: Dict[str, Optional[str]] = {}
+_install_locks: dict[str, threading.Lock] = {}
+_install_results: dict[str, Optional[str]] = {}
 _install_lock_meta = threading.Lock()
 
 

@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
+VALID_ASPECT_RATIOS: tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
 
 
@@ -76,7 +76,7 @@ class ImageGenProvider(abc.ABC):
         """
         return True
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         """Return catalog entries for ``hermes tools`` model picker.
 
         Each entry::
@@ -93,7 +93,7 @@ class ImageGenProvider(abc.ABC):
         """
         return []
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         """Return provider metadata for the ``hermes tools`` picker.
 
         Used by ``tools_config.py`` to inject this provider as a row in
@@ -133,7 +133,7 @@ class ImageGenProvider(abc.ABC):
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate an image.
 
         Implementations should return the dict from :func:`success_response`
@@ -280,15 +280,15 @@ def success_response(
     prompt: str,
     aspect_ratio: str,
     provider: str,
-    extra: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    extra: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Build a uniform success response dict.
 
     ``image`` may be an HTTP URL or an absolute filesystem path (for b64
     providers like OpenAI). Callers that need to pass through additional
     backend-specific fields can supply ``extra``.
     """
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "success": True,
         "image": image,
         "model": model,
@@ -310,7 +310,7 @@ def error_response(
     model: str = "",
     prompt: str = "",
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build a uniform error response dict."""
     return {
         "success": False,

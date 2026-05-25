@@ -72,7 +72,7 @@ def hermes_xai_user_agent() -> str:
     return f"Hermes-Agent/{__version__}"
 
 
-def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, str]:
+def resolve_xai_http_credentials(*, force_refresh: bool = False) -> dict[str, str]:
     """Resolve bearer credentials for direct xAI HTTP endpoints.
 
     Prefers Hermes-managed xAI OAuth credentials when available, then falls back

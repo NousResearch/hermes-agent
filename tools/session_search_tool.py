@@ -86,7 +86,7 @@ def _resolve_to_parent(db, session_id: str) -> str:
     return cur
 
 
-def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
+def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None) -> dict[str, Any]:
     """Slim a message row for the tool response. Keeps content even if empty."""
     entry = {
         "id": m.get("id"),
@@ -277,7 +277,7 @@ def _scroll(
 def _discover(
     db,
     query: str,
-    role_filter: Optional[List[str]],
+    role_filter: Optional[list[str]],
     limit: int,
     sort: Optional[str],
     current_session_id: str = None,
@@ -429,7 +429,7 @@ def session_search(
         return _list_recent_sessions(db, limit, current_session_id)
 
     # Parse role_filter
-    role_list: Optional[List[str]] = None
+    role_list: Optional[list[str]] = None
     if isinstance(role_filter, str) and role_filter.strip():
         role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 

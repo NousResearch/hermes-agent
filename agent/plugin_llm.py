@@ -99,7 +99,7 @@ class PluginLlmImageInput:
     type: str = "image"
 
 
-PluginLlmInput = Union[PluginLlmTextInput, PluginLlmImageInput, Dict[str, Any]]
+PluginLlmInput = Union[PluginLlmTextInput, PluginLlmImageInput, dict[str, Any]]
 """A single structured input block.
 
 Plugins may pass either the dataclasses above or plain dicts with the
@@ -133,7 +133,7 @@ class PluginLlmCompleteResult:
     model: str
     agent_id: str
     usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
-    audit: Dict[str, Any] = field(default_factory=dict)
+    audit: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -152,7 +152,7 @@ class PluginLlmStructuredResult:
     usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
     parsed: Optional[Any] = None
     content_type: str = "text"
-    audit: Dict[str, Any] = field(default_factory=dict)
+    audit: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -334,13 +334,13 @@ def _check_overrides(
 # ---------------------------------------------------------------------------
 
 
-def _normalize_input_block(block: PluginLlmInput) -> Dict[str, Any]:
+def _normalize_input_block(block: PluginLlmInput) -> dict[str, Any]:
     """Coerce a structured input block to a plain dict the message
     builder understands. Unknown shapes raise ``ValueError``."""
     if isinstance(block, PluginLlmTextInput):
         return {"type": "text", "text": block.text}
     if isinstance(block, PluginLlmImageInput):
-        d: Dict[str, Any] = {
+        d: dict[str, Any] = {
             "type": "image",
             "mime_type": block.mime_type,
             "file_name": block.file_name,
@@ -379,7 +379,7 @@ def _build_structured_messages(
     json_schema: Optional[Any],
     schema_name: Optional[str],
     system_prompt: Optional[str],
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Build the OpenAI-style messages list for a structured call.
 
     The instructions become the first text part of the user message,
@@ -387,8 +387,8 @@ def _build_structured_messages(
     JSON-only directive when JSON output is requested. Image inputs are
     encoded as ``image_url`` parts.
     """
-    messages: List[Dict[str, Any]] = []
-    sys_parts: List[str] = []
+    messages: list[dict[str, Any]] = []
+    sys_parts: list[str] = []
     if system_prompt:
         sys_parts.append(system_prompt.strip())
     if json_mode or json_schema is not None:
@@ -399,7 +399,7 @@ def _build_structured_messages(
     if sys_parts:
         messages.append({"role": "system", "content": "\n\n".join(sys_parts)})
 
-    user_parts: List[Dict[str, Any]] = []
+    user_parts: list[dict[str, Any]] = []
     header = instructions.strip()
     if schema_name:
         header = f"{header}\n\nSchema name: {schema_name}"
@@ -525,7 +525,7 @@ def _extract_text(response: Any) -> str:
         if isinstance(content, str):
             return content
         if isinstance(content, list):
-            parts: List[str] = []
+            parts: list[str] = []
             for part in content:
                 if isinstance(part, dict):
                     if part.get("type") == "text" and isinstance(part.get("text"), str):
@@ -621,7 +621,7 @@ class PluginLlm:
 
     def complete(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         *,
         provider: Optional[str] = None,
         model: Optional[str] = None,
@@ -776,7 +776,7 @@ class PluginLlm:
 
     async def acomplete(
         self,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         *,
         provider: Optional[str] = None,
         model: Optional[str] = None,
@@ -897,7 +897,7 @@ class PluginLlm:
     @staticmethod
     def _json_response_format(
         *, json_mode: bool, json_schema: Optional[Any]
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """Build the ``extra_body.response_format`` payload for the
         provider request. Falls back to ``json_object`` when no schema
         is given so providers that ignore json_schema still get a hint."""
@@ -919,14 +919,14 @@ class PluginLlm:
     def _invoke_sync(
         self,
         *,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         provider_override: Optional[str],
         model_override: Optional[str],
         profile_override: Optional[str],
         temperature: Optional[float],
         max_tokens: Optional[int],
         timeout: Optional[float],
-        extra_body: Optional[Dict[str, Any]] = None,
+        extra_body: Optional[dict[str, Any]] = None,
     ) -> tuple[str, str, Any]:
         """Invoke the host's ``call_llm``. Lazy-imports
         ``agent.auxiliary_client`` to avoid circular deps at plugin
@@ -966,14 +966,14 @@ class PluginLlm:
     async def _invoke_async(
         self,
         *,
-        messages: List[Dict[str, Any]],
+        messages: list[dict[str, Any]],
         provider_override: Optional[str],
         model_override: Optional[str],
         profile_override: Optional[str],
         temperature: Optional[float],
         max_tokens: Optional[int],
         timeout: Optional[float],
-        extra_body: Optional[Dict[str, Any]] = None,
+        extra_body: Optional[dict[str, Any]] = None,
     ) -> tuple[str, str, Any]:
         if self._async_caller is not None:
             return await self._async_caller(

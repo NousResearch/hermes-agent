@@ -108,7 +108,7 @@ class ExaWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute an Exa search.
 
         Returns ``{"success": True, "data": {"web": [{...}, ...]}}`` on
@@ -150,7 +150,7 @@ class ExaWebSearchProvider(WebSearchProvider):
             logger.warning("Exa search error: %s", exc)
             return {"success": False, "error": f"Exa search failed: {exc}"}
 
-    def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+    def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Extract content from one or more URLs via Exa.
 
         Returns a list of result dicts shaped for the legacy LLM
@@ -168,7 +168,7 @@ class ExaWebSearchProvider(WebSearchProvider):
             logger.info("Exa extract: %d URL(s)", len(urls))
             response = _get_exa_client().get_contents(urls, text=True)
 
-            results: List[Dict[str, Any]] = []
+            results: list[dict[str, Any]] = []
             for result in response.results or []:
                 content = result.text or ""
                 url = result.url or ""
@@ -197,7 +197,7 @@ class ExaWebSearchProvider(WebSearchProvider):
                 for u in urls
             ]
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "Exa",
             "badge": "paid",

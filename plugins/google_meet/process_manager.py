@@ -44,7 +44,7 @@ def _active_file() -> Path:
     return _root() / ".active.json"
 
 
-def _read_active() -> Optional[Dict[str, Any]]:
+def _read_active() -> Optional[dict[str, Any]]:
     p = _active_file()
     if not p.is_file():
         return None
@@ -54,7 +54,7 @@ def _read_active() -> Optional[Dict[str, Any]]:
         return None
 
 
-def _write_active(data: Dict[str, Any]) -> None:
+def _write_active(data: dict[str, Any]) -> None:
     p = _active_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
@@ -95,7 +95,7 @@ def start(
     realtime_voice: Optional[str] = None,
     realtime_instructions: Optional[str] = None,
     realtime_api_key: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Spawn the meet_bot subprocess for *url*.
 
     If a bot is already running for this hermes install, leave it first —
@@ -187,7 +187,7 @@ def start(
     return {"ok": True, **record}
 
 
-def status() -> Dict[str, Any]:
+def status() -> dict[str, Any]:
     """Return the current meeting state, or ``{"ok": False, "reason": ...}``."""
     active = _read_active()
     if not active:
@@ -197,7 +197,7 @@ def status() -> Dict[str, Any]:
     alive = _pid_alive(pid) if pid else False
 
     status_path = Path(active.get("out_dir", "")) / "status.json"
-    bot_status: Dict[str, Any] = {}
+    bot_status: dict[str, Any] = {}
     if status_path.is_file():
         try:
             bot_status = json.loads(status_path.read_text(encoding="utf-8"))
@@ -216,7 +216,7 @@ def status() -> Dict[str, Any]:
     }
 
 
-def transcript(last: Optional[int] = None) -> Dict[str, Any]:
+def transcript(last: Optional[int] = None) -> dict[str, Any]:
     """Read the current transcript file. Returns ok=False if none exists."""
     active = _read_active()
     if not active:
@@ -243,7 +243,7 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
     }
 
 
-def enqueue_say(text: str) -> Dict[str, Any]:
+def enqueue_say(text: str) -> dict[str, Any]:
     """Append a ``say`` request to the active bot's JSONL queue.
 
     Returns ``{"ok": False, "reason": ...}`` when no meeting is active or
@@ -285,7 +285,7 @@ def enqueue_say(text: str) -> Dict[str, Any]:
     }
 
 
-def stop(*, reason: str = "requested") -> Dict[str, Any]:
+def stop(*, reason: str = "requested") -> dict[str, Any]:
     """Signal the active bot to leave cleanly, then clear the active pointer.
 
     Sends SIGTERM and waits up to 10s for the bot to exit. Falls back to

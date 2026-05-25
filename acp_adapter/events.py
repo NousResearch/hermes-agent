@@ -115,8 +115,8 @@ def make_tool_progress_cb(
     conn: acp.Client,
     session_id: str,
     loop: asyncio.AbstractEventLoop,
-    tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]],
+    tool_call_ids: dict[str, deque[str]],
+    tool_call_meta: dict[str, dict[str, Any]],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
@@ -210,8 +210,8 @@ def make_step_cb(
     conn: acp.Client,
     session_id: str,
     loop: asyncio.AbstractEventLoop,
-    tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]],
+    tool_call_ids: dict[str, deque[str]],
+    tool_call_meta: dict[str, dict[str, Any]],
 ) -> Callable:
     """Create a ``step_callback`` for AIAgent.
 

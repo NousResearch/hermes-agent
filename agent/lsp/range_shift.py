@@ -88,8 +88,8 @@ def build_line_shift(pre_text: str, post_text: str) -> Callable[[int], Optional[
     return shift
 
 
-def shift_diagnostic_range(diag: Dict[str, Any],
-                           shift: Callable[[int], Optional[int]]) -> Optional[Dict[str, Any]]:
+def shift_diagnostic_range(diag: dict[str, Any],
+                           shift: Callable[[int], Optional[int]]) -> Optional[dict[str, Any]]:
     """Return a copy of ``diag`` with its line range remapped through ``shift``.
 
     Returns ``None`` if the diagnostic's start line maps to ``None``
@@ -133,10 +133,10 @@ def shift_diagnostic_range(diag: Dict[str, Any],
     return shifted
 
 
-def shift_baseline(baseline: List[Dict[str, Any]],
-                   shift: Callable[[int], Optional[int]]) -> List[Dict[str, Any]]:
+def shift_baseline(baseline: list[dict[str, Any]],
+                   shift: Callable[[int], Optional[int]]) -> list[dict[str, Any]]:
     """Apply ``shift`` to every diagnostic in ``baseline``, dropping deleted entries."""
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for d in baseline:
         if not isinstance(d, dict):
             continue

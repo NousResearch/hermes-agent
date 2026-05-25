@@ -81,7 +81,7 @@ def _render_qr(url: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _create_bind_task(timeout: float = ONBOARD_API_TIMEOUT) -> Tuple[str, str]:
+def _create_bind_task(timeout: float = ONBOARD_API_TIMEOUT) -> tuple[str, str]:
     """Create a bind task and return *(task_id, aes_key_base64)*.
 
     Raises:
@@ -111,7 +111,7 @@ def _create_bind_task(timeout: float = ONBOARD_API_TIMEOUT) -> Tuple[str, str]:
 def _poll_bind_result(
     task_id: str,
     timeout: float = ONBOARD_API_TIMEOUT,
-) -> Tuple[BindStatus, str, str, str]:
+) -> tuple[BindStatus, str, str, str]:
     """Poll the bind result for *task_id*.
 
     Returns:

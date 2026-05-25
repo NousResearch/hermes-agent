@@ -193,8 +193,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Mention state is the structured ``is_in_at_list`` attribute from the
         # dingtalk-stream SDK (set from the callback's ``isInAtList`` flag),
         # not text parsing.
-        self._mention_patterns: List[re.Pattern] = self._compile_mention_patterns()
-        self._allowed_users: Set[str] = self._load_allowed_users()
+        self._mention_patterns: list[re.Pattern] = self._compile_mention_patterns()
+        self._allowed_users: set[str] = self._load_allowed_users()
 
         self._stream_client: Any = None
         self._stream_task: Optional[asyncio.Task] = None
@@ -206,18 +206,18 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Message deduplication
         self._dedup = MessageDeduplicator(max_size=1000)
         # Map chat_id -> (session_webhook, expired_time_ms) for reply routing
-        self._session_webhooks: Dict[str, tuple[str, int]] = {}
+        self._session_webhooks: dict[str, tuple[str, int]] = {}
         # Map chat_id -> last inbound ChatbotMessage. Keyed by chat_id instead
         # of a single class attribute to avoid cross-message clobbering when
         # multiple conversations run concurrently.
-        self._message_contexts: Dict[str, Any] = {}
+        self._message_contexts: dict[str, Any] = {}
         self._card_template_id: Optional[str] = extra.get("card_template_id")
 
         # Chats for which we've already fired the Done reaction — prevents
         # double-firing across segment boundaries or parallel flows
         # (tool-progress + stream-consumer both finalizing their cards).
         # Reset each inbound message.
-        self._done_emoji_fired: Set[str] = set()
+        self._done_emoji_fired: set[str] = set()
         # Cards in streaming state per chat: chat_id -> { out_track_id -> last_content }.
         # Every `send()` creates+finalizes a card (closed state).  A subsequent
         # `edit_message(finalize=False)` re-opens the card (DingTalk's API
@@ -225,10 +225,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         # streaming).  We track those reopened cards so the next `send()` can
         # auto-close them as siblings — otherwise tool-progress cards get
         # stuck in streaming state forever.
-        self._streaming_cards: Dict[str, Dict[str, str]] = {}
+        self._streaming_cards: dict[str, dict[str, str]] = {}
         # Track fire-and-forget emoji/reaction coroutines so Python's GC
         # doesn't drop them mid-flight, and we can cancel them on disconnect.
-        self._bg_tasks: Set[asyncio.Task] = set()
+        self._bg_tasks: set[asyncio.Task] = set()
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -394,7 +394,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
-    def _dingtalk_free_response_chats(self) -> Set[str]:
+    def _dingtalk_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
             raw = os.getenv("DINGTALK_FREE_RESPONSE_CHATS", "")
@@ -402,7 +402,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
-    def _dingtalk_allowed_chats(self) -> Set[str]:
+    def _dingtalk_allowed_chats(self) -> set[str]:
         """Return the whitelist of group chat IDs the bot will respond in.
 
         When non-empty, group messages from chats NOT in this set are silently
@@ -416,7 +416,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
-    def _compile_mention_patterns(self) -> List[re.Pattern]:
+    def _compile_mention_patterns(self) -> list[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
         if patterns is None:
@@ -442,7 +442,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
             return []
 
-        compiled: List[re.Pattern] = []
+        compiled: list[re.Pattern] = []
         for pattern in patterns:
             if not isinstance(pattern, str) or not pattern.strip():
                 continue
@@ -454,7 +454,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.info("[%s] Loaded %d DingTalk mention pattern(s)", self.name, len(compiled))
         return compiled
 
-    def _load_allowed_users(self) -> Set[str]:
+    def _load_allowed_users(self) -> set[str]:
         """Load allowed-users list from config.extra or env var.
 
         IDs are matched case-insensitively against the sender's ``staff_id`` and
@@ -823,7 +823,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a markdown reply via DingTalk session webhook."""
         metadata = metadata or {}
@@ -936,7 +936,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send an image via DingTalk markdown.
 
@@ -960,7 +960,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """DingTalk webhook replies cannot send local image files directly."""
@@ -979,7 +979,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """DingTalk webhook replies cannot send local file attachments directly."""
@@ -991,7 +991,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             ),
         )
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
         return {
             "name": chat_id,

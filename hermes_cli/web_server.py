@@ -93,7 +93,7 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 
 # Simple rate limiter for the reveal endpoint
-_reveal_timestamps: List[float] = []
+_reveal_timestamps: list[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
@@ -252,7 +252,7 @@ async def auth_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 # Manual overrides for fields that need select options or custom types
-_SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+_SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",
@@ -348,7 +348,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
-_CATEGORY_MERGE: Dict[str, str] = {
+_CATEGORY_MERGE: dict[str, str] = {
     "privacy": "security",
     "context": "agent",
     "skills": "agent",
@@ -391,11 +391,11 @@ def _infer_type(value: Any) -> str:
 
 
 def _build_schema_from_config(
-    config: Dict[str, Any],
+    config: dict[str, Any],
     prefix: str = "",
-) -> Dict[str, Dict[str, Any]]:
+) -> dict[str, dict[str, Any]]:
     """Walk DEFAULT_CONFIG and produce a flat dot-path → field schema dict."""
-    schema: Dict[str, Dict[str, Any]] = {}
+    schema: dict[str, dict[str, Any]] = {}
     for key, value in config.items():
         full_key = f"{prefix}.{key}" if prefix else key
 
@@ -416,7 +416,7 @@ def _build_schema_from_config(
             # Recurse into nested dicts
             schema.update(_build_schema_from_config(value, full_key))
         else:
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "type": _infer_type(value),
                 "description": full_key.replace(".", " → ").replace("_", " ").title(),
                 "category": category,
@@ -436,7 +436,7 @@ CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 # by the normalize/denormalize cycle.  Insert model_context_length right after
 # the "model" key so it renders adjacent in the frontend.
 _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
-_ordered_schema: Dict[str, Dict[str, Any]] = {}
+_ordered_schema: dict[str, dict[str, Any]] = {}
 for _k, _v in CONFIG_SCHEMA.items():
     _ordered_schema[_k] = _v
     if _k == "model":
@@ -654,17 +654,17 @@ async def get_status():
 _ACTION_LOG_DIR: Path = get_hermes_home() / "logs"
 
 # Short ``name`` (from the URL) → absolute log file path.
-_ACTION_LOG_FILES: Dict[str, str] = {
+_ACTION_LOG_FILES: dict[str, str] = {
     "gateway-restart": "gateway-restart.log",
     "hermes-update": "hermes-update.log",
 }
 
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
 # report liveness and exit code without shelling out to ``ps``.
-_ACTION_PROCS: Dict[str, subprocess.Popen] = {}
+_ACTION_PROCS: dict[str, subprocess.Popen] = {}
 
 
-def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
+def _spawn_hermes_action(subcommand: list[str], name: str) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
     Uses the running interpreter's ``hermes_cli.main`` module so the action
@@ -680,7 +680,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
 
     cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
 
-    popen_kwargs: Dict[str, Any] = {
+    popen_kwargs: dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
@@ -700,7 +700,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     return proc
 
 
-def _tail_lines(path: Path, n: int) -> List[str]:
+def _tail_lines(path: Path, n: int) -> list[str]:
     """Return the last ``n`` lines of ``path``.  Reads the whole file — fine
     for our small per-action logs.  Binary-decoded with ``errors='replace'``
     so log corruption doesn't 500 the endpoint."""
@@ -837,7 +837,7 @@ async def search_sessions(q: str = "", limit: int = 20):
         raise HTTPException(status_code=500, detail="Search failed")
 
 
-def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize config for the web UI.
 
     Hermes supports ``model`` as either a bare string (``"anthropic/claude-sonnet-4"``)
@@ -972,7 +972,7 @@ def get_model_info():
 
 # Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
 # in hermes_cli/config.py — listed here for deterministic ordering in the UI.
-_AUX_TASK_SLOTS: Tuple[str, ...] = (
+_AUX_TASK_SLOTS: tuple[str, ...] = (
     "vision",
     "web_extract",
     "compression",
@@ -1137,7 +1137,7 @@ async def set_model_assignment(body: ModelAssignment):
 
 
 
-def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
+def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 
     Reconstructs ``model`` as a dict by reading the current on-disk config
@@ -1309,7 +1309,7 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
     return f"…{s[-visible:]}"
 
 
-def _anthropic_oauth_status() -> Dict[str, Any]:
+def _anthropic_oauth_status() -> dict[str, Any]:
     """Combined status across the three Anthropic credential sources we read.
 
     Hermes resolves Anthropic creds in this order at runtime:
@@ -1374,7 +1374,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     return {"logged_in": False, "source": None}
 
 
-def _claude_code_only_status() -> Dict[str, Any]:
+def _claude_code_only_status() -> dict[str, Any]:
     """Surface Claude Code CLI credentials as their own provider entry.
 
     Independent of the Anthropic entry above so users can see whether their
@@ -1405,7 +1405,7 @@ def _claude_code_only_status() -> Dict[str, Any]:
 # right UI: ``pkce`` = open URL + paste callback code, ``device_code`` =
 # show code + verification URL + poll, ``external`` = read-only (delegated
 # to a third-party CLI like Claude Code or Qwen).
-_OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
+_OAUTH_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     {
         "id": "anthropic",
         "name": "Anthropic (Claude API)",
@@ -1462,7 +1462,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
 )
 
 
-def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
+def _resolve_provider_status(provider_id: str, status_fn) -> dict[str, Any]:
     """Dispatch to the right status helper for an OAuth provider entry."""
     if status_fn is not None:
         try:
@@ -1629,7 +1629,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
 # expired sessions so the dict doesn't grow without bound.
 
 _OAUTH_SESSION_TTL_SECONDS = 15 * 60
-_oauth_sessions: Dict[str, Dict[str, Any]] = {}
+_oauth_sessions: dict[str, dict[str, Any]] = {}
 _oauth_sessions_lock = threading.Lock()
 
 # Import OAuth constants from canonical source instead of duplicating.
@@ -1658,7 +1658,7 @@ def _gc_oauth_sessions() -> None:
             _oauth_sessions.pop(sid, None)
 
 
-def _new_oauth_session(provider_id: str, flow: str) -> tuple[str, Dict[str, Any]]:
+def _new_oauth_session(provider_id: str, flow: str) -> tuple[str, dict[str, Any]]:
     """Create + register a new OAuth session, return (session_id, session_dict)."""
     sid = secrets.token_urlsafe(16)
     sess = {
@@ -1741,7 +1741,7 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         _log.warning("anthropic pool add (dashboard) failed: %s", e)
 
 
-def _start_anthropic_pkce() -> Dict[str, Any]:
+def _start_anthropic_pkce() -> dict[str, Any]:
     """Begin PKCE flow. Returns the auth URL the UI should open."""
     if not _ANTHROPIC_OAUTH_AVAILABLE:
         raise HTTPException(status_code=501, detail="Anthropic OAuth not available (missing adapter)")
@@ -1768,7 +1768,7 @@ def _start_anthropic_pkce() -> Dict[str, Any]:
     }
 
 
-def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
+def _submit_anthropic_pkce(session_id: str, code_input: str) -> dict[str, Any]:
     """Exchange authorization code for tokens. Persists on success."""
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
@@ -1834,7 +1834,7 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
     return {"ok": True, "status": "approved"}
 
 
-async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
+async def _start_device_code_flow(provider_id: str) -> dict[str, Any]:
     """Initiate a device-code flow (Nous, OpenAI Codex, or MiniMax).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
@@ -2584,7 +2584,7 @@ class CronJobUpdate(BaseModel):
 _CRON_PROFILE_LOCK = threading.RLock()
 
 
-def _cron_profile_dicts() -> List[Dict[str, Any]]:
+def _cron_profile_dicts() -> list[dict[str, Any]]:
     """Return dashboard profile records, falling back to a directory scan."""
     from hermes_cli import profiles as profiles_mod
     try:
@@ -2594,7 +2594,7 @@ def _cron_profile_dicts() -> List[Dict[str, Any]]:
         return _fallback_profile_dicts(profiles_mod)
 
 
-def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
+def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME)."""
     from hermes_cli import profiles as profiles_mod
 
@@ -2609,7 +2609,7 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
     return canon, profiles_mod.get_profile_dir(canon)
 
 
-def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+def _annotate_cron_job(job: dict[str, Any], profile: str, home: Path) -> dict[str, Any]:
     annotated = dict(job)
     annotated["profile"] = profile
     annotated["profile_name"] = profile
@@ -2667,7 +2667,7 @@ async def list_cron_jobs(profile: str = "all"):
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
 
-    jobs: List[Dict[str, Any]] = []
+    jobs: list[dict[str, Any]] = []
     for item in _cron_profile_dicts():
         name = str(item.get("name") or "")
         if not name:
@@ -2786,7 +2786,7 @@ def _profile_attr(info, name: str, default: Any = None) -> Any:
         return default
 
 
-def _profile_to_dict(info) -> Dict[str, Any]:
+def _profile_to_dict(info) -> dict[str, Any]:
     return {
         "name": _profile_attr(info, "name", ""),
         "path": str(_profile_attr(info, "path", "")),
@@ -2798,14 +2798,14 @@ def _profile_to_dict(info) -> Dict[str, Any]:
     }
 
 
-def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
+def _fallback_profile_dicts(profiles_mod) -> list[dict[str, Any]]:
     def _safe(callable_, default):
         try:
             return callable_()
         except Exception:
             return default
 
-    profiles: List[Dict[str, Any]] = []
+    profiles: list[dict[str, Any]] = []
     default_home = profiles_mod._get_default_hermes_home()
     if default_home.is_dir():
         model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
@@ -3804,7 +3804,7 @@ _BUILTIN_DASHBOARD_THEMES = [
 ]
 
 
-def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0) -> Optional[Dict[str, Any]]:
+def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0) -> Optional[dict[str, Any]]:
     """Normalise a theme layer spec from YAML into `{hex, alpha}` form.
 
     Accepts shorthand (a bare hex string) or full dict form.  Returns
@@ -3828,7 +3828,7 @@ def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0)
     return None
 
 
-_THEME_DEFAULT_TYPOGRAPHY: Dict[str, str] = {
+_THEME_DEFAULT_TYPOGRAPHY: dict[str, str] = {
     "fontSans": 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     "fontMono": 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace',
     "baseSize": "15px",
@@ -3836,7 +3836,7 @@ _THEME_DEFAULT_TYPOGRAPHY: Dict[str, str] = {
     "letterSpacing": "0",
 }
 
-_THEME_DEFAULT_LAYOUT: Dict[str, str] = {
+_THEME_DEFAULT_LAYOUT: dict[str, str] = {
     "radius": "0.5rem",
     "density": "comfortable",
 }
@@ -3873,7 +3873,7 @@ _THEME_LAYOUT_VARIANTS = {"standard", "cockpit", "tiled"}
 _THEME_CUSTOM_CSS_MAX = 32 * 1024
 
 
-def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _normalise_theme_definition(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Normalise a user theme YAML into the wire format `ThemeProvider`
     expects.  Returns ``None`` if the theme is unusable.
 
@@ -3891,7 +3891,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     # Allow top-level `colors.background` as a shorthand too.
     colors_src = data.get("colors", {}) if isinstance(data.get("colors"), dict) else {}
 
-    def _layer(key: str, default_hex: str, default_alpha: float = 1.0) -> Dict[str, Any]:
+    def _layer(key: str, default_hex: str, default_alpha: float = 1.0) -> dict[str, Any]:
         spec = palette_src.get(key, colors_src.get(key))
         parsed = _parse_theme_layer(spec, default_hex, default_alpha)
         return parsed if parsed is not None else {"hex": default_hex, "alpha": default_alpha}
@@ -3929,7 +3929,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
 
     # Color overrides — keep only valid keys with string values.
     overrides_src = data.get("colorOverrides", {})
-    color_overrides: Dict[str, str] = {}
+    color_overrides: dict[str, str] = {}
     if isinstance(overrides_src, dict):
         for key, val in overrides_src.items():
             if key in _THEME_OVERRIDE_KEYS and isinstance(val, str) and val.strip():
@@ -3940,7 +3940,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     # We don't fetch remote assets here; the frontend just injects them as
     # CSS vars.  Empty values are dropped so a theme can explicitly clear a
     # slot by setting ``hero: ""``.
-    assets_out: Dict[str, Any] = {}
+    assets_out: dict[str, Any] = {}
     assets_src = data.get("assets", {}) if isinstance(data.get("assets"), dict) else {}
     for key in _THEME_NAMED_ASSET_KEYS:
         val = assets_src.get(key)
@@ -3948,7 +3948,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
             assets_out[key] = val
     custom_assets_src = assets_src.get("custom")
     if isinstance(custom_assets_src, dict):
-        custom_assets: Dict[str, str] = {}
+        custom_assets: dict[str, str] = {}
         for key, val in custom_assets_src.items():
             if (
                 isinstance(key, str)
@@ -3974,12 +3974,12 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
     # property -> CSS string.  The frontend converts these into CSS vars
     # that shell components (Card, App header, Backdrop) consume.
     component_styles_src = data.get("componentStyles", {})
-    component_styles: Dict[str, Dict[str, str]] = {}
+    component_styles: dict[str, dict[str, str]] = {}
     if isinstance(component_styles_src, dict):
         for bucket, props in component_styles_src.items():
             if bucket not in _THEME_COMPONENT_BUCKETS or not isinstance(props, dict):
                 continue
-            clean: Dict[str, str] = {}
+            clean: dict[str, str] = {}
             for prop, value in props.items():
                 if (
                     isinstance(prop, str)
@@ -3998,7 +3998,7 @@ def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]
         else "standard"
     )
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "name": name,
         "label": data.get("label") or name,
         "description": data.get("description", ""),
@@ -4190,7 +4190,7 @@ def _discover_dashboard_plugins() -> list:
                 # The frontend exposes ``registerSlot(pluginName, slotName, Component)``
                 # on window; plugins with non-empty slots call it from their JS bundle.
                 slots_src = data.get("slots")
-                slots: List[str] = []
+                slots: list[str] = []
                 if isinstance(slots_src, list):
                     slots = [s for s in slots_src if isinstance(s, str) and s]
                 # Validate ``api`` at discovery time so the value cached
@@ -4273,11 +4273,11 @@ class _AgentPluginInstallBody(BaseModel):
     enable: bool = True
 
 
-def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
+def _strip_dashboard_manifest(p: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in p.items() if not k.startswith("_")}
 
 
-def _merged_plugins_hub() -> Dict[str, Any]:
+def _merged_plugins_hub() -> dict[str, Any]:
     """Agent discovery + dashboard manifests + optional provider picker metadata."""
     from hermes_cli.plugins_cmd import (
         _discover_all_plugins,
@@ -4301,7 +4301,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
     hidden_plugins: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
 
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
 
     for name, version, description, source, dir_str in _discover_all_plugins():
         if name in disabled_set:
@@ -4366,14 +4366,14 @@ def _merged_plugins_hub() -> Dict[str, Any]:
         if str(p["name"]) not in agent_names
     ]
 
-    memory_providers: List[Dict[str, str]] = []
+    memory_providers: list[dict[str, str]] = []
     try:
         for n, desc in _discover_memory_providers():
             memory_providers.append({"name": n, "description": desc})
     except Exception:
         memory_providers = []
 
-    context_engines: List[Dict[str, str]] = []
+    context_engines: list[dict[str, str]] = []
     try:
         for n, desc in _discover_context_engines():
             context_engines.append({"name": n, "description": desc})

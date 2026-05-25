@@ -41,7 +41,7 @@ class MessageDeduplicator:
     """
 
     def __init__(self, max_size: int = 2000, ttl_seconds: float = 300):
-        self._seen: Dict[str, float] = {}
+        self._seen: dict[str, float] = {}
         self._max_size = max_size
         self._ttl = ttl_seconds
 
@@ -110,8 +110,8 @@ class TextBatchAggregator:
         self._batch_delay = batch_delay
         self._split_delay = split_delay
         self._split_threshold = split_threshold
-        self._pending: Dict[str, "MessageEvent"] = {}
-        self._pending_tasks: Dict[str, asyncio.Task] = {}
+        self._pending: dict[str, "MessageEvent"] = {}
+        self._pending_tasks: dict[str, asyncio.Task] = {}
 
     def is_enabled(self) -> bool:
         """Return True if batching is active (delay > 0)."""

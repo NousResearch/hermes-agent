@@ -204,13 +204,13 @@ except Exception as e:
 # Backward-compat constants  (built once after discovery)
 # =============================================================================
 
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
+TOOL_TO_TOOLSET_MAP: dict[str, str] = registry.get_tool_to_toolset_map()
 
-TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
+TOOLSET_REQUIREMENTS: dict[str, dict] = registry.get_toolset_requirements()
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
-_last_resolved_tool_names: List[str] = []
+_last_resolved_tool_names: list[str] = []
 
 
 # =============================================================================
@@ -251,7 +251,7 @@ _LEGACY_TOOLSET_MAP = {
 # which bumps on register() / deregister() / register_toolset_alias(). The
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
-_tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_tool_defs_cache: dict[tuple, list[dict[str, Any]]] = {}
 
 
 def _clear_tool_defs_cache() -> None:
@@ -262,10 +262,10 @@ def _clear_tool_defs_cache() -> None:
 
 
 def get_tool_definitions(
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
+    enabled_toolsets: list[str] = None,
+    disabled_toolsets: list[str] = None,
     quiet_mode: bool = False,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
 
@@ -327,10 +327,10 @@ def get_tool_definitions(
 
 
 def _compute_tool_definitions(
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
+    enabled_toolsets: list[str] = None,
+    disabled_toolsets: list[str] = None,
     quiet_mode: bool = False,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
@@ -542,7 +542,7 @@ def _sanitize_tool_error(error_msg: str) -> str:
 # Tool argument type coercion
 # =========================================================================
 
-def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Coerce tool call arguments to match their JSON Schema types.
 
     LLMs frequently return numbers as strings (``"42"`` instead of ``42``)
@@ -740,12 +740,12 @@ def _coerce_boolean(value: str):
 
 def handle_function_call(
     function_name: str,
-    function_args: Dict[str, Any],
+    function_args: dict[str, Any],
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
     user_task: Optional[str] = None,
-    enabled_tools: Optional[List[str]] = None,
+    enabled_tools: Optional[list[str]] = None,
     skip_pre_tool_call_hook: bool = False,
 ) -> str:
     """
@@ -898,7 +898,7 @@ def handle_function_call(
 # Backward-compat wrapper functions
 # =============================================================================
 
-def get_all_tool_names() -> List[str]:
+def get_all_tool_names() -> list[str]:
     """Return all registered tool names."""
     return registry.get_all_tool_names()
 
@@ -908,16 +908,16 @@ def get_toolset_for_tool(tool_name: str) -> Optional[str]:
     return registry.get_toolset_for_tool(tool_name)
 
 
-def get_available_toolsets() -> Dict[str, dict]:
+def get_available_toolsets() -> dict[str, dict]:
     """Return toolset availability info for UI display."""
     return registry.get_available_toolsets()
 
 
-def check_toolset_requirements() -> Dict[str, bool]:
+def check_toolset_requirements() -> dict[str, bool]:
     """Return {toolset: available_bool} for every registered toolset."""
     return registry.check_toolset_requirements()
 
 
-def check_tool_availability(quiet: bool = False) -> Tuple[List[str], List[dict]]:
+def check_tool_availability(quiet: bool = False) -> tuple[list[str], list[dict]]:
     """Return (available_toolsets, unavailable_info)."""
     return registry.check_tool_availability(quiet=quiet)

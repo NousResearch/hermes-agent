@@ -227,7 +227,7 @@ _TOOL_STUBS = {
 }
 
 
-def generate_hermes_tools_module(enabled_tools: List[str],
+def generate_hermes_tools_module(enabled_tools: list[str],
                                  transport: str = "uds") -> str:
     """
     Build the source code for the hermes_tools.py stub module.
@@ -841,7 +841,7 @@ def _rpc_poll_loop(
 def _execute_remote(
     code: str,
     task_id: Optional[str],
-    enabled_tools: Optional[List[str]],
+    enabled_tools: Optional[list[str]],
 ) -> str:
     """Run a script on the remote terminal backend via file-based RPC.
 
@@ -998,7 +998,7 @@ def _execute_remote(
     stdout_text = redact_sensitive_text(stdout_text)
 
     # Build response
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "status": status,
         "output": stdout_text,
         "tool_calls_made": tool_call_counter[0],
@@ -1036,7 +1036,7 @@ def _execute_remote(
 def execute_code(
     code: str,
     task_id: Optional[str] = None,
-    enabled_tools: Optional[List[str]] = None,
+    enabled_tools: Optional[list[str]] = None,
 ) -> str:
     """
     Run a Python script in a sandboxed child process with RPC access
@@ -1382,7 +1382,7 @@ def execute_code(
         stderr_text = redact_sensitive_text(stderr_text)
 
         # Build response
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "status": status,
             "output": stdout_text,
             "tool_calls_made": tool_call_counter[0],

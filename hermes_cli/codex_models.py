@@ -11,7 +11,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CODEX_MODELS: List[str] = [
+DEFAULT_CODEX_MODELS: list[str] = [
     "gpt-5.5",
     "gpt-5.4-mini",
     "gpt-5.4",
@@ -34,7 +34,7 @@ DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.1-codex-mini",
 ]
 
-_FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
+_FORWARD_COMPAT_TEMPLATE_MODELS: list[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
     ("gpt-5.4-mini", ("gpt-5.3-codex", "gpt-5.2-codex")),
     ("gpt-5.4", ("gpt-5.3-codex", "gpt-5.2-codex")),
@@ -47,14 +47,14 @@ _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
 ]
 
 
-def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
+def _add_forward_compat_models(model_ids: list[str]) -> list[str]:
     """Add Clawdbot-style synthetic forward-compat Codex models.
 
     If a newer Codex slug isn't returned by live discovery, surface it when an
     older compatible template model is present. This mirrors Clawdbot's
     synthetic catalog / forward-compat behavior for GPT-5 Codex variants.
     """
-    ordered: List[str] = []
+    ordered: list[str] = []
     seen: set[str] = set()
     for model_id in model_ids:
         if model_id not in seen:
@@ -71,7 +71,7 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
-def _fetch_models_from_api(access_token: str) -> List[str]:
+def _fetch_models_from_api(access_token: str) -> list[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
         import httpx
@@ -129,7 +129,7 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
     return None
 
 
-def _read_cache_models(codex_home: Path) -> List[str]:
+def _read_cache_models(codex_home: Path) -> list[str]:
     cache_path = codex_home / "models_cache.json"
     if not cache_path.exists():
         return []
@@ -159,14 +159,14 @@ def _read_cache_models(codex_home: Path) -> List[str]:
             sortable.append((rank, slug))
 
     sortable.sort(key=lambda item: (item[0], item[1]))
-    deduped: List[str] = []
+    deduped: list[str] = []
     for _, slug in sortable:
         if slug not in deduped:
             deduped.append(slug)
     return deduped
 
 
-def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
+def get_codex_model_ids(access_token: Optional[str] = None) -> list[str]:
     """Return available Codex model IDs, trying API first, then local sources.
     
     Resolution order: API (live, if token provided) > config.toml default >
@@ -174,7 +174,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     """
     codex_home_str = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
     codex_home = Path(codex_home_str).expanduser()
-    ordered: List[str] = []
+    ordered: list[str] = []
 
     # Try live API if we have a token
     if access_token:

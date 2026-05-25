@@ -84,7 +84,7 @@ class CodeAssistError(RuntimeError):
         status_code: Optional[int] = None,
         response: Any = None,
         retry_after: Optional[float] = None,
-        details: Optional[Dict[str, Any]] = None,
+        details: Optional[dict[str, Any]] = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -117,7 +117,7 @@ class ProjectIdRequiredError(CodeAssistError):
 # HTTP primitive (auth via Bearer token passed per-call)
 # =============================================================================
 
-def _build_headers(access_token: str, *, user_agent_model: str = "") -> Dict[str, str]:
+def _build_headers(access_token: str, *, user_agent_model: str = "") -> dict[str, str]:
     ua = _GEMINI_CLI_USER_AGENT
     if user_agent_model:
         ua = f"{ua} model/{user_agent_model}"
@@ -131,7 +131,7 @@ def _build_headers(access_token: str, *, user_agent_model: str = "") -> Dict[str
     }
 
 
-def _client_metadata() -> Dict[str, str]:
+def _client_metadata() -> dict[str, str]:
     """Match Google's gemini-cli exactly — unrecognized metadata may be rejected."""
     return {
         "ideType": "IDE_UNSPECIFIED",
@@ -142,12 +142,12 @@ def _client_metadata() -> Dict[str, str]:
 
 def _post_json(
     url: str,
-    body: Dict[str, Any],
+    body: dict[str, Any],
     access_token: str,
     *,
     timeout: float = _DEFAULT_REQUEST_TIMEOUT,
     user_agent_model: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         url, data=data, method="POST",
@@ -212,8 +212,8 @@ class CodeAssistProjectInfo:
     """Result from ``load_code_assist``."""
     current_tier_id: str = ""
     cloudaicompanion_project: str = ""   # Google-managed project (free tier)
-    allowed_tiers: List[str] = field(default_factory=list)
-    raw: Dict[str, Any] = field(default_factory=dict)
+    allowed_tiers: list[str] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 def load_code_assist(
@@ -227,7 +227,7 @@ def load_code_assist(
     Returns whatever tier + project info Google reports. On VPC-SC violations,
     returns a synthetic ``standard-tier`` result so the chain can continue.
     """
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "metadata": {
             "duetProject": project_id,
             **_client_metadata(),
@@ -258,12 +258,12 @@ def load_code_assist(
     return CodeAssistProjectInfo()
 
 
-def _parse_load_response(resp: Dict[str, Any]) -> CodeAssistProjectInfo:
+def _parse_load_response(resp: dict[str, Any]) -> CodeAssistProjectInfo:
     current_tier = resp.get("currentTier") or {}
     tier_id = str(current_tier.get("id") or "") if isinstance(current_tier, dict) else ""
     project = str(resp.get("cloudaicompanionProject") or "")
     allowed = resp.get("allowedTiers") or []
-    allowed_ids: List[str] = []
+    allowed_ids: list[str] = []
     if isinstance(allowed, list):
         for t in allowed:
             if isinstance(t, dict):
@@ -288,7 +288,7 @@ def onboard_user(
     tier_id: str,
     project_id: str = "",
     user_agent_model: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Call ``POST /v1internal:onboardUser`` to provision the user.
 
     For paid tiers, ``project_id`` is REQUIRED (raises ProjectIdRequiredError).
@@ -304,7 +304,7 @@ def onboard_user(
             "Set HERMES_GEMINI_PROJECT_ID or GOOGLE_CLOUD_PROJECT."
         )
 
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "tierId": tier_id,
         "metadata": _client_metadata(),
     }
@@ -344,7 +344,7 @@ class QuotaBucket:
     token_type: str = ""
     remaining_fraction: float = 0.0
     reset_time_iso: str = ""
-    raw: Dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 def retrieve_user_quota(
@@ -352,15 +352,15 @@ def retrieve_user_quota(
     *,
     project_id: str = "",
     user_agent_model: str = "",
-) -> List[QuotaBucket]:
+) -> list[QuotaBucket]:
     """Call ``POST /v1internal:retrieveUserQuota`` and parse ``buckets[]``."""
-    body: Dict[str, Any] = {}
+    body: dict[str, Any] = {}
     if project_id:
         body["project"] = project_id
     url = f"{CODE_ASSIST_ENDPOINT}/v1internal:retrieveUserQuota"
     resp = _post_json(url, body, access_token, user_agent_model=user_agent_model)
     raw_buckets = resp.get("buckets") or []
-    buckets: List[QuotaBucket] = []
+    buckets: list[QuotaBucket] = []
     if not isinstance(raw_buckets, list):
         return buckets
     for b in raw_buckets:

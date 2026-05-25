@@ -20,7 +20,7 @@ from agent.skill_preprocessing import (
 
 logger = logging.getLogger(__name__)
 
-_skill_commands: Dict[str, Dict[str, Any]] = {}
+_skill_commands: dict[str, dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
@@ -260,7 +260,7 @@ def _build_skill_message(
     return "\n".join(parts)
 
 
-def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
+def scan_skill_commands() -> dict[str, dict[str, Any]]:
     """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
 
     Returns:
@@ -326,7 +326,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
-def get_skill_commands() -> Dict[str, Dict[str, Any]]:
+def get_skill_commands() -> dict[str, dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty).
 
     Rescans when the active platform scope changes (e.g. a gateway
@@ -341,7 +341,7 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
-def reload_skills() -> Dict[str, Any]:
+def reload_skills() -> dict[str, Any]:
     """Re-scan the skills directory and return a diff of what changed.
 
     Rescans ``~/.hermes/skills/`` and any ``skills.external_dirs`` so the
@@ -373,8 +373,8 @@ def reload_skills() -> Dict[str, Any]:
     # slash-command cache. Using dicts lets the post-rescan diff carry
     # descriptions for newly-visible or just-removed skills without a
     # second disk walk.
-    def _snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
-        out: Dict[str, str] = {}
+    def _snapshot(cmds: dict[str, dict[str, Any]]) -> dict[str, str]:
+        out: dict[str, str] = {}
         for slash_key, info in cmds.items():
             bare = slash_key.lstrip("/")
             out[bare] = (info or {}).get("description") or ""

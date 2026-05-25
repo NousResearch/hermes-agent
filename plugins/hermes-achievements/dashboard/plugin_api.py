@@ -33,9 +33,9 @@ router = APIRouter()
 
 SNAPSHOT_TTL_SECONDS = 120
 _SCAN_LOCK = threading.Lock()
-_SNAPSHOT_CACHE: Optional[Dict[str, Any]] = None
+_SNAPSHOT_CACHE: Optional[dict[str, Any]] = None
 _SNAPSHOT_CACHE_AT = 0
-_SCAN_STATUS: Dict[str, Any] = {
+_SCAN_STATUS: dict[str, Any] = {
     "state": "idle",
     "started_at": None,
     "finished_at": None,
@@ -53,15 +53,15 @@ FILE_RE = re.compile(r"(?:/home/|~/?|\./|/mnt/)[\w./-]+\.(?:py|js|ts|tsx|jsx|css
 TIER_NAMES = ["Copper", "Silver", "Gold", "Diamond", "Olympian"]
 
 
-def tiers(values: List[int]) -> List[Dict[str, Any]]:
+def tiers(values: list[int]) -> list[dict[str, Any]]:
     return [{"name": name, "threshold": threshold} for name, threshold in zip(TIER_NAMES, values)]
 
 
-def req(metric: str, gte: int) -> Dict[str, Any]:
+def req(metric: str, gte: int) -> dict[str, Any]:
     return {"metric": metric, "gte": gte}
 
 
-ACHIEVEMENTS: List[Dict[str, Any]] = [
+ACHIEVEMENTS: list[dict[str, Any]] = [
     # Agent Autonomy — mostly best-session feats
     {"id": "let_him_cook", "name": "Let Him Cook", "description": "Let Hermes run a serious autonomous tool chain in one session.", "category": "Agent Autonomy", "kind": "best_session", "icon": "flame", "threshold_metric": "max_tool_calls_in_session", "tiers": tiers([200, 500, 1200, 3000, 8000])},
     {"id": "autonomous_avalanche", "name": "Autonomous Avalanche", "description": "Accumulate a lifetime avalanche of Hermes tool calls across sessions.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "avalanche", "threshold_metric": "total_tool_calls", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
@@ -154,7 +154,7 @@ def checkpoint_path() -> Path:
     return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_checkpoint.json"
 
 
-def load_state() -> Dict[str, Any]:
+def load_state() -> dict[str, Any]:
     path = state_path()
     if not path.exists():
         return {"unlocks": {}}
@@ -164,7 +164,7 @@ def load_state() -> Dict[str, Any]:
         return {"unlocks": {}}
 
 
-def save_state(state: Dict[str, Any]) -> None:
+def save_state(state: dict[str, Any]) -> None:
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
@@ -180,7 +180,7 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def load_snapshot() -> Optional[Dict[str, Any]]:
+def load_snapshot() -> Optional[dict[str, Any]]:
     path = snapshot_path()
     if not path.exists():
         return None
@@ -193,13 +193,13 @@ def load_snapshot() -> Optional[Dict[str, Any]]:
     return None
 
 
-def save_snapshot(data: Dict[str, Any]) -> None:
+def save_snapshot(data: dict[str, Any]) -> None:
     path = snapshot_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True))
 
 
-def load_checkpoint() -> Dict[str, Any]:
+def load_checkpoint() -> dict[str, Any]:
     path = checkpoint_path()
     if not path.exists():
         return {"schema_version": 1, "generated_at": 0, "sessions": {}}
@@ -216,13 +216,13 @@ def load_checkpoint() -> Dict[str, Any]:
     return {"schema_version": 1, "generated_at": 0, "sessions": {}}
 
 
-def save_checkpoint(data: Dict[str, Any]) -> None:
+def save_checkpoint(data: dict[str, Any]) -> None:
     path = checkpoint_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_json_safe(data), indent=2, sort_keys=True))
 
 
-def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:
+def session_fingerprint(meta: dict[str, Any]) -> dict[str, Any]:
     return {
         "last_active": meta.get("last_active"),
         "started_at": meta.get("started_at"),
@@ -235,7 +235,7 @@ def _cache_is_fresh(now: int) -> bool:
     return _SNAPSHOT_CACHE is not None and (now - _SNAPSHOT_CACHE_AT) <= SNAPSHOT_TTL_SECONDS
 
 
-def _is_snapshot_stale(snapshot: Optional[Dict[str, Any]], now: Optional[int] = None) -> bool:
+def _is_snapshot_stale(snapshot: Optional[dict[str, Any]], now: Optional[int] = None) -> bool:
     if not isinstance(snapshot, dict):
         return True
     ts = int(snapshot.get("generated_at") or 0)
@@ -245,7 +245,7 @@ def _is_snapshot_stale(snapshot: Optional[Dict[str, Any]], now: Optional[int] = 
     return (current - ts) > SNAPSHOT_TTL_SECONDS
 
 
-def _scan_status_payload(now: Optional[int] = None) -> Dict[str, Any]:
+def _scan_status_payload(now: Optional[int] = None) -> dict[str, Any]:
     current = int(now or time.time())
     snap = _SNAPSHOT_CACHE if isinstance(_SNAPSHOT_CACHE, dict) else None
     generated_at = int((snap or {}).get("generated_at") or 0) if snap else 0
@@ -270,7 +270,7 @@ def _tool_name_from_call(call: Any) -> Optional[str]:
     return call.get("name") or fn.get("name")
 
 
-def _content(msg: Dict[str, Any]) -> str:
+def _content(msg: dict[str, Any]) -> str:
     content = msg.get("content")
     if content is None:
         return ""
@@ -282,7 +282,7 @@ def _content(msg: Dict[str, Any]) -> str:
         return str(content)
 
 
-def _count_tool(tool_names: List[str], *needles: str) -> int:
+def _count_tool(tool_names: list[str], *needles: str) -> int:
     lowered = [name.lower() for name in tool_names]
     return sum(1 for name in lowered if any(needle in name for needle in needles))
 
@@ -307,11 +307,11 @@ def is_local_model_name(model_name: str) -> bool:
     return any(marker in name for marker in local_markers)
 
 
-def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    tool_names: Set[str] = set()
-    tool_sequence: List[str] = []
-    files_touched: Set[str] = set()
-    full_text_parts: List[str] = []
+def analyze_messages(session_id: str, title: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    tool_names: set[str] = set()
+    tool_sequence: list[str] = []
+    files_touched: set[str] = set()
+    full_text_parts: list[str] = []
     error_count = 0
 
     for msg in messages:
@@ -419,7 +419,7 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
     }
 
 
-def evaluate_tiered(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_tiered(definition: dict[str, Any], aggregate: dict[str, Any]) -> dict[str, Any]:
     metric = definition["threshold_metric"]
     progress = int(aggregate.get(metric, 0) or 0)
     tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
@@ -437,7 +437,7 @@ def evaluate_tiered(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Di
     return {"unlocked": unlocked, "discovered": discovered or not definition.get("secret"), "state": state, "tier": tier, "progress": progress, "next_tier": next_tier, "next_threshold": next_threshold, "progress_pct": pct}
 
 
-def evaluate_requirements(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_requirements(definition: dict[str, Any], aggregate: dict[str, Any]) -> dict[str, Any]:
     requirements = definition.get("requirements", [])
     if not requirements:
         return {"unlocked": False, "discovered": not definition.get("secret"), "state": "secret" if definition.get("secret") else "discovered", "tier": None, "progress": 0, "next_tier": None, "next_threshold": 1, "progress_pct": 0}
@@ -455,7 +455,7 @@ def evaluate_requirements(definition: Dict[str, Any], aggregate: Dict[str, Any])
     return {"unlocked": complete, "discovered": any_progress or not definition.get("secret"), "state": state, "tier": None, "progress": pct, "next_tier": None, "next_threshold": 100, "progress_pct": 100 if complete else min(99, pct)}
 
 
-def evaluate_boolean(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_boolean(definition: dict[str, Any], aggregate: dict[str, Any]) -> dict[str, Any]:
     # Backward-compatible helper for old tests/definitions. New catalog avoids simple booleans.
     unlocked = bool(aggregate.get(definition["metric"]))
     return {"unlocked": unlocked, "discovered": True, "state": "unlocked" if unlocked else "discovered", "tier": None, "progress": 1 if unlocked else 0, "next_tier": None, "next_threshold": 1, "progress_pct": 100 if unlocked else 0}
@@ -531,7 +531,7 @@ def metric_label(metric: str) -> str:
     return METRIC_LABELS.get(metric, metric.replace("_", " "))
 
 
-def criteria_for(definition: Dict[str, Any]) -> str:
+def criteria_for(definition: dict[str, Any]) -> str:
     if definition.get("secret") and definition.get("state") == "secret":
         return "Secret: exact requirement hidden until Hermes sees the first matching signal. Keep using Hermes across debugging, tools, memory, skills, plugins, and model workflows to reveal it."
     secret_prefix = ""
@@ -549,7 +549,7 @@ def criteria_for(definition: Dict[str, Any]) -> str:
     return secret_prefix + "Requirement: complete the matching Hermes behavior."
 
 
-def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
+def display_achievement(item: dict[str, Any]) -> dict[str, Any]:
     clean = dict(item)
     if clean.get("state") == "secret":
         return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "icon": "secret"}
@@ -561,7 +561,7 @@ def scan_sessions(
     limit: Optional[int] = None,
     progress_callback: Optional[Any] = None,
     progress_every: int = 250,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Scan Hermes sessions and build per-session achievement stats.
 
     ``limit=None`` (the default) scans the ENTIRE session history. Prior
@@ -603,8 +603,8 @@ def scan_sessions(
     try:
         sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
         total_sessions = len(sessions_meta)
-        sessions: List[Dict[str, Any]] = []
-        checkpoint_sessions: Dict[str, Any] = {}
+        sessions: list[dict[str, Any]] = []
+        checkpoint_sessions: dict[str, Any] = {}
         for idx, meta in enumerate(sessions_meta, start=1):
             sid = meta.get("id")
             if not sid:
@@ -671,8 +671,8 @@ def scan_sessions(
     }
 
 
-def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
-    agg: Dict[str, Any] = {
+def aggregate_stats(sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    agg: dict[str, Any] = {
         "session_count": len(sessions),
         "max_tool_calls_in_session": 0,
         "max_distinct_tools_in_session": 0,
@@ -707,8 +707,8 @@ def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
     for key in sum_keys:
         agg[key] = 0
 
-    model_names: Set[str] = set()
-    provider_names: Set[str] = set()
+    model_names: set[str] = set()
+    provider_names: set[str] = set()
     for s in sessions:
         agg["max_tool_calls_in_session"] = max(agg["max_tool_calls_in_session"], s.get("tool_call_count", 0))
         agg["max_distinct_tools_in_session"] = max(agg["max_distinct_tools_in_session"], s.get("distinct_tool_count", 0))
@@ -755,7 +755,7 @@ def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
     return agg
 
 
-def evaluate_definition(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_definition(definition: dict[str, Any], aggregate: dict[str, Any]) -> dict[str, Any]:
     if "threshold_metric" in definition:
         return evaluate_tiered(definition, aggregate)
     if "requirements" in definition:
@@ -763,7 +763,7 @@ def evaluate_definition(definition: Dict[str, Any], aggregate: Dict[str, Any]) -
     return evaluate_boolean(definition, aggregate)
 
 
-def evidence_for(definition: Dict[str, Any], sessions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def evidence_for(definition: dict[str, Any], sessions: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not sessions:
         return None
     metric = definition.get("threshold_metric")
@@ -784,7 +784,7 @@ def evidence_for(definition: Dict[str, Any], sessions: List[Dict[str, Any]]) -> 
     return None
 
 
-def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dict[str, Any]:
+def _compute_from_scan(scan: dict[str, Any], *, is_partial: bool = False) -> dict[str, Any]:
     """Evaluate every achievement definition against a scan result.
 
     Used by ``compute_all`` for finished scans AND by the background
@@ -826,7 +826,7 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     }
 
 
-def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250) -> Dict[str, Any]:
+def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250) -> dict[str, Any]:
     scan = scan_sessions(progress_callback=progress_callback, progress_every=progress_every)
     return _compute_from_scan(scan, is_partial=False)
 
@@ -835,7 +835,7 @@ _BACKGROUND_SCAN_THREAD: Optional[threading.Thread] = None
 _BACKGROUND_SCAN_LOCK = threading.Lock()
 
 
-def _build_pending_snapshot(now: int) -> Dict[str, Any]:
+def _build_pending_snapshot(now: int) -> dict[str, Any]:
     """Placeholder payload used while the first-ever scan is still running.
 
     Returns a structurally-complete response so the dashboard UI can render
@@ -941,7 +941,7 @@ def _start_background_scan() -> None:
         thread.start()
 
 
-def evaluate_all(force: bool = False) -> Dict[str, Any]:
+def evaluate_all(force: bool = False) -> dict[str, Any]:
     """Return the current achievements payload.
 
     Behavior matrix:

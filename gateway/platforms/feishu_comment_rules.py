@@ -53,7 +53,7 @@ class CommentsConfig:
     enabled: bool = True
     policy: str = "pairing"
     allow_from: frozenset = field(default_factory=frozenset)
-    documents: Dict[str, CommentDocumentRule] = field(default_factory=dict)
+    documents: dict[str, CommentDocumentRule] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ def load_config() -> CommentsConfig:
     if not raw:
         return CommentsConfig()
 
-    documents: Dict[str, CommentDocumentRule] = {}
+    documents: dict[str, CommentDocumentRule] = {}
     raw_docs = raw.get("documents", {})
     if isinstance(raw_docs, dict):
         for key, rule_raw in raw_docs.items():
@@ -271,7 +271,7 @@ def pairing_remove(user_open_id: str) -> bool:
     return True
 
 
-def pairing_list() -> Dict[str, Any]:
+def pairing_list() -> dict[str, Any]:
     """Return the approved dict  {user_open_id: {approved_at: ...}}."""
     data = _pairing_cache.load()
     approved = data.get("approved", {})

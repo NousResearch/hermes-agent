@@ -143,7 +143,7 @@ class PendingDialog:
     # Page.handleJavaScriptDialog — the native dialog never fired.
     bridge_request_id: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "type": self.type,
@@ -171,7 +171,7 @@ class DialogRecord:
     closed_by: str  # "agent" | "auto_policy" | "remote" | "watchdog"
     frame_id: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "type": self.type,
@@ -200,7 +200,7 @@ class FrameInfo:
     cdp_session_id: Optional[str] = None
     name: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "frame_id": self.frame_id,
             "url": self.url,
@@ -234,17 +234,17 @@ class SupervisorSnapshot:
     worrying about mutation under their feet.
     """
 
-    pending_dialogs: Tuple[PendingDialog, ...]
-    recent_dialogs: Tuple[DialogRecord, ...]
-    frame_tree: Dict[str, Any]
-    console_errors: Tuple[ConsoleEvent, ...]
+    pending_dialogs: tuple[PendingDialog, ...]
+    recent_dialogs: tuple[DialogRecord, ...]
+    frame_tree: dict[str, Any]
+    console_errors: tuple[ConsoleEvent, ...]
     active: bool  # False if supervisor is detached/stopped
     cdp_url: str
     task_id: str
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize for inclusion in ``browser_snapshot`` output."""
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "pending_dialogs": [d.to_dict() for d in self.pending_dialogs],
             "frame_tree": self.frame_tree,
         }
@@ -293,10 +293,10 @@ class CDPSupervisor:
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
-        self._pending_dialogs: Dict[str, PendingDialog] = {}
-        self._recent_dialogs: List[DialogRecord] = []
-        self._frames: Dict[str, FrameInfo] = {}
-        self._console_events: List[ConsoleEvent] = []
+        self._pending_dialogs: dict[str, PendingDialog] = {}
+        self._recent_dialogs: list[DialogRecord] = []
+        self._frames: dict[str, FrameInfo] = {}
+        self._console_events: list[ConsoleEvent] = []
         self._active = False
 
         # Supervisor loop machinery — populated in start().
@@ -308,13 +308,13 @@ class CDPSupervisor:
 
         # CDP call tracking (runs on supervisor loop only).
         self._next_call_id = 1
-        self._pending_calls: Dict[int, asyncio.Future] = {}
+        self._pending_calls: dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
-        self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
+        self._child_sessions: dict[str, dict[str, Any]] = {}  # session_id -> info
 
         # Dialog auto-dismiss watchdog handles (per dialog id).
-        self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
+        self._dialog_watchdogs: dict[str, asyncio.TimerHandle] = {}
         # Monotonic id generator for dialogs (human-readable in snapshots).
         self._dialog_seq = 0
 
@@ -407,7 +407,7 @@ class CDPSupervisor:
         prompt_text: Optional[str] = None,
         dialog_id: Optional[str] = None,
         timeout: float = 10.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Accept/dismiss a pending dialog. Sync bridge onto the supervisor loop.
 
         Returns ``{"ok": True, "dialog": {...}}`` on success,
@@ -469,7 +469,7 @@ class CDPSupervisor:
         return_by_value: bool = True,
         await_promise: bool = True,
         timeout: float = 10.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
 
         Reuses the supervisor's already-connected WebSocket — zero subprocess
@@ -496,7 +496,7 @@ class CDPSupervisor:
         if not session_id:
             return {"ok": False, "error": "supervisor has no attached page session"}
 
-        async def _do_eval() -> Dict[str, Any]:
+        async def _do_eval() -> dict[str, Any]:
             return await self._cdp(
                 "Runtime.evaluate",
                 {
@@ -767,17 +767,17 @@ class CDPSupervisor:
     async def _cdp(
         self,
         method: str,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[dict[str, Any]] = None,
         *,
         session_id: Optional[str] = None,
         timeout: float = 10.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Send a CDP command and await its response."""
         if self._ws is None:
             raise RuntimeError("supervisor WebSocket is not connected")
         call_id = self._next_call_id
         self._next_call_id += 1
-        payload: Dict[str, Any] = {"id": call_id, "method": method}
+        payload: dict[str, Any] = {"id": call_id, "method": method}
         if params:
             payload["params"] = params
         if session_id:
@@ -819,7 +819,7 @@ class CDPSupervisor:
     # ── Event dispatch ──────────────────────────────────────────────────────
 
     async def _on_event(
-        self, method: str, params: Dict[str, Any], session_id: Optional[str]
+        self, method: str, params: dict[str, Any], session_id: Optional[str]
     ) -> None:
         if method == "Page.javascriptDialogOpening":
             await self._on_dialog_opening(params, session_id)
@@ -843,7 +843,7 @@ class CDPSupervisor:
             self._on_console(params, level_from="exception")
 
     async def _on_dialog_opening(
-        self, params: Dict[str, Any], session_id: Optional[str]
+        self, params: dict[str, Any], session_id: Optional[str]
     ) -> None:
         self._dialog_seq += 1
         dialog = PendingDialog(
@@ -892,7 +892,7 @@ class CDPSupervisor:
         Dialog has already been archived by the caller (``_on_dialog_opening``);
         this just fires the CDP call so the page unblocks.
         """
-        params: Dict[str, Any] = {"accept": accept}
+        params: dict[str, Any] = {"accept": accept}
         if dialog.type == "prompt":
             params["promptText"] = prompt_text
         try:
@@ -975,7 +975,7 @@ class CDPSupervisor:
                     handle.cancel()
             return
 
-        params: Dict[str, Any] = {"accept": accept}
+        params: dict[str, Any] = {"accept": accept}
         if dialog.type == "prompt":
             params["promptText"] = prompt_text
         try:
@@ -997,7 +997,7 @@ class CDPSupervisor:
                 handle.cancel()
 
     async def _on_dialog_closed(
-        self, params: Dict[str, Any], session_id: Optional[str]
+        self, params: dict[str, Any], session_id: Optional[str]
     ) -> None:
         # ``Page.javascriptDialogClosed`` spec has only ``result`` (bool) and
         # ``userInput`` (string), not the original ``message``.  Match by
@@ -1026,7 +1026,7 @@ class CDPSupervisor:
                     handle.cancel()
 
     async def _on_fetch_paused(
-        self, params: Dict[str, Any], session_id: Optional[str]
+        self, params: dict[str, Any], session_id: Optional[str]
     ) -> None:
         """Bridge XHR captured mid-flight — materialize as a pending dialog.
 
@@ -1138,7 +1138,7 @@ class CDPSupervisor:
     # ── Frame / target tracking ─────────────────────────────────────────────
 
     def _on_frame_attached(
-        self, params: Dict[str, Any], session_id: Optional[str]
+        self, params: dict[str, Any], session_id: Optional[str]
     ) -> None:
         frame_id = params.get("frameId")
         if not frame_id:
@@ -1154,7 +1154,7 @@ class CDPSupervisor:
             )
 
     def _on_frame_navigated(
-        self, params: Dict[str, Any], session_id: Optional[str]
+        self, params: dict[str, Any], session_id: Optional[str]
     ) -> None:
         frame = params.get("frame") or {}
         frame_id = frame.get("id")
@@ -1174,7 +1174,7 @@ class CDPSupervisor:
             self._frames[frame_id] = info
 
     def _on_frame_detached(
-        self, params: Dict[str, Any], session_id: Optional[str]
+        self, params: dict[str, Any], session_id: Optional[str]
     ) -> None:
         """Remove a frame from our state only when it's truly gone.
 
@@ -1210,7 +1210,7 @@ class CDPSupervisor:
                 return
             self._frames.pop(frame_id, None)
 
-    async def _on_target_attached(self, params: Dict[str, Any]) -> None:
+    async def _on_target_attached(self, params: dict[str, Any]) -> None:
         info = params.get("targetInfo") or {}
         sid = params.get("sessionId")
         target_type = info.get("type")
@@ -1258,7 +1258,7 @@ class CDPSupervisor:
         # Install the dialog bridge on the child so iframe dialogs are captured.
         await self._install_dialog_bridge(sid)
 
-    def _on_target_detached(self, params: Dict[str, Any]) -> None:
+    def _on_target_detached(self, params: dict[str, Any]) -> None:
         """Handle a child CDP session detaching.
 
         We deliberately DO NOT drop frames from ``_frames`` here — Browserbase
@@ -1290,7 +1290,7 @@ class CDPSupervisor:
 
     # ── Console / exception ring buffer ─────────────────────────────────────
 
-    def _on_console(self, params: Dict[str, Any], *, level_from: str) -> None:
+    def _on_console(self, params: dict[str, Any], *, level_from: str) -> None:
         if level_from == "exception":
             details = params.get("exceptionDetails") or {}
             text = str(details.get("text") or "")
@@ -1302,7 +1302,7 @@ class CDPSupervisor:
                 "warning" if raw_level == "warning" else "log"
             )
             args = params.get("args") or []
-            parts: List[str] = []
+            parts: list[str] = []
             for a in args[:4]:
                 if isinstance(a, dict):
                     parts.append(str(a.get("value") or a.get("description") or ""))
@@ -1315,7 +1315,7 @@ class CDPSupervisor:
 
     # ── Frame tree building (bounded) ───────────────────────────────────────
 
-    def _build_frame_tree_locked(self) -> Dict[str, Any]:
+    def _build_frame_tree_locked(self) -> dict[str, Any]:
         """Build the capped frame_tree payload. Must be called under state lock."""
         frames = self._frames
         if not frames:
@@ -1327,12 +1327,12 @@ class CDPSupervisor:
 
         # BFS from top, capped by FRAME_TREE_MAX_ENTRIES and
         # FRAME_TREE_MAX_OOPIF_DEPTH for OOPIF branches.
-        children: List[Dict[str, Any]] = []
+        children: list[dict[str, Any]] = []
         truncated = False
         if top is None:
             return {"top": None, "children": [], "truncated": False}
 
-        queue: List[Tuple[FrameInfo, int]] = [
+        queue: list[tuple[FrameInfo, int]] = [
             (f, 1) for f in frames.values() if f.parent_frame_id == top.frame_id
         ]
         visited: set[str] = {top.frame_id}
@@ -1370,7 +1370,7 @@ class _SupervisorRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._by_task: Dict[str, CDPSupervisor] = {}
+        self._by_task: dict[str, CDPSupervisor] = {}
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
         """Return the supervisor for ``task_id`` if running, else ``None``."""

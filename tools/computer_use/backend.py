@@ -19,13 +19,13 @@ class UIElement:
     index: int                       # 1-based SOM index
     role: str                        # AX role (AXButton, AXTextField, ...)
     label: str = ""                  # AXTitle / AXDescription / AXValue snippet
-    bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
+    bounds: tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
     app: str = ""                    # owning bundle ID or app name
     pid: int = 0                     # owning process PID
     window_id: int = 0               # SkyLight / CG window ID
-    attributes: Dict[str, Any] = field(default_factory=dict)
+    attributes: dict[str, Any] = field(default_factory=dict)
 
-    def center(self) -> Tuple[int, int]:
+    def center(self) -> tuple[int, int]:
         x, y, w, h = self.bounds
         return x + w // 2, y + h // 2
 
@@ -46,7 +46,7 @@ class CaptureResult:
     width: int                      # screenshot width (logical px, pre-Anthropic-scale)
     height: int
     png_b64: Optional[str] = None
-    elements: List[UIElement] = field(default_factory=list)
+    elements: list[UIElement] = field(default_factory=list)
     # Optional: the target app/window the elements were captured for.
     app: str = ""
     window_title: str = ""
@@ -65,7 +65,7 @@ class ActionResult:
     # post-action capture or the backend always returns one.
     capture: Optional[CaptureResult] = None
     # Arbitrary extra fields for debugging / telemetry.
-    meta: Dict[str, Any] = field(default_factory=dict)
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 class ComputerUseBackend(ABC):
@@ -98,7 +98,7 @@ class ComputerUseBackend(ABC):
         y: Optional[int] = None,
         button: str = "left",           # left | right | middle
         click_count: int = 1,
-        modifiers: Optional[List[str]] = None,
+        modifiers: Optional[list[str]] = None,
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -107,10 +107,10 @@ class ComputerUseBackend(ABC):
         *,
         from_element: Optional[int] = None,
         to_element: Optional[int] = None,
-        from_xy: Optional[Tuple[int, int]] = None,
-        to_xy: Optional[Tuple[int, int]] = None,
+        from_xy: Optional[tuple[int, int]] = None,
+        to_xy: Optional[tuple[int, int]] = None,
         button: str = "left",
-        modifiers: Optional[List[str]] = None,
+        modifiers: Optional[list[str]] = None,
     ) -> ActionResult: ...
 
     @abstractmethod
@@ -122,7 +122,7 @@ class ComputerUseBackend(ABC):
         element: Optional[int] = None,
         x: Optional[int] = None,
         y: Optional[int] = None,
-        modifiers: Optional[List[str]] = None,
+        modifiers: Optional[list[str]] = None,
     ) -> ActionResult: ...
 
     # ── Keyboard ────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ class ComputerUseBackend(ABC):
 
     # ── Introspection ───────────────────────────────────────────────
     @abstractmethod
-    def list_apps(self) -> List[Dict[str, Any]]:
+    def list_apps(self) -> list[dict[str, Any]]:
         """Return running apps with bundle IDs, PIDs, window counts."""
 
     @abstractmethod

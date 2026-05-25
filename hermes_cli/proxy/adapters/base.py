@@ -50,7 +50,7 @@ class UpstreamAdapter(ABC):
 
     @property
     @abstractmethod
-    def allowed_paths(self) -> FrozenSet[str]:
+    def allowed_paths(self) -> frozenset[str]:
         """Set of relative request paths the upstream accepts.
 
         Paths are relative to the proxy's ``/v1`` mount point. For example,

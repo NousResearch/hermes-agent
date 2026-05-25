@@ -57,7 +57,7 @@ def _ra():
     return run_agent
 
 
-def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
+def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
     Returns a dict with three keys:
@@ -81,7 +81,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _r = _ra()
 
     # ── Stable tier ────────────────────────────────────────────────
-    stable_parts: List[str] = []
+    stable_parts: list[str] = []
 
     # Try SOUL.md as primary identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
@@ -253,7 +253,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             pass
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
-    context_parts: List[str] = []
+    context_parts: list[str] = []
 
     # Note: ephemeral_system_prompt is NOT included here. It's injected at
     # API-call time only so it stays out of the cached/stored system prompt.
@@ -272,7 +272,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             context_parts.append(context_files_prompt)
 
     # ── Volatile tier (changes per session/turn — never cached) ───
-    volatile_parts: List[str] = []
+    volatile_parts: list[str] = []
 
     if agent._memory_store:
         if agent._memory_enabled:

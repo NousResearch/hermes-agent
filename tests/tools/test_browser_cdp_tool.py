@@ -34,8 +34,8 @@ class _CDPServer:
     """
 
     def __init__(self) -> None:
-        self._handlers: Dict[str, Any] = {}
-        self._responses: List[Dict[str, Any]] = []
+        self._handlers: dict[str, Any] = {}
+        self._responses: list[dict[str, Any]] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: Any = None
         self._thread: threading.Thread | None = None
@@ -120,7 +120,7 @@ class _CDPServer:
         if self._thread:
             self._thread.join(timeout=3.0)
 
-    def received(self) -> List[Dict[str, Any]]:
+    def received(self) -> list[dict[str, Any]]:
         return list(self._responses)
 
 

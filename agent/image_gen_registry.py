@@ -29,7 +29,7 @@ from agent.image_gen_provider import ImageGenProvider
 logger = logging.getLogger(__name__)
 
 
-_providers: Dict[str, ImageGenProvider] = {}
+_providers: dict[str, ImageGenProvider] = {}
 _lock = threading.Lock()
 
 
@@ -57,7 +57,7 @@ def register_provider(provider: ImageGenProvider) -> None:
         logger.debug("Registered image gen provider '%s' (%s)", name, type(provider).__name__)
 
 
-def list_providers() -> List[ImageGenProvider]:
+def list_providers() -> list[ImageGenProvider]:
     """Return all registered providers, sorted by name."""
     with _lock:
         items = list(_providers.values())

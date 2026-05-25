@@ -114,7 +114,7 @@ class PooledCredential:
     agent_key: Optional[str] = None
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
-    extra: Dict[str, Any] = None  # type: ignore[assignment]
+    extra: dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self):
         if self.extra is None:
@@ -126,7 +126,7 @@ class PooledCredential:
         raise AttributeError(f"'{type(self).__name__}' object has no attribute {name!r}")
 
     @classmethod
-    def from_dict(cls, provider: str, payload: Dict[str, Any]) -> "PooledCredential":
+    def from_dict(cls, provider: str, payload: dict[str, Any]) -> "PooledCredential":
         field_names = {f.name for f in fields(cls) if f.name != "provider"}
         data = {k: payload.get(k) for k in field_names if k in payload}
         # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
@@ -142,7 +142,7 @@ class PooledCredential:
         data.setdefault("access_token", "")
         return cls(provider=provider, **data)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         _ALWAYS_EMIT = {
             "last_status",
             "last_status_at",
@@ -151,7 +151,7 @@ class PooledCredential:
             "last_error_message",
             "last_error_reset_at",
         }
-        result: Dict[str, Any] = {}
+        result: dict[str, Any] = {}
         for field_def in fields(self):
             if field_def.name in {"provider", "extra"}:
                 continue
@@ -187,7 +187,7 @@ def label_from_token(token: str, fallback: str) -> str:
     return fallback
 
 
-def _next_priority(entries: List[PooledCredential]) -> int:
+def _next_priority(entries: list[PooledCredential]) -> int:
     return max((entry.priority for entry in entries), default=-1) + 1
 
 
@@ -248,10 +248,10 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     return None
 
 
-def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[str, Any]:
     if not isinstance(error_context, dict):
         return {}
-    normalized: Dict[str, Any] = {}
+    normalized: dict[str, Any] = {}
     reason = error_context.get("reason")
     if isinstance(reason, str) and reason.strip():
         normalized["reason"] = reason.strip()
@@ -345,7 +345,7 @@ def get_custom_provider_pool_key(base_url: str, provider_name: Optional[str] = N
     return None
 
 
-def list_custom_pool_providers() -> List[str]:
+def list_custom_pool_providers() -> list[str]:
     """Return all 'custom:*' pool keys that have entries in auth.json."""
     pool_data = read_credential_pool(None)
     return sorted(
@@ -356,7 +356,7 @@ def list_custom_pool_providers() -> List[str]:
     )
 
 
-def _get_custom_provider_config(pool_key: str) -> Optional[Dict[str, Any]]:
+def _get_custom_provider_config(pool_key: str) -> Optional[dict[str, Any]]:
     """Return the custom_providers config entry matching a pool key like 'custom:together.ai'."""
     if not pool_key.startswith(CUSTOM_POOL_PREFIX):
         return None
@@ -387,13 +387,13 @@ DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1
 
 
 class CredentialPool:
-    def __init__(self, provider: str, entries: List[PooledCredential]):
+    def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
         self._lock = threading.Lock()
-        self._active_leases: Dict[str, int] = {}
+        self._active_leases: dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
 
     def has_credentials(self) -> bool:
@@ -403,7 +403,7 @@ class CredentialPool:
         """True if at least one entry is not currently in exhaustion cooldown."""
         return bool(self._available_entries())
 
-    def entries(self) -> List[PooledCredential]:
+    def entries(self) -> list[PooledCredential]:
         return list(self._entries)
 
     def current(self) -> Optional[PooledCredential]:
@@ -428,7 +428,7 @@ class CredentialPool:
         self,
         entry: PooledCredential,
         status_code: Optional[int],
-        error_context: Optional[Dict[str, Any]] = None,
+        error_context: Optional[dict[str, Any]] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
         updated = replace(
@@ -525,7 +525,7 @@ class CredentialPool:
                     "(refreshed by another process)",
                     entry.id,
                 )
-                field_updates: Dict[str, Any] = {
+                field_updates: dict[str, Any] = {
                     "access_token": store_access,
                     "refresh_token": store_refresh or entry.refresh_token,
                     "last_status": None,
@@ -583,7 +583,7 @@ class CredentialPool:
                     "(refreshed by another process)",
                     entry.id,
                 )
-                field_updates: Dict[str, Any] = {
+                field_updates: dict[str, Any] = {
                     "access_token": store_access,
                     "refresh_token": store_refresh or entry.refresh_token,
                     "last_status": None,
@@ -640,7 +640,7 @@ class CredentialPool:
                     "Pool entry %s: syncing Nous state from auth.json",
                     entry.id,
                 )
-                field_updates: Dict[str, Any] = {
+                field_updates: dict[str, Any] = {
                     "last_status": None,
                     "last_status_at": None,
                     "last_error_code": None,
@@ -1135,7 +1135,7 @@ class CredentialPool:
         with self._lock:
             return self._select_unlocked()
 
-    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
+    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> list[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
@@ -1144,7 +1144,7 @@ class CredentialPool:
         """
         now = time.time()
         cleared_any = False
-        available: List[PooledCredential] = []
+        available: list[PooledCredential] = []
         for entry in self._entries:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
@@ -1260,7 +1260,7 @@ class CredentialPool:
         self,
         *,
         status_code: Optional[int],
-        error_context: Optional[Dict[str, Any]] = None,
+        error_context: Optional[dict[str, Any]] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = self.current() or self._select_unlocked()
@@ -1369,7 +1369,7 @@ class CredentialPool:
             self._current_id = None
         return removed
 
-    def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
+    def resolve_target(self, target: Any) -> tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:
             return None, None, "No credential target provided."
@@ -1401,7 +1401,7 @@ class CredentialPool:
         return entry
 
 
-def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, payload: Dict[str, Any]) -> bool:
+def _upsert_entry(entries: list[PooledCredential], provider: str, source: str, payload: dict[str, Any]) -> bool:
     existing_idx = None
     for idx, entry in enumerate(entries):
         if entry.source == source:
@@ -1438,7 +1438,7 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
     return False
 
 
-def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -> bool:
+def _normalize_pool_priorities(provider: str, entries: list[PooledCredential]) -> bool:
     if provider != "anthropic":
         return False
 
@@ -1472,9 +1472,9 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     return changed
 
 
-def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+def _seed_from_singletons(provider: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     changed = False
-    active_sources: Set[str] = set()
+    active_sources: set[str] = set()
     auth_store = _load_auth_store()
 
     # Shared suppression gate — used at every upsert site so
@@ -1749,9 +1749,9 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     return changed, active_sources
 
 
-def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+def _seed_from_env(provider: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     changed = False
-    active_sources: Set[str] = set()
+    active_sources: set[str] = set()
 
     # Prefer ~/.hermes/.env over os.environ — the user's config file is the
     # authoritative source for Hermes credentials. Stale env vars from parent
@@ -1840,7 +1840,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     return changed, active_sources
 
 
-def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources: Set[str]) -> bool:
+def _prune_stale_seeded_entries(entries: list[PooledCredential], active_sources: set[str]) -> bool:
     retained = [
         entry
         for entry in entries
@@ -1857,10 +1857,10 @@ def _prune_stale_seeded_entries(entries: List[PooledCredential], active_sources:
     return True
 
 
-def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
+def _seed_custom_pool(pool_key: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     """Seed a custom endpoint pool from custom_providers config and model config."""
     changed = False
-    active_sources: Set[str] = set()
+    active_sources: set[str] = set()
 
     # Shared suppression gate — same pattern as _seed_from_env/_seed_from_singletons.
     try:

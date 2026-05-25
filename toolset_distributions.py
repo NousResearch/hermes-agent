@@ -220,7 +220,7 @@ DISTRIBUTIONS = {
 }
 
 
-def get_distribution(name: str) -> Optional[Dict[str, any]]:
+def get_distribution(name: str) -> Optional[dict[str, any]]:
     """
     Get a toolset distribution by name.
     
@@ -234,7 +234,7 @@ def get_distribution(name: str) -> Optional[Dict[str, any]]:
     return DISTRIBUTIONS.get(name)
 
 
-def list_distributions() -> Dict[str, Dict]:
+def list_distributions() -> dict[str, dict]:
     """
     List all available distributions.
     
@@ -244,7 +244,7 @@ def list_distributions() -> Dict[str, Dict]:
     return DISTRIBUTIONS.copy()
 
 
-def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
+def sample_toolsets_from_distribution(distribution_name: str) -> list[str]:
     """
     Sample toolsets based on a distribution's probabilities.
     

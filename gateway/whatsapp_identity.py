@@ -67,7 +67,7 @@ def normalize_whatsapp_identifier(value: str) -> str:
     )
 
 
-def expand_whatsapp_aliases(identifier: str) -> Set[str]:
+def expand_whatsapp_aliases(identifier: str) -> set[str]:
     """Resolve WhatsApp phone/LID aliases via bridge session mapping files.
 
     Returns the set of all identifiers transitively reachable through the
@@ -83,7 +83,7 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
         return set()
 
     session_dir = get_hermes_home() / "whatsapp" / "session"
-    resolved: Set[str] = set()
+    resolved: set[str] = set()
     queue = [normalized]
 
     while queue:

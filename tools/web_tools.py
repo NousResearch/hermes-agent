@@ -304,13 +304,13 @@ def _is_nous_auxiliary_client(client: Any) -> bool:
     return host == "nousresearch.com" or host.endswith(".nousresearch.com")
 
 
-def _resolve_web_extract_auxiliary(model: Optional[str] = None) -> tuple[Optional[Any], Optional[str], Dict[str, Any]]:
+def _resolve_web_extract_auxiliary(model: Optional[str] = None) -> tuple[Optional[Any], Optional[str], dict[str, Any]]:
     """Resolve the current web-extract auxiliary client, model, and extra body."""
     client, default_model = get_async_text_auxiliary_client("web_extract")
     configured_model = os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip()
     effective_model = model or configured_model or default_model
 
-    extra_body: Dict[str, Any] = {}
+    extra_body: dict[str, Any] = {}
     if client is not None and _is_nous_auxiliary_client(client):
         from agent.auxiliary_client import get_auxiliary_extra_body
         from agent.portal_tags import nous_portal_tags
@@ -850,7 +850,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
 
 async def web_extract_tool(
-    urls: List[str],
+    urls: list[str],
     format: str = None,
     use_llm_processing: bool = True,
     model: Optional[str] = None,
@@ -912,7 +912,7 @@ async def web_extract_tool(
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
-        ssrf_blocked: List[Dict[str, Any]] = []
+        ssrf_blocked: list[dict[str, Any]] = []
         for url in urls:
             if not is_safe_url(url):
                 ssrf_blocked.append({

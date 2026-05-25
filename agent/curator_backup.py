@@ -84,7 +84,7 @@ def _cron_jobs_file() -> Path:
 CRON_JOBS_FILENAME = "cron-jobs.json"
 
 
-def _backup_cron_jobs_into(dest: Path) -> Dict[str, Any]:
+def _backup_cron_jobs_into(dest: Path) -> dict[str, Any]:
     """Copy the live cron jobs.json into ``dest`` as ``cron-jobs.json``.
 
     Returns a small dict describing what was captured so the caller can
@@ -94,7 +94,7 @@ def _backup_cron_jobs_into(dest: Path) -> Dict[str, Any]:
     useful for rolling back skills).
     """
     src = _cron_jobs_file()
-    info: Dict[str, Any] = {"backed_up": False, "jobs_count": 0}
+    info: dict[str, Any] = {"backed_up": False, "jobs_count": 0}
     if not src.exists():
         info["reason"] = "no cron/jobs.json present"
         return info
@@ -141,7 +141,7 @@ def _utc_id(now: Optional[datetime] = None) -> str:
     return s.replace(":", "-") + "Z"
 
 
-def _load_config() -> Dict[str, Any]:
+def _load_config() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -186,7 +186,7 @@ def _count_skill_files(base: Path) -> int:
 
 def _write_manifest(dest: Path, reason: str, archive_path: Path,
                     skills_counted: int,
-                    cron_info: Optional[Dict[str, Any]] = None) -> None:
+                    cron_info: Optional[dict[str, Any]] = None) -> None:
     manifest = {
         "id": dest.name,
         "reason": reason,
@@ -282,15 +282,15 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
     return dest
 
 
-def _prune_old(keep: int) -> List[str]:
+def _prune_old(keep: int) -> list[str]:
     """Delete regular snapshots beyond the newest *keep*. Returns deleted
     ids. Staging dirs (``.rollback-staging-*``) are implementation detail
     and pruned independently on every call."""
     backups = _backups_dir()
     if not backups.exists():
         return []
-    entries: List[Tuple[str, Path]] = []
-    stale_staging: List[Path] = []
+    entries: list[tuple[str, Path]] = []
+    stale_staging: list[Path] = []
     for child in backups.iterdir():
         if not child.is_dir():
             continue
@@ -304,7 +304,7 @@ def _prune_old(keep: int) -> List[str]:
             entries.append((child.name, child))
     # Newest first (lexicographic works because the id is UTC ISO).
     entries.sort(key=lambda t: t[0], reverse=True)
-    deleted: List[str] = []
+    deleted: list[str] = []
     for _, path in entries[keep:]:
         try:
             shutil.rmtree(path)
@@ -323,7 +323,7 @@ def _prune_old(keep: int) -> List[str]:
 # List + rollback
 # ---------------------------------------------------------------------------
 
-def _read_manifest(snap_dir: Path) -> Dict[str, Any]:
+def _read_manifest(snap_dir: Path) -> dict[str, Any]:
     mf = snap_dir / "manifest.json"
     if not mf.exists():
         return {}
@@ -333,7 +333,7 @@ def _read_manifest(snap_dir: Path) -> Dict[str, Any]:
         return {}
 
 
-def list_backups() -> List[Dict[str, Any]]:
+def list_backups() -> list[dict[str, Any]]:
     """Return all restorable snapshots, newest first. Only entries with a
     real ``skills.tar.gz`` tarball are listed — transient
     ``.rollback-staging-*`` directories created mid-rollback are
@@ -341,7 +341,7 @@ def list_backups() -> List[Dict[str, Any]]:
     backups = _backups_dir()
     if not backups.exists():
         return []
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for child in sorted(backups.iterdir(), reverse=True):
         if not child.is_dir():
             continue
@@ -384,7 +384,7 @@ def _resolve_backup(backup_id: Optional[str]) -> Optional[Path]:
     return candidates[0] if candidates else None
 
 
-def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
+def _restore_cron_skill_links(snapshot_dir: Path) -> dict[str, Any]:
     """Reconcile backed-up cron skill links into the live ``cron/jobs.json``.
 
     We do NOT overwrite the whole cron file. Only the ``skills`` and
@@ -406,7 +406,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
     ``cron.jobs`` to pick up the same lock + atomic-write path that tick()
     uses, so we don't race the scheduler.
     """
-    report: Dict[str, Any] = {
+    report: dict[str, Any] = {
         "attempted": False,
         "restored": [],
         "skipped_missing": [],
@@ -438,7 +438,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
     # Build a lookup of the backed-up skill state keyed by job id.
     # We only need the two skill-ish fields (legacy single and modern list).
-    backup_by_id: Dict[str, Dict[str, Any]] = {}
+    backup_by_id: dict[str, dict[str, Any]] = {}
     for job in backup_jobs:
         if not isinstance(job, dict):
             continue
@@ -527,7 +527,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
 
 
-def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
+def rollback(backup_id: Optional[str] = None) -> tuple[bool, str, Optional[Path]]:
     """Restore ``~/.hermes/skills/`` from a snapshot.
 
     Strategy:
@@ -579,7 +579,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     except OSError as e:
         return (False, f"failed to create staging dir: {e}", None)
 
-    moved: List[Tuple[Path, Path]] = []
+    moved: list[tuple[Path, Path]] = []
     try:
         for entry in list(skills.iterdir()):
             if entry.name in _EXCLUDE_TOP_LEVEL:

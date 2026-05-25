@@ -67,7 +67,7 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
 
     # Walk the dict, deciding per-key whether recursion is into a schema
     # node, a container map, or a scalar.
-    repaired: Dict[str, Any] = {}
+    repaired: dict[str, Any] = {}
     for key, value in node.items():
         if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             # Map of name → schema.  Don't treat the map itself as a schema
@@ -164,7 +164,7 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
     return repaired
 
 
-def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
+def _fill_missing_type(node: dict[str, Any]) -> dict[str, Any]:
     """Infer a reasonable ``type`` if this schema node has none."""
     if "type" in node and node["type"] not in {None, ""}:
         return node
@@ -191,7 +191,7 @@ def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     return {**node, "type": inferred}
 
 
-def sanitize_moonshot_tool_parameters(parameters: Any) -> Dict[str, Any]:
+def sanitize_moonshot_tool_parameters(parameters: Any) -> dict[str, Any]:
     """Normalize tool parameters to a Moonshot-compatible object schema.
 
     Returns a deep-copied schema with the two flavored-JSON-Schema repairs
@@ -213,12 +213,12 @@ def sanitize_moonshot_tool_parameters(parameters: Any) -> Dict[str, Any]:
     return repaired
 
 
-def sanitize_moonshot_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def sanitize_moonshot_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply ``sanitize_moonshot_tool_parameters`` to every tool's parameters."""
     if not tools:
         return tools
 
-    sanitized: List[Dict[str, Any]] = []
+    sanitized: list[dict[str, Any]] = []
     any_change = False
     for tool in tools:
         if not isinstance(tool, dict):

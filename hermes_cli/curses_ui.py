@@ -34,12 +34,12 @@ def flush_stdin() -> None:
 
 def curses_checklist(
     title: str,
-    items: List[str],
-    selected: Set[int],
+    items: list[str],
+    selected: set[int],
     *,
-    cancel_returns: Set[int] | None = None,
-    status_fn: Optional[Callable[[Set[int]], str]] = None,
-) -> Set[int]:
+    cancel_returns: set[int] | None = None,
+    status_fn: Optional[Callable[[set[int]], str]] = None,
+) -> set[int]:
     """Curses multi-select checklist. Returns set of selected indices.
 
     Args:
@@ -164,7 +164,7 @@ def curses_checklist(
 
 def curses_radiolist(
     title: str,
-    items: List[str],
+    items: list[str],
     selected: int = 0,
     *,
     cancel_returns: int | None = None,
@@ -288,7 +288,7 @@ def curses_radiolist(
 
 def _radio_numbered_fallback(
     title: str,
-    items: List[str],
+    items: list[str],
     selected: int,
     cancel_returns: int,
 ) -> int:
@@ -314,7 +314,7 @@ def _radio_numbered_fallback(
 
 def curses_single_select(
     title: str,
-    items: List[str],
+    items: list[str],
     default_index: int = 0,
     *,
     cancel_label: str = "Cancel",
@@ -415,7 +415,7 @@ def curses_single_select(
 
 def _numbered_single_fallback(
     title: str,
-    items: List[str],
+    items: list[str],
     cancel_idx: int,
 ) -> int | None:
     """Text-based numbered fallback for single-select."""
@@ -439,11 +439,11 @@ def _numbered_single_fallback(
 
 def _numbered_fallback(
     title: str,
-    items: List[str],
-    selected: Set[int],
-    cancel_returns: Set[int],
-    status_fn: Optional[Callable[[Set[int]], str]] = None,
-) -> Set[int]:
+    items: list[str],
+    selected: set[int],
+    cancel_returns: set[int],
+    status_fn: Optional[Callable[[set[int]], str]] = None,
+) -> set[int]:
     """Text-based toggle fallback for terminals without curses."""
     chosen = set(selected)
     print(color(f"\n  {title}", Colors.YELLOW))

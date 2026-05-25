@@ -6,9 +6,9 @@ import type { SessionDeleteResponse, SessionListItem, SessionListResponse } from
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
-import { OverlayHint, useOverlayKeys, windowOffset } from './overlayControls.js'
+import { OverlayHint, useOverlayKeys } from './overlayControls.js'
+import { RESUME_PAGE_SIZE, buildResumeViewport, moveResumeSelection } from './sessionPickerPaging.js'
 
-const VISIBLE = 15
 const MIN_WIDTH = 60
 const MAX_WIDTH = 120
 
@@ -114,12 +114,20 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
       return
     }
 
-    if (key.upArrow && sel > 0) {
-      setSel(s => s - 1)
+    if (key.upArrow) {
+      setSel(s => moveResumeSelection(s, -1, items.length))
     }
 
-    if (key.downArrow && sel < items.length - 1) {
-      setSel(s => s + 1)
+    if (key.downArrow) {
+      setSel(s => moveResumeSelection(s, 1, items.length))
+    }
+
+    if (key.pageUp) {
+      setSel(s => moveResumeSelection(s, -RESUME_PAGE_SIZE, items.length))
+    }
+
+    if (key.pageDown) {
+      setSel(s => moveResumeSelection(s, RESUME_PAGE_SIZE, items.length))
     }
 
     if (key.return && items[sel]) {
@@ -163,7 +171,8 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     )
   }
 
-  const offset = windowOffset(items.length, sel, VISIBLE)
+  const viewport = buildResumeViewport(items, sel)
+  const { end, offset, page, totalPages } = viewport
 
   return (
     <Box flexDirection="column" width={width}>
@@ -171,9 +180,13 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
         Resume Session
       </Text>
 
-      {offset > 0 && <Text color={t.color.muted}>  ↑ {offset} more</Text>}
+      <Text color={t.color.muted}>
+        Page {page}/{totalPages} · showing {offset + 1}-{end} of {items.length}
+      </Text>
 
-      {items.slice(offset, offset + VISIBLE).map((s, vi) => {
+      {offset > 0 && <Text color={t.color.muted}>  ↑ {offset} previous</Text>}
+
+      {items.slice(offset, end).map((s, vi) => {
         const i = offset + vi
         const selected = sel === i
         const pendingDelete = confirmDelete === i
@@ -208,12 +221,12 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
         )
       })}
 
-      {offset + VISIBLE < items.length && <Text color={t.color.muted}>  ↓ {items.length - offset - VISIBLE} more</Text>}
+      {end < items.length && <Text color={t.color.muted}>  ↓ {items.length - end} more</Text>}
       {err && <Text color={t.color.label}>error: {err}</Text>}
       {deleting ? (
         <OverlayHint t={t}>deleting…</OverlayHint>
       ) : (
-        <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · d delete · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>↑/↓ select · PgUp/PgDn page · Enter resume · 1-9 quick · d delete · Esc/q cancel</OverlayHint>
       )}
     </Box>
   )

@@ -1243,8 +1243,8 @@ _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
-_INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
-_INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
+_INTERRUPT_REASON_GATEWAY_SHUTDOWN = "网关正在关闭"
+_INTERRUPT_REASON_GATEWAY_RESTART = "网关正在重启"
 
 _CONTROL_INTERRUPT_MESSAGES = frozenset(
     {
@@ -3364,14 +3364,14 @@ class GatewayRunner:
         """
         active = self._snapshot_running_agents()
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = "重启" if self._restart_requested else "关闭"
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "你当前的任务会被中断。"
+            "重启后再发一条消息，我会尽量从中断处继续。"
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "你当前的任务会被中断。"
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        msg = f"⚠️ 网关正在{action}——{hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -6774,9 +6774,9 @@ class GatewayRunner:
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
-                            f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
+                            f"你好，我暂时还未识别你的身份。\n\n"
+                            f"这是你的配对码：`{code}`\n\n"
+                            f"请让机器人管理员执行：\n"
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
@@ -6784,8 +6784,7 @@ class GatewayRunner:
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            "Too many pairing requests right now~ "
-                            "Please try again later!"
+                            "当前配对请求过多，请稍后再试。"
                         )
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)

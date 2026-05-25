@@ -21,8 +21,10 @@
 # Claude Code sandbox already ships `rg` on PATH.
 #
 # Network: works as-is under Claude Code for Web "Trusted" egress. For "Custom"
-# egress, allowlist: astral.sh, github.com, objects.githubusercontent.com,
-# pypi.org, files.pythonhosted.org (and registry.npmjs.org for --with-node).
+# egress, allowlist: github.com, objects.githubusercontent.com, pypi.org,
+# files.pythonhosted.org (and registry.npmjs.org for --with-node). uv itself is
+# fetched from GitHub Releases — astral.sh does NOT need to be allowlisted (some
+# restricted sandboxes return HTTP 403 for it).
 #
 # Usage:
 #   scripts/cloud-setup.sh              # Python env only (fast)
@@ -30,12 +32,15 @@
 
 set -euo pipefail
 
-# Pinned uv version + sha256 of its install script. Bump both deliberately (and
-# re-test) rather than tracking latest — consistent with this repo's exact-pin
-# supply-chain policy. Regenerate the digest when bumping UV_VERSION:
-#   curl -fsSL https://astral.sh/uv/<version>/install.sh | sha256sum
+# Pinned uv version + sha256 of each GitHub release tarball. Bump deliberately
+# (and re-test) rather than tracking latest — consistent with this repo's
+# exact-pin supply-chain policy. Regenerate the digests when bumping UV_VERSION:
+#   for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+#     curl -sSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-$t.tar.gz.sha256"
+#   done
 UV_VERSION="0.11.13"
-UV_INSTALLER_SHA256="48cd5aca5d5671a3b3d5f61538cc8622e4434af63319115159990d8b0dd02416"
+UV_SHA256_x86_64="f830ea3d38ae1492acf53cb7f2cd0f81d6ae22b42d2d7310a6c7d42c451e1a43"
+UV_SHA256_aarch64="12366407dc1fdba5179b10bd69c11ebfc2eff25791366089c0b2f5701056efc5"
 
 WITH_NODE=0
 for arg in "$@"; do
@@ -148,13 +153,30 @@ if [ "$uv_current" != "$UV_VERSION" ]; then
   if [ -n "$uv_current" ]; then
     echo "▶ found uv ${uv_current}, but this repo pins ${UV_VERSION} — installing pinned uv"
   else
-    echo "▶ installing uv ${UV_VERSION} (sha256-verified installer)"
+    echo "▶ installing uv ${UV_VERSION}"
   fi
-  uv_installer="$(mktemp)"
-  curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" -o "$uv_installer"
-  echo "${UV_INSTALLER_SHA256}  ${uv_installer}" | sha256sum -c - > /dev/null
-  UV_INSTALL_DIR="$HOME/.local/bin" sh "$uv_installer"
-  rm -f "$uv_installer"
+  # Pull the standalone binary straight from GitHub Releases. We deliberately do
+  # NOT use the astral.sh installer: restricted sandboxes (e.g. Claude Code for
+  # Web on "Custom" egress) block astral.sh with HTTP 403, whereas github.com +
+  # objects.githubusercontent.com are already required (python-build-standalone,
+  # git deps), so this adds no new allowlist host.
+  case "$(uname -m)" in
+    x86_64 | amd64) uv_target="x86_64-unknown-linux-gnu" uv_sha="$UV_SHA256_x86_64" ;;
+    aarch64 | arm64) uv_target="aarch64-unknown-linux-gnu" uv_sha="$UV_SHA256_aarch64" ;;
+    *)
+      echo "error: no pinned uv build for arch '$(uname -m)'" >&2
+      exit 1
+      ;;
+  esac
+  uv_tarball="uv-${uv_target}.tar.gz"
+  uv_tmp="$(mktemp -d)"
+  curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${uv_tarball}" -o "$uv_tmp/$uv_tarball"
+  echo "${uv_sha}  $uv_tmp/$uv_tarball" | sha256sum -c - > /dev/null
+  tar -xzf "$uv_tmp/$uv_tarball" -C "$uv_tmp"
+  mkdir -p "$HOME/.local/bin"
+  install -m 0755 "$uv_tmp/uv-${uv_target}/uv" "$HOME/.local/bin/uv"
+  install -m 0755 "$uv_tmp/uv-${uv_target}/uvx" "$HOME/.local/bin/uvx"
+  rm -rf "$uv_tmp"
   hash -r 2> /dev/null || true
 fi
 uv --version

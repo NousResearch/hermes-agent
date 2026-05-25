@@ -49,6 +49,7 @@ AUTHOR_MAP = {
     "45688690+fujinice@users.noreply.github.com": "fujinice",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "steveonjava@gmail.com": "steveonjava",
     "kenyon1977@gmail.com": "kenyonxu",
     "cipherframe@users.noreply.github.com": "CipherFrame",
     "121752779+jacevys@users.noreply.github.com": "jacevys",

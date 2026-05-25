@@ -29,6 +29,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -65,6 +66,8 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+INITIAL_BACKOFF_SEC = 30.0
+MAX_BACKOFF_SEC = 900.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -5403,7 +5406,7 @@ class GatewayRunner:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
-        disabled_corrupt_boards: dict[str, tuple[str, int | None, int | None]] = {}
+        disabled_corrupt_boards: dict[str, dict] = {}
 
         def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
             path = _kb.kanban_db_path(slug)
@@ -5426,6 +5429,32 @@ class GatewayRunner:
                 or "database disk image is malformed" in msg
             )
 
+        def _confirm_corruption(slug: str, exc: Exception) -> bool:
+            """Confirm corruption via PRAGMA quick_check before latching.
+
+            Transient I/O errors match the same pattern as genuine corruption; confirm before latching.
+            Returns True if genuinely corrupt, False if quick_check says ok (transient error).
+            """
+            db_path = _kb.kanban_db_path(slug)
+            uri = f"file:{db_path}?mode=ro"
+            try:
+                check_conn = sqlite3.connect(uri, uri=True, timeout=2)
+                try:
+                    row = check_conn.execute("PRAGMA quick_check").fetchone()
+                    result = row[0] if row else "error"
+                finally:
+                    check_conn.close()
+                if result == "ok":
+                    logger.debug(
+                        "kanban dispatcher: board %s quick_check ok; treating %s as transient, not latching",
+                        slug,
+                        exc,
+                    )
+                    return False
+                return True
+            except Exception:
+                return True
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -5437,15 +5466,27 @@ class GatewayRunner:
             """
             conn = None
             fingerprint = _board_db_fingerprint(slug)
-            disabled_fingerprint = disabled_corrupt_boards.get(slug)
-            if disabled_fingerprint == fingerprint:
-                return None
-            if disabled_fingerprint is not None:
-                logger.info(
-                    "kanban dispatcher: board %s database changed; retrying dispatch",
-                    slug,
-                )
-                disabled_corrupt_boards.pop(slug, None)
+            state = disabled_corrupt_boards.get(slug)
+            if state is not None:
+                if state["fingerprint"] != fingerprint:
+                    # File changed; clear latch immediately and retry.
+                    logger.info(
+                        "kanban dispatcher: board %s database changed; retrying dispatch",
+                        slug,
+                    )
+                    disabled_corrupt_boards.pop(slug, None)
+                elif time.monotonic() < state["disabled_until_ts"]:
+                    remaining = state["disabled_until_ts"] - time.monotonic()
+                    logger.debug(
+                        "kanban dispatcher: board %s skipped (corrupt-board backoff, %.0fs remaining, next retry ~%s)",
+                        slug,
+                        remaining,
+                        time.strftime(
+                            "%H:%M:%S", time.localtime(time.time() + remaining)
+                        ),
+                    )
+                    return None
+                # Backoff window expired; fall through to retry.
             try:
                 conn = _kb.connect(board=slug)
                 # `connect()` runs the schema + idempotent migration on
@@ -5454,7 +5495,7 @@ class GatewayRunner:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
+                result = _kb.dispatch_once(
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
@@ -5462,17 +5503,43 @@ class GatewayRunner:
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
+                # Successful dispatch clears latch.
+                # Backoff counter resets when file changes or dispatch succeeds.
+                disabled_corrupt_boards.pop(slug, None)
+                return result
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = fingerprint
+                    if not _confirm_corruption(slug, exc):
+                        return None
+                    prev = disabled_corrupt_boards.get(slug)
+                    if prev is not None and prev["fingerprint"] == fingerprint:
+                        new_backoff = min(prev["backoff_seconds"] * 2, MAX_BACKOFF_SEC)
+                    else:
+                        new_backoff = INITIAL_BACKOFF_SEC
+                    disabled_until = time.monotonic() + new_backoff
+                    failure_count = (
+                        int(math.log2(new_backoff / INITIAL_BACKOFF_SEC)) + 1
+                        if new_backoff >= INITIAL_BACKOFF_SEC
+                        else 1
+                    )
+                    disabled_corrupt_boards[slug] = {
+                        "fingerprint": fingerprint,
+                        "disabled_until_ts": disabled_until,
+                        "backoff_seconds": new_backoff,
+                    }
                     logger.error(
                         "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; disabling dispatch for this board "
-                        "until the file changes or the gateway restarts. Move "
-                        "or restore the file, then run `hermes kanban init` if "
-                        "you need a fresh board.",
+                        "SQLite database (failure #%d); backing off %.0fs, next retry ~%s. "
+                        "Original error: %s. Move or restore the file, then run "
+                        "`hermes kanban init` if you need a fresh board.",
                         slug,
                         fingerprint[0],
+                        failure_count,
+                        new_backoff,
+                        time.strftime(
+                            "%H:%M:%S", time.localtime(time.time() + new_backoff)
+                        ),
+                        exc,
                     )
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)

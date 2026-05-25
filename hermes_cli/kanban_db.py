@@ -2676,7 +2676,7 @@ def _append_event(
                 # O_NONBLOCK: open(2) on a FIFO blocks until a reader
                 # connects; in CI (and any headless context) there is no
                 # reader, so the write op deadlocks the caller.  Non-blocking
-                # open + a zero-second select/poll lets us bail gracefully.
+                # open lets us bail gracefully when no reader is connected.
                 _fd = os.open(_fifo_path, os.O_WRONLY | os.O_NONBLOCK)
                 try:
                     _fifo = os.fdopen(_fd, "w", encoding="utf-8")
@@ -2684,8 +2684,14 @@ def _append_event(
                     _fifo.close()
                 except Exception:
                     os.close(_fd)
-        except Exception:
-            pass  # Non-fatal — don't break the event write
+        except OSError as _e:
+            import errno
+            if _e.errno == errno.ENXIO:
+                _log.debug("kanban_fifo_no_reader: no TUI listening on %s", _fifo_path)
+            else:
+                _log.debug("kanban_fifo_open_error: %s", _e)
+        except Exception as _e:
+            _log.debug("kanban_fifo_write_error: %s", _e)
 
 
 def _end_run(

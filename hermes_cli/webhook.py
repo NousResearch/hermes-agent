@@ -28,6 +28,10 @@ _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 _SUBSCRIPTIONS_FILE_MODE = 0o600
 
 
+class CorruptSubscriptionsError(Exception):
+    """Raised when the subscriptions file exists but cannot be parsed."""
+
+
 def _hermes_home() -> Path:
     from hermes_constants import get_hermes_home
     return get_hermes_home()
@@ -43,9 +47,16 @@ def _load_subscriptions() -> Dict[str, dict]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    except json.JSONDecodeError as exc:
+        raise CorruptSubscriptionsError(
+            f"Webhook subscriptions file is corrupt: {path}. "
+            "Move it aside or repair the JSON before modifying subscriptions."
+        ) from exc
+    if not isinstance(data, dict):
+        raise CorruptSubscriptionsError(
+            f"Webhook subscriptions file must contain a JSON object: {path}"
+        )
+    return data
 
 
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
@@ -85,7 +96,7 @@ def _get_webhook_config() -> dict:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return cfg_get(cfg, "platforms", "webhook", default={})
+        return cfg.get("platforms", {}).get("webhook", {})
     except Exception:
         return {}
 

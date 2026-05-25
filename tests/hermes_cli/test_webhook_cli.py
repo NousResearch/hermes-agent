@@ -9,6 +9,7 @@ from pathlib import Path
 
 from hermes_cli.webhook import (
     webhook_command,
+    CorruptSubscriptionsError,
     _load_subscriptions,
     _save_subscriptions,
     _subscriptions_path,
@@ -140,11 +141,25 @@ class TestPersistence:
         data = json.loads(path.read_text())
         assert "persist" in data
 
-    def test_corrupted_file(self):
+    def test_corrupted_file_raises(self):
         path = _subscriptions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("broken{{{")
-        assert _load_subscriptions() == {}
+        with pytest.raises(CorruptSubscriptionsError):
+            _load_subscriptions()
+
+    def test_non_dict_json_raises(self):
+        path = _subscriptions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]", encoding="utf-8")
+        with pytest.raises(CorruptSubscriptionsError):
+            _load_subscriptions()
+
+    def test_valid_file_returns_data(self):
+        path = _subscriptions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"demo": {"secret": "s"}}', encoding="utf-8")
+        assert _load_subscriptions() == {"demo": {"secret": "s"}}
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
     def test_save_creates_secret_file_owner_only_under_permissive_umask(self):

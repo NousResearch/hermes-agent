@@ -3161,6 +3161,28 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         registered_names.append(util_name)
 
     if registered_names:
+        # Toolset-name collision guard (the toolset-level analogue of the
+        # tool-name guard above). The MCP server's tools live under the
+        # ``mcp-<name>`` toolset, reached via a ``<name>`` -> ``mcp-<name>``
+        # alias. But ``toolsets.get_toolset`` / ``resolve_toolset`` consult the
+        # static ``TOOLSETS`` table before the registry alias map, so when the
+        # server name matches a built-in toolset the built-in shadows the alias
+        # and the freshly-registered tools are silently unreachable via the
+        # bare ``<name>`` toolset. Warn — otherwise this is a multi-hour,
+        # zero-feedback debugging hunt (see issue #30563).
+        try:
+            from toolsets import TOOLSETS
+        except Exception:
+            TOOLSETS = {}
+        if name in TOOLSETS:
+            logger.warning(
+                "MCP server '%s' shares its name with a built-in toolset — the "
+                "built-in takes precedence during toolset resolution, so these "
+                "MCP tools (registered under '%s') are NOT reachable via the "
+                "'%s' toolset. Rename the MCP server in your config to a name "
+                "that does not collide with a built-in toolset.",
+                name, toolset_name, name,
+            )
         registry.register_toolset_alias(name, toolset_name)
 
     return registered_names

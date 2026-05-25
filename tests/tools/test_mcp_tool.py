@@ -3615,6 +3615,87 @@ class TestMCPBuiltinCollisionGuard:
         _servers.pop("srv", None)
 
 
+class TestMCPToolsetNameCollisionWarning:
+    """An MCP server whose name matches a built-in toolset is warned about.
+
+    The built-in toolset shadows the ``<name>`` -> ``mcp-<name>`` alias during
+    toolset resolution, leaving the MCP tools unreachable via the bare
+    ``<name>`` toolset. The tools still register (under the namespaced
+    toolset), but the collision must be surfaced loudly instead of failing
+    silently — issue #30563.
+    """
+
+    def test_warns_when_server_name_shadows_builtin_toolset(self, caplog):
+        import logging
+        from toolsets import TOOLSETS
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        # 'kanban' is a built-in toolset, so it shadows the mcp-kanban alias.
+        assert "kanban" in TOOLSETS
+
+        mock_registry = ToolRegistry()
+        mock_tools = [_make_mcp_tool("list_tasks", "List kanban tasks")]
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry):
+            registered = asyncio.run(
+                _discover_and_register_server("kanban", {"command": "test", "args": []})
+            )
+
+        # Tools still register, under the namespaced 'mcp-kanban' toolset ...
+        assert "mcp_kanban_list_tasks" in registered
+        assert mock_registry.get_toolset_for_tool("mcp_kanban_list_tasks") == "mcp-kanban"
+        # ... but the shadowing is surfaced loudly instead of failing silently.
+        assert any(
+            "built-in toolset" in r.message and "kanban" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+        _servers.pop("kanban", None)
+
+    def test_no_warning_when_server_name_is_unique(self, caplog):
+        import logging
+        from toolsets import TOOLSETS
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        unique_name = "totallyuniquemcp"
+        assert unique_name not in TOOLSETS
+
+        mock_registry = ToolRegistry()
+        mock_tools = [_make_mcp_tool("do_thing", "Do a thing")]
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"), \
+             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry):
+            registered = asyncio.run(
+                _discover_and_register_server(unique_name, {"command": "test", "args": []})
+            )
+
+        assert f"mcp_{unique_name}_do_thing" in registered
+        assert not any(
+            "built-in toolset" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+        _servers.pop(unique_name, None)
+
+
 # ---------------------------------------------------------------------------
 # sanitize_mcp_name_component
 # ---------------------------------------------------------------------------

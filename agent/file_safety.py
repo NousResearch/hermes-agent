@@ -50,6 +50,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
             os.path.join(home, ".pypirc"),
+            os.path.join(home, ".git-credentials"),
             "/etc/sudoers",
             "/etc/passwd",
             "/etc/shadow",
@@ -71,6 +72,7 @@ def build_write_denied_prefixes(home: str) -> list[str]:
             os.path.join(home, ".docker"),
             os.path.join(home, ".azure"),
             os.path.join(home, ".config", "gh"),
+            os.path.join(home, ".config", "gcloud"),
         ]
     ]
 

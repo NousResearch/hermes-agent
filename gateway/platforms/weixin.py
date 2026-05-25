@@ -21,7 +21,9 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import struct
+import subprocess
 import tempfile
 import textwrap
 import time
@@ -94,6 +96,10 @@ BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
+WEIXIN_IMAGE_UPLOAD_TARGET_BYTES = 128_000
+WEIXIN_IMAGE_UPLOAD_MIN_QUALITY = 45
+WEIXIN_IMAGE_UPLOAD_QUALITY_STEPS = (85, 75, 65, 55, 45)
+WEIXIN_IMAGE_MAX_DIMENSION = 1280
 
 
 def _is_stale_session_ret(
@@ -151,6 +157,7 @@ _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_WEIXIN_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
 def check_weixin_requirements() -> bool:
@@ -196,6 +203,74 @@ def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
 
 def _aes_padded_size(size: int) -> int:
     return ((size + 1 + 15) // 16) * 16
+
+
+def _has_ffmpeg() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+def _looks_like_large_image_upload_failure(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "cdn upload http 500" in message or "broken pipe" in message
+
+
+def _ffmpeg_scale_filter(max_dimension: int) -> str:
+    return (
+        f"scale='if(gte(iw,ih),min(iw,{max_dimension}),-2)':"
+        f"'if(gte(ih,iw),min(ih,{max_dimension}),-2)'"
+    )
+
+
+def _compress_image_with_ffmpeg(
+    src_path: str,
+    *,
+    max_dimension: int = WEIXIN_IMAGE_MAX_DIMENSION,
+    target_bytes: int = WEIXIN_IMAGE_UPLOAD_TARGET_BYTES,
+) -> Optional[str]:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    source = Path(src_path)
+    if not source.exists():
+        return None
+
+    temp_dir = tempfile.mkdtemp(prefix="weixin-img-")
+    output_path = Path(temp_dir) / f"{source.stem}.jpg"
+    scale_filter = _ffmpeg_scale_filter(max_dimension)
+
+    for quality in WEIXIN_IMAGE_UPLOAD_QUALITY_STEPS:
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(source),
+            "-vf",
+            scale_filter,
+            "-frames:v",
+            "1",
+            "-q:v",
+            str(quality),
+            str(output_path),
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("weixin: ffmpeg image compression failed for %s at q=%s: %s", source, quality, str(exc)[:200])
+            continue
+        if result.returncode != 0:
+            logger.warning("weixin: ffmpeg image compression failed for %s at q=%s: %s", source, quality, (result.stderr or result.stdout).strip()[:200])
+            continue
+        try:
+            if output_path.stat().st_size <= target_bytes or quality <= WEIXIN_IMAGE_UPLOAD_MIN_QUALITY:
+                return str(output_path)
+        except OSError:
+            continue
+
+    if output_path.exists():
+        return str(output_path)
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    return None
 
 
 def _random_wechat_uin() -> str:
@@ -1785,7 +1860,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 file_path = os.path.abspath(file_path)
             cleanup = False
         try:
-            return await self.send_document(chat_id, file_path, caption=caption, metadata=metadata)
+            return await self.send_image_file(chat_id, file_path, caption=caption, metadata=metadata)
         finally:
             if cleanup and file_path and os.path.exists(file_path):
                 try:
@@ -1803,12 +1878,54 @@ class WeixinAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         del reply_to, kwargs
-        return await self.send_document(
-            chat_id=chat_id,
-            file_path=image_path,
-            caption=caption,
-            metadata=metadata,
-        )
+        cleanup_paths: List[str] = []
+        try:
+            result = await self.send_document(
+                chat_id=chat_id,
+                file_path=image_path,
+                caption=caption,
+                metadata=metadata,
+            )
+            if result.success or not _has_ffmpeg() or not _looks_like_large_image_upload_failure(Exception(result.error or "")):
+                return result
+
+            compressed_path = _compress_image_with_ffmpeg(image_path)
+            if not compressed_path or compressed_path == image_path:
+                return result
+            cleanup_paths.append(compressed_path)
+            logger.info(
+                "[%s] Retrying image upload with compressed fallback for %s (%s -> %s bytes)",
+                self.name,
+                _safe_id(chat_id),
+                Path(image_path).stat().st_size if Path(image_path).exists() else "?",
+                Path(compressed_path).stat().st_size if Path(compressed_path).exists() else "?",
+            )
+            if self._send_session is None:
+                return await self.send_document(
+                    chat_id=chat_id,
+                    file_path=compressed_path,
+                    caption=caption,
+                    metadata=metadata,
+                )
+            original_session = self._send_session
+            async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as retry_session:
+                self._send_session = retry_session
+                try:
+                    return await self.send_document(
+                        chat_id=chat_id,
+                        file_path=compressed_path,
+                        caption=caption,
+                        metadata=metadata,
+                    )
+                finally:
+                    self._send_session = original_session
+        finally:
+            for cleanup_path in cleanup_paths:
+                try:
+                    Path(cleanup_path).unlink(missing_ok=True)
+                    Path(cleanup_path).parent.rmdir()
+                except OSError:
+                    pass
 
     async def send_document(
         self,
@@ -2110,7 +2227,7 @@ async def send_weixin_direct(
 
         for media_path, _is_voice in media_files or []:
             ext = Path(media_path).suffix.lower()
-            if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
+            if ext in _WEIXIN_IMAGE_EXTS:
                 last_result = await live_adapter.send_image_file(chat_id, media_path)
             else:
                 last_result = await live_adapter.send_document(chat_id, media_path)
@@ -2155,7 +2272,7 @@ async def send_weixin_direct(
 
         for media_path, _is_voice in media_files or []:
             ext = Path(media_path).suffix.lower()
-            if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
+            if ext in _WEIXIN_IMAGE_EXTS:
                 last_result = await adapter.send_image_file(chat_id, media_path)
             else:
                 last_result = await adapter.send_document(chat_id, media_path)

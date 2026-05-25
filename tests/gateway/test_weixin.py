@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -521,6 +522,151 @@ class TestWeixinOutboundMedia:
         media = payload["msg"]["item_list"][0]["image_item"]["media"]
         assert media["encrypt_query_param"] == "enc-param"
         assert media["aes_key"] == expected_aes_key
+
+
+class TestWeixinImageCompressionFallback:
+    def test_send_image_file_retries_with_compressed_fallback_on_large_upload_failure(self):
+        adapter = _make_adapter()
+        compressed_path = "/tmp/compressed.jpg"
+        adapter.send_document = AsyncMock(
+            side_effect=[
+                SendResult(success=False, error="CDN upload HTTP 500"),
+                SendResult(success=True, message_id="msg-2"),
+            ]
+        )
+
+        with patch("gateway.platforms.weixin._has_ffmpeg", return_value=True), \
+             patch("gateway.platforms.weixin._compress_image_with_ffmpeg", return_value=compressed_path), \
+             patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.stat") as stat_mock, \
+             patch("pathlib.Path.unlink"), \
+             patch("pathlib.Path.rmdir"):
+            stat_mock.return_value.st_size = 12345
+            result = asyncio.run(adapter.send_image_file("wxid_test123", "/tmp/original.png"))
+
+        assert result.success is True
+        assert adapter.send_document.await_args_list[0].kwargs["file_path"] == "/tmp/original.png"
+        assert adapter.send_document.await_args_list[1].kwargs["file_path"] == compressed_path
+
+    def test_send_image_file_skips_retry_without_compressed_fallback(self):
+        adapter = _make_adapter()
+        failure = SendResult(success=False, error="CDN upload HTTP 500")
+        adapter.send_document = AsyncMock(return_value=failure)
+
+        with patch("gateway.platforms.weixin._has_ffmpeg", return_value=True), \
+             patch("gateway.platforms.weixin._compress_image_with_ffmpeg", return_value=None):
+            result = asyncio.run(adapter.send_image_file("wxid_test123", "/tmp/original.png"))
+
+        assert result == failure
+        adapter.send_document.assert_awaited_once()
+
+    def test_send_image_routes_local_paths_through_send_image_file(self):
+        adapter = _make_adapter()
+        adapter.send_image_file = AsyncMock(return_value=SendResult(success=True, message_id="msg-3"))
+
+        result = asyncio.run(adapter.send_image("wxid_test123", "/tmp/original.png", caption="caption"))
+
+        assert result.success is True
+        adapter.send_image_file.assert_awaited_once_with("wxid_test123", "/tmp/original.png", caption="caption", metadata=None)
+
+    def test_send_weixin_direct_routes_images_via_send_image_file(self):
+        adapter = _make_adapter()
+        adapter._send_session = type("S", (), {"closed": False})()
+        adapter.format_message = lambda message: ""
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text-msg"))
+        adapter.send_image_file = AsyncMock(return_value=SendResult(success=True, message_id="img-msg"))
+        adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc-msg"))
+
+        with patch.dict("gateway.platforms.weixin._LIVE_ADAPTERS", {"tok": adapter}, clear=True):
+            result = asyncio.run(
+                weixin.send_weixin_direct(
+                    extra={"account_id": "acct"},
+                    token="tok",
+                    chat_id="wxid_test123",
+                    message="",
+                    media_files=[("/tmp/picture.png", False), ("/tmp/file.pdf", False)],
+                )
+            )
+
+        assert result["success"] is True
+        adapter.send_image_file.assert_awaited_once_with("wxid_test123", "/tmp/picture.png")
+        adapter.send_document.assert_awaited_once_with("wxid_test123", "/tmp/file.pdf")
+
+    def test_send_weixin_direct_treats_bmp_as_image(self):
+        adapter = _make_adapter()
+        adapter._send_session = type("S", (), {"closed": False})()
+        adapter.format_message = lambda message: ""
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text-msg"))
+        adapter.send_image_file = AsyncMock(return_value=SendResult(success=True, message_id="img-msg"))
+        adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc-msg"))
+
+        with patch.dict("gateway.platforms.weixin._LIVE_ADAPTERS", {"tok": adapter}, clear=True):
+            result = asyncio.run(
+                weixin.send_weixin_direct(
+                    extra={"account_id": "acct"},
+                    token="tok",
+                    chat_id="wxid_test123",
+                    message="",
+                    media_files=[("/tmp/picture.bmp", False)],
+                )
+            )
+
+        assert result["success"] is True
+        adapter.send_image_file.assert_awaited_once_with("wxid_test123", "/tmp/picture.bmp")
+        adapter.send_document.assert_not_awaited()
+
+    def test_send_image_file_uses_fresh_session_for_retry(self):
+        adapter = _make_adapter()
+        original_session = object()
+        retry_session = object()
+        adapter._send_session = original_session
+        adapter.send_document = AsyncMock(
+            side_effect=[
+                SendResult(success=False, error="Broken pipe"),
+                SendResult(success=True, message_id="msg-4"),
+            ]
+        )
+
+        class _RetryClientSession:
+            def __init__(self, *args, **kwargs):
+                self.session = retry_session
+            async def __aenter__(self):
+                return self.session
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with patch("gateway.platforms.weixin._has_ffmpeg", return_value=True), \
+             patch("gateway.platforms.weixin._compress_image_with_ffmpeg", return_value="/tmp/compressed.jpg"), \
+             patch("gateway.platforms.weixin.aiohttp.ClientSession", _RetryClientSession), \
+             patch("gateway.platforms.weixin._make_ssl_connector", return_value=None), \
+             patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.stat") as stat_mock, \
+             patch("pathlib.Path.unlink"), \
+             patch("pathlib.Path.rmdir"):
+            stat_mock.return_value.st_size = 12345
+            result = asyncio.run(adapter.send_image_file("wxid_test123", "/tmp/original.png"))
+
+        assert result.success is True
+        assert adapter.send_document.await_args_list[0].kwargs["file_path"] == "/tmp/original.png"
+        assert adapter.send_document.await_args_list[1].kwargs["file_path"] == "/tmp/compressed.jpg"
+        assert adapter._send_session is original_session
+
+
+class TestWeixinImageCompressionHelpers:
+    def test_ffmpeg_scale_filter_handles_square_images(self):
+        scale = weixin._ffmpeg_scale_filter(1280)
+        assert "gte(iw,ih)" in scale
+        assert "gte(ih,iw)" in scale
+
+    def test_compress_image_with_ffmpeg_returns_none_on_timeout(self, tmp_path):
+        image_path = tmp_path / "demo.png"
+        image_path.write_bytes(b"png")
+
+        with patch("gateway.platforms.weixin.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             patch("gateway.platforms.weixin.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=120)):
+            result = weixin._compress_image_with_ffmpeg(str(image_path))
+
+        assert result is None
 
 
 class TestWeixinRemoteMediaSafety:

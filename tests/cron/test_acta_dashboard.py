@@ -1599,6 +1599,7 @@ def test_outputs_page_uses_v9_shell_and_signed_source_rows():
     assert 'data-open-url="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
     assert '<article class="output-row readable unread fresh" data-read-key="output:lead:2026-05-19T10:00:00+00:00"' in html
     assert '<span class="read-state">UNREAD</span>' in html
+    assert '<div class="stat">Unread <b data-unread-count="1">1</b></div>' in html
     assert "document.querySelectorAll('.output-row.readable')" in html
     assert "el.querySelectorAll('.output-open-overlay')" in html
     assert "setRead(el, true);" in html
@@ -1657,6 +1658,7 @@ def test_outputs_page_gates_unsafe_links_and_read_state_to_signed_rows():
     assert 'data-read-key="output:unsafe' not in html
     assert '<span class="read-state">UNREAD</span>' not in html
     assert '<span class="muted">No signed link</span>' in html
+    assert '<div class="stat">Unread <b data-unread-count="0">0</b></div>' in html
     assert "NO FOLLOW-UP" in html
     assert 'onclick="bad' not in html
 
@@ -2135,6 +2137,7 @@ def test_run_history_published_rows_open_signed_detail_without_prompt_or_path_le
     assert 'href="https://acta.imperatr.com/r/run-details/daily-2026-05-20_08-00-00.html?exp=1&amp;sig=abc"' in html
     assert '<article class="output-row readable unread fresh" data-read-key="run:daily:2026-05-20_08-00-00" data-read-title="Daily Brief"' in html
     assert re.search(r'<span class="read-state">UNREAD</span><span class="confidence-chip">[^<]+</span>', html)
+    assert '<div class="stat">Unread <b data-unread-count="1">1</b></div>' in html
     assert "document.querySelectorAll('.output-row.readable')" in html
     assert "el.querySelectorAll('.output-open-overlay')" in html
     assert "setRead(el, true);" in html
@@ -2189,6 +2192,7 @@ def test_run_history_unsafe_or_missing_artifact_url_remains_disabled():
     assert 'data-open-url=' not in html
     assert html.count('aria-disabled="true"') == 3
     assert html.count('<span class="muted">HISTORY</span>') == 3
+    assert '<div class="stat">Unread <b data-unread-count="0">0</b></div>' in html
     assert '<span class="open">SIGNED</span>' not in html
     articles = re.findall(r"<article class=\"output-row[^>]*>.*?</article>", html, re.S)
     assert len(articles) == 3

@@ -1609,7 +1609,7 @@ def render_outputs_page(
   <p class="kicker">Acta Situation Room · Outputs</p>
   <h1>Signed source objects.</h1>
   <p class="lede">Compact source-backed output rows with artifact links, Telegram follow-up, freshness, category, and provenance in the Acta Imperatr surface.</p>
-  <section class="stats"><div class="stat">Outputs <b>{len(rows)}</b></div><div class="stat">Signed <b>{signed}</b></div><div class="stat">Fresh <b>{fresh}</b></div><div class="stat">Silent <b>{silent}</b></div><div class="stat">Missing <b>{missing}</b></div></section>
+  <section class="stats"><div class="stat">Outputs <b>{len(rows)}</b></div><div class="stat">Signed <b>{signed}</b></div><div class="stat">Unread <b data-unread-count="{signed}">{signed}</b></div><div class="stat">Fresh <b>{fresh}</b></div><div class="stat">Silent <b>{silent}</b></div><div class="stat">Missing <b>{missing}</b></div></section>
   <section class="outputs-panel">
     {''.join(rows) or '<p class="prompt">No source outputs yet.</p>'}
   </section>
@@ -1711,6 +1711,7 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
     rows: list[str] = []
     fresh = sum(1 for item in runs if item.status == "fresh")
     silent = sum(1 for item in runs if item.status == "silent")
+    signed = sum(1 for item in runs if _is_safe_signed_acta_artifact_url(item.artifact_url))
     for index, item in enumerate(runs, start=1):
         run_time = item.run_time.isoformat() if item.run_time else "unknown"
         age = _age_label(item.run_time, now) if item.run_time else "unknown"
@@ -1767,7 +1768,7 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
   <h1>Run history.</h1>
   <p class="lede">Chronological cron output history scanned from run files across jobs. Local filesystem paths are not exposed.</p>
   <nav class="quick-nav"><a href="/">Today</a><a href="/outputs">Outputs</a><a class="active" href="/runs">Runs</a><a href="/jobs">Jobs</a><a href="/archive">Archive</a></nav>
-  <section class="stats"><div class="stat">Runs <b>{len(rows)}</b></div><div class="stat">Fresh <b>{fresh}</b></div><div class="stat">Silent <b>{silent}</b></div></section>
+  <section class="stats"><div class="stat">Runs <b>{len(rows)}</b></div><div class="stat">Unread <b data-unread-count="{signed}">{signed}</b></div><div class="stat">Fresh <b>{fresh}</b></div><div class="stat">Silent <b>{silent}</b></div></section>
   <section class="outputs-panel">
     {''.join(rows) or '<p class="prompt">No cron run history yet.</p>'}
   </section>

@@ -77,6 +77,7 @@ AUTHOR_MAP = {
     "34853915+m0n3r0@users.noreply.github.com": "m0n3r0",
     "leeseoki@makestar.com": "leeseoki0",
     "kronexoi13@gmail.com": "kronexoi",
+    "hua.zhong@kingsmith.com": "vgocoder",
     "leovillalbajr@gmail.com": "Lempkey",
     "nidhi2894@gmail.com": "nidhi-singh02",
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",

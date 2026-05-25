@@ -14,6 +14,7 @@ from agent.image_routing import (
     _explicit_aux_vision_override,
     _lookup_supports_vision,
     _supports_vision_override,
+    _looks_like_vision_model,
     build_native_content_parts,
     decide_image_input_mode,
 )
@@ -67,6 +68,26 @@ class TestExplicitAuxVisionOverride:
     def test_base_url_set_is_explicit(self):
         cfg = {"auxiliary": {"vision": {"provider": "auto", "base_url": "http://localhost:11434"}}}
         assert _explicit_aux_vision_override(cfg) is True
+
+
+class TestLooksLikeVisionModel:
+    @pytest.mark.parametrize("model", [
+        "mimo-v2-omni",
+        "qwen2.5-vl-72b-instruct",
+        "claude-3-vision-preview",
+        "vendor/model-visual",
+    ])
+    def test_recognises_vision_slugs(self, model):
+        assert _looks_like_vision_model(model) is True
+
+    @pytest.mark.parametrize("model", [
+        "gpt-4o-mini",
+        "claude-3-haiku",
+        "deepseek-chat",
+        "",
+    ])
+    def test_rejects_non_vision_slugs(self, model):
+        assert _looks_like_vision_model(model) is False
 
 
 # ─── decide_image_input_mode ─────────────────────────────────────────────────
@@ -298,6 +319,20 @@ def _png_bytes() -> bytes:
     return base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
     )
+
+
+    @pytest.mark.parametrize("model", [
+        "mimo-v2-omni",
+        "qwen2.5-vl-72b-instruct",
+        "claude-3-vision-preview",
+    ])
+    def test_auto_with_unknown_vision_shaped_slug_falls_back_to_native(self, model, monkeypatch):
+        monkeypatch.setattr("agent.image_routing._lookup_supports_vision", lambda provider, model, cfg=None: None)
+        assert decide_image_input_mode("custom", model, {}) == "native"
+
+    def test_auto_known_non_vision_still_text_even_if_slug_looks_visiony(self, monkeypatch):
+        monkeypatch.setattr("agent.image_routing._lookup_supports_vision", lambda provider, model, cfg=None: False)
+        assert decide_image_input_mode("custom", "fake-vision-model", {}) == "text"
 
 
 class TestBuildNativeContentParts:

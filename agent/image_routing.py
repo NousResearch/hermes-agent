@@ -186,6 +186,32 @@ def _lookup_supports_vision(
     return bool(caps.supports_vision)
 
 
+_VISION_SLUG_FRAGMENTS = (
+    "vision",
+    "visual",
+    "vl",
+    "omni",
+    "multimodal",
+)
+
+_VISION_SLUG_SUFFIXES = (
+    "-vl",
+    "_vl",
+    ".vl",
+)
+
+
+def _looks_like_vision_model(model: str) -> bool:
+    """Heuristically identify vision-capable models absent from models.dev."""
+    slug = (model or "").strip().lower()
+    if not slug:
+        return False
+    tail = slug.rsplit("/", 1)[-1]
+    if any(fragment in tail for fragment in _VISION_SLUG_FRAGMENTS):
+        return True
+    return tail.endswith(_VISION_SLUG_SUFFIXES)
+
+
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -215,6 +241,8 @@ def decide_image_input_mode(
 
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
+        return "native"
+    if supports is None and _looks_like_vision_model(model):
         return "native"
     return "text"
 
@@ -388,4 +416,5 @@ def build_native_content_parts(
 __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
+    "_looks_like_vision_model",
 ]

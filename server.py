@@ -5,7 +5,7 @@ Minimal Railway admin wrapper for Hermes.
 - Health check at /health
 - Manages `hermes gateway` as a subprocess
 - Stores config in /data/.hermes/.env
-- Writes a minimal config.yaml so Hermes picks up the selected model
+- Writes a minimal config.yaml so Hermes picks up the selected model/provider
 """
 
 import asyncio
@@ -51,8 +51,10 @@ else:
     print(f"[server] Admin username: {ADMIN_USERNAME}", flush=True)
 
 ENV_VARS = [
+    ("LLM_PROVIDER", "LLM Provider", "model", False),
     ("LLM_MODEL", "Model", "model", False),
     ("OPENROUTER_API_KEY", "OpenRouter", "provider", True),
+    ("GOOGLE_API_KEY", "Google / Gemini", "provider", True),
     ("DEEPSEEK_API_KEY", "DeepSeek", "provider", True),
     ("DASHSCOPE_API_KEY", "DashScope", "provider", True),
     ("GLM_API_KEY", "GLM / Z.AI", "provider", True),
@@ -126,12 +128,22 @@ def write_env(path: Path, data: Dict[str, str]) -> None:
 
 
 def write_config_yaml(data: Dict[str, str]) -> None:
-    model = data.get("LLM_MODEL", "").strip() or "openrouter/auto"
+    provider = (data.get("LLM_PROVIDER", "").strip() or "openrouter").lower()
+    model = data.get("LLM_MODEL", "").strip()
+
+    if not model:
+        if provider == "gemini":
+            model = "gemini-2.5-flash"
+        elif provider == "openrouter":
+            model = "openrouter/auto"
+        else:
+            model = "openrouter/auto"
+
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(
         f"""model:
   default: "{model}"
-  provider: "auto"
+  provider: "{provider}"
 
 terminal:
   backend: "local"
@@ -264,18 +276,35 @@ INDEX_HTML = """
 
       <div class="card">
         <h3>Quick Config</h3>
+
+        <div class="field">
+          <label class="small muted">Provider</label>
+          <select id="LLM_PROVIDER" onchange="updateProviderFields()">
+            <option value="openrouter">OpenRouter</option>
+            <option value="gemini">Google Gemini</option>
+          </select>
+        </div>
+
         <div class="field">
           <label class="small muted">Model</label>
-          <input id="LLM_MODEL" placeholder="e.g. google/gemma-3-1b-it:free" />
+          <input id="LLM_MODEL" placeholder="e.g. gemini-2.5-flash" />
         </div>
-        <div class="field">
+
+        <div class="field" id="openrouterField">
           <label class="small muted">OpenRouter API Key</label>
-          <input id="OPENROUTER_API_KEY" type="password" placeholder="sk-..." />
+          <input id="OPENROUTER_API_KEY" type="password" placeholder="sk-or-..." />
         </div>
+
+        <div class="field" id="googleField">
+          <label class="small muted">Google API Key</label>
+          <input id="GOOGLE_API_KEY" type="password" placeholder="AIza..." />
+        </div>
+
         <div class="field">
           <label class="small muted">Telegram Bot Token</label>
           <input id="TELEGRAM_BOT_TOKEN" type="password" placeholder="123456:ABC..." />
         </div>
+
         <div class="row">
           <button onclick="saveConfig(true)">Save & Restart</button>
           <button class="secondary" onclick="loadConfig()">Reload</button>
@@ -334,6 +363,25 @@ function textareaFromEnvObject(obj) {
   return Object.keys(obj).sort().map(k => `${k}=${obj[k] ?? ""}`).join("\\n");
 }
 
+function updateProviderFields() {
+  const provider = document.getElementById("LLM_PROVIDER").value;
+
+  document.getElementById("openrouterField").style.display =
+    provider === "openrouter" ? "block" : "none";
+
+  document.getElementById("googleField").style.display =
+    provider === "gemini" ? "block" : "none";
+
+  const modelInput = document.getElementById("LLM_MODEL");
+  if (!modelInput.value.trim()) {
+    if (provider === "gemini") {
+      modelInput.placeholder = "e.g. gemini-2.5-flash";
+    } else {
+      modelInput.placeholder = "e.g. openrouter/auto";
+    }
+  }
+}
+
 async function loadStatus() {
   const data = await api("/api/status");
   const gw = data.gateway || {};
@@ -355,17 +403,37 @@ async function loadLogs() {
 async function loadConfig() {
   const data = await api("/api/config");
   const vars = data.vars || {};
+
+  document.getElementById("LLM_PROVIDER").value = vars.LLM_PROVIDER || "openrouter";
   document.getElementById("LLM_MODEL").value = vars.LLM_MODEL || "";
   document.getElementById("OPENROUTER_API_KEY").value = vars.OPENROUTER_API_KEY || "";
+  document.getElementById("GOOGLE_API_KEY").value = vars.GOOGLE_API_KEY || "";
   document.getElementById("TELEGRAM_BOT_TOKEN").value = vars.TELEGRAM_BOT_TOKEN || "";
   document.getElementById("envText").value = textareaFromEnvObject(vars);
+
+  updateProviderFields();
 }
 
 async function saveConfig(restart) {
   const current = envObjectFromTextarea(document.getElementById("envText").value);
+
+  current.LLM_PROVIDER = document.getElementById("LLM_PROVIDER").value.trim();
   current.LLM_MODEL = document.getElementById("LLM_MODEL").value.trim();
-  current.OPENROUTER_API_KEY = document.getElementById("OPENROUTER_API_KEY").value.trim() || current.OPENROUTER_API_KEY || "";
-  current.TELEGRAM_BOT_TOKEN = document.getElementById("TELEGRAM_BOT_TOKEN").value.trim() || current.TELEGRAM_BOT_TOKEN || "";
+
+  current.OPENROUTER_API_KEY =
+    document.getElementById("OPENROUTER_API_KEY").value.trim() ||
+    current.OPENROUTER_API_KEY ||
+    "";
+
+  current.GOOGLE_API_KEY =
+    document.getElementById("GOOGLE_API_KEY").value.trim() ||
+    current.GOOGLE_API_KEY ||
+    "";
+
+  current.TELEGRAM_BOT_TOKEN =
+    document.getElementById("TELEGRAM_BOT_TOKEN").value.trim() ||
+    current.TELEGRAM_BOT_TOKEN ||
+    "";
 
   await api("/api/config", {
     method: "PUT",
@@ -392,6 +460,7 @@ async function refreshAll() {
   await Promise.all([loadStatus(), loadLogs(), loadConfig()]);
 }
 
+updateProviderFields();
 refreshAll();
 setInterval(loadStatus, 5000);
 setInterval(loadLogs, 3000);
@@ -422,9 +491,11 @@ class Gateway:
             write_config_yaml(file_env)
 
             model = file_env.get("LLM_MODEL", "")
+            provider = file_env.get("LLM_PROVIDER", "")
             provider_present = any(file_env.get(k) for k in PROVIDER_KEYS)
+
             print(
-                f"[gateway] starting - model={model or 'NOT SET'} provider_key={'set' if provider_present else 'NOT SET'}",
+                f"[gateway] starting - provider={provider or 'NOT SET'} model={model or 'NOT SET'} provider_key={'set' if provider_present else 'NOT SET'}",
                 flush=True,
             )
 
@@ -528,6 +599,20 @@ async def api_config_put(request: Request):
         for k, v in existing.items():
             if k not in merged:
                 merged[k] = v
+
+        provider = (merged.get("LLM_PROVIDER", "") or "").strip().lower()
+
+        if not provider:
+            if merged.get("GOOGLE_API_KEY"):
+                provider = "gemini"
+            else:
+                provider = "openrouter"
+            merged["LLM_PROVIDER"] = provider
+
+        if provider == "gemini":
+            merged.pop("OPENROUTER_API_KEY", None)
+        elif provider == "openrouter":
+            merged.pop("GOOGLE_API_KEY", None)
 
         merged["ADMIN_USERNAME"] = ADMIN_USERNAME
         merged["ADMIN_PASSWORD"] = ADMIN_PASSWORD

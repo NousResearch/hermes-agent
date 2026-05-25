@@ -303,46 +303,55 @@ export const DARK_THEME: Theme = {
   bannerHero: ''
 }
 
-// Light-terminal palette: darker golds/ambers that stay legible on white
-// backgrounds. Same shape as DARK_THEME so `fromSkin` still layers on top
-// cleanly (#11300).
+const JARVIS_LIGHT_BRAND: ThemeBrand = {
+  ...BRAND,
+  name: 'Jarvis',
+  welcome: 'Jarvis online. Type your message or /help for commands.',
+  goodbye: 'Shutting down.',
+  tool: '│',
+  helpHeader: 'Available Commands'
+}
+
+// Light-terminal default mirrors the `jarvis-light` skin: high-contrast
+// blue/slate tones for white or pale terminals. Same shape as DARK_THEME
+// so `fromSkin` still layers explicit skins on top cleanly (#11300).
 export const LIGHT_THEME: Theme = {
   color: {
-    primary: '#8B6914',
-    accent: '#A0651C',
-    border: '#7A4F1F',
-    text: '#3D2F13',
-    muted: '#7A5A0F',
-    completionBg: '#F5F5F5',
-    completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
-    completionMetaBg: '#F5F5F5',
-    completionMetaCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    primary: '#020617',
+    accent: '#2563EB',
+    border: '#2563EB',
+    text: '#020617',
+    muted: '#334155',
+    completionBg: '#F8FAFC',
+    completionCurrentBg: '#DBEAFE',
+    completionMetaBg: '#E2E8F0',
+    completionMetaCurrentBg: '#BFDBFE',
 
-    label: '#7A5A0F',
-    ok: '#2E7D32',
-    error: '#C62828',
-    warn: '#E65100',
+    label: '#0F172A',
+    ok: '#166534',
+    error: '#B91C1C',
+    warn: '#92400E',
 
-    prompt: '#2B2014',
-    sessionLabel: '#7A5A0F',
-    sessionBorder: '#7A5A0F',
+    prompt: '#020617',
+    sessionLabel: '#020617',
+    sessionBorder: '#475569',
 
-    statusBg: '#F5F5F5',
-    statusFg: '#333333',
-    statusGood: '#2E7D32',
-    statusWarn: '#8B6914',
-    statusBad: '#D84315',
-    statusCritical: '#B71C1C',
-    selectionBg: '#D4E4F7',
+    statusBg: '#E2E8F0',
+    statusFg: '#020617',
+    statusGood: '#166534',
+    statusWarn: '#92400E',
+    statusBad: '#C2410C',
+    statusCritical: '#7F1D1D',
+    selectionBg: '#DBEAFE',
 
     diffAdded: 'rgb(200,240,200)',
     diffRemoved: 'rgb(240,200,200)',
     diffAddedWord: 'rgb(27,94,32)',
     diffRemovedWord: 'rgb(183,28,28)',
-    shellDollar: '#1565C0'
+    shellDollar: '#2563EB'
   },
 
-  brand: BRAND,
+  brand: JARVIS_LIGHT_BRAND,
 
   bannerLogo: '',
   bannerHero: ''
@@ -552,7 +561,7 @@ export function normalizeThemeForAnsiLightTerminal(
   return { ...theme, color }
 }
 
-const DEFAULT_LIGHT_MODE = detectLightMode()
+export const DEFAULT_LIGHT_MODE = detectLightMode()
 
 export const DEFAULT_THEME: Theme = normalizeThemeForAnsiLightTerminal(
   DEFAULT_LIGHT_MODE ? LIGHT_THEME : DARK_THEME,

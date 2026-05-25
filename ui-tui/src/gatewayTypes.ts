@@ -6,6 +6,7 @@ export interface GatewaySkin {
   branding?: Record<string, string>
   colors?: Record<string, string>
   help_header?: string
+  name?: string
   tool_prefix?: string
 }
 

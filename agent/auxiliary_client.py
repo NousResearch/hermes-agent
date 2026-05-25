@@ -165,10 +165,7 @@ _PROVIDER_ALIASES = {
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
     if normalized.startswith("custom:"):
-        suffix = normalized.split(":", 1)[1].strip()
-        if not suffix:
-            return "custom"
-        normalized = suffix
+        return normalized if normalized.split(":", 1)[1].strip() else "custom"
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":

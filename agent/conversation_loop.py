@@ -3945,8 +3945,14 @@ def run_conversation(
                 print(f"❌ {error_msg}")
             except (OSError, ValueError):
                 logger.error(error_msg)
-            
-            logger.debug("Outer loop error in API call #%d", api_call_count, exc_info=True)
+
+            # Emit the full traceback at ERROR level so it lands in both
+            # agent.log AND errors.log.  Previously this was logged at DEBUG,
+            # which meant intermittent outer-loop failures were unreproducible
+            # — users would see a one-line summary on screen with no way to
+            # recover the call site.  logger.exception() includes the
+            # traceback automatically and emits at ERROR.
+            logger.exception("Outer loop error in API call #%d", api_call_count)
             
             # If an assistant message with tool_calls was already appended,
             # the API expects a role="tool" result for every tool_call_id.

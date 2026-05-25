@@ -372,6 +372,32 @@ def _lookup_supports_vision(
     return None
 
 
+_VISION_SLUG_FRAGMENTS = (
+    "vision",
+    "visual",
+    "vl",
+    "omni",
+    "multimodal",
+)
+
+_VISION_SLUG_SUFFIXES = (
+    "-vl",
+    "_vl",
+    ".vl",
+)
+
+
+def _looks_like_vision_model(model: str) -> bool:
+    """Heuristically identify vision-capable models absent from models.dev."""
+    slug = (model or "").strip().lower()
+    if not slug:
+        return False
+    tail = slug.rsplit("/", 1)[-1]
+    if any(fragment in tail for fragment in _VISION_SLUG_FRAGMENTS):
+        return True
+    return tail.endswith(_VISION_SLUG_SUFFIXES)
+
+
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -388,7 +414,12 @@ def decide_image_input_mode(
         return "text"
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
-    return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
+    supports = _lookup_supports_vision(provider, model, cfg, **extra)
+    if supports is True:
+        return "native"
+    if supports is None and _looks_like_vision_model(model):
+        return "native"
+    return "text"
 
 
 # Image size handling is REACTIVE: attach at full size and let

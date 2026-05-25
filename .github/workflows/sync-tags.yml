@@ -1,0 +1,53 @@
+name: Sync Upstream to Main and Develop
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Todos los días a medianoche
+  workflow_dispatch: # Botón manual
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: develop # 👈 OBLIGATORIO: Le dice a GitHub que empiece trabajando en tu rama develop
+
+      - name: Sync Process
+        run: |
+          # 1. Configurar la identidad del bot
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 2. Configurar el repositorio original y descargar el historial completo de ambos lados
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --all --tags --prune
+
+          # ---------------------------------------------------------
+          # PASO A: Actualizar tu rama MAIN en la nube
+          # ---------------------------------------------------------
+          # Creamos una rama local 'main' que sea una copia exacta de 'upstream/main'
+          git checkout -B main upstream/main
+          
+          # La subimos directamente a TU 'origin/main', sobreescribiéndola para que quede idéntica
+          git push origin main --force
+
+          # ---------------------------------------------------------
+          # PASO B: Actualizar tu rama DEVELOP integrando lo nuevo
+          # ---------------------------------------------------------
+          # Creamos la rama local 'develop' basada en tu 'origin/develop' real de la nube
+          git checkout -B develop origin/develop
+          
+          # Fusionamos 'main' (que ya tiene lo último de NousResearch) dentro de 'develop'
+          git merge main --no-edit
+          
+          # ---------------------------------------------------------
+          # PASO C: Subir los cambios de develop y los tags
+          # ---------------------------------------------------------
+          git push origin develop
+          git push origin --tags

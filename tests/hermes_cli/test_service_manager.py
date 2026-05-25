@@ -412,6 +412,115 @@ def test_s6_manager_kind_and_supports_registration() -> None:
     assert mgr.supports_runtime_registration() is True
 
 
+# ---------------------------------------------------------------------------
+# _seed_supervise_skeleton — unit tests
+# ---------------------------------------------------------------------------
+#
+# The skeleton helper pre-creates the dirs and FIFOs that s6-supervise
+# would otherwise create as root mode 0700, locking out the
+# unprivileged hermes user from every lifecycle op. These tests run
+# against tmp_path and assert the produced layout — the live-container
+# verification (against real s6-svc / s6-svstat) lives in
+# tests/docker/test_s6_profile_gateway_integration.py.
+
+
+def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
+    """Verifies the dirs + FIFO + modes the helper lays down."""
+    import stat
+
+    from hermes_cli.service_manager import _seed_supervise_skeleton
+
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
+
+    _seed_supervise_skeleton(svc_dir)
+
+    # Top-level event/ — s6-svlisten1 event subscription dir.
+    event = svc_dir / "event"
+    assert event.is_dir(), "missing top-level event/"
+    assert stat.S_IMODE(event.stat().st_mode) == 0o3730, (
+        f"event/ mode = {oct(event.stat().st_mode)}, want 03730"
+    )
+
+    # supervise/ dir.
+    supervise = svc_dir / "supervise"
+    assert supervise.is_dir(), "missing supervise/"
+    assert stat.S_IMODE(supervise.stat().st_mode) == 0o755
+
+    # supervise/event/.
+    supervise_event = supervise / "event"
+    assert supervise_event.is_dir(), "missing supervise/event/"
+    assert stat.S_IMODE(supervise_event.stat().st_mode) == 0o3730
+
+    # supervise/control FIFO.
+    control = supervise / "control"
+    assert control.exists(), "missing supervise/control FIFO"
+    assert stat.S_ISFIFO(control.stat().st_mode), (
+        "supervise/control must be a FIFO"
+    )
+    assert stat.S_IMODE(control.stat().st_mode) == 0o660
+
+
+def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
+    """When a log/ subdir exists, its supervise tree also gets seeded.
+
+    Without this, ``unregister_profile_gateway``'s rmtree would EACCES
+    on the logger's root-owned supervise dir even after the parent
+    slot's supervise/ was hermes-owned.
+    """
+    import stat
+
+    from hermes_cli.service_manager import _seed_supervise_skeleton
+
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
+    (svc_dir / "log").mkdir()  # logger subdir present
+
+    _seed_supervise_skeleton(svc_dir)
+
+    # Logger's own supervise tree is seeded the same way.
+    log_event = svc_dir / "log" / "event"
+    log_supervise = svc_dir / "log" / "supervise"
+    log_supervise_event = log_supervise / "event"
+    log_control = log_supervise / "control"
+
+    assert log_event.is_dir()
+    assert stat.S_IMODE(log_event.stat().st_mode) == 0o3730
+    assert log_supervise.is_dir()
+    assert log_supervise_event.is_dir()
+    assert log_control.exists() and stat.S_ISFIFO(log_control.stat().st_mode)
+
+
+def test_seed_supervise_skeleton_skips_when_no_log_subservice(tmp_path) -> None:
+    """If log/ isn't present, no logger skeleton is created."""
+    from hermes_cli.service_manager import _seed_supervise_skeleton
+
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
+
+    _seed_supervise_skeleton(svc_dir)
+
+    assert not (svc_dir / "log").exists(), (
+        "helper must not synthesize a log/ subdir on its own"
+    )
+
+
+def test_seed_supervise_skeleton_is_idempotent(tmp_path) -> None:
+    """Calling the helper twice on the same dir is a no-op the second time.
+
+    Important because s6-supervise may have already opened the FIFO
+    when a re-register / reconcile happens; double-creation would
+    error out. The helper short-circuits on existence.
+    """
+    from hermes_cli.service_manager import _seed_supervise_skeleton
+
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
+
+    _seed_supervise_skeleton(svc_dir)
+    _seed_supervise_skeleton(svc_dir)  # must not raise
+
+
 def test_s6_register_creates_service_dir_and_triggers_scan(
     s6_scandir, fake_subprocess_run,
 ) -> None:

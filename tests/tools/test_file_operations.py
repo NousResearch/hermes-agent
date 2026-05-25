@@ -391,6 +391,8 @@ class TestShellFileOpsHelpers:
         )
 
         def side_effect(command, **kwargs):
+            if command.startswith("if [ ! -e "):
+                return {"output": "regular\n", "returncode": 0}
             if command.startswith("wc -c"):
                 return {"output": "12\n", "returncode": 0}
             if command.startswith("head -c"):
@@ -419,6 +421,8 @@ class TestShellFileOpsHelpers:
         )
 
         def side_effect(command, **kwargs):
+            if command.startswith("if [ ! -e "):
+                return {"output": "regular\n", "returncode": 0}
             if command.startswith("wc -c"):
                 return {"output": "6\n", "returncode": 0}
             if command.startswith("head -c"):
@@ -433,6 +437,40 @@ class TestShellFileOpsHelpers:
 
         assert result.error is None
         assert result.content == "alpha\n"
+
+    def test_read_file_rejects_non_regular_before_read_commands(self, mock_env):
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if command.startswith("if [ ! -e "):
+                return {"output": "non_regular\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/test/fifo")
+
+        assert result.error is not None
+        assert "non-regular" in result.error
+        assert not any(command.startswith(("wc -c", "head -c", "sed -n", "wc -l")) for command in commands)
+
+    def test_read_file_raw_rejects_non_regular_before_read_commands(self, mock_env):
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if command.startswith("if [ ! -e "):
+                return {"output": "non_regular\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file_raw("/tmp/test/device")
+
+        assert result.error is not None
+        assert "non-regular" in result.error
+        assert not any(command.startswith(("wc -c", "head -c", "cat ")) for command in commands)
 
 
 class TestSearchPathValidation:

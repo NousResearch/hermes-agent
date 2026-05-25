@@ -146,6 +146,14 @@ def _is_blocked_device(filepath: str) -> bool:
     return False
 
 
+def _is_existing_non_regular_path(path: Path) -> bool:
+    """Return True when a resolved local path exists but is not a regular file."""
+    try:
+        return path.exists() and not path.is_file()
+    except OSError:
+        return False
+
+
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
@@ -492,6 +500,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+        if _is_blocked_device(str(_resolved)) or _is_existing_non_regular_path(_resolved):
+            return json.dumps({
+                "error": (
+                    f"Cannot read '{path}': resolved path is not a regular "
+                    "file. Refusing to read directories, devices, FIFOs, "
+                    "sockets, and other special files."
+                ),
+            })
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).

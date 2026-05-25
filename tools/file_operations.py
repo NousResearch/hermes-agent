@@ -642,6 +642,41 @@ class ShellFileOperations(FileOperations):
         """Check if file is an image we can return as base64."""
         ext = os.path.splitext(path)[1].lower()
         return ext in IMAGE_EXTENSIONS
+
+    def _readable_regular_file_status(self, path: str) -> str:
+        """Return regular, missing, or non_regular for a read target."""
+        escaped = self._escape_shell_arg(path)
+        status_cmd = (
+            f"if [ ! -e {escaped} ]; then "
+            "printf '%s\\n' missing; "
+            f"elif [ -f {escaped} ]; then "
+            "printf '%s\\n' regular; "
+            "else "
+            "printf '%s\\n' non_regular; "
+            "fi"
+        )
+        result = self._exec(status_cmd, timeout=5)
+        if result.exit_code != 0:
+            return "unknown"
+        lines = _strip_terminal_fence_leaks(result.stdout).strip().splitlines()
+        return lines[-1].strip() if lines else "unknown"
+
+    def _reject_non_regular_read_target(self, path: str) -> Optional[ReadResult]:
+        """Reject missing and non-regular files before running read commands."""
+        status = self._readable_regular_file_status(path)
+        if status == "regular":
+            return None
+        if status == "missing":
+            return self._suggest_similar_files(path)
+        if status == "non_regular":
+            return ReadResult(
+                error=(
+                    f"Cannot read non-regular file: {path}. "
+                    "Refusing to read directories, devices, FIFOs, sockets, "
+                    "and other special files."
+                )
+            )
+        return ReadResult(error=f"Failed to inspect file type before reading: {path}")
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
         """Add line numbers to content in LINE_NUM|CONTENT format."""
@@ -729,6 +764,10 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
         
         offset, limit = normalize_read_pagination(offset, limit)
+
+        preflight_error = self._reject_non_regular_read_target(path)
+        if preflight_error is not None:
+            return preflight_error
         
         # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
@@ -864,6 +903,11 @@ class ShellFileOperations(FileOperations):
         Uses cat so the full file is returned regardless of size.
         """
         path = self._expand_path(path)
+
+        preflight_error = self._reject_non_regular_read_target(path)
+        if preflight_error is not None:
+            return preflight_error
+
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:

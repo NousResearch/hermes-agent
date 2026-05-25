@@ -1366,13 +1366,27 @@ async def web_crawl_tool(
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
+    _BUILTIN_BACKENDS = ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
-        return _is_backend_available(configured)
-    return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
-    )
+    if configured in set(_BUILTIN_BACKENDS):
+        if _is_backend_available(configured):
+            return True
+    elif any(_is_backend_available(backend) for backend in _BUILTIN_BACKENDS):
+        return True
+    # Built-in backends are not the only source: third-party plugins register
+    # their own WebSearchProvider via PluginContext.register_web_search_provider
+    # (e.g. a Kagi provider keyed on KAGI_API_KEY). Consult the registry so the
+    # web_search / web_extract tools are not gated off when only a plugin
+    # provider is configured and available (#31873).
+    try:
+        from agent.web_search_registry import get_active_search_provider
+
+        provider = get_active_search_provider()
+        if provider is not None and provider.is_available():
+            return True
+    except Exception as exc:  # registry must never hard-fail the availability gate
+        logger.debug("web_search_registry availability check failed: %s", exc)
+    return False
 
 
 def check_auxiliary_model() -> bool:

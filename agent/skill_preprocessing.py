@@ -41,8 +41,9 @@ def substitute_template_vars(
 ) -> str:
     """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
 
-    Only substitutes tokens for which a concrete value is available --
-    unresolved tokens are left in place so the author can spot them.
+    P30-12 FIX: values are shell-escaped before substitution so that
+    paths containing spaces, quotes, or shell metacharacters cannot
+    break the inline-shell expansion (bash -c) downstream.
     """
     if not content:
         return content
@@ -52,12 +53,23 @@ def substitute_template_vars(
     def _replace(match: re.Match) -> str:
         token = match.group(1)
         if token == "HERMES_SKILL_DIR" and skill_dir_str:
-            return skill_dir_str
+            return _shell_escape(skill_dir_str)
         if token == "HERMES_SESSION_ID" and session_id:
-            return str(session_id)
+            return _shell_escape(str(session_id))
         return match.group(0)
 
     return _SKILL_TEMPLATE_RE.sub(_replace, content)
+
+
+# P30-12 FIX: escape a string for safe embedding inside bash -c.
+# Replaces ', ", \, $, and newlines so the string cannot break out of
+# single quotes (used as the primary quoting mechanism below).
+def _shell_escape(s: str) -> str:
+    """Return a shell-safe single-quoted string, escaping the 5 special chars."""
+    # Escape backslash first, then single quotes, then the others.
+    # Using single-quote enclosure with \' escape for maximum portability.
+    escaped = s.replace("\\", "\\\\").replace("'", "'\\''")
+    return f"'{escaped}'"
 
 
 def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:

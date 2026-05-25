@@ -176,17 +176,25 @@ class TestMainDispatchForwardsIgnoreRules:
         import hermes_cli.main as hm
 
         src = inspect.getsource(hm)
-        # Find the run_oneshot(...) call. We can't easily parse the whole
-        # function, but the wiring must include `ignore_rules=` and read it
-        # off of args via getattr so older test harnesses still work.
         assert "run_oneshot(" in src, "main.py must still dispatch to run_oneshot"
-        # Crude but robust: the dispatch block must mention both the call
-        # and the keyword. Anything wider would over-constrain.
-        idx = src.index("run_oneshot(")
-        window = src[idx : idx + 400]
-        assert "ignore_rules=" in window, (
-            "main.py oneshot dispatch must forward args.ignore_rules to run_oneshot; "
-            "without this --ignore-rules is a silent no-op on -z (#26633)."
+        # main.py has more than one oneshot dispatch site (fast-path vs full
+        # parser path). Every call site must forward args.ignore_rules; if
+        # even one site drops it, --ignore-rules is a silent no-op on whichever
+        # path the bare `hermes -z` invocation takes.
+        sites = []
+        cursor = 0
+        while True:
+            idx = src.find("run_oneshot(", cursor)
+            if idx == -1:
+                break
+            sites.append(src[idx : idx + 400])
+            cursor = idx + 1
+        assert sites, "expected at least one run_oneshot(...) dispatch in main.py"
+        missing = [i for i, w in enumerate(sites) if "ignore_rules=" not in w]
+        assert not missing, (
+            f"main.py oneshot dispatch site(s) {missing} (of {len(sites)} total) "
+            "must forward args.ignore_rules to run_oneshot; without this "
+            "--ignore-rules is a silent no-op on -z (#26633)."
         )
 
 

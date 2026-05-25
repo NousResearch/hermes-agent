@@ -3633,7 +3633,12 @@ class BasePlatformAdapter(ABC):
                             and text_content
                             and text_content[:1024] == text_content
                         ):
-                            telegram_tts_caption = text_content
+                            # Strip markdown for the voice caption: Telegram's
+                            # send_voice does not apply parse_mode here, so raw
+                            # markdown syntax (e.g. **bold**) would otherwise be
+                            # rendered literally in the caption. See #32029.
+                            from tools.tts_tool import _strip_markdown_for_tts
+                            telegram_tts_caption = _strip_markdown_for_tts(text_content)[:1024]
                         tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,

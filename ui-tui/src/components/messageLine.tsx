@@ -109,6 +109,8 @@ export const MessageLine = memo(function MessageLine({
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
 
+  const showResponseSeparator = shouldShowResponseSeparator(msg, showDetails)
+
   const content = (() => {
     if (msg.kind === 'slash') {
       return <Text color={t.color.muted}>{msg.text}</Text>
@@ -195,6 +197,17 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
+      {showResponseSeparator && (
+        <Box marginBottom={1}>
+          <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
+            <Text color={t.color.border}>└─ </Text>
+          </NoSelect>
+          <Text color={t.color.muted} dim>
+            Response
+          </Text>
+        </Box>
+      )}
+
       <Box>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
@@ -207,6 +220,9 @@ export const MessageLine = memo(function MessageLine({
     </Box>
   )
 })
+
+export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
+  msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
 
 interface MessageLineProps {
   cols: number

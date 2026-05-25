@@ -370,6 +370,96 @@ class TestSlackThreadContext:
         assert "メール要約: 本日の新着3件" in context
 
     @pytest.mark.asyncio
+    async def test_fetch_thread_context_renders_attachment_only_parent(self):
+        """Zendesk-style Slack app parents can have empty text and rich attachments."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        ticket_link = (
+            "<https://example.zendesk.com/agent/tickets/1234|"
+            "*#1234 · Error while adding bank account*> "
+        )
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B_ZENDESK",
+                    "subtype": "bot_message",
+                    "username": "Zendesk",
+                    "text": "",
+                    "attachments": [
+                        {
+                            "text": "Acme Corp · Jane Requester",
+                            "fields": [
+                                {
+                                    "value": (
+                                        ticket_link
+                                        + "The requester reports that adding "
+                                        "a foreign account opens an error screen."
+                                    )
+                                }
+                            ],
+                            "footer": (
+                                "<https://example.zendesk.com/agent/tickets/1234|"
+                                "*Ticket #1234*> | Status: new"
+                            ),
+                        }
+                    ],
+                },
+                {"ts": "1000.1", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._user_name_cache = {"Zendesk": "Zendesk", "U1": "Alice"}
+
+        context = await adapter._fetch_thread_context(
+            channel_id="C1",
+            thread_ts="1000.0",
+            current_ts="1000.1",
+            team_id="T1",
+        )
+
+        assert "[thread parent] Zendesk:" in context
+        assert "Acme Corp · Jane Requester" in context
+        assert "#1234 · Error while adding bank account" in context
+        assert "Ticket #1234" in context
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_context_omits_block_payload_json_from_history(self):
+        """Thread backfill should stay readable and avoid per-message JSON bloat."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "user": "U1",
+                    "text": "Parent with workflow block",
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "*Workflow:* deploy approval",
+                            },
+                        }
+                    ],
+                },
+                {"ts": "1000.1", "user": "U1", "text": "Current"},
+            ]
+        })
+        adapter._user_name_cache = {"U1": "Alice"}
+
+        context = await adapter._fetch_thread_context(
+            channel_id="C1",
+            thread_ts="1000.0",
+            current_ts="1000.1",
+            team_id="T1",
+        )
+
+        assert "Parent with workflow block" in context
+        assert "*Workflow:* deploy approval" in context
+        assert "Slack Block Kit payload" not in context
+
+    @pytest.mark.asyncio
     async def test_fetch_thread_context_excludes_self_bot_replies(self):
         """Parent (non-self bot) is kept, self-bot child replies are dropped,
         user replies are kept."""
@@ -496,6 +586,35 @@ class TestSlackThreadContext:
         assert parent == "Parent summary"
         # No additional API call
         assert mock_client.conversations_replies.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_parent_text_renders_attachment_only_parent(self):
+        """Cold parent-text fetches should use the same renderer as context fetches."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B_ZENDESK",
+                    "subtype": "bot_message",
+                    "text": "",
+                    "attachments": [
+                        {
+                            "text": "Acme Corp · Jane Requester",
+                            "fields": [{"value": "Ticket #1234 details"}],
+                        }
+                    ],
+                }
+            ]
+        })
+
+        parent = await adapter._fetch_thread_parent_text(
+            channel_id="C1", thread_ts="1000.0", team_id="T1"
+        )
+
+        assert "Acme Corp · Jane Requester" in parent
+        assert "Ticket #1234 details" in parent
 
 
 # ===========================================================================

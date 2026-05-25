@@ -63,7 +63,10 @@ _ensure_slack_mock()
 import gateway.platforms.slack as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.platforms.slack import (  # noqa: E402
+    SlackAdapter,
+    _extract_text_from_slack_attachments,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1076,29 @@ class TestIncomingDocumentHandling:
         assert "• Second bullet" in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_current_message_includes_block_kit_payload(self, adapter):
+        """Current non-rich Block Kit payloads stay visible to the agent."""
+        event = self._make_event(
+            text="Please review this form",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*Priority:* high",
+                    },
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "Please review this form" in msg_event.text
+        assert "[Slack Block Kit payload for this message]" in msg_event.text
+        assert "Priority" in msg_event.text
+
+    @pytest.mark.asyncio
     async def test_attachments_unfurl_text_is_appended_even_when_url_is_in_message(self, adapter):
         """Shared URLs should still expose unfurl preview text to the agent."""
         event = self._make_event(
@@ -1094,6 +1120,78 @@ class TestIncomingDocumentHandling:
         assert "📎 [Spec](https://example.com/spec)" in msg_event.text
         assert "The latest product spec preview" in msg_event.text
         assert "_Notion_" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_attachment_fields_are_visible_for_integration_messages(self, adapter):
+        """Integration messages may put the useful payload only in attachment fields."""
+        adapter._user_name_cache = {"U_USER": "Requester"}
+        ticket_link = (
+            "<https://example.zendesk.com/agent/tickets/1234|"
+            "*#1234 · Error while adding bank account*> "
+        )
+        event = self._make_event(
+            text="",
+            attachments=[
+                {
+                    "text": "Acme Corp · Jane Requester",
+                    "fields": [
+                        {
+                            "value": (
+                                ticket_link
+                                + "The requester reports that adding a foreign "
+                                "account opens an error screen."
+                            )
+                        }
+                    ],
+                    "footer": (
+                        "<https://example.zendesk.com/agent/tickets/1234|"
+                        "*Ticket #1234*> | Status: new"
+                    ),
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "Acme Corp · Jane Requester" in msg_event.text
+        assert "#1234 · Error while adding bank account" in msg_event.text
+        assert "Ticket #1234" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_attachment_fallback_is_kept_when_fields_are_metadata(self, adapter):
+        """Fields should not suppress fallback summaries that carry the title."""
+        event = self._make_event(
+            text="",
+            attachments=[
+                {
+                    "fields": [{"title": "Status", "value": "new"}],
+                    "fallback": "Ticket #1234: Error while adding bank account",
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "Status: new" in msg_event.text
+        assert "Ticket #1234: Error while adding bank account" in msg_event.text
+
+    def test_attachment_rendering_truncates_fields_and_total_output(self):
+        """Long attachment payloads are bounded at field and aggregate levels."""
+        long_field_value = "x" * 1600
+        rendered = _extract_text_from_slack_attachments([
+            {"fields": [{"title": "Details", "value": long_field_value}]}
+        ])
+        assert ("x" * 1497) + "..." in rendered
+        assert ("x" * 1498) not in rendered
+
+        total_rendered = _extract_text_from_slack_attachments(
+            [{"text": "y" * 1500} for _ in range(5)],
+            max_chars=2000,
+        )
+        assert len(total_rendered) <= 2000
+        assert total_rendered.endswith("... [truncated]")
 
     @pytest.mark.asyncio
     async def test_message_unfurl_attachments_are_skipped(self, adapter):

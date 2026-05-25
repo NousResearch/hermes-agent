@@ -15,6 +15,7 @@ Covers:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -100,6 +101,18 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> str:
+    """Compute a Svix v1 signature header for *body* using *secret*."""
+    key = (
+        base64.b64decode(secret.removeprefix("whsec_"))
+        if secret.startswith("whsec_")
+        else secret.encode()
+    )
+    signed = msg_id.encode() + b"." + timestamp.encode() + b"." + body
+    digest = hmac.new(key, signed, hashlib.sha256).digest()
+    return "v1," + base64.b64encode(digest).decode()
+
+
 # ===================================================================
 # Signature validation
 # ===================================================================
@@ -168,6 +181,134 @@ class TestValidateSignature:
         secret = "generic-secret"
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_svix_signature_valid(self):
+        """Valid Svix/AgentMail v1 signature headers are accepted."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_svix_signature_wrong_body_rejects(self):
+        """Svix/AgentMail signatures are bound to the exact raw request body."""
+        adapter = _make_adapter()
+        signed_body = b'{"event_type":"message.received"}'
+        received_body = b'{"event_type":"message.sent"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(signed_body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, received_body, secret) is False
+
+    def test_validate_svix_signature_old_timestamp_rejects(self):
+        """Svix/AgentMail signatures outside the replay window are rejected."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()) - 301)
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_svix_signature_multiple_entries_accepts_matching_v1(self):
+        """Svix rotation headers may contain multiple space-separated signatures."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": "v1,wrong " + sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_svix_signature_missing_signature_rejects(self):
+        """Partial Svix headers reject instead of falling through to another scheme."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"svix-id": "msg_123"})
+        assert adapter._validate_signature(req, b"{}", "secret") is False
+
+    def test_validate_svix_signature_unsupported_version_rejects(self):
+        """Only Svix v1 signatures are accepted."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "whsec_" + base64.b64encode(b"agentmail-signing-secret").decode()
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp).replace("v1,", "v2,")
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_svix_signature_invalid_whsec_rejects(self):
+        """Malformed whsec_ secrets are rejected, not silently treated as raw secrets."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        malformed_secret = "whsec_not-valid-base64!"
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        raw_sig = _svix_signature(
+            body, malformed_secret.removeprefix("whsec_"), msg_id, timestamp
+        )
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": raw_sig,
+            }
+        )
+        assert adapter._validate_signature(req, body, malformed_secret) is False
+
+    def test_validate_svix_signature_raw_secret_valid(self):
+        """Raw shared secrets are accepted for Svix-style senders without whsec_ secrets."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "raw-agentmail-secret"
+        msg_id = "msg_123"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(
+            headers={
+                "svix-id": msg_id,
+                "svix-timestamp": timestamp,
+                "svix-signature": sig,
+            }
+        )
         assert adapter._validate_signature(req, body, secret) is True
 
 
@@ -304,6 +445,27 @@ class TestEventFilter:
             )
             assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_payload_type_field(self):
+        """Svix-style payloads often use a top-level `type` event field."""
+        routes = {
+            "svix": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["message.received"],
+                "prompt": "got it",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/svix",
+                json={"type": "message.received"},
+            )
+            assert resp.status == 202
+
 
 # ===================================================================
 # HTTP handling
@@ -335,6 +497,22 @@ class TestHTTPHandling:
             data = await resp.json()
             assert data["status"] == "accepted"
             assert data["route"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_route_without_secret_rejects_unsigned_request(self):
+        """Missing HMAC secret must fail closed even if connect() was bypassed."""
+        routes = {"test": {"prompt": "hi"}}
+        adapter = _make_adapter(routes=routes, secret="")
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/test", json={"data": "value"})
+            assert resp.status == 403
+            data = await resp.json()
+            assert data["error"] == "Webhook route is missing an HMAC secret"
+
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_health_endpoint(self):
@@ -431,6 +609,25 @@ class TestIdempotency:
 
             resp2 = await cli.post("/webhooks/idem", json={"x": 1}, headers=headers)
             assert resp2.status == 202  # re-accepted
+
+    @pytest.mark.asyncio
+    async def test_svix_id_used_as_delivery_id_for_deduplication(self):
+        """Svix retries reuse svix-id, so use it as the delivery ID when present."""
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"svix-id": "msg_duplicate"}
+            resp1 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp1.status == 202
+
+            resp2 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp2.status == 200
+            data = await resp2.json()
+            assert data["status"] == "duplicate"
+            assert data["delivery_id"] == "msg_duplicate"
 
 
 # ===================================================================

@@ -1094,7 +1094,7 @@ def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are already stored locally.
 
     Lets TTS / STT setup skip the API-key prompt for users who logged in
-    through ``hermes model`` -> xAI Grok OAuth (SuperGrok Subscription).
+    through ``hermes model`` -> xAI Grok OAuth (SuperGrok / Premium+).
     """
     try:
         from hermes_cli.auth import get_xai_oauth_auth_status
@@ -1124,7 +1124,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
 
     open_browser = not _is_remote_session()
     print()
-    print_info("Signing in to xAI Grok OAuth (SuperGrok Subscription)...")
+    print_info("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     try:
         creds = _xai_oauth_loopback_login(open_browser=open_browser)
         _save_xai_oauth_tokens(
@@ -1259,7 +1259,7 @@ def _setup_tts_provider(config: dict):
 
         if oauth_logged_in:
             print_success(
-                "xAI TTS will use your xAI Grok OAuth (SuperGrok Subscription) "
+                "xAI TTS will use your xAI Grok OAuth (SuperGrok / Premium+) "
                 "credentials"
             )
         elif existing_api_key:
@@ -1269,7 +1269,7 @@ def _setup_tts_provider(config: dict):
             choice_idx = prompt_choice(
                 "How do you want xAI TTS to authenticate?",
                 choices=[
-                    "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
+                    "Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
                     "Paste an xAI API key (console.x.ai)",
                     "Skip → fallback to Edge TTS",
                 ],
@@ -2188,28 +2188,58 @@ def _setup_matrix():
             print_success("E2EE enabled")
 
         matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
+        # Use the central lazy-deps feature group so we install ALL of
+        # platform.matrix's dependencies (mautrix, Markdown, aiosqlite,
+        # asyncpg, aiohttp-socks) — not just mautrix itself.  The previous
+        # hand-rolled ``pip install mautrix[encryption]`` left asyncpg /
+        # aiosqlite uninstalled and broke E2EE connect with
+        # ``No module named 'asyncpg'`` on every fresh install (#31116).
         try:
-            __import__("mautrix")
+            from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
+            _missing_before = feature_missing("platform.matrix")
+            if _missing_before:
+                print_info(
+                    f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)..."
+                )
+                try:
+                    _lazy_ensure("platform.matrix", prompt=False)
+                    print_success(f"{matrix_pkg} installed")
+                except Exception as exc:
+                    print_warning(
+                        f"Install failed — run manually: pip install "
+                        f"'mautrix[encryption]' asyncpg aiosqlite Markdown "
+                        f"aiohttp-socks"
+                    )
+                    print_info(f"  Error: {exc}")
         except ImportError:
-            print_info(f"Installing {matrix_pkg}...")
-            import subprocess
-            uv_bin = shutil.which("uv")
-            if uv_bin:
-                result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
-                    capture_output=True, text=True,
-                )
-            else:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", matrix_pkg],
-                    capture_output=True, text=True,
-                )
-            if result.returncode == 0:
-                print_success(f"{matrix_pkg} installed")
-            else:
-                print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
-                if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+            # tools.lazy_deps unavailable (extreme edge case — partial
+            # install).  Fall back to the legacy single-package install
+            # path so the wizard still does *something*.
+            try:
+                __import__("mautrix")
+            except ImportError:
+                print_info(f"Installing {matrix_pkg}...")
+                import subprocess
+                uv_bin = shutil.which("uv")
+                if uv_bin:
+                    result = subprocess.run(
+                        [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
+                        capture_output=True, text=True,
+                    )
+                else:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", matrix_pkg],
+                        capture_output=True, text=True,
+                    )
+                if result.returncode == 0:
+                    print_success(f"{matrix_pkg} installed")
+                else:
+                    print_warning(
+                        f"Install failed — run manually: pip install "
+                        f"'{matrix_pkg}' asyncpg aiosqlite Markdown aiohttp-socks"
+                    )
+                    if result.stderr:
+                        print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         print()
         print_info("🔒 Security: Restrict who can use your bot")
@@ -2229,50 +2259,6 @@ def _setup_matrix():
         home_room = prompt("Home room ID (leave empty to set later with /set-home)")
         if home_room:
             save_env_value("MATRIX_HOME_ROOM", home_room)
-
-
-def _setup_mattermost():
-    """Configure Mattermost bot credentials."""
-    print_header("Mattermost")
-    existing = get_env_value("MATTERMOST_TOKEN")
-    if existing:
-        print_info("Mattermost: already configured")
-        if not prompt_yes_no("Reconfigure Mattermost?", False):
-            return
-
-    print_info("Works with any self-hosted Mattermost instance.")
-    print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
-    print_info("   2. Copy the bot token")
-    print()
-    mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
-    if mm_url:
-        save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
-    token = prompt("Bot token", password=True)
-    if not token:
-        return
-    save_env_value("MATTERMOST_TOKEN", token)
-    print_success("Mattermost token saved")
-
-    print()
-    print_info("🔒 Security: Restrict who can use your bot")
-    print_info("   To find your user ID: click your avatar → Profile")
-    print_info("   or use the API: GET /api/v4/users/me")
-    print()
-    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
-    if allowed_users:
-        save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Mattermost allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
-
-    print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
-    print_info("   To get a channel ID: click channel name → View Info → copy the ID")
-    print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
-    if home_channel:
-        save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
-    print_info("   Open config in your editor:  hermes config edit")
 
 
 def _setup_bluebubbles():

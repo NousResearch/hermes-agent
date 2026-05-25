@@ -327,6 +327,12 @@ class TestWebServerEndpoints:
         # Public endpoints should still work
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
+        resp = unauth_client.get("/api/dashboard/plugins")
+        assert resp.status_code == 200
+        resp = unauth_client.get("/api/dashboard/plugins/rescan")
+        assert resp.status_code == 401
+        resp = self.client.get("/api/dashboard/plugins/rescan")
+        assert resp.status_code == 200
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
@@ -2285,7 +2291,10 @@ class TestPtyWebSocket:
             self.ws_module.app.state, "bound_port", 9119, raising=False
         )
 
-        with self.client.websocket_connect(self._url(channel="abc-123")) as conn:
+        headers = {"host": "127.0.0.1:9119", "origin": "http://127.0.0.1:9119"}
+        with self.client.websocket_connect(
+            self._url(channel="abc-123"), headers=headers
+        ) as conn:
             try:
                 conn.receive_bytes()
             except Exception:

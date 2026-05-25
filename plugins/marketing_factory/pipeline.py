@@ -297,12 +297,16 @@ class ImageGenAgent:
         self.backend = os.environ.get("MF_IMAGE_BACKEND", "pollinations").lower()
 
     def is_enabled(self) -> bool:
-        # Default OFF as of 2026-05: Pollinations free tier now caps at 1
-        # concurrent request per IP and returns HTTP 402 on overflow, which
-        # breaks the campaign-time burst of 6-7 parallel image requests.
-        # User opts back in via MF_AUTO_IMAGES=1 once they have either a
-        # paid Pollinations API key OR we plug in a local SDXL backend.
-        return self.backend != "disabled" and os.environ.get("MF_AUTO_IMAGES", "0") == "1"
+        # The image pipeline is enabled if EITHER a brand library exists OR
+        # generation is explicitly turned on. The per-draft generate() decides
+        # which path applies based on the brand's library.
+        return self.backend != "disabled"
+
+    def _generation_enabled(self) -> bool:
+        """LLM-generated images require explicit opt-in via MF_AUTO_IMAGES=1.
+        Default OFF because Pollinations free tier rate-limits to 1 concurrent
+        request per IP and returns HTTP 402 on overflow."""
+        return os.environ.get("MF_AUTO_IMAGES", "0") == "1"
 
     def generate(
         self,
@@ -313,7 +317,30 @@ class ImageGenAgent:
         token_ledger: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if not self.is_enabled():
-            return {"kind": "image_prompt", "url": None, "prompt": None, "fallback_used": True, "error": "image gen disabled", "backend": self.backend}
+            return {"kind": "image_prompt", "url": None, "prompt": None, "fallback_used": True, "error": "image pipeline disabled", "backend": self.backend}
+
+        # First-class: pick from the brand's curated image library if it has
+        # entries. Zero cost, instant, no rate limits, brand-authentic. This is
+        # how Pupular's IG/TikTok drafts get real adoptable-pet photos instead
+        # of uncanny AI-generated lookalikes.
+        library = [url for url in (app.get("image_library") or []) if isinstance(url, str) and url.strip()]
+        if library:
+            import random as _random
+            chosen = _random.choice(library)
+            return {
+                "kind": "library_image",
+                "url": chosen,
+                "prompt": None,
+                "model": "brand_library",
+                "fallback_used": False,
+                "error": None,
+                "backend": "library",
+            }
+
+        # No library — only fall through to LLM gen if explicitly opted in.
+        if not self._generation_enabled():
+            return {"kind": "image_prompt", "url": None, "prompt": None, "fallback_used": True, "error": "no library + MF_AUTO_IMAGES=0", "backend": self.backend}
+
         prompt = self._build_prompt(app, item, body, token_ledger=token_ledger)
         if self.backend == "pollinations":
             url = self._pollinations_url(prompt)
@@ -321,7 +348,7 @@ class ImageGenAgent:
                 "kind": "image_prompt",
                 "url": url,
                 "prompt": prompt,
-                "model": "flux",
+                "model": "sana",
                 "fallback_used": False,
                 "error": None,
                 "backend": "pollinations",

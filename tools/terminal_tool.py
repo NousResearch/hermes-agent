@@ -71,6 +71,7 @@ from tools.tool_backend_helpers import (
     coerce_modal_mode,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
     resolve_modal_backend_state,
 )
 
@@ -1118,13 +1119,19 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             if modal_state["managed_mode_blocked"]:
                 raise ValueError(
                     "Modal backend is configured for managed mode, but "
-                    "a paid Nous subscription is required for the Tool Gateway and no direct "
-                    "Modal credentials/config were found. Log in with `hermes model` or "
-                    "choose TERMINAL_MODAL_MODE=direct/auto."
+                    "Nous Tool Gateway access is not currently available and no direct "
+                    "Modal credentials/config were found. "
+                    + nous_tool_gateway_unavailable_message(
+                        "managed Modal execution",
+                    )
+                    + " Choose TERMINAL_MODAL_MODE=direct/auto to use direct Modal credentials."
                 )
             if modal_state["mode"] == "managed":
                 raise ValueError(
-                    "Modal backend is configured for managed mode, but the managed tool gateway is unavailable."
+                    "Modal backend is configured for managed mode, but the managed tool gateway is unavailable. "
+                    + nous_tool_gateway_unavailable_message(
+                        "managed Modal execution",
+                    )
                 )
             if modal_state["mode"] == "direct":
                 raise ValueError(
@@ -2214,16 +2221,21 @@ def check_terminal_requirements() -> bool:
                 if modal_state["managed_mode_blocked"]:
                     logger.error(
                         "Modal backend selected with TERMINAL_MODAL_MODE=managed, but "
-                        "a paid Nous subscription is required for the Tool Gateway and no direct "
-                        "Modal credentials/config were found. Log in with `hermes model` "
-                        "or choose TERMINAL_MODAL_MODE=direct/auto."
+                        "Nous Tool Gateway access is not currently available and no direct "
+                        "Modal credentials/config were found. %s Choose "
+                        "TERMINAL_MODAL_MODE=direct/auto to use direct Modal credentials.",
+                        nous_tool_gateway_unavailable_message(
+                            "managed Modal execution",
+                        ),
                     )
                     return False
                 if modal_state["mode"] == "managed":
                     logger.error(
                         "Modal backend selected with TERMINAL_MODAL_MODE=managed, but the managed "
-                        "tool gateway is unavailable. Configure the managed gateway or choose "
-                        "TERMINAL_MODAL_MODE=direct/auto."
+                        "tool gateway is unavailable. %s",
+                        nous_tool_gateway_unavailable_message(
+                            "managed Modal execution",
+                        ),
                     )
                     return False
                 elif modal_state["mode"] == "direct":

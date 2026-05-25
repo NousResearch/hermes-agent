@@ -66,6 +66,7 @@ from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
     managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
 
@@ -452,12 +453,22 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
         # of a raw HTTP error from httpx.
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
+            gateway_message = ""
+            if status in {401, 402, 403}:
+                gateway_message = (
+                    "\n\n"
+                    + nous_tool_gateway_unavailable_message(
+                        "managed FAL image generation",
+                        force_fresh=True,
+                    )
+                )
             raise ValueError(
                 f"Nous Subscription gateway rejected model '{model}' "
                 f"(HTTP {status}). This model may not yet be enabled on "
                 f"the Nous Portal's FAL proxy. Either:\n"
                 f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
                 f"  • Pick a different model via `hermes tools` → Image Generation."
+                f"{gateway_message}"
             ) from exc
         raise
 
@@ -767,6 +778,11 @@ def _build_no_backend_setup_message() -> str:
         )
     else:
         lines.append("  - FAL_KEY environment variable is not set")
+        gateway_message = nous_tool_gateway_unavailable_message(
+            "managed FAL image generation",
+        )
+        if gateway_message:
+            lines.append(f"  - {gateway_message}")
     lines.append("")
     lines.append("To enable image generation, do one of:")
     lines.append(

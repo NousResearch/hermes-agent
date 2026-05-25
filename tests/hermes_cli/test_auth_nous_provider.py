@@ -667,6 +667,42 @@ def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     assert "example.com" in str(status.get("portal_base_url", ""))
 
 
+def test_get_nous_auth_status_pool_opaque_key_is_not_portal_login(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_nous_auth_status, invalidate_nous_auth_status_cache
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    invalidate_nous_auth_status_cache()
+
+    from agent.credential_pool import PooledCredential, load_pool
+    pool = load_pool("nous")
+    entry = PooledCredential.from_dict("nous", {
+        "access_token": "",
+        "agent_key": "opaque-agent-key",
+        "agent_key_expires_at": "2099-01-01T00:00:00+00:00",
+        "label": "manual opaque key",
+        "auth_type": "api_key",
+        "source": "manual",
+        "base_url": "https://inference.example.com/v1",
+        "inference_base_url": "https://inference.example.com/v1",
+    })
+    pool.add_entry(entry)
+
+    status = get_nous_auth_status()
+
+    assert status["logged_in"] is False
+    assert status["inference_credential_present"] is True
+    assert status["credential_source"] == "pool:manual opaque key"
+    assert status.get("access_token") is None
+    assert status.get("portal_base_url") is None
+    assert status.get("inference_base_url") == "https://inference.example.com/v1"
+    invalidate_nous_auth_status_cache()
+
+
 def test_get_nous_auth_status_auth_store_fallback(tmp_path, monkeypatch):
     """get_nous_auth_status() falls back to auth store when credential
     pool is empty.
@@ -1023,12 +1059,19 @@ class TestLoginNousSkipKeepsCurrent:
             lambda *a, **kw: prompt_returns,
         )
         monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda p: {})
-        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda: None)
+        free_tier_calls = []
+
+        def _check_nous_free_tier(**kwargs):
+            free_tier_calls.append(kwargs)
+            return None
+
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", _check_nous_free_tier)
         monkeypatch.setattr(
             models_mod, "partition_nous_models_by_tier",
             lambda ids, p, free_tier=False: (ids, []),
         )
         monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)
+        return free_tier_calls
 
     def test_skip_keep_current_preserves_provider_and_model(self, tmp_path, monkeypatch):
         """User picks Skip → config.yaml untouched, Nous creds still saved."""
@@ -1070,7 +1113,7 @@ class TestLoginNousSkipKeepsCurrent:
         hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
         )
-        self._patch_login_internals(
+        free_tier_calls = self._patch_login_internals(
             monkeypatch, prompt_returns="xiaomi/mimo-v2-pro",
         )
 
@@ -1083,6 +1126,7 @@ class TestLoginNousSkipKeepsCurrent:
         cfg_after = yaml.safe_load(config_path.read_text())
         assert cfg_after["model"]["provider"] == "nous"
         assert cfg_after["model"]["default"] == "xiaomi/mimo-v2-pro"
+        assert free_tier_calls == [{"force_fresh": True}]
 
         auth_after = json.loads(auth_path.read_text())
         assert auth_after["active_provider"] == "nous"

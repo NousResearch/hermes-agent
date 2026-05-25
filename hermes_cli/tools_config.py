@@ -28,6 +28,7 @@ from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
 )
+from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
 from utils import base_url_hostname, is_truthy_value
 
@@ -1855,6 +1856,20 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     return visible
 
 
+def _hidden_nous_gateway_message(cat: dict, config: dict, capability: str) -> str:
+    """Return a reason when a category's Nous provider is hidden."""
+    if managed_nous_tools_enabled():
+        return ""
+    if not any(p.get("managed_nous_feature") for p in cat.get("providers", [])):
+        return ""
+    features = get_nous_subscription_features(config)
+    message = format_nous_portal_entitlement_message(
+        features.account_info,
+        capability=capability,
+    )
+    return message or ""
+
+
 _POST_SETUP_INSTALLED: dict = {
     # post_setup_key -> predicate(): True when the install side-effect
     # is already satisfied. Used by `_toolset_needs_configuration_prompt`
@@ -1955,6 +1970,11 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
     icon = cat.get("icon", "")
     name = cat["name"]
     providers = _visible_providers(cat, config)
+    hidden_nous_message = _hidden_nous_gateway_message(
+        cat,
+        config,
+        f"the Nous Subscription provider for {name}",
+    )
 
     # Check Python version requirement
     if cat.get("requires_python"):
@@ -1975,6 +1995,9 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         # For single-provider tools, show a note if available
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
+        if hidden_nous_message:
+            for line in hidden_nous_message.splitlines():
+                _print_warning(f"  {line}")
         _configure_provider(provider, config)
     else:
         # Multiple providers - let user choose
@@ -1984,6 +2007,9 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         print(color(f"  --- {icon} {name} - {title} ---", Colors.CYAN))
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
+        if hidden_nous_message:
+            for line in hidden_nous_message.splitlines():
+                _print_warning(f"  {line}")
         print()
 
         # Plain text labels only (no ANSI codes in menu items)
@@ -2410,8 +2436,17 @@ def _configure_provider(provider: dict, config: dict):
 
     if provider.get("requires_nous_auth"):
         features = get_nous_subscription_features(config)
-        if not features.nous_auth_present:
-            _print_warning("  Nous Subscription is only available after logging into Nous Portal.")
+        entitled = bool(
+            features.account_info and features.account_info.paid_service_access is True
+        )
+        if not features.nous_auth_present or not entitled:
+            message = format_nous_portal_entitlement_message(
+                features.account_info,
+                capability=f"{provider.get('name', 'Nous Subscription')}",
+            )
+            _print_warning(
+                f"  {message or 'Nous Subscription is only available after logging into Nous Portal.'}"
+            )
             return
 
     # Set TTS provider in config if applicable
@@ -2680,15 +2715,26 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
     icon = cat.get("icon", "")
     name = cat["name"]
     providers = _visible_providers(cat, config)
+    hidden_nous_message = _hidden_nous_gateway_message(
+        cat,
+        config,
+        f"the Nous Subscription provider for {name}",
+    )
 
     if len(providers) == 1:
         provider = providers[0]
         print()
         print(color(f"  --- {icon} {name} ({provider['name']}) ---", Colors.CYAN))
+        if hidden_nous_message:
+            for line in hidden_nous_message.splitlines():
+                _print_warning(f"  {line}")
         _reconfigure_provider(provider, config)
     else:
         print()
         print(color(f"  --- {icon} {name} - Choose a provider ---", Colors.CYAN))
+        if hidden_nous_message:
+            for line in hidden_nous_message.splitlines():
+                _print_warning(f"  {line}")
         print()
 
         provider_choices = []
@@ -2719,8 +2765,17 @@ def _reconfigure_provider(provider: dict, config: dict):
 
     if provider.get("requires_nous_auth"):
         features = get_nous_subscription_features(config)
-        if not features.nous_auth_present:
-            _print_warning("  Nous Subscription is only available after logging into Nous Portal.")
+        entitled = bool(
+            features.account_info and features.account_info.paid_service_access is True
+        )
+        if not features.nous_auth_present or not entitled:
+            message = format_nous_portal_entitlement_message(
+                features.account_info,
+                capability=f"{provider.get('name', 'Nous Subscription')}",
+            )
+            _print_warning(
+                f"  {message or 'Nous Subscription is only available after logging into Nous Portal.'}"
+            )
             return
 
     if provider.get("tts_provider"):

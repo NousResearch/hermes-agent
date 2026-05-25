@@ -347,25 +347,53 @@ const StatusRulePane = memo(function StatusRulePane({
     return null
   }
 
+  // Memoize primitive props so StatusRule (memo'd) doesn't re-render
+  // on every scroll event that produces a new status object reference.
+  const ruleProps = useMemo(
+    () => ({
+      bgCount: ui.bgTasks.size,
+      busy: ui.busy,
+      cols: composer.cols,
+      cwdLabel: status.cwdLabel,
+      model: ui.info?.model ?? '',
+      modelFast: ui.info?.fast || ui.info?.service_tier === 'priority',
+      modelReasoningEffort: ui.info?.reasoning_effort,
+      sessionStartedAt: status.sessionStartedAt,
+      showCost: ui.showCost,
+      status: ui.status,
+      statusColor: status.statusColor,
+      turnStartedAt: status.turnStartedAt,
+      usage: ui.usage,
+      voiceLabel: status.voiceLabel,
+    }),
+    [
+      ui.bgTasks.size,
+      ui.busy,
+      composer.cols,
+      status.cwdLabel,
+      ui.info?.model,
+      ui.info?.fast,
+      ui.info?.service_tier,
+      ui.info?.reasoning_effort,
+      status.sessionStartedAt,
+      ui.showCost,
+      ui.status,
+      status.statusColor,
+      status.turnStartedAt,
+      status.voiceLabel,
+      // usage changes on every token event — always re-compute
+      ui.usage?.context_percent,
+      ui.usage?.context_used,
+      ui.usage?.context_max,
+      ui.usage?.total,
+      ui.usage?.compressions,
+      ui.usage?.cost_usd,
+    ]
+  )
+
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
-      <StatusRule
-        bgCount={ui.bgTasks.size}
-        busy={ui.busy}
-        cols={composer.cols}
-        cwdLabel={status.cwdLabel}
-        model={ui.info?.model ?? ''}
-        modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
-        modelReasoningEffort={ui.info?.reasoning_effort}
-        sessionStartedAt={status.sessionStartedAt}
-        showCost={ui.showCost}
-        status={ui.status}
-        statusColor={status.statusColor}
-        t={ui.theme}
-        turnStartedAt={status.turnStartedAt}
-        usage={ui.usage}
-        voiceLabel={status.voiceLabel}
-      />
+      <StatusRule t={ui.theme} {...ruleProps} />
     </Box>
   )
 })

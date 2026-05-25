@@ -1,6 +1,6 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
@@ -287,7 +287,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
-export function StatusRule({
+export const StatusRule = memo(function StatusRule({
   cwdLabel,
   cols,
   busy,
@@ -378,7 +378,7 @@ export function StatusRule({
       ) : null}
     </Box>
   )
-}
+})
 
 export function FloatBox({ children, color }: { children: ReactNode; color: string }) {
   return (

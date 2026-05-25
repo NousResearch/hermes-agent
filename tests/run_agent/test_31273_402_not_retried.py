@@ -118,30 +118,18 @@ class TestSourceStillHasBillingExclusionRemoved:
     """
 
     def test_conversation_loop_omits_billing_from_client_error_exclusion(self):
-        import inspect
-        from agent import conversation_loop
+        from agent.conversation_loop import _NON_CLIENT_ERROR_REASONS
+        from agent.error_classifier import FailoverReason
 
-        src = inspect.getsource(conversation_loop)
-
-        # Locate the is_client_error block and inspect its exclusion set.
-        marker = "is_client_error = ("
-        assert marker in src, (
-            "agent/conversation_loop.py must define is_client_error — "
-            "the bug-fix anchor for #31273 has moved or been renamed."
+        assert FailoverReason.rate_limit in _NON_CLIENT_ERROR_REASONS, (
+            "_NON_CLIENT_ERROR_REASONS has changed shape — re-verify that "
+            "FailoverReason.billing is still NOT in it (#31273)."
         )
-        idx = src.index(marker)
-        # Window large enough to span the full predicate (~30 lines).
-        window = src[idx:idx + 2000]
-
-        assert "FailoverReason.rate_limit" in window, (
-            "is_client_error exclusion set has changed shape — re-verify "
-            "that FailoverReason.billing is still NOT in it (#31273)."
-        )
-        assert "FailoverReason.billing" not in window, (
-            "FailoverReason.billing must NOT appear in the is_client_error "
-            "exclusion set — see #31273.  Billing (HTTP 402) is non-retryable "
-            "by the time control reaches this block: credential-pool rotation "
-            "and provider fallback have both already had their chance to "
-            "continue the loop.  Re-adding it causes runaway token spend on "
-            "depleted balances."
+        assert FailoverReason.billing not in _NON_CLIENT_ERROR_REASONS, (
+            "FailoverReason.billing must NOT appear in _NON_CLIENT_ERROR_REASONS — "
+            "see #31273.  Billing (HTTP 402) is non-retryable by the time control "
+            "reaches the is_client_error block: credential-pool rotation and "
+            "provider fallback have both already had their chance to continue "
+            "the loop.  Re-adding it causes runaway token spend on depleted "
+            "balances."
         )

@@ -153,11 +153,11 @@ def get_read_block_error(path: str) -> Optional[str]:
         carrier.
       * Credential / secret stores under HERMES_HOME and the global Hermes
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
-        ``.env``, ``webhook_subscriptions.json``, and anything under
-        ``mcp-tokens/``. These hold plaintext provider keys, OAuth tokens,
-        and HMAC secrets that the agent never needs to read directly —
-        provider tools / gateway adapters consume them through internal
-        channels.
+        ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
+        and anything under ``mcp-tokens/``. These hold plaintext provider keys,
+        OAuth tokens, and HMAC secrets that the agent never needs to read
+        directly — provider tools / gateway adapters consume them through
+        internal channels.
 
     **This is NOT a security boundary.** The terminal tool runs as the
     same OS user with shell access; the agent can still ``cat auth.json``
@@ -222,6 +222,7 @@ def get_read_block_error(path: str) -> Optional[str]:
         ".anthropic_oauth.json",
         ".env",
         "webhook_subscriptions.json",
+        os.path.join("auth", "google_oauth.json"),
     )
     for hd in hermes_dirs:
         for name in credential_file_names:

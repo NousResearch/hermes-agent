@@ -27,7 +27,7 @@ import signal
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -465,6 +465,128 @@ def mock_config():
         "memory": {"memory_enabled": False, "user_profile_enabled": False},
         "command_allowlist": [],
     }
+
+
+@pytest.fixture()
+def slack_adapter_factory(monkeypatch):
+    """Build a SlackAdapter with in-memory Slack/Bolt surfaces for hook tests."""
+    from gateway.config import PlatformConfig
+    import gateway.platforms.slack as slack_mod
+
+    class FakeSlackApp:
+        def __init__(self, token):
+            self.token = token
+            self.client = AsyncMock()
+            self.registered_events = []
+            self.registered_commands = []
+            self.registered_actions = []
+
+        def event(self, event_type):
+            self.registered_events.append(event_type)
+
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        def command(self, matcher):
+            def decorator(fn):
+                self.registered_commands.append((matcher, fn))
+                return fn
+
+            return decorator
+
+        def action(self, action_id):
+            self.registered_actions.append(action_id)
+
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    class FakeWebClient:
+        def __init__(self, token):
+            self.token = token
+            self.proxy = None
+            self.auth_test = AsyncMock(
+                return_value={
+                    "team_id": "T_FAKE",
+                    "team": "FakeTeam",
+                    "user_id": "U_BOT",
+                    "user": "testbot",
+                }
+            )
+
+    class FakeSocketModeHandler:
+        def __init__(self, app, app_token, proxy=None):
+            self.app = app
+            self.app_token = app_token
+            self.proxy = proxy
+            self.client = MagicMock(proxy=None)
+            self.started = False
+
+        async def start_async(self):
+            self.started = True
+
+        async def close_async(self):
+            pass
+
+    monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+    monkeypatch.setattr(slack_mod, "AsyncApp", FakeSlackApp)
+    monkeypatch.setattr(slack_mod, "AsyncWebClient", FakeWebClient)
+    monkeypatch.setattr(slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler)
+    monkeypatch.setattr(slack_mod, "_resolve_slack_proxy_url", lambda: None)
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-fake")
+
+    def _factory(profile_name=None):
+        adapter = slack_mod.SlackAdapter(
+            PlatformConfig(enabled=True, token="xoxb-fake-token")
+        )
+        if profile_name is not None:
+            setattr(adapter.config, "profile_name", profile_name)
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._release_platform_lock = MagicMock()
+        return adapter
+
+    return _factory
+
+
+@pytest.fixture()
+def gateway_runner_factory():
+    """Create a minimal GatewayRunner instance for direct method unit tests."""
+    from gateway.run import GatewayRunner
+
+    def _factory():
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.adapters = {}
+        runner._get_guild_id = lambda event: None
+        return runner
+
+    return _factory
+
+
+@pytest.fixture()
+def message_event_factory():
+    """Build MessageEvent objects without starting any real gateway adapter."""
+    from gateway.config import Platform
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    def _factory(text="hello", platform=Platform.SLACK, chat_id="C_FAKE"):
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=platform,
+                chat_id=chat_id,
+                chat_type="channel",
+                user_id="U_FAKE",
+                thread_id="T_FAKE",
+            ),
+            message_id="M_FAKE",
+        )
+
+    return _factory
 
 
 # ── Global test timeout ─────────────────────────────────────────────────────

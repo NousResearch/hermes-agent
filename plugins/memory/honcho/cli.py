@@ -314,8 +314,8 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     sys.stdout.flush()
     if secret:
         if sys.stdin.isatty():
-            import getpass
-            val = getpass.getpass(prompt="")
+            from hermes_cli.secret_prompt import masked_secret_prompt
+            val = masked_secret_prompt("")
         else:
             # Non-TTY (piped input, test runners) — read plaintext
             val = sys.stdin.readline().strip()

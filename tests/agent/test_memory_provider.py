@@ -236,6 +236,38 @@ class TestMemoryManager:
         assert p1.synced_turns == [("user msg", "assistant msg")]
         assert p2.synced_turns == [("user msg", "assistant msg")]
 
+    def test_sync_all_normalizes_python_multimodal_blocks(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        mgr.sync_all(
+            [
+                {"type": "text", "text": "What is in this image?"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ],
+            [{"type": "text", "text": "A red square."}],
+        )
+
+        assert provider.synced_turns == [
+            ("What is in this image?\n\n[image attached]", "A red square.")
+        ]
+
+    def test_sync_all_normalizes_serialized_multimodal_blocks(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        mgr.sync_all(
+            '[{"type":"input_text","text":"Describe this"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]',
+            "ok",
+        )
+
+        assert provider.synced_turns == [("Describe this\n\n[image attached]", "ok")]
+
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
         mgr = MemoryManager()

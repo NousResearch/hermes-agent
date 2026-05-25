@@ -25,9 +25,10 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 import re
-import inspect
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -57,6 +58,88 @@ def sanitize_context(text: str) -> str:
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+_TEXT_BLOCK_TYPES = {"text", "input_text"}
+_IMAGE_BLOCK_TYPES = {"image_url", "input_image"}
+_AUDIO_BLOCK_TYPES = {"audio", "input_audio"}
+_VIDEO_BLOCK_TYPES = {"video", "input_video"}
+_MEDIA_BLOCK_MARKERS = {
+    "image": "[image attached]",
+    "audio": "[audio attached]",
+    "video": "[video attached]",
+}
+
+
+def normalize_memory_turn_content(content: Any) -> str:
+    """Convert turn content to plain text before provider sync.
+
+    Some gateway/model paths represent multimodal messages as OpenAI-style
+    content block lists. Memory providers expect text; passing raw lists can
+    crash providers, and serializing the blocks verbatim may persist base64
+    media payloads. Keep human text and replace media blocks with short
+    markers.
+    """
+    normalized = _flatten_rich_content(content)
+    return sanitize_context(normalized).strip()
+
+
+def _flatten_rich_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        parsed = _parse_serialized_content_blocks(content)
+        if parsed is not None:
+            return _flatten_content_blocks(parsed)
+        return content
+    if isinstance(content, list):
+        return _flatten_content_blocks(content)
+    if isinstance(content, dict):
+        block = _flatten_content_block(content)
+        return block if block is not None else json.dumps(content, ensure_ascii=False)
+    return str(content)
+
+
+def _parse_serialized_content_blocks(content: str) -> Optional[list[Any]]:
+    stripped = content.strip()
+    if not stripped.startswith("["):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def _flatten_content_blocks(blocks: list[Any]) -> str:
+    parts: list[str] = []
+    saw_known_block = False
+    for block in blocks:
+        flattened = _flatten_content_block(block)
+        if flattened is None:
+            continue
+        saw_known_block = True
+        if flattened:
+            parts.append(flattened)
+    if saw_known_block:
+        return "\n\n".join(parts)
+    return json.dumps(blocks, ensure_ascii=False)
+
+
+def _flatten_content_block(block: Any) -> Optional[str]:
+    if not isinstance(block, dict):
+        return None
+    block_type = block.get("type")
+    if block_type in _TEXT_BLOCK_TYPES:
+        text = block.get("text")
+        return text.strip() if isinstance(text, str) else ""
+    if block_type in _IMAGE_BLOCK_TYPES:
+        return _MEDIA_BLOCK_MARKERS["image"]
+    if block_type in _AUDIO_BLOCK_TYPES:
+        return _MEDIA_BLOCK_MARKERS["audio"]
+    if block_type in _VIDEO_BLOCK_TYPES:
+        return _MEDIA_BLOCK_MARKERS["video"]
+    return None
 
 
 class StreamingContextScrubber:
@@ -368,11 +451,13 @@ class MemoryManager:
 
     # -- Sync ----------------------------------------------------------------
 
-    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_all(self, user_content: Any, assistant_content: Any, *, session_id: str = "") -> None:
         """Sync a completed turn to all providers."""
+        user_text = normalize_memory_turn_content(user_content)
+        assistant_text = normalize_memory_turn_content(assistant_content)
         for provider in self._providers:
             try:
-                provider.sync_turn(user_content, assistant_content, session_id=session_id)
+                provider.sync_turn(user_text, assistant_text, session_id=session_id)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' sync_turn failed: %s",

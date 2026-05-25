@@ -326,3 +326,93 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def test_build_gemini_contents_coalesces_parallel_tool_responses():
+    """Parallel tool calls must produce 1 model turn (N functionCall parts)
+    followed by 1 user turn (N functionResponse parts).
+
+    Gemini rejects mismatched counts: HTTP 400 INVALID_ARGUMENT — "number of
+    function response parts is equal to the number of function call parts of
+    the function call turn". This regresses if tool responses get split into
+    separate user turns.
+    """
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    contents, _ = _build_gemini_contents(
+        [
+            {"role": "user", "content": "find X and run Y"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                    {"id": "c2", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "r1", "name": "a"},
+            {"role": "tool", "tool_call_id": "c2", "content": "r2", "name": "b"},
+        ]
+    )
+
+    # Find the model turn with functionCalls
+    fc_turn = next(c for c in contents if c["role"] == "model" and any("functionCall" in p for p in c["parts"]))
+    fc_count = sum(1 for p in fc_turn["parts"] if "functionCall" in p)
+
+    # The next turn must be a single user turn with the same count of functionResponse parts
+    fc_idx = contents.index(fc_turn)
+    response_turn = contents[fc_idx + 1]
+    assert response_turn["role"] == "user"
+    fr_count = sum(1 for p in response_turn["parts"] if "functionResponse" in p)
+    assert fc_count == fr_count == 2, (
+        f"Expected {fc_count} functionResponse parts in single user turn, got {fr_count}. "
+        f"Full contents: {contents}"
+    )
+
+
+def test_build_gemini_contents_drops_orphan_tool_responses():
+    """A tool response with no matching upstream tool_call must be dropped.
+
+    Mid-session provider switches can leave stale tool messages without their
+    pair. Sending them to Gemini triggers HTTP 400.
+    """
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    contents, _ = _build_gemini_contents(
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "stale", "content": "leftover", "name": "x"},
+            {"role": "user", "content": "are you there"},
+        ]
+    )
+
+    # No turn should contain a functionResponse part
+    assert not any(
+        any(isinstance(p, dict) and "functionResponse" in p for p in c["parts"])
+        for c in contents
+    ), f"Orphan functionResponse leaked through: {contents}"
+
+
+def test_build_gemini_contents_preserves_orphan_tool_calls_for_replay():
+    """An assistant tool_call with no matching response must be preserved.
+
+    This is the "tool replay" pattern (sending an assistant turn with a
+    pending tool_call and waiting for Gemini to acknowledge before sending
+    the response). Regression guard for thoughtSignature handling.
+    """
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    contents, _ = _build_gemini_contents(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "pending", "type": "function", "function": {"name": "get_x", "arguments": "{}"}},
+                ],
+            },
+        ]
+    )
+    assert len(contents) == 1
+    assert contents[0]["role"] == "model"
+    assert any("functionCall" in p for p in contents[0]["parts"])

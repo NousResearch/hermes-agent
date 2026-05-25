@@ -280,20 +280,29 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # module-import time). Without this, config.yaml's toggle is ignored because
 # the setup_logging() call below imports agent.redact, which reads the env var
 # exactly once. Env var in .env still wins — this is config.yaml fallback only.
+#
+# We also read network.force_ipv4 from the same yaml load to avoid two
+# separate config.yaml reads (saves ~17ms on every CLI startup — the second
+# `load_config()` was doing a full deep-merge for one boolean lookup).
+_FORCE_IPV4_EARLY = False
 try:
-    if "HERMES_REDACT_SECRETS" not in os.environ:
-        import yaml as _yaml_early
+    import yaml as _yaml_early
 
-        _cfg_path = get_hermes_home() / "config.yaml"
-        if _cfg_path.exists():
-            with open(_cfg_path, encoding="utf-8") as _f:
-                _early_sec_cfg = (_yaml_early.safe_load(_f) or {}).get("security", {})
+    _cfg_path = get_hermes_home() / "config.yaml"
+    if _cfg_path.exists():
+        with open(_cfg_path, encoding="utf-8") as _f:
+            _early_cfg_raw = _yaml_early.safe_load(_f) or {}
+        if "HERMES_REDACT_SECRETS" not in os.environ:
+            _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
                 _early_redact = _early_sec_cfg.get("redact_secrets")
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
-            del _early_sec_cfg
-        del _cfg_path
+        _early_net_cfg = _early_cfg_raw.get("network", {})
+        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
+            _FORCE_IPV4_EARLY = True
+        del _early_cfg_raw
+    del _cfg_path
 except Exception:
     pass  # best-effort — redaction stays at default (enabled) on config errors
 
@@ -307,17 +316,15 @@ except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference early, before any HTTP clients are created.
-try:
-    from hermes_cli.config import load_config as _load_config_early
-    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+# We already determined whether to force IPv4 from the raw yaml read above —
+# this just calls the toggle without a redundant load_config() round trip.
+if _FORCE_IPV4_EARLY:
+    try:
+        from hermes_constants import apply_ipv4_preference as _apply_ipv4
 
-    _early_cfg = _load_config_early()
-    _net = _early_cfg.get("network", {})
-    if isinstance(_net, dict) and _net.get("force_ipv4"):
         _apply_ipv4(force=True)
-    del _early_cfg, _net
-except Exception:
-    pass  # best-effort — don't crash if config isn't available yet
+    except Exception:
+        pass  # best-effort — don't crash if hermes_constants not importable yet
 
 import logging
 import threading
@@ -4551,11 +4558,27 @@ def _model_flow_named_custom(config, provider_info):
     print(f"   Provider: {name} ({base_url})")
 
 
-# Keep the historical eager model catalog import on desktop/CI. Termux defers
-# it to the model-selection handlers so plain `hermes --tui` does not pay for
-# requests/models.dev catalog imports before the Node TUI starts.
-if not _is_termux_startup_environment():
-    from hermes_cli.models import _PROVIDER_MODELS
+# Lazy-export the model catalog at module level. Tests and a handful of
+# downstream call sites read `hermes_cli.main._PROVIDER_MODELS` directly,
+# so the symbol needs to be reachable as a module attribute. But importing
+# the catalog eagerly costs ~55ms on every `hermes` invocation — including
+# fast paths like `hermes --version` and slash-command dispatch that never
+# touch the catalog. PEP 562 module-level __getattr__ defers the import
+# until first attribute access, so the cost is only paid by callers that
+# actually look up the catalog. Termux already defers via the same
+# mechanism (its model-selection handlers do their own function-local
+# imports), so the explicit termux branch from before is no longer needed.
+_LAZY_MODEL_EXPORTS = ("_PROVIDER_MODELS",)
+
+
+def __getattr__(name):
+    """Defer the model-catalog import until something actually reads it."""
+    if name in _LAZY_MODEL_EXPORTS:
+        from hermes_cli.models import _PROVIDER_MODELS
+        # Cache on the module so subsequent accesses skip the import machinery.
+        globals()[name] = _PROVIDER_MODELS
+        return _PROVIDER_MODELS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _current_reasoning_effort(config) -> str:

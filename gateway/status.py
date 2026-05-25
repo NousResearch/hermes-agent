@@ -431,10 +431,14 @@ def acquire_gateway_runtime_lock() -> bool:
     path = _get_gateway_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "a+", encoding="utf-8")
-    if not _try_acquire_file_lock(handle):
+    try:
+        if not _try_acquire_file_lock(handle):
+            handle.close()
+            return False
+        _write_gateway_lock_record(handle)
+    except Exception:
         handle.close()
-        return False
-    _write_gateway_lock_record(handle)
+        raise
     _gateway_lock_handle = handle
     return True
 

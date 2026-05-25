@@ -15727,6 +15727,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if last_activity is None:
                     continue
                 if (now - last_activity) > _AGENT_CACHE_IDLE_TTL_SECS:
+                    # Check whether the session has actually expired in the
+                    # session store.  If it hasn't (e.g. daily-reset mode
+                    # where the reset fires hours after the user's last
+                    # message), keep the agent in cache so the session-store
+                    # expiry watcher can still find it and call
+                    # on_session_end() with the live transcript.  Skipping
+                    # eviction here means the agent stays alive until the
+                    # session genuinely expires, at which point the watcher
+                    # (gateway/run.py _session_expiry_watcher) tears it down
+                    # properly.  (#11205 follow-up)
+                    session_entry = None
+                    try:
+                        _store = getattr(self, "session_store", None)
+                        if _store is not None:
+                            _store._ensure_loaded()
+                            session_entry = _store._entries.get(key)
+                    except Exception:
+                        pass
+                    if session_entry is not None:
+                        if not _store._is_session_expired(session_entry):
+                            continue  # keep agent — session hasn't expired
                     to_evict.append((key, agent))
             for key, _ in to_evict:
                 _cache.pop(key, None)

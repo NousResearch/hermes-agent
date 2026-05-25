@@ -708,6 +708,58 @@ class TestAgentCacheBoundedGrowth:
         assert runner._sweep_idle_cached_agents() == 0
         assert "s" in runner._agent_cache
 
+    def test_idle_sweep_keeps_agent_when_session_not_expired(self, monkeypatch):
+        """Agents past idle TTL are kept if the session hasn't expired yet.
+
+        In daily-reset mode the reset can fire hours after the last
+        user message — evicting the agent early means the
+        session-expiry watcher has nothing to call on_session_end()
+        with, and memory providers miss the live transcript.
+        """
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
+        runner = self._bounded_runner()
+        runner._cleanup_agent_resources = MagicMock()
+
+        import time as _t
+        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+
+        # Session store says the session is still alive.
+        session_entry = MagicMock()
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"stale-session": session_entry}
+        runner.session_store._is_session_expired.return_value = False
+
+        runner._agent_cache["stale-session"] = (stale, "sig")
+
+        evicted = runner._sweep_idle_cached_agents()
+        assert evicted == 0
+        assert "stale-session" in runner._agent_cache
+
+    def test_idle_sweep_evicts_when_session_is_expired(self, monkeypatch):
+        """Agent IS evicted when past idle TTL AND session store says expired."""
+        from gateway import run as gw_run
+
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
+        runner = self._bounded_runner()
+        runner._cleanup_agent_resources = MagicMock()
+
+        import time as _t
+        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+
+        # Session store says the session has expired.
+        session_entry = MagicMock()
+        runner.session_store = MagicMock()
+        runner.session_store._entries = {"stale-session": session_entry}
+        runner.session_store._is_session_expired.return_value = True
+
+        runner._agent_cache["stale-session"] = (stale, "sig")
+
+        evicted = runner._sweep_idle_cached_agents()
+        assert evicted == 1
+        assert "stale-session" not in runner._agent_cache
+
     def test_plain_dict_cache_is_tolerated(self):
         """Test fixtures using plain {} don't crash _enforce_agent_cache_cap."""
         from gateway.run import GatewayRunner

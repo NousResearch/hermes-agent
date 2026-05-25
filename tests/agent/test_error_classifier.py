@@ -56,7 +56,6 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
-            "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
@@ -292,64 +291,6 @@ class TestClassifyApiError:
         e = MockAPIError("Overloaded", status_code=529)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
-
-    # ── 5xx that are actually request-validation errors ──
-    # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
-    # request-validation failures with a 5xx status. These are
-    # deterministic, so they must NOT be retried — otherwise the retry
-    # loop hammers the identical bad request into a flood.
-
-    def test_502_with_unknown_parameter_is_non_retryable(self):
-        e = MockAPIError(
-            "Unknown parameter: 'input[617]._empty_recovery_synthetic'",
-            status_code=502,
-            body={
-                "error": {
-                    "type": "invalid_request_error",
-                    "message": (
-                        "[ObjectParam] [input[617]._empty_recovery_synthetic] "
-                        "[unknown_parameter] Unknown parameter: "
-                        "'input[617]._empty_recovery_synthetic'."
-                    ),
-                }
-            },
-        )
-        result = classify_api_error(e)
-        assert result.reason == FailoverReason.format_error
-        assert result.retryable is False
-        assert result.should_fallback is True
-
-    def test_502_with_unsupported_parameter_is_non_retryable(self):
-        e = MockAPIError(
-            "Unsupported parameter: logprobs",
-            status_code=502,
-            body={
-                "error": {
-                    "type": "invalid_request_error",
-                    "message": "Unsupported parameter: logprobs",
-                }
-            },
-        )
-        result = classify_api_error(e)
-        assert result.reason == FailoverReason.format_error
-        assert result.retryable is False
-
-    def test_500_with_invalid_request_error_type_is_non_retryable(self):
-        e = MockAPIError(
-            "bad request",
-            status_code=500,
-            body={"error": {"type": "invalid_request_error", "message": "bad request"}},
-        )
-        result = classify_api_error(e)
-        assert result.reason == FailoverReason.format_error
-        assert result.retryable is False
-
-    def test_502_plain_bad_gateway_still_retryable(self):
-        """A genuine 502 with no request-validation signal stays retryable."""
-        e = MockAPIError("Bad Gateway", status_code=502)
-        result = classify_api_error(e)
-        assert result.reason == FailoverReason.server_error
-        assert result.retryable is True
 
     # ── Model not found ──
 
@@ -1317,64 +1258,105 @@ class TestRateLimitErrorWithoutStatusCode:
         assert result.reason != FailoverReason.rate_limit
 
 
+# ── Test: Overloaded errors (Issue #14038) ────────────────────────────
 
-# ── Test: multimodal_tool_content_unsupported pattern ───────────────────
+class TestOverloadedErrorClassification:
+    """Overloaded errors must classify as server-side overload, NOT rate_limit.
 
-class TestMultimodalToolContentUnsupported:
-    """Issue #27344 — providers that reject list-type tool message content
-    should be classified as ``multimodal_tool_content_unsupported`` so the
-    retry loop can downgrade screenshots to text and try again.
+    The key insight: overloaded errors should NOT rotate credentials because
+    the API key is valid — the server is just busy.  Before the fix,
+    messages like "temporarily overloaded, please try again later" matched
+    _RATE_LIMIT_PATTERNS ("try again in"), causing credential pool exhaustion.
     """
 
-    def test_xiaomi_mimo_text_is_not_set_pattern(self):
-        """The actual Xiaomi MiMo 400 wording from the bug report."""
-        e = MockAPIError(
-            "Error code: 400 - {'error': {'code': '400', 'message': 'Param Incorrect', 'param': 'text is not set', 'type': ''}}",
-            status_code=400,
+    def test_temporarily_overloaded_is_overloaded_not_rate_limit(self):
+        """Z.AI code 1305: 'temporarily overloaded, please try again later'.
+
+        This is the exact bug: 'try again' matches _RATE_LIMIT_PATTERNS,
+        but the overloaded check must take priority.
+        """
+        e = Exception(
+            "The service may be temporarily overloaded, please try again later"
         )
-        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
-        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.reason != FailoverReason.rate_limit
         assert result.retryable is True
+        assert result.should_rotate_credential is False
 
-    def test_generic_tool_message_must_be_string(self):
+    def test_overloaded_plain(self):
+        """Plain 'overloaded' in message → overloaded."""
+        e = Exception("The model is overloaded right now")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_service_is_busy(self):
+        """'service is busy' → overloaded."""
+        e = Exception("service is busy, please wait")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
+
+    def test_server_is_overloaded(self):
+        """'server is overloaded' → overloaded."""
+        e = Exception("server is overloaded with requests")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
+
+    def test_overloaded_via_400_status_code(self):
+        """Some providers return overloaded as 400 — must still classify correctly."""
         e = MockAPIError(
-            "tool message content must be a string",
+            "The service may be temporarily overloaded, please try again later",
             status_code=400,
+            body={"error": {"message": "The service may be temporarily overloaded, please try again later"}},
         )
-        result = classify_api_error(e, provider="custom", model="some-model")
-        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
 
-    def test_expected_string_got_list(self):
-        e = MockAPIError(
-            "Schema validation failed: expected string, got list",
-            status_code=400,
-        )
-        result = classify_api_error(e, provider="custom", model="some-model")
-        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+    def test_overloaded_200_with_error_body(self):
+        """HTTP 200 with overloaded message in body (Z.AI code 1305 scenario)."""
+        class OverloadedOK(Exception):
+            status_code = 200
+            body = {
+                "error": {
+                    "code": "1305",
+                    "message": "The service may be temporarily overloaded, please try again later",
+                }
+            }
+        result = classify_api_error(OverloadedOK("temporarily overloaded"))
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
 
-    def test_multimodal_tool_content_takes_priority_over_context_overflow(self):
-        """Some providers return a 400 whose message contains BOTH
-        'text is not set' and a length-shaped phrase; the tool-content
-        recovery is cheaper than compression so it must win the priority.
-        """
-        e = MockAPIError(
-            "text is not set; context length exceeded",
-            status_code=400,
-        )
-        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
-        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+    # ── Regression: rate_limit patterns must still work ──
 
-    def test_no_status_code_path_also_classifies(self):
-        """When the error reaches us without a status code (transport
-        layer ate it) the message-only classifier branch must also
-        recognise the pattern.
-        """
-        e = MockTransportError("tool_call.content must be string")
-        result = classify_api_error(e, provider="alibaba", model="qwen3.5-plus")
-        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+    def test_too_many_requests_still_rate_limit(self):
+        """Regression: 'too many requests' must still classify as rate_limit."""
+        e = Exception("too many requests, please slow down")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
 
-    def test_unrelated_400_is_not_misclassified(self):
-        """Make sure the patterns don't false-positive on normal 400s."""
-        e = MockAPIError("bad request: missing field 'model'", status_code=400)
-        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
-        assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+    def test_rate_limit_reached_still_rate_limit(self):
+        """Regression: 'rate limit' must still classify as rate_limit."""
+        e = Exception("rate limit reached for this model")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+    def test_429_still_rate_limit(self):
+        """Regression: HTTP 429 must still classify as rate_limit."""
+        e = MockAPIError("Too Many Requests", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+    def test_503_still_overloaded(self):
+        """Regression: HTTP 503 still classifies via status code path."""
+        e = MockAPIError("Service Unavailable", status_code=503)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True

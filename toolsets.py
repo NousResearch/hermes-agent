@@ -48,6 +48,9 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     # Planning & memory
     "todo", "memory",
+    # Shared Agent Memory API (external Markdown/Basic Memory service)
+    "shared_memory_search", "shared_memory_create_draft", "shared_memory_get",
+    "shared_memory_update", "shared_memory_update_status",
     # Session history search
     "session_search",
     # Clarifying questions
@@ -213,6 +216,15 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+
+    "shared_memory": {
+        "description": "Shared Agent Memory service: Markdown/Basic Memory-backed durable memory with draft/review/accepted workflow",
+        "tools": [
+            "shared_memory_search", "shared_memory_create_draft", "shared_memory_get",
+            "shared_memory_update", "shared_memory_update_status",
+        ],
         "includes": []
     },
     

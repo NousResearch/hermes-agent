@@ -56,6 +56,16 @@ class TestResolveToolset:
         tools = resolve_toolset("web")
         assert set(tools) == {"web_search", "web_extract"}
 
+    def test_shared_memory_toolset(self):
+        tools = resolve_toolset("shared_memory")
+        assert set(tools) == {
+            "shared_memory_search",
+            "shared_memory_create_draft",
+            "shared_memory_get",
+            "shared_memory_update",
+            "shared_memory_update_status",
+        }
+
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools

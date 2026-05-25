@@ -1862,6 +1862,10 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     if source_msg.get("role") != "assistant":
         return
 
+    is_fallback_active = bool(getattr(agent, "_fallback_activated", False)) or bool(
+        getattr(agent, "_fallback_index", 0) > 0
+    )
+
     # 1. Explicit reasoning_content already set — preserve it verbatim
     # (includes DeepSeek/Kimi's own space-placeholder written at creation
     # time, and any valid reasoning content from the same provider).
@@ -1871,8 +1875,14 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # those with HTTP 400. When the active provider enforces the
     # thinking-mode echo, upgrade "" → " " on replay so stale history
     # doesn't 400 the user on the next turn.
+    #
+    # When a fallback is active (#31092), the reasoning_content was
+    # written by the *previous* provider and may use a different format.
+    # Cross-provider reasoning_content causes HTTP 400 on thinking-mode
+    # providers (DeepSeek rejects GLM's reasoning tokens).  Skip the
+    # verbatim copy and let the fallback logic handle it.
     existing = source_msg.get("reasoning_content")
-    if isinstance(existing, str):
+    if isinstance(existing, str) and not is_fallback_active:
         if existing == "" and agent._needs_thinking_reasoning_pad():
             api_msg["reasoning_content"] = " "
         else:

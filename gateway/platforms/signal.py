@@ -633,6 +633,7 @@ class SignalAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             timestamp=timestamp,
+            message_id=str(ts_ms) if ts_ms else None,
             raw_message={"sender": sender, "timestamp_ms": ts_ms},
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
@@ -988,6 +989,13 @@ class SignalAdapter(BasePlatformAdapter):
                 params["textStyle"] = text_styles[0]
             else:
                 params["textStyles"] = text_styles
+
+        if reply_to is not None:
+            try:
+                params["quoteTimestamp"] = int(reply_to)
+                params["quoteAuthor"] = chat_id
+            except (ValueError, TypeError):
+                pass
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]

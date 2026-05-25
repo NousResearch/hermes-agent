@@ -1661,6 +1661,9 @@ class GatewayRunner:
     _exit_code: Optional[int] = None
     _draining: bool = False
     _restart_requested: bool = False
+    _rate_limited_sessions: Dict[str, float] = {}  # session_key -> timestamp when 429 hit
+    _rate_limit_queue_enabled: bool = False
+    _rate_limit_queue_max_depth: int = 5
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
@@ -1687,6 +1690,10 @@ class GatewayRunner:
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._rate_limit_queue_enabled = self._load_rate_limit_queue_enabled()
+        self._rate_limit_queue_max_depth = self._load_rate_limit_queue_max_depth()
+        self._rate_limited_sessions: Dict[str, float] = {}
+        self._rate_limit_queued_events: Dict[str, list] = {}  # session -> [MessageEvent, ...]
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -2622,6 +2629,70 @@ class GatewayRunner:
             depth += 1
         return depth
 
+    # ── Rate-limit queue helpers ────────────────────────────────────
+
+    def _mark_session_rate_limited(self, session_key: str) -> None:
+        """Flag a session as rate-limited. Called from post-run path."""
+        self._rate_limited_sessions[session_key] = time.time()
+
+    def _clear_session_rate_limited(self, session_key: str) -> None:
+        """Clear rate-limit flag for a session."""
+        self._rate_limited_sessions.pop(session_key, None)
+
+    def _is_session_rate_limited(self, session_key: str) -> bool:
+        """Check if a session is currently rate-limited."""
+        return session_key in self._rate_limited_sessions
+
+    def _rate_limit_queue_enabled_for_session(self, session_key: str) -> bool:
+        """Check if rate-limit queueing is active for a specific session."""
+        return self._rate_limit_queue_enabled and self._is_session_rate_limited(session_key)
+
+    def _rate_limit_queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
+        """Total rate-limit queued items for a session (overflow + slot)."""
+        if not self._rate_limit_queue_enabled:
+            return 0
+        rl_overflow = getattr(self, "_rate_limit_queued_events", {}) or {}
+        depth = len(rl_overflow.get(session_key, []))
+        if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
+            depth += 1
+        return depth
+
+    def _enqueue_rate_limit_event(self, session_key: str, event: Any, adapter: Any) -> None:
+        """Append to the rate-limit FIFO for a session.
+
+        Uses the adapter's _pending_messages slot for the first item and
+        _rate_limit_queued_events for overflow (separate from /queue's FIFO).
+        """
+        if not adapter:
+            return
+        from gateway.platforms.base import merge_pending_message_event
+        if session_key in adapter._pending_messages:
+            # Slot occupied — go to overflow
+            self._rate_limit_queued_events.setdefault(session_key, []).append(event)
+        else:
+            merge_pending_message_event(adapter._pending_messages, session_key, event)
+
+    def _promote_rate_limit_event(self, session_key: str, adapter: Any, pending_event: Any) -> Any:
+        """Promote the next rate-limit overflow item into the slot.
+
+        Called after _dequeue_pending_event consumed the slot.  Returns
+        the original pending_event (may be None).
+        """
+        rl_overflow = getattr(self, "_rate_limit_queued_events", None)
+        if not rl_overflow:
+            return pending_event
+        overflow = rl_overflow.get(session_key)
+        if not overflow:
+            return pending_event
+        next_event = overflow.pop(0)
+        if not overflow:
+            rl_overflow.pop(session_key, None)
+        if pending_event is None:
+            return next_event
+        # Slot is already refilled by caller; push next_event back to overflow front
+        overflow.insert(0, next_event)
+        return pending_event
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
@@ -3027,6 +3098,42 @@ class GatewayRunner:
             pass
         return None
 
+    @staticmethod
+    def _load_rate_limit_queue_enabled() -> bool:
+        """Load rate-limit queue opt-in from config.yaml or env var."""
+        raw = os.getenv("HERMES_GATEWAY_RATE_LIMIT_QUEUE", "").strip().lower()
+        if raw in ("true", "1", "yes"):
+            return True
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return bool((cfg.get("gateway") or {}).get("rate_limit_queue", False))
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _load_rate_limit_queue_max_depth() -> int:
+        """Load per-session rate-limit queue max depth from config or env var."""
+        raw = os.getenv("HERMES_GATEWAY_RATE_LIMIT_QUEUE_MAX_DEPTH", "").strip()
+        if not raw:
+            try:
+                import yaml as _y
+                cfg_path = _hermes_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    raw = str((cfg.get("gateway") or {}).get("rate_limit_queue_max_depth", 5) or 5)
+            except Exception:
+                raw = "5"
+        try:
+            return max(1, min(int(raw), 50))
+        except (TypeError, ValueError):
+            return 5
+
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
             session_key: agent
@@ -3109,6 +3216,57 @@ class GatewayRunner:
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=(
+                    reply_anchor
+                    if event.source.platform == Platform.TELEGRAM
+                    and event.source.chat_type == "dm"
+                    and event.source.thread_id
+                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                ),
+                metadata=thread_meta,
+            )
+            return True
+
+        # --- Rate-limit queue case (provider returned 429 for this session) ---
+        if self._rate_limit_queue_enabled_for_session(session_key):
+            adapter = self.adapters.get(event.source.platform)
+            if not adapter:
+                return True
+
+            rl_depth = self._rate_limit_queue_depth(session_key, adapter=adapter)
+            reply_anchor = self._reply_anchor_for_event(event)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+
+            if rl_depth >= self._rate_limit_queue_max_depth:
+                # Queue full — respond with error, don't enqueue
+                message = (
+                    f"⚠️ Rate limited and queue is full "
+                    f"({rl_depth}/{self._rate_limit_queue_max_depth}). "
+                    f"Please try again in a moment."
+                )
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=message,
+                    reply_to=(
+                        reply_anchor
+                        if event.source.platform == Platform.TELEGRAM
+                        and event.source.chat_type == "dm"
+                        and event.source.thread_id
+                        else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                    ),
+                    metadata=thread_meta,
+                )
+                return True
+
+            # Enqueue using dedicated rate-limit FIFO
+            self._enqueue_rate_limit_event(session_key, event, adapter)
+            message = (
+                f"⏳ Rate limited — queued for processing "
+                f"({rl_depth + 1}/{self._rate_limit_queue_max_depth})."
+            )
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
@@ -9299,6 +9457,12 @@ class GatewayRunner:
         _qe = getattr(self, "_queued_events", None)
         if _qe is not None:
             _qe.pop(session_key, None)
+
+        # Clear rate-limit queue state for this session.
+        self._rate_limited_sessions.pop(session_key, None)
+        _rlqe = getattr(self, "_rate_limit_queued_events", None)
+        if _rlqe is not None:
+            _rlqe.pop(session_key, None)
 
         try:
             from tools.env_passthrough import clear_env_passthrough
@@ -17591,6 +17755,22 @@ class GatewayRunner:
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
+
+            # Propagate rate-limit state from agent to gateway so messages
+            # can be queued during the 429 backoff window.
+            if _agent is not None and getattr(_agent, "_hit_rate_limit", False):
+                if not self._is_session_rate_limited(session_key):
+                    logger.info(
+                        "Session %s hit rate limit — enabling message queueing",
+                        session_key,
+                    )
+                self._mark_session_rate_limited(session_key)
+
+            # Clear rate-limit flag on successful completion or if fallback
+            # was activated (the fallback provider handled the request).
+            if result and result.get("completed") and self._is_session_rate_limited(session_key):
+                self._clear_session_rate_limited(session_key)
+
             adapter = self.adapters.get(source.platform)
             
             # Get pending message from adapter.
@@ -17606,6 +17786,10 @@ class GatewayRunner:
                 # order, and (b) causes any mid-chain /queue to correctly
                 # route to overflow rather than jumping the queue.
                 pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+                # Rate-limit queue: promote the next rate-limited overflow
+                # item into the slot if this session was rate-limited.
+                if self._rate_limit_queue_enabled and self._is_session_rate_limited(session_key):
+                    pending_event = self._promote_rate_limit_event(session_key, adapter, pending_event)
                 if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                     interrupt_message = result.get("interrupt_message")
                     if _is_control_interrupt_message(interrupt_message):

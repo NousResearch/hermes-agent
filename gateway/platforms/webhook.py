@@ -97,6 +97,10 @@ def check_webhook_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def _route_enabled(route: dict) -> bool:
+    return route.get("enabled", True) is not False
+
+
 class WebhookAdapter(BasePlatformAdapter):
     """Generic webhook receiver that triggers agent runs from HTTP POSTs."""
 
@@ -105,7 +109,13 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: str = config.extra.get("host", DEFAULT_HOST)
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
-        self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
+        raw_static_routes: Dict[str, dict] = config.extra.get("routes", {})
+        self._static_route_names = set(raw_static_routes)
+        self._static_routes: Dict[str, dict] = {
+            name: route
+            for name, route in raw_static_routes.items()
+            if _route_enabled(route)
+        }
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
@@ -316,7 +326,16 @@ class WebhookAdapter(BasePlatformAdapter):
             # validation entirely, letting unauthenticated callers in.
             new_dynamic: Dict[str, dict] = {}
             for k, v in data.items():
-                if k in self._static_routes:
+                if k in self._static_route_names:
+                    continue
+                if not isinstance(v, dict):
+                    logger.warning(
+                        "[webhook] Dynamic route '%s' skipped: route config must be an object.",
+                        k,
+                    )
+                    continue
+                if not _route_enabled(v):
+                    logger.debug("[webhook] Dynamic route '%s' skipped: disabled", k)
                     continue
                 effective_secret = v.get("secret", self._global_secret)
                 if not effective_secret:

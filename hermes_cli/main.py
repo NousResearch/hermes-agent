@@ -11887,7 +11887,7 @@ def main():
     webhook_parser = subparsers.add_parser(
         "webhook",
         help="Manage dynamic webhook subscriptions",
-        description="Create, list, and remove webhook subscriptions for event-driven agent activation",
+        description="Create, list, enable, disable, and remove webhook subscriptions for event-driven agent activation",
     )
     webhook_subparsers = webhook_parser.add_subparsers(dest="webhook_action")
 
@@ -11929,6 +11929,16 @@ def main():
     webhook_subparsers.add_parser(
         "list", aliases=["ls"], help="List all dynamic subscriptions"
     )
+
+    wh_disable = webhook_subparsers.add_parser(
+        "disable", help="Disable a dynamic subscription without deleting it"
+    )
+    wh_disable.add_argument("name", help="Subscription name to disable")
+
+    wh_enable = webhook_subparsers.add_parser(
+        "enable", help="Re-enable a disabled dynamic subscription"
+    )
+    wh_enable.add_argument("name", help="Subscription name to enable")
 
     wh_rm = webhook_subparsers.add_parser(
         "remove", aliases=["rm"], help="Remove a subscription"

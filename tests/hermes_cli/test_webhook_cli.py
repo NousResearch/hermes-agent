@@ -50,6 +50,7 @@ class TestSubscribe:
         assert "/webhooks/test-hook" in out
         subs = _load_subscriptions()
         assert "test-hook" in subs
+        assert subs["test-hook"]["enabled"] is True
 
     def test_with_options(self, capsys):
         webhook_command(_make_args(
@@ -109,6 +110,18 @@ class TestList:
         assert "a" in out
         assert "b" in out
 
+    def test_marks_disabled_entries(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="active"))
+        webhook_command(_make_args(webhook_action="subscribe", name="paused"))
+        webhook_command(_make_args(webhook_action="disable", name="paused"))
+        capsys.readouterr()  # clear
+
+        webhook_command(_make_args(webhook_action="list"))
+        out = capsys.readouterr().out
+
+        assert "active (enabled)" in out
+        assert "paused (disabled)" in out
+
 
 class TestRemove:
     def test_remove_existing(self, capsys):
@@ -130,6 +143,32 @@ class TestRemove:
         subs = _load_subscriptions()
         assert "keep" in subs
         assert "drop" not in subs
+
+
+class TestEnableDisable:
+    def test_disable_existing(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="pause-me"))
+        webhook_command(_make_args(webhook_action="disable", name="pause-me"))
+        out = capsys.readouterr().out
+
+        assert "Disabled" in out
+        assert _load_subscriptions()["pause-me"]["enabled"] is False
+
+    def test_enable_existing(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="resume-me"))
+        webhook_command(_make_args(webhook_action="disable", name="resume-me"))
+        webhook_command(_make_args(webhook_action="enable", name="resume-me"))
+        out = capsys.readouterr().out
+
+        assert "Enabled" in out
+        assert _load_subscriptions()["resume-me"]["enabled"] is True
+
+    def test_missing_subscription_does_not_create_entry(self, capsys):
+        webhook_command(_make_args(webhook_action="disable", name="missing"))
+        out = capsys.readouterr().out
+
+        assert "No subscription" in out
+        assert _load_subscriptions() == {}
 
 
 class TestPersistence:

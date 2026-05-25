@@ -484,6 +484,23 @@ class TestHTTPHandling:
             assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_disabled_route_behaves_like_unknown_route(self):
+        """POST to a disabled route returns 404 and never dispatches."""
+        adapter = _make_adapter(
+            routes={"paused": {"enabled": False, "secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        )
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/paused", json={"a": 1})
+            assert resp.status == 404
+            data = await resp.json()
+            assert data["error"] == "Unknown route: paused"
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_webhook_handler_returns_202(self):
         """Valid request returns 202 Accepted."""
         routes = {"test": {"secret": _INSECURE_NO_AUTH, "prompt": "hi"}}
@@ -1031,4 +1048,3 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
-

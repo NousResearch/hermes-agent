@@ -43,6 +43,40 @@ class TestDynamicRouteLoading:
         assert "my-hook" in adapter._routes
         assert "static" in adapter._routes
 
+    def test_disabled_dynamic_route_is_skipped(self, tmp_path):
+        subs = {
+            "paused": {
+                "enabled": False,
+                "secret": "dynamic-secret",
+                "prompt": "test",
+                "events": [],
+            }
+        }
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(json.dumps(subs))
+
+        adapter = _make_adapter()
+        adapter._reload_dynamic_routes()
+        assert "paused" not in adapter._routes
+        assert "paused" not in adapter._dynamic_routes
+
+    def test_reenabled_dynamic_route_hot_reloads(self, tmp_path):
+        import time
+        path = tmp_path / _DYNAMIC_ROUTES_FILENAME
+        path.write_text(json.dumps({"paused": {"enabled": False, "secret": "s"}}))
+
+        adapter = _make_adapter()
+        adapter._reload_dynamic_routes()
+        assert "paused" not in adapter._dynamic_routes
+
+        time.sleep(0.05)
+        path.write_text(json.dumps({"paused": {"enabled": True, "secret": "s"}}))
+        adapter._reload_dynamic_routes()
+        assert "paused" in adapter._dynamic_routes
+
+    def test_disabled_static_route_is_skipped(self):
+        adapter = _make_adapter(routes={"paused": {"enabled": False, "secret": ""}})
+        assert "paused" not in adapter._routes
+
     def test_static_takes_precedence(self, tmp_path):
         (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
             json.dumps({"conflict": {"secret": "dynamic", "prompt": "dyn"}})

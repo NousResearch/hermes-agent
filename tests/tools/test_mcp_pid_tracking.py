@@ -133,7 +133,8 @@ class TestKillOrphanedMcpChildren:
         import signal
         with patch("os.kill", side_effect=mock_kill), \
              patch("builtins.open", side_effect=selective_open), \
-             patch("time.sleep"):  # skip the 2s wait
+             patch("time.sleep"), \
+             patch("gateway.status._pid_exists", return_value=True):
             _kill_orphaned_mcp_children()
         
         # Should have sent SIGTERM to both 100 and 200

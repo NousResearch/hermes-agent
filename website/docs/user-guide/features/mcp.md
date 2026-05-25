@@ -524,6 +524,8 @@ hermes mcp serve
 
 This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle.
 
+Hermes also ships a root-level [`server.json`](https://github.com/NousResearch/hermes-agent/blob/main/server.json) metadata file for MCP registries. Clients that understand MCP registry metadata can install the PyPI package and run it with the fixed `mcp serve` arguments.
+
 ### MCP client configuration
 
 Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:

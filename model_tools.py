@@ -738,6 +738,108 @@ def _coerce_boolean(value: str):
     return value
 
 
+def validate_tool_args(args: Dict[str, Any], schema: dict) -> List[str]:
+    """Validate tool call arguments against their JSON Schema.
+
+    Checks required fields, type mismatches (after coercion), enum
+    constraints, and numeric/string range constraints (minimum/maximum,
+    minLength/maxLength).  Returns a list of human-readable error strings —
+    empty when arguments are valid.
+    """
+    errors: List[str] = []
+    parameters = schema.get("parameters", {})
+    properties = parameters.get("properties", {})
+    required = parameters.get("required", [])
+
+    # 1. Required fields
+    for field in required:
+        if field not in args:
+            errors.append(f"Missing required argument: {field}")
+
+    # 2. Per-property checks (only for arguments that are present)
+    #
+    # JSON Schema type → Python type mapping.  "null" maps to NoneType so that
+    # nullable union types such as ["string", "null"] validate correctly.
+    type_map = {
+        "string": str,
+        "integer": int,
+        "number": (int, float),
+        "boolean": bool,
+        "array": list,
+        "object": dict,
+        "null": type(None),
+    }
+
+    for key, value in args.items():
+        prop_schema = properties.get(key)
+        if not prop_schema:
+            continue
+
+        # Type check
+        type_error = False
+        expected_type = prop_schema.get("type")
+        if expected_type:
+            # Normalise union types to a list
+            types_to_check = expected_type if isinstance(expected_type, list) else [expected_type]
+            matched = False
+            for t in types_to_check:
+                # In JSON Schema, booleans and integers are distinct even though
+                # Python's bool is a subclass of int.  Apply the bool guard
+                # BEFORE the isinstance check so that True/False never match
+                # "integer" and non-bool ints never match "boolean".
+                if t == "integer" and isinstance(value, bool):
+                    continue
+                if t == "boolean" and not isinstance(value, bool) and isinstance(value, int):
+                    continue
+                python_type = type_map.get(t)
+                if python_type and isinstance(value, python_type):
+                    matched = True
+                    break
+            if not matched and types_to_check:
+                type_error = True
+                errors.append(
+                    f"Argument '{key}' has wrong type: expected "
+                    f"{'/'.join(types_to_check)}, got {type(value).__name__}"
+                )
+
+        # Enum constraint — skip when a type error was already recorded for
+        # this argument to avoid confusing double-error output.
+        if not type_error:
+            enum_values = prop_schema.get("enum")
+            if enum_values is not None and value not in enum_values:
+                errors.append(
+                    f"Argument '{key}' value '{value}' not in enum: {enum_values}"
+                )
+
+        # Numeric constraints
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            minimum = prop_schema.get("minimum")
+            if minimum is not None and value < minimum:
+                errors.append(
+                    f"Argument '{key}' value {value} is below minimum {minimum}"
+                )
+            maximum = prop_schema.get("maximum")
+            if maximum is not None and value > maximum:
+                errors.append(
+                    f"Argument '{key}' value {value} exceeds maximum {maximum}"
+                )
+
+        # String constraints
+        if isinstance(value, str):
+            min_length = prop_schema.get("minLength")
+            if min_length is not None and len(value) < min_length:
+                errors.append(
+                    f"Argument '{key}' length {len(value)} is below minLength {min_length}"
+                )
+            max_length = prop_schema.get("maxLength")
+            if max_length is not None and len(value) > max_length:
+                errors.append(
+                    f"Argument '{key}' length {len(value)} exceeds maxLength {max_length}"
+                )
+
+    return errors
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -766,6 +868,16 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+
+    # Validate arguments against JSON Schema before dispatch
+    tool_schema = registry.get_schema(function_name)
+    if tool_schema:
+        validation_errors = validate_tool_args(function_args, tool_schema)
+        if validation_errors:
+            return json.dumps(
+                {"error": f"Invalid arguments: {'; '.join(validation_errors)}"},
+                ensure_ascii=False,
+            )
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:

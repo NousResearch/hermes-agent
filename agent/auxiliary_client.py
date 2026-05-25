@@ -702,7 +702,12 @@ class _CodexCompletionsAdapter:
                         "effort": effort,
                         "summary": "auto",
                     }
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+                    # Only send include=["reasoning.encrypted_content"] for models
+                    # that support it. GPT-4o, GPT-4o-mini, and older models reject
+                    # this parameter with HTTP 400.
+                    from agent.model_metadata import openai_supports_encrypted_content
+                    if openai_supports_encrypted_content(final_model):
+                        resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")

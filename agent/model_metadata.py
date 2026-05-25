@@ -287,6 +287,39 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+# OpenAI models that ACCEPT the ``reasoning.encrypted_content`` include
+# parameter on the Responses API.
+#
+# Models NOT on this list will return HTTP 400 with "Encrypted content is
+# not supported with this model" when the include parameter is sent.
+#
+# Currently supported models: o-series (o1, o3), gpt-5 series.
+# Not supported: gpt-4o, gpt-4o-mini, gpt-4, gpt-3.5-turbo.
+_OPENAI_ENCRYPTED_CONTENT_CAPABLE_PREFIXES = (
+    "o1",
+    "o3",
+    "gpt-5",
+)
+
+
+def openai_supports_encrypted_content(model: str) -> bool:
+    """Return True when an OpenAI model accepts ``reasoning.encrypted_content``.
+
+    Allowlist by substring (matches both bare ``gpt-5`` and
+    aggregator-prefixed ``openai/gpt-5``). Conservative by design:
+    if a future model isn't listed, we send no include parameter rather
+    than 400.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    # Strip common aggregator prefixes (openai/, openrouter/openai/, ...)
+    for sep in ("/",):
+        if sep in name:
+            name = name.rsplit(sep, 1)[-1]
+    return any(name.startswith(prefix) for prefix in _OPENAI_ENCRYPTED_CONTENT_CAPABLE_PREFIXES)
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

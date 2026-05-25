@@ -135,10 +135,19 @@ class ResponsesApiTransport(ProviderTransport):
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
             else:
+                from agent.model_metadata import openai_supports_encrypted_content
+
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                kwargs["include"] = ["reasoning.encrypted_content"]
+                # Only send include=["reasoning.encrypted_content"] for models
+                # that support it. GPT-4o, GPT-4o-mini, and older models reject
+                # this parameter with HTTP 400 "Encrypted content is not
+                # supported with this model".
+                if openai_supports_encrypted_content(model):
+                    kwargs["include"] = ["reasoning.encrypted_content"]
         elif not is_github_responses and not is_xai_responses:
-            kwargs["include"] = []
+            # Don't send include parameter at all when reasoning is disabled.
+            # Sending include=[] can also cause issues with some models.
+            pass
 
         request_overrides = params.get("request_overrides")
         if request_overrides:

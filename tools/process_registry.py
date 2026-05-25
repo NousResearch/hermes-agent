@@ -1235,6 +1235,19 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    def count_running(self) -> int:
+        """Return the count of currently-running background processes.
+
+        Cheap O(1) read of the running dict, suitable for status-bar polling
+        on every render tick. CPython dict ``len()`` is atomic; callers do not
+        need to hold ``self._lock``. Reflects ``_running`` only: sessions are
+        moved to ``_finished`` when their subprocess exits.
+        """
+        try:
+            return len(self._running)
+        except Exception:
+            return 0
+
     def list_sessions(self, task_id: str = None) -> list:
         """List all running and recently-finished processes."""
         with self._lock:

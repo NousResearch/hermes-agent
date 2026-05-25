@@ -8,6 +8,7 @@ import os
 import pytest
 
 from gateway.runtime_footer import (
+    _format_token_count,
     _home_relative_cwd,
     _model_short,
     build_footer_line,
@@ -17,7 +18,7 @@ from gateway.runtime_footer import (
 
 
 # ---------------------------------------------------------------------------
-# _model_short + _home_relative_cwd
+# _model_short + _home_relative_cwd + _format_token_count
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -50,6 +51,19 @@ def test_home_relative_cwd_leaves_abs_path_alone(tmp_path, monkeypatch):
 
 def test_home_relative_cwd_empty_returns_empty():
     assert _home_relative_cwd("") == ""
+
+
+@pytest.mark.parametrize(
+    "tokens,expected",
+    [
+        (999, "999"),
+        (11_800, "11.8K"),
+        (204_800, "204.8K"),
+        (1_050_000, "1.1M"),
+    ],
+)
+def test_format_token_count(tokens, expected):
+    assert _format_token_count(tokens) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +107,17 @@ def test_format_footer_context_pct_clamped_to_100():
         fields=("context_pct",),
     )
     assert out == "100%"
+
+
+def test_format_footer_context_usage():
+    out = format_runtime_footer(
+        model="m",
+        context_tokens=11_800,
+        context_length=204_800,
+        cwd="",
+        fields=("context_usage",),
+    )
+    assert out == "11.8K/204.8K"
 
 
 def test_format_footer_context_pct_never_negative():
@@ -152,14 +177,26 @@ def test_format_footer_unknown_field_silently_ignored():
 # ---------------------------------------------------------------------------
 
 def test_resolve_defaults_off_empty_config():
-    cfg = resolve_footer_config({}, "telegram")
+    cfg = resolve_footer_config({}, "discord")
     assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+
+
+def test_resolve_telegram_platform_default_enabled():
+    cfg = resolve_footer_config({}, "telegram")
+    assert cfg == {"enabled": True, "fields": ["context_usage"]}
 
 
 def test_resolve_global_enable():
     user = {"display": {"runtime_footer": {"enabled": True}}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
+    assert cfg["fields"] == ["model", "context_pct", "cwd"]
+
+
+def test_resolve_global_disable_can_override_telegram_default():
+    user = {"display": {"runtime_footer": {"enabled": False}}}
+    cfg = resolve_footer_config(user, "telegram")
+    assert cfg["enabled"] is False
     assert cfg["fields"] == ["model", "context_pct", "cwd"]
 
 
@@ -198,7 +235,7 @@ def test_resolve_platform_can_add_fields_only():
 def test_resolve_ignores_malformed_config():
     # Non-dict runtime_footer shouldn't crash
     user = {"display": {"runtime_footer": "on"}}
-    cfg = resolve_footer_config(user, "telegram")
+    cfg = resolve_footer_config(user, "discord")
     assert cfg["enabled"] is False
 
 
@@ -209,12 +246,24 @@ def test_resolve_ignores_malformed_config():
 def test_build_footer_empty_when_disabled():
     out = build_footer_line(
         user_config={},
-        platform_key="telegram",
+        platform_key="discord",
         model="openai/gpt-5.4",
         context_tokens=10, context_length=100,
         cwd="/tmp",
     )
     assert out == ""
+
+
+def test_build_footer_telegram_uses_platform_default():
+    out = build_footer_line(
+        user_config={},
+        platform_key="telegram",
+        model="openai/gpt-5.4",
+        context_tokens=11_800,
+        context_length=204_800,
+        cwd="/tmp",
+    )
+    assert out == "11.8K/204.8K"
 
 
 def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):

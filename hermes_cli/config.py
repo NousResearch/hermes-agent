@@ -1074,10 +1074,11 @@ DEFAULT_CONFIG = {
         # (disabled) preserves prior behavior.
         "ephemeral_system_ttl": 0,
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
-        # Gateway runtime-metadata footer appended to the FINAL message of a turn
-        # (disabled by default to keep replies minimal). When enabled, renders
-        # e.g. `model · 68% · ~/projects/hermes`. Per-platform overrides go under
-        # display.platforms.<platform>.runtime_footer.
+        # Gateway runtime-metadata footer appended to the FINAL message of a turn.
+        # Global default stays off to keep replies minimal, but Telegram gets a
+        # built-in per-platform `context_usage` footer unless the user overrides it.
+        # When enabled, renders e.g. `model · 68% · ~/projects/hermes`. Per-platform
+        # overrides go under display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide

@@ -30,6 +30,11 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
+    # Telegram users do not have the CLI status bar, so give them a tiny
+    # built-in footer that exposes the same core context-usage signal.
+    "telegram": {"enabled": True, "fields": ["context_usage"]},
+}
 _SEP = " · "
 
 
@@ -54,6 +59,23 @@ def _model_short(model: Optional[str]) -> str:
     return model.rsplit("/", 1)[-1]
 
 
+def _format_token_count(tokens: int) -> str:
+    """Format token counts compactly (e.g. 11800 -> '11.8K')."""
+    if tokens >= 1_000_000:
+        val = tokens / 1_000_000
+        rounded = round(val)
+        if abs(val - rounded) < 0.05:
+            return f"{rounded}M"
+        return f"{val:.1f}M"
+    if tokens >= 1_000:
+        val = tokens / 1_000
+        rounded = round(val)
+        if abs(val - rounded) < 0.05:
+            return f"{rounded}K"
+        return f"{val:.1f}K"
+    return str(tokens)
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -62,8 +84,9 @@ def resolve_footer_config(
 
     Merge order (later wins):
         1. Built-in defaults (enabled=False)
-        2. ``display.runtime_footer``
-        3. ``display.platforms.<platform_key>.runtime_footer``
+        2. Built-in per-platform defaults
+        3. ``display.runtime_footer``
+        4. ``display.platforms.<platform_key>.runtime_footer``
     """
     resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
     cfg = (user_config or {}).get("display") or {}
@@ -85,6 +108,22 @@ def resolve_footer_config(
                     resolved["enabled"] = bool(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
+
+    has_user_global = isinstance(global_cfg, dict)
+    has_user_platform = False
+    if platform_key:
+        platforms = cfg.get("platforms") or {}
+        plat_cfg = platforms.get(platform_key)
+        if isinstance(plat_cfg, dict):
+            has_user_platform = isinstance(plat_cfg.get("runtime_footer"), dict)
+
+    if not has_user_global and not has_user_platform:
+        plat_default = _PLATFORM_DEFAULTS.get(platform_key or "")
+        if isinstance(plat_default, dict):
+            if "enabled" in plat_default:
+                resolved["enabled"] = bool(plat_default.get("enabled"))
+            if isinstance(plat_default.get("fields"), list) and plat_default["fields"]:
+                resolved["fields"] = [str(f) for f in plat_default["fields"]]
 
     return resolved
 
@@ -108,6 +147,12 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "context_usage":
+            if context_length and context_length > 0 and context_tokens >= 0:
+                parts.append(
+                    f"{_format_token_count(context_tokens)}/"
+                    f"{_format_token_count(context_length)}"
+                )
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))

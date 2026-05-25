@@ -53,8 +53,26 @@ def _redirect_uri(request: Request) -> str:
     Reads from the request URL — under uvicorn's ``proxy_headers=True``
     this picks up the public https URL from ``X-Forwarded-Host`` plus
     ``X-Forwarded-Proto``.
+
+    Under ``X-Forwarded-Prefix: /hermes`` (Mission Control deploys), we
+    additionally prepend the prefix to the path so the IDP redirects
+    the user back to ``https://mission-control.tilos.com/hermes/auth/callback``
+    rather than the bare ``/auth/callback`` (which the proxy doesn't
+    route to the dashboard). FastAPI's ``url_for`` doesn't natively
+    honour X-Forwarded-Prefix — that header isn't part of the
+    Starlette/uvicorn proxy_headers set — so we splice the prefix in
+    manually.
     """
-    return str(request.url_for("auth_callback"))
+    from urllib.parse import urlparse, urlunparse
+
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+    base = str(request.url_for("auth_callback"))
+    prefix = prefix_from_request(request)
+    if not prefix:
+        return base
+    parsed = urlparse(base)
+    return urlunparse(parsed._replace(path=f"{prefix}{parsed.path}"))
 
 
 def _client_ip(request: Request) -> str:
@@ -62,6 +80,18 @@ def _client_ip(request: Request) -> str:
     if fwd:
         return fwd.split(",")[0].strip()
     return request.client.host if request.client else ""
+
+
+def _prefix(request: Request) -> str:
+    """Resolve the X-Forwarded-Prefix header for the active request.
+
+    Local indirection so the routes pass a consistent value to the
+    cookie helpers (cookie name + Path attribute) and the gate's
+    redirect builders (login_url construction). See
+    ``hermes_cli.dashboard_auth.prefix`` for the normalisation rules.
+    """
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+    return prefix_from_request(request)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +187,10 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     if safe_next:
         from urllib.parse import quote
         pkce = f"{pkce};next={quote(safe_next, safe='')}"
-    set_pkce_cookie(resp, payload=pkce, use_https=detect_https(request))
+    set_pkce_cookie(
+        resp, payload=pkce, use_https=detect_https(request),
+        prefix=_prefix(request),
+    )
     return resp
 
 
@@ -280,8 +313,9 @@ async def auth_callback(
         refresh_token=session.refresh_token,
         access_token_expires_in=expires_in,
         use_https=detect_https(request),
+        prefix=_prefix(request),
     )
-    clear_pkce_cookie(resp)
+    clear_pkce_cookie(resp, prefix=_prefix(request))
     return resp
 
 
@@ -334,9 +368,10 @@ async def auth_logout(request: Request):
         ip=_client_ip(request),
     )
 
-    resp = RedirectResponse(url="/login", status_code=302)
-    clear_session_cookies(resp)
-    clear_pkce_cookie(resp)
+    prefix = _prefix(request)
+    resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
+    clear_session_cookies(resp, prefix=prefix)
+    clear_pkce_cookie(resp, prefix=prefix)
     return resp
 
 

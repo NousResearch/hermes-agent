@@ -105,7 +105,7 @@ def test_full_login_round_trip_unlocks_api_status(gated_app):
     assert r1.status_code == 302
     pkce = next(
         (c for c in r1.headers.get_list("set-cookie")
-         if c.startswith("hermes_session_pkce=")),
+         if "hermes_session_pkce" in c),
         None,
     )
     assert pkce and "HttpOnly" in pkce
@@ -125,8 +125,8 @@ def test_full_login_round_trip_unlocks_api_status(gated_app):
     assert r2.status_code == 302
     assert r2.headers["location"] == "/"
     set_cookies = r2.headers.get_list("set-cookie")
-    assert any(c.startswith("hermes_session_at=") for c in set_cookies)
-    assert any(c.startswith("hermes_session_rt=") for c in set_cookies)
+    assert any("hermes_session_at" in c for c in set_cookies)
+    assert any("hermes_session_rt" in c for c in set_cookies)
 
     # 3) /api/status now succeeds because we're authenticated.
     r3 = gated_app.get("/api/status")

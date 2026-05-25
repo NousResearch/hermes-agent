@@ -3806,24 +3806,13 @@ async def events_ws(ws: WebSocket) -> None:
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 
-    Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
-    no prefix is set / the header is malformed. We deliberately reject
-    anything containing ``..`` or non-printable bytes so a hostile proxy
-    can't inject HTML via the prefix.
+    Thin re-export of :func:`hermes_cli.dashboard_auth.prefix.normalise_prefix`
+    — the single source of truth lives in the dashboard_auth package so
+    the gate middleware, the OAuth routes, the cookie helpers, and the
+    SPA mount all agree on validation rules.
     """
-    if not raw:
-        return ""
-    p = raw.strip()
-    if not p:
-        return ""
-    if not p.startswith("/"):
-        p = "/" + p
-    p = p.rstrip("/")
-    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
-        return ""
-    if len(p) > 64:
-        return ""
-    return p
+    from hermes_cli.dashboard_auth.prefix import normalise_prefix
+    return normalise_prefix(raw)
 
 
 def mount_spa(application: FastAPI):

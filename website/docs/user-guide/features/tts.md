@@ -455,17 +455,104 @@ If your configured provider isn't available, Hermes automatically falls back:
 - **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
 - **Nothing available** → Voice messages pass through with an accurate note to the user
 
+### STT custom command providers
+
+If the STT engine you want isn't natively supported (Doubao ASR, NVIDIA Parakeet, a whisper.cpp build, an open-source SenseVoice CLI, anything else that exposes a shell command), wire it in as a **command-type provider** without writing any Python. Hermes runs your shell command against the audio file and reads back the transcript.
+
+Declare one or more providers under `stt.providers.<name>` and switch between them with `stt.provider: <name>` — same shape as the TTS [command-provider registry](#custom-command-providers), adapted for the input=audio → output=transcript direction.
+
+```yaml
+stt:
+  provider: parakeet                # pick any name under stt.providers
+  providers:
+    parakeet:
+      type: command
+      command: "parakeet-asr --model nvidia/parakeet-tdt-0.6b-v2 --in {input_path} --out {output_path}"
+      format: txt
+      language: en
+      timeout: 300
+
+    whispercpp:
+      type: command
+      command: "whisper-cli -m ~/models/ggml-large-v3.bin -f {input_path} -otxt -of {output_dir}/transcript"
+      format: txt
+
+    sensevoice:
+      type: command
+      command: "sensevoice-cli {input_path} --json | tee {output_path}"
+      format: json
+```
+
+This complements the legacy `HERMES_LOCAL_STT_COMMAND` escape hatch — that env var still works untouched via the built-in `local_command` path. Use `stt.providers.<name>` when you want **multiple** shell-driven STT engines, a name you can pick via `stt.provider`, or anything that needs per-provider `language` / `model` / `timeout`.
+
+#### STT placeholders
+
+Your command template can reference these placeholders. Hermes substitutes them at render time and shell-quotes each value for the surrounding context (bare / single-quoted / double-quoted), so paths with spaces are safe.
+
+| Placeholder       | Meaning                                                              |
+|-------------------|----------------------------------------------------------------------|
+| `{input_path}`    | Absolute path to the input audio file (original location, read-only) |
+| `{output_path}`   | Absolute path the command should write the transcript to             |
+| `{output_dir}`    | Parent directory of `{output_path}` (handy for whisper-style tools)  |
+| `{format}`        | Configured output format: `txt` / `json` / `srt` / `vtt`             |
+| `{language}`      | Configured language code (defaults to `en`)                          |
+| `{model}`         | `stt.providers.<name>.model`, empty when unset                       |
+
+Use `{{` and `}}` for literal braces (handy when embedding JSON snippets in the command).
+
+#### How the transcript is read back
+
+After your command exits successfully:
+
+1. If `{output_path}` exists and is non-empty → Hermes reads it as UTF-8 text.
+2. Otherwise, if the command wrote to stdout → Hermes uses that.
+3. Otherwise → error: "Command STT provider wrote no output file and produced no stdout".
+
+This lets you use the registry for both file-writing CLIs (`whisper-cli`, `parakeet-asr`) and curl-style one-liners that emit transcript to stdout (`curl … | jq -r .text`).
+
+For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `transcript` field. Extracting `.text` from JSON is out of scope for the runner — either configure `format: txt`, or post-process JSON downstream.
+
+#### STT command-provider optional keys
+
+| Key             | Default | Meaning                                                                                              |
+|-----------------|---------|------------------------------------------------------------------------------------------------------|
+| `timeout`       | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
+| `format`        | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
+| `language`      | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
+| `model`         | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
+
+#### STT command-provider behavior notes
+
+- **Built-ins always win.** Declaring `stt.providers.openai: type: command` does NOT override the real OpenAI Whisper handler. The built-in name is short-circuited before the command-provider resolver runs.
+- **Process-tree cleanup.** A command running over `timeout` has its entire process tree killed, not just the shell wrapper. Long-running ASR pipelines that fork model-loading subprocesses are reaped reliably.
+- **Shell-quoting is automatic.** Placeholders inside `'…'` get single-quote-safe escaping; inside `"…"` get `$`/`` ` ``/`"` escaping; outside quotes get `shlex.quote`. Don't pre-quote placeholder values.
+
+#### STT command-provider security
+
+The shell command runs under the same user as Hermes with full filesystem access — same trust model as `tts.providers.<name>: type: command` and `HERMES_LOCAL_STT_COMMAND`. Only declare command providers from sources you trust.
+
 ### Python plugin providers (STT)
 
-For STT engines that aren't built-in (OpenRouter, SenseAudio, Gemini-STT, Deepgram, custom proprietary backends), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 6 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`) — those keep their native implementations and always win on name collision.
+For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 6 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
+
+#### When to pick which (STT)
+
+| Backend has…                                                 | Use                                                              |
+|--------------------------------------------------------------|------------------------------------------------------------------|
+| A single shell command that takes an audio file and emits text | `stt.providers.<name>: type: command` (no Python needed)        |
+| Only the legacy single-command escape hatch is wanted        | `HERMES_LOCAL_STT_COMMAND` env var (preserved for back-compat)  |
+| A Python SDK with no CLI                                     | `register_transcription_provider()` plugin                      |
+| OAuth-refreshing auth, streaming chunks, voice-list metadata | `register_transcription_provider()` plugin                      |
+| A built-in already covers it (`local`, `groq`, `openai`, …)  | Set `stt.provider: <name>` — built-ins are inline               |
 
 #### Resolution order
 
 1. **`stt.provider` is a built-in name** → built-in dispatch. **Always wins.**
-2. **`stt.provider` matches a plugin-registered `TranscriptionProvider`** → plugin dispatch:
+2. **`stt.provider` matches `stt.providers.<name>` with `command:` set** → command-provider runner (see [STT custom command providers](#stt-custom-command-providers)). Wins over a same-name plugin.
+3. **`stt.provider` matches a plugin-registered `TranscriptionProvider`** → plugin dispatch:
    - if the plugin's `is_available()` returns `False` (missing creds or SDK), the call surfaces an unavailability error envelope identifying the plugin — **not** the generic "No STT provider available" message.
    - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and `language` (from `stt.<provider>.language`).
-3. **No match** → "No STT provider available" error.
+4. **No match** → "No STT provider available" error.
 
 #### Per-provider config namespace
 

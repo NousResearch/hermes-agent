@@ -297,7 +297,12 @@ class ImageGenAgent:
         self.backend = os.environ.get("MF_IMAGE_BACKEND", "pollinations").lower()
 
     def is_enabled(self) -> bool:
-        return self.backend != "disabled" and os.environ.get("MF_AUTO_IMAGES", "1") != "0"
+        # Default OFF as of 2026-05: Pollinations free tier now caps at 1
+        # concurrent request per IP and returns HTTP 402 on overflow, which
+        # breaks the campaign-time burst of 6-7 parallel image requests.
+        # User opts back in via MF_AUTO_IMAGES=1 once they have either a
+        # paid Pollinations API key OR we plug in a local SDXL backend.
+        return self.backend != "disabled" and os.environ.get("MF_AUTO_IMAGES", "0") == "1"
 
     def generate(
         self,
@@ -365,13 +370,34 @@ class ImageGenAgent:
 
     def _pollinations_url(self, prompt: str) -> str:
         from urllib.parse import quote
-        # Pollinations: GET-based URL is the image itself; no API call required from
-        # this process. The user's browser fetches it directly when rendering.
         encoded = quote(prompt[:400], safe="")
-        # 768x768 — renders ~30-50% faster than 1024 with no visible quality
-        # loss at dashboard preview sizes. Keeps the user from staring at a
-        # "rendering image…" placeholder.
-        return f"{self.POLLINATIONS_BASE}{encoded}?model=flux&width=768&height=768&nologo=true"
+        # Pollinations changed their access tiers — `flux` now returns HTTP 402
+        # (paid model). `sana` is the only currently-free model and renders in
+        # ~1s. Overridable via MF_POLLINATIONS_MODEL for users with a paid key.
+        import os as _os
+        model = _os.environ.get("MF_POLLINATIONS_MODEL", "sana")
+        # 768x768 is fast and renders well at dashboard preview sizes.
+        url = f"{self.POLLINATIONS_BASE}{encoded}?model={model}&width=768&height=768&nologo=true"
+        # Fire-and-forget prewarm: trigger Pollinations to render+cache this
+        # image in a background thread so by the time the user's browser asks
+        # for it, the response is a fast Cloudflare cache hit. Without this,
+        # the browser's first GET often times out during Pollinations
+        # cold-start (30-90s of Flux compute) while a patient curl eventually
+        # succeeds — producing "image unavailable" in the dashboard for
+        # otherwise-valid URLs.
+        self._prewarm(url)
+        return url
+
+    def _prewarm(self, url: str) -> None:
+        import threading
+        import httpx as _httpx
+        def _ping():
+            try:
+                with _httpx.Client(timeout=180.0) as c:
+                    c.get(url)
+            except Exception:
+                pass
+        threading.Thread(target=_ping, daemon=True).start()
 
 
 class ReviewSafetyAgent:

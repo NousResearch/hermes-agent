@@ -195,7 +195,7 @@
           h("div", { className: "h-8 w-8 rounded-full bg-gradient-to-br from-pink-400 via-red-500 to-yellow-400" }),
           h("span", { className: "text-sm font-semibold" }, brandName)
         ),
-        firstImage ? h("div", { className: "mb-2" }, h(ImageWithFallback, { url: firstImage.url, alt: "post image", aspectRatio: "1/1" })) : null,
+        firstImage && firstImage.url ? h("div", { className: "mb-2" }, h(ImageWithFallback, { url: firstImage.url, alt: "post image", aspectRatio: "1/1" })) : null,
         h("div", { className: "flex gap-3 text-lg mb-1" }, "♡  ◌  ⤴"),
         h("p", { className: "text-sm leading-6 whitespace-pre-wrap" },
           h("span", { className: "font-semibold mr-1" }, brandName),
@@ -204,14 +204,14 @@
       );
     }
     if (channel === "tiktok") {
-      // Stacked layout (no absolute positioning) so the body never overlaps the
-      // image even when Pollinations is slow or fails.
+      // Stacked layout. Only renders the image box when an image URL exists —
+      // avoids permanent "no image" boxes when image gen is disabled.
       return h("div", { className: "rounded-xl border border-midground/20 bg-black text-white p-3 flex flex-col gap-2", style: { maxWidth: "320px" } },
         h("div", { className: "flex items-center gap-2" },
           h("div", { className: "h-6 w-6 rounded-full bg-pink-400/40" }),
           h("span", { className: "text-xs font-semibold" }, brandName)
         ),
-        h(ImageWithFallback, { url: firstImage && firstImage.url, alt: "tiktok thumb", aspectRatio: "9/16" }),
+        firstImage && firstImage.url ? h(ImageWithFallback, { url: firstImage.url, alt: "tiktok thumb", aspectRatio: "9/16" }) : null,
         h("p", { className: "text-sm leading-5 whitespace-pre-wrap" }, body)
       );
     }
@@ -483,6 +483,24 @@
         refresh().catch(() => {});
       }
     }, [campaignRunning, refresh]);
+
+    // Preload all draft images eagerly. Pollinations cold-start (Flux render)
+    // takes 30-90s for a fresh prompt; preloading here kicks off that work in
+    // the background long before the user scrolls to the draft. By the time
+    // the <img> in the draft card actually renders, the image is already
+    // sitting in the browser cache. Fixes the cold-start race that caused
+    // "image unavailable" on otherwise-valid URLs.
+    useEffect(() => {
+      if (!data?.drafts) return;
+      for (const draft of data.drafts) {
+        for (const img of (draft.images || [])) {
+          if (img && img.url) {
+            const pre = new Image();
+            pre.src = img.url;
+          }
+        }
+      }
+    }, [data?.drafts]);
 
     const run = useCallback(async (label, fn) => {
       setBusy(label);

@@ -900,6 +900,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     po_triage.add_argument("--json", action="store_true",
                            help="Emit JSON output")
 
+    po_architect_complete = po_sub.add_parser(
+        "architect-complete",
+        help="Run Slice 6 ArchitectOS spec completion for an existing production order",
+    )
+    po_architect_complete.add_argument(
+        "production_order_id",
+        help="Production order ID in ARCHITECT_SPEC",
+    )
+    po_architect_complete.add_argument("--board", default=None,
+                                       help="Kanban board slug (default: current board)")
+    po_architect_complete.add_argument(
+        "--spec-file",
+        required=True,
+        help="Path to a JSON file containing the ArchitectOS spec packet",
+    )
+    po_architect_complete.add_argument("--json", action="store_true",
+                                       help="Emit JSON output")
+
     return kanban_parser
 
 
@@ -2746,6 +2764,7 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
         get_brief_value,
         list_production_orders,
         log_workflow_event,
+        run_architect_spec_bridge,
         run_full_bridge,
         run_orchestrator_triage_bridge,
         validate_brief,
@@ -2875,6 +2894,58 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
         else:
             print(format_production_order_status(po))
             print("\nSlice 5 triage complete: ArchitectOS handoff attached.")
+        return 0
+
+    if po_action == "architect-complete":
+        po_id = getattr(args, "production_order_id", None)
+        spec_file = getattr(args, "spec_file", None)
+        if not po_id:
+            print(
+                "kanban production-order architect-complete: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not spec_file:
+            print(
+                "kanban production-order architect-complete: --spec-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(spec_file, "r", encoding="utf-8") as f:
+                architect_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order architect-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_architect_spec_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    architect_packet=architect_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order architect-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_dev_os",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nSlice 6 architect completion complete: DevOS handoff attached.")
         return 0
 
     if po_action == "show":

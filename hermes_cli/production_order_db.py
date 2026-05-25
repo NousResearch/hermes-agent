@@ -82,14 +82,19 @@ from hermes_cli import kanban_db as kb
 PRODUCTION_ORDER_FIELD = "production_order_id"
 STATE_FIELD = "current_state"
 WORKFLOW_TEMPLATE_ID = "hermes-production-workflow-v1"
+WORKFLOW_SPEC_SOURCE = (
+    "/Users/jarren/Projects/hermes-workspace/specs/architecture/workflows/"
+    "hermes-production-workflow-v1.md"
+)
 
-# Only Slice 4 + Slice 5 transitions are wired. Remaining transitions become
-# live when each downstream profile uses the state machine.
+# Only implemented runtime bridge transitions are wired. Remaining transitions
+# become live when each downstream profile uses the state machine.
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "BRIEF_DRAFTED":                {"ACTION_APPROVED"},
     "ACTION_APPROVED":              {"PRODUCTION_ORDER_CREATED"},
     "PRODUCTION_ORDER_CREATED":     {"ORCHESTRATOR_TRIAGE"},
     "ORCHESTRATOR_TRIAGE":          {"ARCHITECT_SPEC"},
+    "ARCHITECT_SPEC":               {"ARCHITECT_READY_FOR_DEV"},
 }
 
 STATE_OWNERS: dict[str, str] = {
@@ -98,6 +103,7 @@ STATE_OWNERS: dict[str, str] = {
     "PRODUCTION_ORDER_CREATED":     "orchestrator_os",
     "ORCHESTRATOR_TRIAGE":          "orchestrator_os",
     "ARCHITECT_SPEC":               "architect_os",
+    "ARCHITECT_READY_FOR_DEV":      "dev_os",
 }
 
 WORKFLOW_INITIAL_STATE = "PRODUCTION_ORDER_CREATED"
@@ -120,7 +126,7 @@ ORCHESTRATOR_HANDOFF_TEMPLATE: dict[str, str] = {
     "acceptance_criteria": (
         "Correct workflow path chosen, ArchitectOS card assigned `ready`"
     ),
-    "source_truth": "specs/architecture/workflows/hermes-production-workflow-v1.md",
+    "source_truth": WORKFLOW_SPEC_SOURCE,
     "stop_conditions": (
         "From spec section 12: missing source truth, unclear owner, "
         "ambiguous scope, unapproved external action, approval boundary hit, "
@@ -150,7 +156,7 @@ ARCHITECT_HANDOFF_TEMPLATE: dict[str, str] = {
         "Spec is bounded to the approved brief, preserves non-goals, and "
         "names verification requirements before DevOS implementation"
     ),
-    "source_truth": "specs/architecture/workflows/hermes-production-workflow-v1.md",
+    "source_truth": WORKFLOW_SPEC_SOURCE,
     "stop_conditions": (
         "Missing source truth, ambiguous product behavior, contract/schema "
         "decision not present in the frozen brief, approval boundary hit, "
@@ -192,6 +198,31 @@ BRIEF_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "stop conditions": ("stop_conditions",),
     "approval boundaries": ("approval_boundaries",),
     "expected output": ("expected_output",),
+}
+
+DEVOS_HANDOFF_TEMPLATE: dict[str, Any] = {
+    "from_profile": "architect_os",
+    "to_profile": "dev_os",
+    "current_state": "ARCHITECT_SPEC",
+    "requested_next_state": "ARCHITECT_READY_FOR_DEV",
+    "source_truth": [WORKFLOW_SPEC_SOURCE],
+    "approval_boundaries": [],
+    "artifact_references": [],
+}
+
+REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS = {
+    "production_order_id",
+    "stage",
+    "owner_profile",
+    "objective",
+    "source_truth",
+    "scope",
+    "out_of_scope",
+    "acceptance_criteria",
+    "devos_task",
+    "files_or_areas_allowed",
+    "stop_conditions",
+    "next_state",
 }
 
 # Child card definitions for production Kanban graph (from spec section 7 + feature brief section 8)
@@ -863,6 +894,83 @@ def create_architect_handoff(po: ProductionOrder) -> dict[str, str]:
     return packet
 
 
+def validate_architect_spec_packet(
+    packet: dict[str, Any],
+    *,
+    expected_production_order_id: str,
+) -> dict[str, Any]:
+    """Validate the deterministic ArchitectOS spec-completion packet.
+
+    The runtime does not invent ArchitectOS reasoning. The packet must be
+    provided by the caller and contain the minimum fields required to prepare
+    the DevOS handoff without changing workflow contracts.
+    """
+    if not isinstance(packet, dict):
+        raise ValueError("architect spec packet must be a JSON object")
+
+    missing = sorted(
+        field for field in REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS
+        if field not in packet or packet[field] in (None, "", [], {})
+    )
+    if missing:
+        raise ValueError(
+            "architect spec packet missing required field(s): "
+            + ", ".join(missing)
+        )
+
+    if packet["production_order_id"] != expected_production_order_id:
+        raise ValueError(
+            "architect spec packet production_order_id does not match the "
+            "requested production order"
+        )
+    if str(packet["stage"]).lower() != "architect_spec":
+        raise ValueError("architect spec packet stage must be 'architect_spec'")
+    if packet["owner_profile"] != "architect_os":
+        raise ValueError("architect spec packet owner_profile must be 'architect_os'")
+    if packet["next_state"] != "ARCHITECT_READY_FOR_DEV":
+        raise ValueError(
+            "architect spec packet next_state must be 'ARCHITECT_READY_FOR_DEV'"
+        )
+
+    source_truth = packet["source_truth"]
+    if isinstance(source_truth, str):
+        source_truth_values = {source_truth}
+    else:
+        try:
+            source_truth_values = {str(value) for value in source_truth}
+        except TypeError as exc:
+            raise ValueError(
+                "architect spec packet source_truth must be a string or list"
+            ) from exc
+    if WORKFLOW_SPEC_SOURCE not in source_truth_values:
+        raise ValueError(
+            "architect spec packet source_truth must include the canonical workflow spec: "
+            f"{WORKFLOW_SPEC_SOURCE}"
+        )
+
+    return packet
+
+
+def create_devos_handoff(
+    po: ProductionOrder,
+    architect_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the deterministic DevOS handoff packet from ArchitectOS output."""
+    packet = dict(DEVOS_HANDOFF_TEMPLATE)
+    packet["production_order_id"] = po.production_order_id
+    packet["objective"] = architect_packet["objective"]
+    packet["source_truth"] = architect_packet["source_truth"]
+    packet["scope"] = architect_packet["scope"]
+    packet["out_of_scope"] = architect_packet["out_of_scope"]
+    packet["acceptance_criteria"] = architect_packet["acceptance_criteria"]
+    packet["devos_task"] = architect_packet["devos_task"]
+    packet["allowed_files_or_areas"] = architect_packet["files_or_areas_allowed"]
+    packet["stop_conditions"] = architect_packet["stop_conditions"]
+    packet["approval_boundaries"] = architect_packet.get("approval_boundaries", [])
+    packet["artifact_references"] = architect_packet.get("artifact_references", [])
+    return packet
+
+
 def freeze_handoff_on_card(
     conn: sqlite3.Connection,
     card_id: str,
@@ -1050,6 +1158,103 @@ def run_orchestrator_triage_bridge(
     conn.execute(
         "UPDATE tasks SET status = 'ready' WHERE id = ?",
         (architect_card_id,),
+    )
+
+    return po
+
+
+def run_architect_spec_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    architect_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance ARCHITECT_SPEC → ARCHITECT_READY_FOR_DEV for an existing order.
+
+    Preconditions are deterministic and strict: the existing production order
+    must already be in ARCHITECT_SPEC, be owned by ArchitectOS, retain the
+    existing 6-card Kanban graph, and receive an explicit ArchitectOS packet.
+    The runtime then prepares the DevOS handoff packet and advances ownership
+    to DevOS without creating or duplicating any cards.
+    """
+    matches = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == production_order_id
+    ]
+    if not matches:
+        raise ValueError(f"production order {production_order_id!r} not found")
+    po = matches[0]
+
+    if po.current_state != "ARCHITECT_SPEC":
+        raise StateTransitionError(
+            f"Production order {production_order_id} is in {po.current_state!r}; "
+            "expected 'ARCHITECT_SPEC'"
+        )
+    if po.current_owner_profile != "architect_os":
+        raise StateTransitionError(
+            f"Production order {production_order_id} is owned by "
+            f"{po.current_owner_profile!r}; expected 'architect_os'"
+        )
+    if not po.parent_kanban_card_id:
+        raise ValueError("production order parent Kanban card is missing")
+    if len(po.child_kanban_card_ids) != 6:
+        raise ValueError(
+            f"production order Kanban graph must have 6 child cards; "
+            f"found {len(po.child_kanban_card_ids)}"
+        )
+    if len(set(po.child_kanban_card_ids)) != 6:
+        raise ValueError("production order Kanban graph contains duplicate child card IDs")
+
+    placeholders = ",".join(["?"] * len(po.child_kanban_card_ids))
+    existing_child_count = conn.execute(
+        f"SELECT COUNT(*) AS n FROM tasks WHERE id IN ({placeholders})",
+        tuple(po.child_kanban_card_ids),
+    ).fetchone()["n"]
+    if existing_child_count != 6:
+        raise ValueError(
+            f"production order Kanban graph references {6 - existing_child_count} "
+            "missing child card(s)"
+        )
+
+    packet = validate_architect_spec_packet(
+        architect_packet,
+        expected_production_order_id=production_order_id,
+    )
+    devos_card_id = po.child_kanban_card_ids[2]
+    devos_handoff = create_devos_handoff(po, packet)
+    freeze_handoff_on_card(conn, devos_card_id, devos_handoff)
+
+    transition_state(
+        conn,
+        po,
+        "ARCHITECT_READY_FOR_DEV",
+        "architect_os",
+        result="architect spec completed; DevOS handoff attached",
+        next_action="dispatch_dev_os",
+        card_id=po.parent_kanban_card_id,
+        event_type="architect_spec_completed",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="ARCHITECT_SPEC",
+        to_state="ARCHITECT_READY_FOR_DEV",
+        owner_profile="architect_os",
+        kanban_card_id=devos_card_id,
+        result="DevOS handoff packet attached",
+        next_action="dispatch_dev_os",
+    )
+
+    for cid in po.child_kanban_card_ids:
+        conn.execute(
+            "UPDATE tasks SET current_state = ? WHERE id = ?",
+            (po.current_state, cid),
+        )
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (devos_card_id,),
     )
 
     return po

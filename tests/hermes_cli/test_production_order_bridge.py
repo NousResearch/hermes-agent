@@ -33,12 +33,14 @@ from hermes_cli.production_order_db import (
     PRODUCTION_ORDER_FIELD,
     STATE_FIELD,
     WORKFLOW_INITIAL_STATE,
+    WORKFLOW_SPEC_SOURCE,
     WORKFLOW_TEMPLATE_ID,
     ProductionOrder,
     StageEntry,
     StateTransitionError,
     _base36_random,
     create_architect_handoff,
+    create_devos_handoff,
     create_orchestrator_handoff,
     create_production_kanban_graph,
     create_production_order,
@@ -47,9 +49,11 @@ from hermes_cli.production_order_db import (
     generate_production_order_id,
     list_production_orders,
     log_workflow_event,
+    run_architect_spec_bridge,
     run_full_bridge,
     run_orchestrator_triage_bridge,
     transition_state,
+    validate_architect_spec_packet,
     validate_brief,
     validate_state_transition,
 )
@@ -117,9 +121,39 @@ def snake_case_brief(sample_brief) -> dict:
     }
 
 
+def architect_spec_packet(production_order_id: str) -> dict:
+    """Minimal ArchitectOS result/spec packet for Slice 6 tests."""
+    return {
+        "production_order_id": production_order_id,
+        "stage": "architect_spec",
+        "owner_profile": "architect_os",
+        "objective": "Specify the bounded Slice 6 handoff bridge.",
+        "source_truth": [WORKFLOW_SPEC_SOURCE],
+        "scope": ["Attach a DevOS handoff packet and advance the PO state."],
+        "out_of_scope": ["DevOS implementation execution", "Slice 7"],
+        "acceptance_criteria": [
+            "Production order transitions to ARCHITECT_READY_FOR_DEV.",
+            "Current owner becomes dev_os.",
+        ],
+        "devos_task": "Prepare for implementation from the approved spec; do not execute Slice 7.",
+        "files_or_areas_allowed": [
+            "hermes_cli/production_order_db.py",
+            "hermes_cli/kanban.py",
+            "tests/hermes_cli/test_production_order_bridge.py",
+        ],
+        "stop_conditions": [
+            "Production order is not in ARCHITECT_SPEC.",
+            "Current owner is not architect_os.",
+        ],
+        "approval_boundaries": ["Do not trigger DevOS execution in Slice 6."],
+        "artifact_references": ["architect-spec.json"],
+        "next_state": "ARCHITECT_READY_FOR_DEV",
+    }
+
 # ---------------------------------------------------------------------------
 # Production Order ID Generation
 # ---------------------------------------------------------------------------
+
 
 
 def test_production_order_id_format():
@@ -327,7 +361,7 @@ def test_workflow_template_id_set(conn, sample_brief):
 
 
 def test_valid_state_transitions():
-    """3 allowed transitions pass validation."""
+    """Wired production workflow transitions pass validation."""
     # BRIEF_DRAFTED -> ACTION_APPROVED
     assert validate_state_transition("BRIEF_DRAFTED", "ACTION_APPROVED", "hermes")
     # ACTION_APPROVED -> PRODUCTION_ORDER_CREATED
@@ -336,6 +370,8 @@ def test_valid_state_transitions():
     assert validate_state_transition("PRODUCTION_ORDER_CREATED", "ORCHESTRATOR_TRIAGE", "orchestrator_os")
     # ORCHESTRATOR_TRIAGE -> ARCHITECT_SPEC
     assert validate_state_transition("ORCHESTRATOR_TRIAGE", "ARCHITECT_SPEC", "orchestrator_os")
+    # ARCHITECT_SPEC -> ARCHITECT_READY_FOR_DEV
+    assert validate_state_transition("ARCHITECT_SPEC", "ARCHITECT_READY_FOR_DEV", "architect_os")
 
 
 def test_invalid_state_transition_rejected():
@@ -774,6 +810,182 @@ def test_architect_handoff_uses_frozen_brief_metadata(conn, sample_brief):
     assert handoff["scope"] == sample_brief["scope"]
     assert handoff["out_of_scope"] == sample_brief["out of scope"]
     assert sample_brief["target repo or workspace"] in handoff["inputs"]
+
+
+def test_validate_architect_spec_packet_accepts_minimal_packet():
+    """Slice 6 packet accepts explicit canonical workflow source truth."""
+    packet = architect_spec_packet("PO-20260525-test")
+
+    validated = validate_architect_spec_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+    )
+
+    assert validated is packet
+
+
+def test_validate_architect_spec_packet_rejects_missing_required_field():
+    """Slice 6 requires a complete ArchitectOS packet; runtime cannot invent it."""
+    packet = architect_spec_packet("PO-20260525-test")
+    packet.pop("devos_task")
+
+    with pytest.raises(ValueError, match="devos_task"):
+        validate_architect_spec_packet(
+            packet,
+            expected_production_order_id="PO-20260525-test",
+        )
+
+
+def test_validate_architect_spec_packet_rejects_wrong_source_truth():
+    """ArchitectOS packet must cite the canonical workspace workflow spec."""
+    packet = architect_spec_packet("PO-20260525-test")
+    packet["source_truth"] = [
+        "specs/architecture/workflows/hermes-production-workflow-v1.md"
+    ]
+
+    with pytest.raises(ValueError, match="canonical workflow spec"):
+        validate_architect_spec_packet(
+            packet,
+            expected_production_order_id="PO-20260525-test",
+        )
+
+
+def test_create_devos_handoff_from_architect_packet(conn, sample_brief):
+    """DevOS handoff packet preserves ArchitectOS packet boundaries."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    packet = architect_spec_packet(po.production_order_id)
+
+    handoff = create_devos_handoff(po, packet)
+
+    assert handoff["production_order_id"] == po.production_order_id
+    assert handoff["current_state"] == "ARCHITECT_SPEC"
+    assert handoff["requested_next_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert handoff["from_profile"] == "architect_os"
+    assert handoff["to_profile"] == "dev_os"
+    assert handoff["devos_task"] == packet["devos_task"]
+    assert handoff["allowed_files_or_areas"] == packet["files_or_areas_allowed"]
+    assert handoff["approval_boundaries"] == packet["approval_boundaries"]
+    assert handoff["artifact_references"] == packet["artifact_references"]
+
+
+def test_architect_spec_bridge_moves_existing_order_to_ready_for_dev(conn, sample_brief):
+    """Slice 6 advances an existing ARCHITECT_SPEC PO and preserves its graph."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    po = run_orchestrator_triage_bridge(conn, production_order_id=po.production_order_id)
+    original_parent_id = po.parent_kanban_card_id
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_architect_spec_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        architect_packet=architect_spec_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "ARCHITECT_READY_FOR_DEV"
+    assert completed.current_owner_profile == "dev_os"
+    assert completed.parent_kanban_card_id == original_parent_id
+    assert completed.child_kanban_card_ids == original_child_ids
+    assert len(completed.child_kanban_card_ids) == 6
+    assert completed.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert any(
+        s.from_state == "ARCHITECT_SPEC" and s.to_state == "ARCHITECT_READY_FOR_DEV"
+        for s in completed.stage_history
+    )
+
+    link_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (completed.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert link_count == 6
+
+    devos_card = kb.get_task(conn, original_child_ids[2])
+    assert devos_card is not None
+    assert devos_card.status == "ready"
+    assert devos_card.body is not None
+    assert "--- HANDOFF PACKET ---" in devos_card.body
+    assert '\"to_profile\": \"dev_os\"' in devos_card.body
+    assert "Prepare for implementation from the approved spec" in devos_card.body
+
+    events = conn.execute(
+        "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events] == [
+        "brief_approved",
+        "production_order_created",
+        "kanban_graph_created",
+        "state_transitioned",
+        "handoff_created",
+        "orchestrator_triage_completed",
+        "handoff_created",
+        "architect_spec_completed",
+        "handoff_created",
+    ]
+    assert events[-2]["from_state"] == "ARCHITECT_SPEC"
+    assert events[-2]["to_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert events[-2]["owner_profile"] == "architect_os"
+
+
+def test_architect_spec_bridge_rejects_wrong_state(conn, sample_brief):
+    """Slice 6 refuses to skip OrchestratorOS triage / ArchitectOS spec ownership."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    with pytest.raises(StateTransitionError, match="expected 'ARCHITECT_SPEC'"):
+        run_architect_spec_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+            architect_packet=architect_spec_packet(po.production_order_id),
+        )
+
+
+def test_cli_architect_complete_json(capsys, conn, tmp_path, sample_brief):
+    """CLI architect-complete consumes a JSON spec packet and emits strict JSON."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    po = run_orchestrator_triage_bridge(conn, production_order_id=po.production_order_id)
+    packet_path = tmp_path / "architect-packet.json"
+    packet_path.write_text(json.dumps(architect_spec_packet(po.production_order_id)), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="architect-complete",
+        production_order_id=po.production_order_id,
+        board=None,
+        spec_file=str(packet_path),
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["production_order_id"] == po.production_order_id
+    assert parsed["current_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert parsed["current_owner_profile"] == "dev_os"
+    assert parsed["child_card_ids"] == po.child_kanban_card_ids
+    assert "Slice 6" not in captured.out
 
 
 # ---------------------------------------------------------------------------

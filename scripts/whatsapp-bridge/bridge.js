@@ -603,6 +603,9 @@ app.post('/send-media', async (req, res) => {
       case 'video':
         msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
         break;
+      case 'sticker':
+        msgPayload = { sticker: buffer, mimetype: MIME_MAP[ext] || 'image/webp' };
+        break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
         // If the caller passes mp3, wav, m4a etc. (e.g. from Edge TTS / NeuTTS),

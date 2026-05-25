@@ -1612,6 +1612,29 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     return True
 
 
+def _agent_result_get(agent_result: Any, key: str, default: Any = None) -> Any:
+    """Read a value from an agent result only when it is mapping-like."""
+    if not isinstance(agent_result, dict):
+        return default
+    return agent_result.get(key, default)
+
+
+def _messages_from_agent_result(agent_result: Any, fallback_history: list) -> list:
+    """Return conversation messages from a gateway agent result.
+
+    Queued gateway turns normally receive a dict from ``_run_agent()``, but
+    defensive callers may also see platform delivery objects such as
+    ``SendResult``.  Those objects intentionally expose attributes rather than a
+    mapping API, so accessing ``.get(\"messages\")`` on them crashes the queue
+    drain path.  Fall back to the history we already have unless the result is a
+    mapping with an explicit ``messages`` value.
+    """
+    messages = _agent_result_get(agent_result, "messages")
+    if isinstance(messages, list):
+        return messages
+    return fallback_history
+
+
 def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
@@ -17500,7 +17523,7 @@ class GatewayRunner:
             # MCP reinit → same 400 → loop, burning 91% CPU for hours.
             _agent = agent_holder[0]
             _result_for_fb = result_holder[0]
-            _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
+            _run_failed = _agent_result_get(_result_for_fb, "failed", False) if _result_for_fb else False
             if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
                 _cfg_model = _resolve_gateway_model()
                 if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
@@ -17604,7 +17627,7 @@ class GatewayRunner:
                         adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}
 
-                was_interrupted = result.get("interrupted")
+                was_interrupted = _agent_result_get(result, "interrupted")
                 if not was_interrupted:
                     # Queued message after normal completion — deliver the first
                     # response before processing the queued follow-up.
@@ -17621,13 +17644,13 @@ class GatewayRunner:
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
-                    _previewed = bool(result.get("response_previewed"))
+                    _previewed = bool(_agent_result_get(result, "response_previewed"))
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
                         or _previewed
                         or (_sc and getattr(_sc, "final_content_delivered", False))
                     )
-                    first_response = result.get("final_response", "")
+                    first_response = _agent_result_get(result, "final_response", "")
                     if first_response and not _already_streamed:
                         try:
                             logger.info(
@@ -17675,7 +17698,7 @@ class GatewayRunner:
                 # interrupted." is just noise; the user already knows they sent a
                 # new message).
 
-                updated_history = result.get("messages", history)
+                updated_history = _messages_from_agent_result(result, history)
                 next_source = source
                 next_message = pending
                 next_message_id = None

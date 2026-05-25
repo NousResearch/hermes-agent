@@ -2070,7 +2070,7 @@ def test_complete_never_claimed_task_synthesizes_run(kanban_home):
 
 
 def test_complete_enforce_review_redirects_worktree(kanban_home):
-    """Worker completions on worktree tasks route to blocked review."""
+    """Worker completions on worktree tasks route to the Review column."""
     conn = kb.connect()
     try:
         tid = kb.create_task(
@@ -2090,9 +2090,9 @@ def test_complete_enforce_review_redirects_worktree(kanban_home):
         )
         assert ok is True
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
+        assert task.status == "review"
         run = kb.latest_run(conn, tid)
-        assert run.outcome == "blocked"
+        assert run.outcome == "submitted_for_review"
         assert run.summary == "fixed null deref"
         assert run.metadata == {"changed_files": ["main.py"]}
         evts = [

@@ -231,6 +231,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     # the env var and write to ~/.hermes/kanban.db.
     "kanban_complete",
     "kanban_block",
+    "kanban_request_changes",
     "kanban_comment",
     "kanban_heartbeat",
     "kanban_show",

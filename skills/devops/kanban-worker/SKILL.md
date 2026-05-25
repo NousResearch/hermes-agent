@@ -1,7 +1,7 @@
 ---
 name: kanban-worker
 description: Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper detail on specific scenarios.
-version: 2.0.0
+version: 2.0.1
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -47,28 +47,23 @@ kanban_complete(
 )
 ```
 
-**Coding task that needs human review (review-required):**
+**Coding task on worktree/dir (default SDLC handoff):**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+Call `kanban_complete` with full handoff in `summary` + `metadata`. The kernel routes the card to the **Review** column. Load `sdlc-review` for the automated pass; humans merge after `review-required:` block.
 
 ```python
-import json
-
-kanban_comment(
-    body="review-required handoff:\n" + json.dumps({
+kanban_complete(
+    summary="shipped rate limiter — 14/14 tests, PR #42 open",
+    metadata={
         "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
         "tests_run": 14,
         "tests_passed": 14,
-        "diff_path": "/path/to/worktree",  # or PR url if pushed
-        "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
-    }, indent=2),
-)
-kanban_block(
-    reason="review-required: rate limiter shipped, 14/14 tests pass — needs eyes on the user_id/IP fallback choice before merging",
+        "pr": "https://github.com/org/repo/pull/42",
+    },
 )
 ```
 
-Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
+Scratch tasks complete to `done` normally. Review agents (`HERMES_KANBAN_REVIEW=1`): see `sdlc-review` — use `kanban_block(review-required:...)` or `kanban_request_changes`, never `kanban_complete`.
 
 **Research task:**
 ```python
@@ -78,21 +73,6 @@ kanban_complete(
         "sources_read": 12,
         "recommendation": "vLLM",
         "benchmarks": {"vllm": 1.0, "sglang": 0.87, "trtllm": 0.72},
-    },
-)
-```
-
-**Review task:**
-```python
-kanban_complete(
-    summary="reviewed PR #123; 2 blocking issues found (SQL injection in /search, missing CSRF on /settings)",
-    metadata={
-        "pr_number": 123,
-        "findings": [
-            {"severity": "critical", "file": "api/search.py", "line": 42, "issue": "raw SQL concat"},
-            {"severity": "high", "file": "api/settings.py", "issue": "missing CSRF middleware"},
-        ],
-        "approved": False,
     },
 )
 ```
@@ -189,3 +169,7 @@ Every tool has a CLI equivalent for human operators and scripts:
 - etc.
 
 Use the tools from inside an agent; the CLI exists for the human at the terminal.
+
+## Reference
+
+- `references/kanban-review-column.md` — Review column vs Blocked `review-required` vs separate reviewer task; SDLC flow and config knobs

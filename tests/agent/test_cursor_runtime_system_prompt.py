@@ -101,7 +101,8 @@ def test_run_cursor_sdk_turn_injects_kanban_guidance_first_turn_only(
 
     assert len(captured) == 2
     assert "Kanban task execution protocol" in captured[0]
-    assert "review-required:" in captured[0]
+    assert "Review" in captured[0]
+    assert "status = review" in captured[0]
     assert "work kanban task t_fake" in captured[0]
     assert captured[1] == "continue please"
     assert "Kanban task execution protocol" not in captured[1]

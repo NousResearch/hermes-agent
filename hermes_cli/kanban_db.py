@@ -2787,17 +2787,16 @@ def _redirect_worker_completion_to_review(
     verified_cards: list[str],
     expected_run_id: Optional[int],
 ) -> bool:
-    """Finish a worker run as ``blocked`` with a review-required reason."""
+    """Finish an implementer run in the Review column for automated SDLC review."""
     handoff_summary = summary if summary is not None else result
     reason_line = (handoff_summary or "worker finished").strip().splitlines()[0][:200]
-    block_reason = f"review-required: {reason_line}"
 
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'blocked',
+                   SET status       = 'review',
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL
@@ -2810,7 +2809,7 @@ def _redirect_worker_completion_to_review(
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'blocked',
+                   SET status       = 'review',
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL
@@ -2825,8 +2824,8 @@ def _redirect_worker_completion_to_review(
         run_id = _end_run(
             conn,
             task_id,
-            outcome="blocked",
-            status="blocked",
+            outcome="submitted_for_review",
+            status="submitted_for_review",
             summary=handoff_summary,
             metadata=metadata,
         )
@@ -2834,12 +2833,11 @@ def _redirect_worker_completion_to_review(
             run_id = _synthesize_ended_run(
                 conn,
                 task_id,
-                outcome="blocked",
+                outcome="submitted_for_review",
                 summary=handoff_summary,
                 metadata=metadata,
             )
         redirect_payload: dict = {
-            "block_reason": block_reason,
             "summary": reason_line or None,
         }
         if verified_cards:
@@ -2854,8 +2852,8 @@ def _redirect_worker_completion_to_review(
         _append_event(
             conn,
             task_id,
-            "blocked",
-            {"reason": block_reason},
+            "status",
+            {"status": "review"},
             run_id=run_id,
         )
     _clear_failure_counter(conn, task_id)
@@ -3238,6 +3236,68 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        return True
+
+
+def return_task_to_ready(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """Transition ``running -> ready`` (e.g. review agent requests changes)."""
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'ready',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                """,
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'ready',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                """,
+                (task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="changes_requested",
+            status="changes_requested",
+            summary=reason,
+        )
+        if run_id is None and reason:
+            run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="changes_requested",
+                summary=reason,
+            )
+        _append_event(
+            conn,
+            task_id,
+            "changes_requested",
+            {"reason": reason} if reason else None,
+            run_id=run_id,
+        )
         return True
 
 
@@ -5245,8 +5305,8 @@ def dispatch_once(
     # ---- review column dispatch ----
     # Review tasks are tasks that a worker moved to 'review' after
     # creating a PR.  The dispatcher spawns a review agent (loading
-    # sdlc-review skill) that verifies the PR and either merges (→ done)
-    # or rejects (→ back to running for the worker to fix).
+    # sdlc-review skill) that verifies the PR and either blocks with
+    # review-required (human sign-off) or returns the card to ready.
     #
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
@@ -5632,6 +5692,8 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    if task.skills and "sdlc-review" in task.skills:
+        env["HERMES_KANBAN_REVIEW"] = "1"
     if os.path.isdir(workspace):
         env["TERMINAL_CWD"] = workspace
         env["HERMES_CURSOR_AUX_CWD"] = workspace

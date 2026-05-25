@@ -216,7 +216,8 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     if os.environ.get("HERMES_KANBAN_TASK"):
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
-            "must use kanban_complete, kanban_block, kanban_heartbeat, or "
+            "must use kanban_complete, kanban_block, kanban_request_changes, "
+            "kanban_heartbeat, or "
             "kanban_comment for their assigned task."
         )
     return None
@@ -460,6 +461,13 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             "provide at least one of: summary (preferred), result"
         )
+    if os.environ.get("HERMES_KANBAN_REVIEW") == "1":
+        return tool_error(
+            "Review agents cannot kanban_complete to done. Post findings via "
+            "kanban_comment, then kanban_block(reason='review-required: ...') "
+            "for human sign-off or kanban_request_changes(...) to send the "
+            "card back to ready for the implementer."
+        )
     if metadata is not None and not isinstance(metadata, dict):
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
@@ -505,16 +513,16 @@ def _handle_complete(args: dict, **kw) -> str:
                 )
             run = kb.latest_run(conn, tid)
             task = kb.get_task(conn, tid)
-            if task and task.status == "blocked":
+            if task and task.status == "review":
                 return _ok(
                     task_id=tid,
                     run_id=run.id if run else None,
-                    status="blocked",
-                    review_required=True,
+                    status="review",
+                    submitted_for_review=True,
                     message=(
-                        "Task blocked for human review instead of completing. "
-                        "A reviewer can approve via the dashboard (unblock) or "
-                        "move to done after inspection."
+                        "Implementation handoff submitted to the Review column. "
+                        "An automated review agent will verify the work; humans "
+                        "approve after review-required block."
                     ),
                 )
             return _ok(task_id=tid, run_id=run.id if run else None)
@@ -563,6 +571,54 @@ def _handle_block(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_block failed")
         return tool_error(f"kanban_block: {e}")
+
+
+def _handle_request_changes(args: dict, **kw) -> str:
+    """Send the task back to ready after a review run (changes needed)."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error(
+            "reason is required — list concrete, actionable fixes for the implementer"
+        )
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.return_task_to_ready(
+                conn, tid,
+                reason=str(reason).strip(),
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(
+                    f"could not return {tid} to ready "
+                    f"(unknown id or not in running)"
+                )
+            run = kb.latest_run(conn, tid)
+            return _ok(
+                task_id=tid,
+                run_id=run.id if run else None,
+                status="ready",
+                message=(
+                    "Task returned to ready for the implementer. "
+                    "Post the fix list via kanban_comment before calling this."
+                ),
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_request_changes: {e}")
+    except Exception as e:
+        logger.exception("kanban_request_changes failed")
+        return tool_error(f"kanban_request_changes: {e}")
 
 
 def _handle_heartbeat(args: dict, **kw) -> str:
@@ -858,8 +914,8 @@ KANBAN_LIST_SCHEMA = {
             "status": {
                 "type": "string",
                 "enum": [
-                    "triage", "todo", "ready", "running",
-                    "blocked", "done", "archived",
+                    "triage", "todo", "scheduled", "ready", "running",
+                    "blocked", "review", "done", "archived",
                 ],
                 "description": "Optional task status filter.",
             },
@@ -890,10 +946,11 @@ KANBAN_COMPLETE_SCHEMA = {
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
         "``summary`` or ``result`` is required. On ``worktree`` / ``dir`` "
-        "tasks the kernel redirects this call to ``blocked`` with a "
-        "``review-required:`` reason so a human can approve before "
-        "the card reaches ``done`` — pass the full handoff here and "
-        "the reviewer will see it on the run row. For genuinely "
+        "tasks the kernel redirects this call to the Review column "
+        "(``status = review``) for an automated SDLC review pass — pass "
+        "the full handoff here (changed files, tests, PR URL in "
+        "``metadata``). After review, humans approve via "
+        "``review-required:`` block. For genuinely "
         "terminal scratch tasks (research writeups, pure decomposition), "
         "``kanban_complete`` completes normally. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
@@ -1002,6 +1059,35 @@ KANBAN_BLOCK_SCHEMA = {
                     "What you need answered, in one or two sentences. "
                     "Don't paste the whole conversation; the human has "
                     "the board and can ask follow-ups via comments."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["reason"],
+    },
+}
+
+KANBAN_REQUEST_CHANGES_SCHEMA = {
+    "name": "kanban_request_changes",
+    "description": (
+        "Return the current task to ``ready`` after an automated review run "
+        "when changes are needed. Post a structured comment with the fix "
+        "list first, then call this with a short reason. Review agents use "
+        "this instead of implementing fixes themselves. Do not use from "
+        "implementer runs — use ``kanban_complete`` to submit to Review."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One-line summary of what must change (details belong "
+                    "in a kanban_comment)."
                 ),
             },
             "board": _board_schema_prop(),
@@ -1271,6 +1357,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_request_changes",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_CHANGES_SCHEMA,
+    handler=_handle_request_changes,
+    check_fn=_check_kanban_mode,
+    emoji="↩",
 )
 
 registry.register(

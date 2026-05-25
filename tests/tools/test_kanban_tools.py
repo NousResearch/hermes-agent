@@ -55,8 +55,8 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_show", "kanban_complete", "kanban_block", "kanban_request_changes",
+        "kanban_heartbeat", "kanban_comment", "kanban_create", "kanban_link",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -135,8 +135,8 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_list",
-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_show", "kanban_complete", "kanban_block", "kanban_request_changes",
+        "kanban_heartbeat", "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -311,8 +311,8 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
-def test_complete_worktree_redirects_to_review_blocked(worker_env):
-    """Worktree/dir tasks must land in blocked (review-required), not done."""
+def test_complete_worktree_redirects_to_review_column(worker_env):
+    """Worktree/dir tasks must land in review, not done."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
@@ -332,21 +332,58 @@ def test_complete_worktree_redirects_to_review_blocked(worker_env):
     })
     d = json.loads(out)
     assert d["ok"] is True
-    assert d["review_required"] is True
-    assert d["status"] == "blocked"
+    assert d["submitted_for_review"] is True
+    assert d["status"] == "review"
 
     conn = kb.connect()
     try:
         task = kb.get_task(conn, worker_env)
-        assert task.status == "blocked"
+        assert task.status == "review"
         run = kb.latest_run(conn, worker_env)
-        assert run.outcome == "blocked"
+        assert run.outcome == "submitted_for_review"
         assert run.summary == "shipped rate limiter"
         assert run.metadata == {"changed_files": ["api/limit.py"], "tests_run": 14}
         events = [e for e in kb.list_events(conn, worker_env)
                   if e.kind == "completion_redirected_to_review"]
         assert len(events) == 1
-        assert events[0].payload["block_reason"].startswith("review-required:")
+        assert events[0].payload["summary"] == "shipped rate limiter"
+    finally:
+        conn.close()
+
+
+def test_review_agent_cannot_kanban_complete(worker_env, monkeypatch):
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_REVIEW", "1")
+    out = kt._handle_complete({"summary": "trying to finish review"})
+    d = json.loads(out)
+    assert "error" in d
+    assert "Review agents cannot kanban_complete" in d["error"]
+
+
+def test_request_changes_returns_task_to_ready(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        kb.claim_task(conn, worker_env)
+    finally:
+        conn.close()
+
+    out = kt._handle_request_changes({
+        "reason": "missing unit tests for edge case",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "ready"
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "ready"
+        run = kb.latest_run(conn, worker_env)
+        assert run.outcome == "changes_requested"
     finally:
         conn.close()
 

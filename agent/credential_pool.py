@@ -249,6 +249,16 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
         return float(sec_match.group(1))
+    # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits
+    hr_min_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\s+(\d+)\s*min", message, re.IGNORECASE)
+    if hr_min_match:
+        return int(hr_min_match.group(1)) * 3600 + int(hr_min_match.group(2)) * 60
+    hr_only_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\b", message, re.IGNORECASE)
+    if hr_only_match:
+        return int(hr_only_match.group(1)) * 3600
+    min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
+    if min_only_match:
+        return int(min_only_match.group(1)) * 60
     return None
 
 
@@ -1265,9 +1275,21 @@ class CredentialPool:
         *,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        api_key_hint: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
-            entry = self.current() or self._select_unlocked()
+            entry = None
+            if api_key_hint:
+                # Prefer the specific entry whose API key matches the one that
+                # actually failed.  When this pool was freshly loaded from disk
+                # (another process already rotated), current() is None and
+                # _select_unlocked() would return the NEXT key — the wrong one.
+                entry = next(
+                    (e for e in self._entries if e.runtime_api_key == api_key_hint),
+                    None,
+                )
+            if entry is None:
+                entry = self.current() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]

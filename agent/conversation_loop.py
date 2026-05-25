@@ -65,7 +65,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
-from hermes_constants import display_hermes_home as _dhh_fn
+from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.schema_sanitizer import strip_pattern_and_format
 from tools.skill_provenance import set_current_write_origin
@@ -227,6 +227,37 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "miss the prefix cache.",
                 agent.session_id, exc,
             )
+
+
+def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
+    if is_partial_stub and dropped_tools:
+        tool_list = ", ".join(dropped_tools[:3])
+        return (
+            "[System: Your previous tool call "
+            f"({tool_list}) was too large and "
+            "the stream timed out before it "
+            "could be delivered. Do NOT retry "
+            "the same tool call with the same "
+            "large content. Instead, break the "
+            "content into multiple smaller tool "
+            "calls (e.g. use multiple patch calls "
+            "or write smaller files). Each tool "
+            "call's arguments must be under ~8K "
+            "tokens to avoid stream timeouts.]"
+        )
+    elif is_partial_stub:
+        return (
+            "[System: The previous response was cut off by a "
+            "network error mid-stream. Continue exactly where "
+            "you left off. Do not restart or repeat prior text. "
+            "Finish the answer directly.]"
+        )
+    else:
+        return (
+            "[System: Your previous response was truncated by the output "
+            "length limit. Continue exactly where you left off. Do not "
+            "restart or repeat prior text. Finish the answer directly.]"
+        )
 
 
 def run_conversation(
@@ -1414,7 +1445,7 @@ def run_conversation(
                         finish_reason = "length"
 
                 if finish_reason == "length":
-                    if getattr(response, "id", "") == "partial-stream-stub":
+                    if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Stream interrupted by network error "
                             f"(finish_reason='length' on partial-stream-stub)",
@@ -1518,37 +1549,36 @@ def run_conversation(
                                 truncated_response_parts.append(assistant_message.content)
 
                             if length_continue_retries < 3:
-                                # Distinguish a real output-token truncation
-                                # from a partial-stream-stub network error
-                                # (#30963).  Same continuation machinery,
-                                # but the prompt has to tell the truth or
-                                # the model goes off rails ("I wasn't
-                                # truncated, I'm done").
                                 _is_partial_stream_stub = (
-                                    getattr(response, "id", "") == "partial-stream-stub"
+                                    getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                                 )
-                                if _is_partial_stream_stub:
+                                _dropped_tools = getattr(
+                                    response, "_dropped_tool_names", None
+                                )
+
+                                if _is_partial_stream_stub and _dropped_tools:
+                                    _tool_list = ", ".join(_dropped_tools[:3])
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Stream interrupted mid "
+                                        f"tool-call ({_tool_list}) — requesting "
+                                        f"chunked retry "
+                                        f"({length_continue_retries}/3)..."
+                                    )
+                                elif _is_partial_stream_stub:
                                     agent._vprint(
                                         f"{agent.log_prefix}↻ Stream interrupted — "
                                         f"requesting continuation "
                                         f"({length_continue_retries}/3)..."
-                                    )
-                                    _continue_content = (
-                                        "[System: The previous response was cut off by a "
-                                        "network error mid-stream. Continue exactly where "
-                                        "you left off. Do not restart or repeat prior text. "
-                                        "Finish the answer directly.]"
                                     )
                                 else:
                                     agent._vprint(
                                         f"{agent.log_prefix}↻ Requesting continuation "
                                         f"({length_continue_retries}/3)..."
                                     )
-                                    _continue_content = (
-                                        "[System: Your previous response was truncated by the output "
-                                        "length limit. Continue exactly where you left off. Do not "
-                                        "restart or repeat prior text. Finish the answer directly.]"
-                                    )
+
+                                _continue_content = _get_continuation_prompt(
+                                    _is_partial_stream_stub, _dropped_tools
+                                )
                                 continue_msg = {
                                     "role": "user",
                                     "content": _continue_content,
@@ -2859,15 +2889,26 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors
                     if classified.is_auth or classified.reason == FailoverReason.billing:
-                        if _provider in {"openai-codex", "xai-oauth"} and status_code == 401:
+                        if _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
                             if _provider == "openai-codex":
                                 agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 agent._vprint(f"{agent.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
                                 agent._vprint(f"{agent.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
                                 agent._vprint(f"{agent.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
-                            else:
+                            elif _provider == "xai-oauth":
                                 agent._vprint(f"{agent.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
                                 agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.", force=True)
+                            else:  # nous
+                                agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
+                                agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)
+                                agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: hermes auth add nous --type oauth", force=True)
+                                agent._vprint(f"{agent.log_prefix}      2. Check your portal account: https://portal.nousresearch.com", force=True)
+                                # ``:free`` is OpenRouter slug syntax; Nous Portal will reject
+                                # the model name even after a successful re-auth.
+                                if isinstance(_model, str) and _model.endswith(":free"):
+                                    agent._vprint(f"{agent.log_prefix}      ⚠️  Note: `{_model}` looks like an OpenRouter slug (`:free` suffix).", force=True)
+                                    agent._vprint(f"{agent.log_prefix}         Nous Portal won't recognize that model name. Either switch to a", force=True)
+                                    agent._vprint(f"{agent.log_prefix}         Nous catalog model, or run `/model openrouter:{_model}` to use OpenRouter.", force=True)
                         else:
                             agent._vprint(f"{agent.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Is the key valid? Run: hermes setup", force=True)

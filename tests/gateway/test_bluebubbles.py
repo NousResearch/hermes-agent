@@ -416,6 +416,207 @@ class TestBlueBubblesAttachmentDownload:
         )
         assert result is None
 
+    def test_force_download_fallback_on_500(self, monkeypatch):
+        """Regular /download fails + private API enabled → /download/force is tried."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        called_urls = []
+
+        class FailingResponse:
+            status_code = 500
+
+            def raise_for_status(self):
+                raise httpx.HTTPError("500 Server Error")
+
+        class SuccessResponse:
+            status_code = 200
+            content = b"\x89PNG\r\n\x1a\nforced"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            called_urls.append(url)
+            if "/download/force" in url:
+                return SuccessResponse()
+            return FailingResponse()
+
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+
+        cached = {}
+
+        def mock_cache_image(data, ext):
+            cached["data"] = data
+            cached["ext"] = ext
+            return f"/tmp/forced{ext}"
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            mock_cache_image,
+        )
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment(
+                "att-guid-force", {"mimeType": "image/png"}
+            )
+        )
+
+        assert result == "/tmp/forced.png"
+        assert cached["data"] == b"\x89PNG\r\n\x1a\nforced"
+        assert len(called_urls) == 2
+        assert "/download/force" not in called_urls[0]
+        assert "/download/force" in called_urls[1]
+
+    def test_force_download_not_tried_on_normal_success(self, monkeypatch):
+        """Normal /download succeeds → /download/force is NOT called."""
+        adapter = _make_adapter(monkeypatch)
+        import asyncio
+
+        called_urls = []
+
+        class SuccessResponse:
+            status_code = 200
+            content = b"ok-bytes"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            called_urls.append(url)
+            return SuccessResponse()
+
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            lambda data, ext: f"/tmp/normal{ext}",
+        )
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment("att-guid", {"mimeType": "image/png"})
+        )
+
+        assert result == "/tmp/normal.png"
+        assert len(called_urls) == 1
+        assert "/download/force" not in called_urls[0]
+
+    def test_both_downloads_fail_returns_none(self, monkeypatch):
+        """Both /download and /download/force fail → returns None, no crash."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        called_urls = []
+
+        class FailingResponse:
+            status_code = 500
+
+            def raise_for_status(self):
+                raise httpx.HTTPError("500 Server Error")
+
+        async def mock_get(url, **kwargs):
+            called_urls.append(url)
+            return FailingResponse()
+
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment("att-guid", {"mimeType": "image/png"})
+        )
+
+        assert result is None
+        assert len(called_urls) == 2
+        assert "/download/force" in called_urls[1]
+
+    def test_force_download_skipped_when_private_api_disabled(self, monkeypatch):
+        """Regular /download fails + private API disabled → no fallback call."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = False
+        import asyncio
+        import httpx
+
+        called_urls = []
+
+        class FailingResponse:
+            status_code = 500
+
+            def raise_for_status(self):
+                raise httpx.HTTPError("500 Server Error")
+
+        async def mock_get(url, **kwargs):
+            called_urls.append(url)
+            return FailingResponse()
+
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment("att-guid", {"mimeType": "image/png"})
+        )
+
+        assert result is None
+        assert len(called_urls) == 1
+        assert "/download/force" not in called_urls[0]
+
+    def test_force_download_uses_longer_timeout(self, monkeypatch):
+        """Force endpoint uses ≥600s timeout for iCloud poll window."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        captured_timeouts = []
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        class SuccessResponse:
+            content = b"forced"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            captured_timeouts.append((url, kwargs.get("timeout")))
+            if "/download/force" in url:
+                return SuccessResponse()
+            return FailingResponse()
+
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_document_from_bytes",
+            lambda data, filename: f"/tmp/{filename}",
+        )
+
+        asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment(
+                "att-guid", {"mimeType": "application/pdf", "transferName": "f.pdf"}
+            )
+        )
+
+        normal_url, normal_timeout = captured_timeouts[0]
+        force_url, force_timeout = captured_timeouts[1]
+        assert "/download/force" not in normal_url
+        assert "/download/force" in force_url
+        assert normal_timeout == 60.0
+        assert force_timeout >= 600.0, (
+            f"force timeout {force_timeout} too short; server polls for 10 min"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Webhook registration

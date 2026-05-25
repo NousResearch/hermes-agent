@@ -693,25 +693,71 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Inbound attachment downloading (from #4588)
     # ------------------------------------------------------------------
 
+    async def _fetch_attachment_bytes(
+        self, att_guid: str, *, force: bool
+    ) -> Optional[bytes]:
+        """Fetch raw attachment bytes from BlueBubbles.
+
+        When ``force=True``, hits the Private-API-only ``/download/force``
+        endpoint, which triggers macOS to pull the file from iCloud before
+        streaming it back. The server polls for up to 10 minutes, so the
+        client timeout has to be at least that long.
+
+        Returns the bytes on success, None on any HTTP/network failure.
+        """
+        if not self.client:
+            return None
+        encoded = quote(att_guid, safe="")
+        suffix = "/force" if force else ""
+        # Force endpoint may block while the macOS helper pulls from iCloud;
+        # server-side poll window is 10 min. 60s is plenty for the cached path.
+        timeout = 660.0 if force else 60.0
+        try:
+            resp = await self.client.get(
+                self._api_url(f"/api/v1/attachment/{encoded}/download{suffix}"),
+                timeout=timeout,
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            return resp.content
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] %s attempt for %s failed: %s",
+                "force-download" if force else "download",
+                _redact(att_guid),
+                exc,
+            )
+            return None
+
     async def _download_attachment(
         self, att_guid: str, att_meta: Dict[str, Any]
     ) -> Optional[str]:
         """Download an attachment from BlueBubbles and cache it locally.
 
         Returns the local file path on success, None on failure.
+
+        Tries the normal ``/download`` endpoint first. If that fails (commonly
+        a 500 when the attachment hasn't been pulled from iCloud yet) and the
+        server has the Private API enabled, retries against
+        ``/download/force`` — which triggers the macOS helper to pull from
+        iCloud and then streams the bytes back. The Private-API endpoint
+        returns 500 when the helper isn't reachable, so gating on
+        ``self._private_api_enabled`` avoids a guaranteed second failure.
         """
         if not self.client:
             return None
-        try:
-            encoded = quote(att_guid, safe="")
-            resp = await self.client.get(
-                self._api_url(f"/api/v1/attachment/{encoded}/download"),
-                timeout=60,
-                follow_redirects=True,
-            )
-            resp.raise_for_status()
-            data = resp.content
 
+        data = await self._fetch_attachment_bytes(att_guid, force=False)
+        if data is None and self._private_api_enabled:
+            logger.info(
+                "[bluebubbles] regular download failed for %s, trying force-download",
+                _redact(att_guid),
+            )
+            data = await self._fetch_attachment_bytes(att_guid, force=True)
+        if data is None:
+            return None
+
+        try:
             mime = (att_meta.get("mimeType") or "").lower()
             transfer_name = att_meta.get("transferName", "")
 

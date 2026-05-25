@@ -474,6 +474,27 @@ def get_kanban_event_metrics() -> dict:
     }
 
 
+def get_kanban_fifo_metrics() -> dict:
+    """Return operational metrics for the kanban FIFO notification bridge."""
+    return {
+        "queue_depth": _kanban_fifo_queue.qsize(),
+        "queue_maxsize": _kanban_fifo_queue.maxsize,
+        "dropped_count": _kanban_fifo_dropped_count,
+        "received_count": _kanban_fifo_received_count,
+        "dispatch_failures": _kanban_fifo_dispatch_failures,
+        "reader_alive": (
+            _kanban_global_reader_thread.is_alive()
+            if _kanban_global_reader_thread is not None
+            else False
+        ),
+        "reader_name": (
+            _kanban_global_reader_thread.name
+            if _kanban_global_reader_thread is not None
+            else None
+        ),
+    }
+
+
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,

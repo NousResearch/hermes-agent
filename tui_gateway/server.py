@@ -144,6 +144,11 @@ _KANBAN_FIFO_PATH = os.path.expanduser("~/.hermes/tui_kanban.fifo")
 _kanban_fifo_queue: queue.Queue = queue.Queue(maxsize=10000)
 _kanban_global_reader_thread: threading.Thread | None = None
 
+# Module-level metrics counters for operational visibility.
+_kanban_fifo_dropped_count: int = 0
+_kanban_fifo_received_count: int = 0
+_kanban_fifo_dispatch_failures: int = 0
+
 # Create FIFO on import (idempotent). Clean up at exit so stale FIFOs
 # don't block future TUI starts (open() on a stale FIFO blocks forever).
 try:
@@ -192,11 +197,15 @@ def _start_global_kanban_reader() -> threading.Thread:
                         try:
                             _data = json.loads(_line)
                             _kanban_fifo_queue.put(_data, block=False)
+                            global _kanban_fifo_received_count
+                            _kanban_fifo_received_count += 1
                         except queue.Full:
+                            global _kanban_fifo_dropped_count
+                            _kanban_fifo_dropped_count += 1
                             logger.debug(
                                 "kanban_fifo_queue full; dropped notification"
                             )
-                        except Exception:
+                        except json.JSONDecodeError:
                             logger.debug(
                                 "kanban_fifo_reader: bad JSON line", exc_info=True
                             )
@@ -320,7 +329,8 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
                         _emit("status.update", sid, {"kind": "process", "text": _msg})
                         with session["history_lock"]:
                             if session.get("running"):
-                                continue  # defer until idle
+                                session.setdefault("_pending_kanban", []).append(_msg)
+                                continue
                             session["running"] = True
                         _rid = f"__kanban__{int(time.time() * 1000)}"
                         try:
@@ -333,6 +343,8 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
             _conn.close()
     except Exception:
         logger.debug("kanban_notification_dispatch failed", exc_info=True)
+        global _kanban_fifo_dispatch_failures
+        _kanban_fifo_dispatch_failures += 1
 
 
 def _start_kanban_fifo_reader(sid: str, session: dict) -> threading.Thread:
@@ -344,6 +356,27 @@ def _start_kanban_fifo_reader(sid: str, session: dict) -> threading.Thread:
     kept for backward compatibility at existing call sites.
     """
     return _start_global_kanban_reader()
+
+
+def get_kanban_fifo_metrics() -> dict:
+    """Return operational metrics for the kanban FIFO notification bridge."""
+    return {
+        "queue_depth": _kanban_fifo_queue.qsize(),
+        "queue_maxsize": _kanban_fifo_queue.maxsize,
+        "dropped_count": _kanban_fifo_dropped_count,
+        "received_count": _kanban_fifo_received_count,
+        "dispatch_failures": _kanban_fifo_dispatch_failures,
+        "reader_alive": (
+            _kanban_global_reader_thread.is_alive()
+            if _kanban_global_reader_thread is not None
+            else False
+        ),
+        "reader_name": (
+            _kanban_global_reader_thread.name
+            if _kanban_global_reader_thread is not None
+            else None
+        ),
+    }
 
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
@@ -776,7 +809,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
                 current["slash_worker"] = worker
-            except Exception:
+            except (OSError, ImportError):
                 pass
 
             try:
@@ -790,7 +823,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 )
                 notify_registered = True
                 load_permanent_allowlist()
-            except Exception:
+            except ImportError:
                 pass
 
             _wire_callbacks(sid)
@@ -815,7 +848,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         session_id=lk,
                         dispatch=_make_tui_dispatch(current, sid),
                     )
-                except Exception:
+                except ImportError:
                     pass
         except Exception as e:
             current["agent_error"] = str(e)
@@ -999,7 +1032,7 @@ def _load_cfg() -> dict:
             _cfg_mtime = mtime
             _cfg_path = p
         return data
-    except Exception:
+    except (FileNotFoundError, yaml.YAMLError, TypeError):
         pass
     return {}
 
@@ -1016,7 +1049,7 @@ def _save_cfg(cfg: dict):
         _cfg_path = path
         try:
             _cfg_mtime = path.stat().st_mtime
-        except Exception:
+        except OSError:
             _cfg_mtime = None
 
 
@@ -1025,7 +1058,7 @@ def _set_session_context(session_key: str) -> list:
         from gateway.session_context import set_session_vars
 
         return set_session_vars(session_key=session_key)
-    except Exception:
+    except ImportError:
         return []
 
 
@@ -1036,7 +1069,7 @@ def _clear_session_context(tokens: list) -> None:
         from gateway.session_context import clear_session_vars
 
         clear_session_vars(tokens)
-    except Exception:
+    except ImportError:
         pass
 
 
@@ -1098,7 +1131,7 @@ def resolve_skin() -> dict:
             "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", ""),
         }
-    except Exception:
+    except (ImportError, AttributeError):
         return {}
 
 
@@ -1147,7 +1180,7 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
         if detected:
             provider, detected_model = detected
             return detected_model, provider
-    except Exception:
+    except (ImportError, ValueError):
         pass
     return model, None
 
@@ -1271,7 +1304,7 @@ def _load_enabled_toolsets() -> list[str] | None:
 
     try:
         from toolsets import validate_toolset
-    except Exception:
+    except ImportError:
         validate_toolset = None
 
     if explicit and validate_toolset is not None:
@@ -1284,7 +1317,7 @@ def _load_enabled_toolsets() -> list[str] | None:
 
                 discover_plugins()
                 plugin_valid = [name for name in unresolved if validate_toolset(name)]
-            except Exception:
+            except ImportError:
                 plugin_valid = []
 
             if plugin_valid:
@@ -1324,7 +1357,7 @@ def _load_enabled_toolsets() -> list[str] | None:
                     mcp_names.add(str(name))
                 else:
                     mcp_disabled.add(str(name))
-        except Exception:
+        except (FileNotFoundError, json.JSONDecodeError):
             mcp_names = set()
             mcp_disabled = set()
 
@@ -1377,7 +1410,7 @@ def _load_enabled_toolsets() -> list[str] | None:
         if fallback_notice is not None:
             print(fallback_notice, file=sys.stderr, flush=True)
         return enabled or None
-    except Exception:
+    except (ImportError, FileNotFoundError):
         if fallback_notice is not None:
             print(
                 "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
@@ -1412,6 +1445,7 @@ def _restart_slash_worker(session: dict):
             getattr(session.get("agent"), "model", _resolve_model()),
         )
     except Exception:
+        logger.warning("Failed to create slash worker", exc_info=True)
         session["slash_worker"] = None
 
 
@@ -1473,7 +1507,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         cfg = load_config()
         user_provs = cfg.get("providers")
         custom_provs = get_compatible_custom_providers(cfg)
-    except Exception:
+    except (ImportError, FileNotFoundError):
         pass
 
     result = switch_model(
@@ -1615,12 +1649,12 @@ def _sync_session_key_after_compress(
 
         try:
             unregister_gateway_notify(old_key)
-        except Exception:
+        except KeyError:
             pass
         session["session_key"] = new_session_id
         try:
             yolo_was_on = is_session_yolo_enabled(old_key)
-        except Exception:
+        except (ImportError, KeyError):
             yolo_was_on = False
         if yolo_was_on:
             try:
@@ -1633,7 +1667,7 @@ def _sync_session_key_after_compress(
                 new_session_id,
                 lambda data: _emit("approval.request", sid, data),
             )
-        except Exception:
+        except ImportError:
             pass
     except Exception:
         # Even if the approval module fails to import, still anchor the
@@ -1690,7 +1724,7 @@ def _get_usage(agent) -> dict:
         usage["cost_status"] = cost.status
         if cost.amount_usd is not None:
             usage["cost_usd"] = float(cost.amount_usd)
-    except Exception:
+    except (AttributeError, ImportError):
         pass
     return usage
 
@@ -1702,7 +1736,7 @@ def _probe_credentials(agent) -> str:
         provider = getattr(agent, "provider", "") or ""
         if not key or key == "no-key-required":
             return f"No API key configured for provider '{provider}'. First message will fail."
-    except Exception:
+    except AttributeError:
         pass
     return ""
 
@@ -1745,7 +1779,7 @@ def _current_profile_name() -> str:
         from hermes_cli.profiles import get_active_profile_name
 
         return get_active_profile_name() or "default"
-    except Exception:
+    except ImportError:
         return "default"
 
 
@@ -1797,7 +1831,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
 
         info["version"] = __version__
         info["release_date"] = __release_date__
-    except Exception:
+    except (ImportError, AttributeError):
         pass
     try:
         from model_tools import get_toolset_for_tool
@@ -1807,23 +1841,26 @@ def _session_info(agent, session: dict | None = None) -> dict:
             info["tools"].setdefault(get_toolset_for_tool(name) or "other", []).append(
                 name
             )
-    except Exception:
+    except (ImportError, AttributeError):
         pass
     try:
         from hermes_cli.banner import get_available_skills
 
         info["skills"] = get_available_skills()
     except Exception:
+        logger.debug("Failed to load available skills", exc_info=True)
         pass
     try:
         from tools.mcp_tool import get_mcp_status
 
         info["mcp_servers"] = get_mcp_status()
     except Exception:
+        logger.debug("Failed to get MCP status", exc_info=True)
         info["mcp_servers"] = []
     try:
         info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
     except Exception:
+        logger.debug("Failed to get system prompt", exc_info=True)
         pass
     try:
         from hermes_cli.banner import get_update_result
@@ -1832,6 +1869,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         info["update_behind"] = get_update_result(timeout=0.5)
         info["update_command"] = recommended_update_command()
     except Exception:
+        logger.debug("Failed to get update info", exc_info=True)
         pass
     warn = _probe_credentials(agent)
     if warn:
@@ -1844,7 +1882,7 @@ def _tool_ctx(name: str, args: dict) -> str:
         from agent.display import build_tool_preview
 
         return build_tool_preview(name, args, max_len=80) or ""
-    except Exception:
+    except (ImportError, AttributeError):
         return ""
 
 
@@ -1894,6 +1932,7 @@ def _redact_tui_verbose_text(text: str) -> str:
 
         redacted = redact_sensitive_text(str(text), force=True)
     except Exception:
+        logger.warning("Redaction failed — sensitive data may leak", exc_info=True)
         return ""
     return _cap_tui_verbose_text(redacted)
 
@@ -1902,6 +1941,7 @@ def _tool_args_text(args: dict) -> str:
     try:
         raw = json.dumps(args or {}, indent=2, ensure_ascii=False, default=str)
     except Exception:
+        logger.debug("JSON serialization failed for tool args", exc_info=True)
         raw = str(args or {})
     return _redact_tui_verbose_text(raw)
 
@@ -1912,6 +1952,7 @@ def _tool_result_text(result: object) -> str:
 
         raw = _multimodal_text_summary(result)
     except Exception:
+        logger.debug("Multimodal text summary failed", exc_info=True)
         raw = str(result)
     return _redact_tui_verbose_text(raw)
 
@@ -1940,6 +1981,7 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     try:
         data = json.loads(result)
     except Exception:
+        logger.debug("JSON parse failed for tool summary", exc_info=True)
         data = None
 
     dur = _fmt_tool_duration(duration_s)
@@ -1974,6 +2016,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         except Exception:
+            logger.debug("capture_local_edit_snapshot failed", exc_info=True)
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
@@ -2019,6 +2062,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             if isinstance(data, dict) and isinstance(data.get("todos"), list):
                 payload["todos"] = data.get("todos")
         except Exception:
+            logger.debug("todo result parse failed", exc_info=True)
             pass
     try:
         from agent.display import render_edit_diff_with_delta
@@ -2033,6 +2077,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         ):
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
+        logger.debug("render_edit_diff_with_delta failed", exc_info=True)
         pass
     if _tool_progress_enabled(sid) or payload.get("inline_diff"):
         _emit("tool.complete", sid, payload)
@@ -2194,11 +2239,13 @@ def _available_personalities(cfg: dict | None = None) -> dict:
 
         return (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
     except Exception:
+        logger.debug("load_cli_config failed for personalities", exc_info=True)
         try:
             from hermes_cli.config import load_config as _load_full_cfg
 
             return (_load_full_cfg().get("agent") or {}).get("personalities", {}) or {}
         except Exception:
+            logger.debug("load_config failed for personalities", exc_info=True)
             cfg = cfg or _load_cfg()
             return (cfg.get("agent") or {}).get("personalities", {}) or {}
 
@@ -2484,6 +2531,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     session["show_reasoning"] = _load_show_reasoning()
     session["tool_progress_mode"] = _load_tool_progress_mode()
     session["tool_started_at"] = {}
+    session["_pending_kanban"] = []
     with session["history_lock"]:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
@@ -2584,6 +2632,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
         "tool_started_at": {},
+        "_pending_kanban": [],
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,
@@ -2604,6 +2653,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             key, getattr(agent, "model", _resolve_model())
         )
     except Exception:
+        logger.warning("Failed to create slash worker on session start", exc_info=True)
         # Defer hard-failure to slash.exec; chat still works without slash worker.
         _sessions[sid]["slash_worker"] = None
     try:
@@ -2612,6 +2662,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
         load_permanent_allowlist()
     except Exception:
+        logger.debug("Approval registration failed on session start", exc_info=True)
         pass
     # Surface the self-improvement background review's "💾 …" summary as a
     # review.summary event so Ink can render it as a persistent system line
@@ -2623,6 +2674,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             "review.summary", _sid, {"text": str(message)}
         )
     except Exception:
+        logger.debug("background_review_callback not available on agent", exc_info=True)
         # Bare AIAgents that don't expose the attribute (unlikely, but keep
         # session startup resilient).
         pass
@@ -2680,6 +2732,7 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
                 else f"[The user attached an image but analysis failed.]\n{hint}"
             )
         except Exception:
+            logger.warning("Image analysis failed", exc_info=True)
             parts.append(f"[The user attached an image but analysis failed.]\n{hint}")
 
     text = user_text or ""
@@ -3404,6 +3457,7 @@ def _(rid, params: dict) -> dict:
             elif resolved_title:
                 session["pending_title"] = None
         except Exception:
+            logger.debug("Title resolution failed", exc_info=True)
             resolved_title = fallback
         return _ok(
             rid,
@@ -3471,6 +3525,7 @@ def _(rid, params: dict) -> dict:
         try:
             meta = db.get_session(key) or {}
         except Exception:
+            logger.debug("session.info DB read failed", exc_info=True)
             meta = {}
 
     def _dt(value, fallback: datetime | None = None) -> datetime:
@@ -3478,6 +3533,7 @@ def _(rid, params: dict) -> dict:
             try:
                 return datetime.fromtimestamp(float(value))
             except Exception:
+                logger.debug("Timestamp parse failed", exc_info=True)
                 pass
         return fallback or datetime.now()
 
@@ -3525,6 +3581,7 @@ def _(rid, params: dict) -> dict:
                 session["session_key"], include_ancestors=True
             )
         except Exception:
+            logger.warning("session.history DB read failed", exc_info=True)
             pass
     return _ok(
         rid,
@@ -3972,6 +4029,7 @@ def _(rid, params: dict) -> dict:
                 try:
                     raw = json.loads(p.read_text(encoding="utf-8"))
                 except Exception:
+                    logger.warning("Subagent state JSON read failed", exc_info=True)
                     raw = {}
                 subagents = raw.get("subagents") or []
                 entries.append(
@@ -4131,7 +4189,7 @@ def _notification_poller_loop(
     while not stop_event.is_set() and not session.get("_finalized"):
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
-        except Exception:
+        except queue.Empty:
             # No process event — check kanban queue while we're awake.
             try:
                 _kanban_evt = _kanban_fifo_queue.get_nowait()
@@ -4175,7 +4233,7 @@ def _notification_poller_loop(
     while not process_registry.completion_queue.empty():
         try:
             evt = process_registry.completion_queue.get_nowait()
-        except Exception:
+        except queue.Empty:
             break
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
@@ -4449,6 +4507,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             goals_cfg = _load_cfg().get("goals") or {}
                             goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
                         except Exception:
+                            logger.debug("Goals config load failed", exc_info=True)
                             goal_max_turns = 20
                         goal_mgr = GoalManager(
                             session_id=sid_key,
@@ -4495,6 +4554,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             _session_key, exc,
                         )
                     except Exception:
+                        logger.debug("Pending title DB save failed", exc_info=True)
                         # Transient DB failure — keep pending_title for retry.
                         pass
 
@@ -4516,6 +4576,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         session.get("history", []),
                     )
                 except Exception:
+                    logger.debug("Auto-title generation failed", exc_info=True)
                     pass
 
             # CLI parity: when voice-mode TTS is on, speak the agent reply
@@ -4562,6 +4623,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
             except Exception:
+                logger.debug("Approval token reset failed", exc_info=True)
                 pass
             _clear_session_context(session_tokens)
             with session["history_lock"]:
@@ -4590,6 +4652,32 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 print(
                     f"[tui_gateway] goal continuation dispatch failed: "
                     f"{type(_cont_exc).__name__}: {_cont_exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
+
+        # Drain pending kanban notifications that were queued while the
+        # session was busy. Process them now that the session is idle.
+        while True:
+            with session["history_lock"]:
+                _pending = session.get("_pending_kanban", [])
+                if not _pending:
+                    break
+                _next_msg = _pending.pop(0)
+                if session.get("running"):
+                    # Another turn started (user prompt or goal followup)
+                    # — put it back and stop draining.
+                    _pending.insert(0, _next_msg)
+                    break
+                session["running"] = True
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, _next_msg)
+            except Exception as _pk_exc:
+                print(
+                    f"[tui_gateway] pending kanban dispatch failed: "
+                    f"{type(_pk_exc).__name__}: {_pk_exc}",
                     file=sys.stderr,
                 )
                 with session["history_lock"]:
@@ -5512,6 +5600,7 @@ def _(rid, params: dict) -> dict:
                 rid, {"mtime": cfg_path.stat().st_mtime if cfg_path.exists() else 0}
             )
         except Exception:
+            logger.debug("config.mtime stat failed", exc_info=True)
             return _ok(rid, {"mtime": 0})
     return _err(rid, 4002, f"unknown config key: {key}")
 
@@ -5630,6 +5719,7 @@ def _(rid, params: dict) -> dict:
                 if isinstance(_approvals, dict):
                     _confirm_required = bool(_approvals.get("mcp_reload_confirm", True))
             except Exception:
+                logger.debug("MCP reload confirm config load failed", exc_info=True)
                 _confirm_required = True
             if _confirm_required:
                 # Return a structured response the Ink client can surface
@@ -5929,6 +6019,7 @@ def _resolve_name(name: str) -> str:
         r = resolve_command(name)
         return r.name if r else name
     except Exception:
+        logger.debug("command.resolve failed", exc_info=True)
         return name
 
 
@@ -5977,6 +6068,7 @@ def _(rid, params: dict) -> dict:
             result = resolve_plugin_command_result(handler(arg))
             return _ok(rid, {"type": "plugin", "output": str(result or "")})
     except Exception:
+        logger.warning("Plugin command handler failed", exc_info=True)
         pass
 
     try:
@@ -6001,6 +6093,7 @@ def _(rid, params: dict) -> dict:
                     },
                 )
     except Exception:
+        logger.warning("Skill command handler failed", exc_info=True)
         pass
 
     # ── Commands that queue messages onto _pending_input in the CLI ───
@@ -6062,6 +6155,7 @@ def _(rid, params: dict) -> dict:
                         },
                     )
             except Exception:
+                logger.debug("Steer command queue failed", exc_info=True)
                 pass
         # Fallback: no active run, treat as next-turn message
         return _ok(rid, {"type": "send", "message": arg})
@@ -6082,6 +6176,7 @@ def _(rid, params: dict) -> dict:
             goals_cfg = _load_cfg().get("goals") or {}
             max_turns = int(goals_cfg.get("max_turns", 20) or 20)
         except Exception:
+            logger.debug("Goal command config load failed", exc_info=True)
             max_turns = 20
         mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
 
@@ -7009,6 +7104,7 @@ def _(rid, params: dict) -> dict:
                 rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
             )
     except Exception:
+        logger.debug("Skill command check failed", exc_info=True)
         pass
 
     plugin_handler = None
@@ -7022,6 +7118,7 @@ def _(rid, params: dict) -> dict:
 
             plugin_handler = get_plugin_command_handler(_cmd_base)
         except Exception:
+            logger.debug("Plugin handler lookup failed", exc_info=True)
             plugin_handler = None
             resolve_plugin_command_result = None
 
@@ -7471,6 +7568,7 @@ def _resolve_browser_cdp_url() -> str:
         if isinstance(browser_cfg, dict):
             return str(browser_cfg.get("cdp_url", "") or "").strip()
     except Exception:
+        logger.debug("Browser CDP URL config read failed", exc_info=True)
         pass
     return ""
 
@@ -7503,6 +7601,7 @@ def _http_ok(url: str, timeout: float) -> bool:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             return 200 <= getattr(resp, "status", 200) < 300
     except Exception:
+        logger.debug("CDP URL probe failed", exc_info=True)
         return False
 
 
@@ -7673,6 +7772,7 @@ def _browser_disconnect(rid) -> dict:
 
             cleanup_all_browsers()
         except Exception:
+            logger.debug("Browser cleanup failed", exc_info=True)
             pass
 
     reap()

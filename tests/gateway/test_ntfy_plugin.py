@@ -940,4 +940,4 @@ class TestTruncateHelper:
 
     def test_unicode_message_encoded(self):
         result = _ntfy._truncate_body("héllo 🔔", context="test")
-        assert result == "héllo 🔔".encode("utf-8")
+        assert result == "héllo 🔔".encode()

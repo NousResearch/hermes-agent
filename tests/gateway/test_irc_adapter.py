@@ -395,7 +395,7 @@ class TestIRCAdapterSplitting:
         adapter._current_nick = "bot"
         lines = adapter._split_message(text, "#test")
         for line in lines:
-            overhead = len(f"PRIVMSG #test :{line}\r\n".encode("utf-8"))
+            overhead = len(f"PRIVMSG #test :{line}\r\n".encode())
             assert overhead <= 512, f"line over 512 bytes: {overhead}"
 
     def test_split_prefers_word_boundary(self):

@@ -293,7 +293,7 @@ def _twilio_creds() -> tuple[str, str]:
 
 def _twilio_basic_headers() -> dict[str, str]:
     sid, token = _twilio_creds()
-    auth = base64.b64encode(f"{sid}:{token}".encode("utf-8")).decode("ascii")
+    auth = base64.b64encode(f"{sid}:{token}".encode()).decode("ascii")
     return {"Authorization": f"Basic {auth}"}
 
 

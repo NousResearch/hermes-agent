@@ -112,7 +112,16 @@ hermes linear-aig serve
 
 The MVP receiver validates Linear webhook signatures, acknowledges
 `AgentSessionEvent` webhooks quickly, and emits Agent Activities back to Linear.
-Full Hermes task execution wiring is still separate from this preview receiver.
+By default it runs in `bridge` mode, which is useful for webhook smoke tests
+because it responds transparently without starting a full Hermes task. To route
+Linear sessions through Hermes oneshot execution, set:
+
+```bash
+export HERMES_LINEAR_AIG_TASK_MODE="oneshot"
+export HERMES_LINEAR_AIG_MODEL="..."       # optional
+export HERMES_LINEAR_AIG_PROVIDER="..."    # optional
+export HERMES_LINEAR_AIG_TOOLSETS="..."    # optional comma-separated list
+```
 
 ---
 

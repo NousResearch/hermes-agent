@@ -12055,6 +12055,36 @@ def main():
                 "bridge response used by the MVP smoke path."
             ),
         )
+        _linear_aig_sub.add_argument(
+            "--task-mode",
+            choices=["bridge", "oneshot"],
+            default="",
+            help=(
+                "How to process Linear sessions. Defaults to "
+                "HERMES_LINEAR_AIG_TASK_MODE or bridge."
+            ),
+        )
+        _linear_aig_sub.add_argument(
+            "--model",
+            default="",
+            help="Model override for oneshot mode. Defaults to HERMES_LINEAR_AIG_MODEL.",
+        )
+        _linear_aig_sub.add_argument(
+            "--provider",
+            default="",
+            help=(
+                "Provider override for oneshot mode. Defaults to "
+                "HERMES_LINEAR_AIG_PROVIDER."
+            ),
+        )
+        _linear_aig_sub.add_argument(
+            "--toolsets",
+            default="",
+            help=(
+                "Comma-separated toolsets for oneshot mode. Defaults to "
+                "HERMES_LINEAR_AIG_TOOLSETS or configured CLI toolsets."
+            ),
+        )
     linear_aig_parser.set_defaults(func=cmd_linear_aig)
 
     # =========================================================================

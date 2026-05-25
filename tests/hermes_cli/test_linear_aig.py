@@ -46,6 +46,10 @@ def _args(**overrides):
         "port": None,
         "graphql_url": "",
         "ack_only": False,
+        "task_mode": "",
+        "model": "",
+        "provider": "",
+        "toolsets": "",
     }
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -73,6 +77,10 @@ def test_load_runtime_config_uses_environment_defaults():
             linear_aig.HOST_ENV: "127.0.0.1",
             linear_aig.PORT_ENV: "9999",
             linear_aig.GRAPHQL_URL_ENV: "https://linear.test/graphql",
+            linear_aig.TASK_MODE_ENV: "oneshot",
+            linear_aig.MODEL_ENV: "model-a",
+            linear_aig.PROVIDER_ENV: "provider-a",
+            linear_aig.TOOLSETS_ENV: "linear,git",
         },
     )
 
@@ -81,6 +89,10 @@ def test_load_runtime_config_uses_environment_defaults():
     assert config.host == "127.0.0.1"
     assert config.port == 9999
     assert config.graphql_url == "https://linear.test/graphql"
+    assert config.task_mode == "oneshot"
+    assert config.model == "model-a"
+    assert config.provider == "provider-a"
+    assert config.toolsets == "linear,git"
 
 
 def test_load_runtime_config_cli_args_override_environment():
@@ -92,11 +104,16 @@ def test_load_runtime_config_cli_args_override_environment():
             port=8668,
             graphql_url="https://override.test/graphql",
             ack_only=True,
+            task_mode="bridge",
+            model="arg-model",
+            provider="arg-provider",
+            toolsets="arg-tools",
         ),
         {
             linear_aig.ACCESS_TOKEN_ENV: "env_token",
             linear_aig.WEBHOOK_SECRET_ENV: "env_secret",
             linear_aig.PORT_ENV: "9999",
+            linear_aig.TASK_MODE_ENV: "oneshot",
         },
     )
 
@@ -106,11 +123,26 @@ def test_load_runtime_config_cli_args_override_environment():
     assert config.port == 8668
     assert config.graphql_url == "https://override.test/graphql"
     assert config.ack_only is True
+    assert config.task_mode == "bridge"
+    assert config.model == "arg-model"
+    assert config.provider == "arg-provider"
+    assert config.toolsets == "arg-tools"
 
 
 def test_load_runtime_config_requires_token_and_webhook_secret():
     with pytest.raises(ValueError, match=linear_aig.ACCESS_TOKEN_ENV):
         linear_aig.load_runtime_config(_args(), {})
+
+
+def test_load_runtime_config_rejects_unknown_task_mode():
+    with pytest.raises(ValueError, match="task mode"):
+        linear_aig.load_runtime_config(
+            _args(task_mode="launch"),
+            {
+                linear_aig.ACCESS_TOKEN_ENV: "lin_access_token",
+                linear_aig.WEBHOOK_SECRET_ENV: "signing_secret",
+            },
+        )
 
 
 def test_describe_runtime_config_redacts_sensitive_values():
@@ -127,6 +159,7 @@ def test_describe_runtime_config_redacts_sensitive_values():
     assert "webhook_secret_value" not in description
     assert "lin_...oken" in description
     assert "webh...alue" in description
+    assert "task_mode: bridge" in description
 
 
 def test_linear_aig_command_check_config_prints_redacted_config(monkeypatch, capsys):
@@ -183,6 +216,65 @@ def test_run_server_builds_receiver_and_starts_aiohttp(monkeypatch):
     assert calls[0]["app"] is app
     assert calls[0]["host"] == "127.0.0.1"
     assert calls[0]["port"] == 8668
+
+
+def test_build_oneshot_prompt_includes_linear_context():
+    prompt = linear_aig.build_oneshot_prompt(linear_aig.parse_agent_session_event(_payload()))
+
+    assert "Linear Agent Session" in prompt
+    assert "Action: created" in prompt
+    assert "Issue: WHO-192" in prompt
+    assert "Issue title: Implement Hermes Linear AIG webhook receiver" in prompt
+    assert "Implement WHO-192" in prompt
+
+
+@pytest.mark.asyncio
+async def test_oneshot_dispatcher_runs_hermes_agent(monkeypatch):
+    calls = []
+
+    def fake_run(prompt, *, model, provider, toolsets):
+        calls.append(
+            {
+                "prompt": prompt,
+                "model": model,
+                "provider": provider,
+                "toolsets": toolsets,
+            }
+        )
+        return "Hermes result"
+
+    monkeypatch.setattr(linear_aig, "run_hermes_oneshot", fake_run)
+    dispatcher = linear_aig.build_task_dispatcher(
+        linear_aig.LinearAIGRuntimeConfig(
+            access_token="lin_token",
+            webhook_secret="webhook_secret",
+            task_mode="oneshot",
+            model="model-a",
+            provider="provider-a",
+            toolsets="linear,git",
+        )
+    )
+
+    result = await dispatcher(linear_aig.parse_agent_session_event(_payload()))
+
+    assert result == "Hermes result"
+    assert calls[0]["model"] == "model-a"
+    assert calls[0]["provider"] == "provider-a"
+    assert calls[0]["toolsets"] == "linear,git"
+    assert "Implement WHO-192" in calls[0]["prompt"]
+
+
+def test_build_task_dispatcher_respects_ack_only():
+    dispatcher = linear_aig.build_task_dispatcher(
+        linear_aig.LinearAIGRuntimeConfig(
+            access_token="lin_token",
+            webhook_secret="webhook_secret",
+            ack_only=True,
+            task_mode="oneshot",
+        )
+    )
+
+    assert dispatcher is None
 
 
 def test_verify_linear_signature_accepts_sha256_prefix():

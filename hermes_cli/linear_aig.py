@@ -37,6 +37,14 @@ WEBHOOK_SECRET_ENV = "HERMES_LINEAR_AIG_WEBHOOK_SECRET"
 HOST_ENV = "HERMES_LINEAR_AIG_HOST"
 PORT_ENV = "HERMES_LINEAR_AIG_PORT"
 GRAPHQL_URL_ENV = "HERMES_LINEAR_AIG_GRAPHQL_URL"
+TASK_MODE_ENV = "HERMES_LINEAR_AIG_TASK_MODE"
+MODEL_ENV = "HERMES_LINEAR_AIG_MODEL"
+PROVIDER_ENV = "HERMES_LINEAR_AIG_PROVIDER"
+TOOLSETS_ENV = "HERMES_LINEAR_AIG_TOOLSETS"
+
+TASK_MODE_BRIDGE = "bridge"
+TASK_MODE_ONESHOT = "oneshot"
+TASK_MODES = {TASK_MODE_BRIDGE, TASK_MODE_ONESHOT}
 
 ActivitySender = Callable[[str, dict[str, Any]], Awaitable[None]]
 TaskDispatcher = Callable[["AgentSessionEvent"], Awaitable[str | None]]
@@ -61,6 +69,10 @@ class LinearAIGRuntimeConfig:
     port: int = DEFAULT_PORT
     graphql_url: str = LINEAR_GRAPHQL_URL
     ack_only: bool = False
+    task_mode: str = TASK_MODE_BRIDGE
+    model: str | None = None
+    provider: str | None = None
+    toolsets: str | None = None
 
 
 def _header(headers: Mapping[str, str], name: str) -> str:
@@ -226,6 +238,27 @@ def load_runtime_config(args: Any, env: Mapping[str, str]) -> LinearAIGRuntimeCo
         or LINEAR_GRAPHQL_URL
     )
     ack_only = bool(getattr(args, "ack_only", False))
+    task_mode = (
+        str(getattr(args, "task_mode", "") or "").strip()
+        or _env(env, TASK_MODE_ENV)
+        or TASK_MODE_BRIDGE
+    ).lower()
+    if task_mode not in TASK_MODES:
+        raise ValueError(
+            "Linear AIG task mode must be one of: "
+            + ", ".join(sorted(TASK_MODES))
+        )
+    model = str(getattr(args, "model", "") or "").strip() or _env(env, MODEL_ENV) or None
+    provider = (
+        str(getattr(args, "provider", "") or "").strip()
+        or _env(env, PROVIDER_ENV)
+        or None
+    )
+    toolsets = (
+        str(getattr(args, "toolsets", "") or "").strip()
+        or _env(env, TOOLSETS_ENV)
+        or None
+    )
 
     missing = []
     if not access_token:
@@ -245,6 +278,10 @@ def load_runtime_config(args: Any, env: Mapping[str, str]) -> LinearAIGRuntimeCo
         port=port,
         graphql_url=graphql_url,
         ack_only=ack_only,
+        task_mode=task_mode,
+        model=model,
+        provider=provider,
+        toolsets=toolsets,
     )
 
 
@@ -258,6 +295,10 @@ def describe_runtime_config(config: LinearAIGRuntimeConfig) -> str:
             f"  port: {config.port}",
             f"  graphql_url: {config.graphql_url}",
             f"  ack_only: {config.ack_only}",
+            f"  task_mode: {config.task_mode}",
+            f"  model: {config.model or '<configured default>'}",
+            f"  provider: {config.provider or '<configured default>'}",
+            f"  toolsets: {config.toolsets or '<configured default>'}",
         ]
     )
 
@@ -342,6 +383,64 @@ async def ack_only_dispatcher(event: AgentSessionEvent) -> str:
         f"Hermes Linear AIG bridge received the session{target}. "
         "Full task execution is not wired in this runtime yet."
     )
+
+
+def build_oneshot_prompt(event: AgentSessionEvent) -> str:
+    parts = [
+        "You are Hermes responding to a Linear Agent Session.",
+        f"Action: {event.action}",
+    ]
+    if event.issue_identifier:
+        parts.append(f"Issue: {event.issue_identifier}")
+    if event.issue_title:
+        parts.append(f"Issue title: {event.issue_title}")
+    if event.comment_body:
+        parts.append(f"Comment: {event.comment_body}")
+    if event.prompt:
+        parts.append("")
+        parts.append(event.prompt)
+    return "\n".join(parts).strip()
+
+
+def run_hermes_oneshot(
+    prompt: str,
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+    toolsets: str | None = None,
+) -> str:
+    from hermes_cli.oneshot import _run_agent
+
+    return _run_agent(
+        prompt,
+        model=model,
+        provider=provider,
+        toolsets=toolsets,
+        use_config_toolsets=toolsets is None,
+    )
+
+
+def build_task_dispatcher(config: LinearAIGRuntimeConfig) -> TaskDispatcher | None:
+    if config.ack_only:
+        return None
+    if config.task_mode == TASK_MODE_BRIDGE:
+        return ack_only_dispatcher
+    if config.task_mode == TASK_MODE_ONESHOT:
+        async def _dispatch(event: AgentSessionEvent) -> str:
+            prompt = build_oneshot_prompt(event)
+            if not prompt:
+                return "Hermes Linear AIG received an empty Agent Session prompt."
+            response = await asyncio.to_thread(
+                run_hermes_oneshot,
+                prompt,
+                model=config.model,
+                provider=config.provider,
+                toolsets=config.toolsets,
+            )
+            return response or "Hermes completed the Linear Agent Session without a final response."
+
+        return _dispatch
+    raise ValueError(f"Unsupported Linear AIG task mode: {config.task_mode}")
 
 
 class LinearAIGReceiver:
@@ -432,7 +531,7 @@ def run_server(config: LinearAIGRuntimeConfig) -> None:
             access_token=config.access_token,
             graphql_url=config.graphql_url,
         ),
-        task_dispatcher=None if config.ack_only else ack_only_dispatcher,
+        task_dispatcher=build_task_dispatcher(config),
     )
     app = create_app(receiver)
     web.run_app(app, host=config.host, port=config.port)

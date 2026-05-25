@@ -1909,6 +1909,22 @@ class MCPServerTask:
                     )
                     return
 
+                # Benign anyio cleanup artifact during reconnect tear-down:
+                # don't burn a reconnect-budget slot on it.  Without this,
+                # every keepalive-driven reconnect on an HTTP/Streamable
+                # MCP server raises ``RuntimeError("not holding this lock")``
+                # from ``streamable_http_client.__aexit__`` and the server is
+                # permanently disconnected after _MAX_RECONNECT_RETRIES
+                # cleanup events.  See #31987.
+                if _is_anyio_cleanup_artifact(exc):
+                    logger.debug(
+                        "MCP server '%s': anyio cleanup artifact during "
+                        "reconnect tear-down (not counting against retries): %s",
+                        self.name, exc,
+                    )
+                    backoff = 1.0
+                    continue
+
                 retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
@@ -2239,6 +2255,39 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "broken pipe",
     "end of file",
 )
+
+
+# Substrings (lower-cased match) that identify anyio cleanup artifacts
+# raised from ``streamable_http_client.__aexit__`` during a planned
+# reconnect tear-down.  When ``async with streamable_http_client(...)``
+# unwinds while an anyio Lock is still held by a different coroutine
+# in the same TaskGroup (asyncio + anyio>=4.x), the exit raises
+# ``RuntimeError("The current task is not holding this lock")`` even
+# though the session shut down cleanly.  This is benign cleanup noise,
+# not a real connection failure — the next reconnect attempt will
+# succeed.  See #31987.
+_ANYIO_CLEANUP_MARKERS: tuple = (
+    "current task is not holding this lock",
+)
+
+
+def _is_anyio_cleanup_artifact(exc: BaseException) -> bool:
+    """Return True if ``exc`` is a benign anyio cleanup error.
+
+    Walks ``BaseExceptionGroup`` chains because the top-level error
+    from a ``streamable_http_client`` teardown is typically
+    ``ExceptionGroup("unhandled errors in a TaskGroup", [...])`` with
+    the real anyio RuntimeError nested inside.  See #31987.
+    """
+    stack: list[BaseException] = [exc]
+    while stack:
+        cur = stack.pop()
+        msg = str(cur).lower()
+        if msg and any(marker in msg for marker in _ANYIO_CLEANUP_MARKERS):
+            return True
+        if isinstance(cur, BaseExceptionGroup):
+            stack.extend(cur.exceptions)
+    return False
 
 
 def _is_session_expired_error(exc: BaseException) -> bool:

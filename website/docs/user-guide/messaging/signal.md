@@ -36,13 +36,13 @@ version of the Java Runtime (class file version 69.0), this version of the Java 
 only recognizes class file versions up to 65.0
 ```
 
-Recipe for pinning Adoptium Temurin 25 (works on Debian/Ubuntu, including WSL2):
+Recipe for pinning Adoptium Temurin 25 (works on Debian/Ubuntu, including WSL2). signal-cli only needs a JRE; Adoptium ships the JRE under a directory named `jdk-25.<patch>+<build>-jre`, which the symlink glob below matches:
 
 ```bash
 sudo mkdir -p /opt/java
-curl -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jre/hotspot/normal/eclipse?project=jdk" \
+curl -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jre/hotspot/normal/eclipse" \
   | sudo tar xz -C /opt/java
-sudo ln -sf /opt/java/jdk-25* /opt/java/current
+sudo ln -sf /opt/java/jdk-25*-jre /opt/java/current
 export JAVA_HOME=/opt/java/current
 export PATH="$JAVA_HOME/bin:$PATH"
 ```
@@ -262,7 +262,7 @@ The adapter monitors the SSE connection and automatically reconnects if:
 | **"Cannot reach signal-cli"** during setup | Ensure signal-cli daemon is running: `signal-cli --account +YOUR_NUMBER daemon --http 127.0.0.1:8080` |
 | **Messages not received** | Check that `SIGNAL_ALLOWED_USERS` includes the sender's **ACI UUID** (see [Allowlist with Phone Number Privacy](#allowlist-with-phone-number-privacy)) — phone-number-only allowlists silently reject real DMs |
 | **`UnsupportedClassVersionError: ... class file version 69.0`** | signal-cli 0.14.x requires Java 25+; see [Java version](#java-version) — `openjdk-21-jre-headless` is too old |
-| **`Verify error: StatusCode: 499 DeprecatedVersionException`** | signal-cli &lt; 0.14 is server-rejected — upgrade to 0.14.x and pin Java 25+ |
+| **`Verify error: StatusCode: 499 DeprecatedVersionException`** | `signal-cli < 0.14` is server-rejected — upgrade to 0.14.x and pin Java 25+ |
 | **`Signal SSE: connected` repeating every ~2 s with no messages delivering** | You are pointed at `bbernhard/signal-cli-rest-api` instead of the native daemon. Switch to upstream `signal-cli --http` (see warning under [Prerequisites](#prerequisites)). |
 | **`signal-cli register` returns 409 `AlreadyVerifiedException`** | See [Recovering from a stuck registration](#recovering-from-a-stuck-registration) below — `--reregister` and `verify` cannot fix this on their own |
 | **"signal-cli not found on PATH"** | Install signal-cli and ensure it's in your PATH (third-party Docker wrappers are not compatible — see warning under [Prerequisites](#prerequisites)) |

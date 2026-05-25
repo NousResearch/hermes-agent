@@ -426,6 +426,50 @@ class TestMediaDeliveryPathValidation:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
 
+    def test_allows_canonical_cache_images_path(self, tmp_path, monkeypatch):
+        """Verify that the canonical cache/images path is deliverable (regression for #31733)."""
+        root = tmp_path / ".hermes" / "cache" / "images"
+        media_file = root / "generated.png"
+        media_file.parent.mkdir(parents=True)
+        media_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+        self._patch_roots(monkeypatch, root)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_allows_both_legacy_and_canonical_cache_images(self, tmp_path, monkeypatch):
+        """Both legacy image_cache/ and canonical cache/images/ should be deliverable."""
+        legacy_root = tmp_path / ".hermes" / "image_cache"
+        canonical_root = tmp_path / ".hermes" / "cache" / "images"
+        legacy_file = legacy_root / "legacy.png"
+        canonical_file = canonical_root / "canonical.png"
+        legacy_file.parent.mkdir(parents=True)
+        canonical_file.parent.mkdir(parents=True)
+        legacy_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+        canonical_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+        self._patch_roots(monkeypatch, legacy_root, canonical_root)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(legacy_file)) == str(legacy_file.resolve())
+        assert BasePlatformAdapter.validate_media_delivery_path(str(canonical_file)) == str(canonical_file.resolve())
+
+    def test_allows_all_canonical_cache_dirs(self, tmp_path, monkeypatch):
+        """All canonical cache subdirs should be deliverable (cache/images, cache/audio, etc.)."""
+        subdirs = ["images", "audio", "videos", "documents", "screenshots"]
+        roots = []
+        for sub in subdirs:
+            d = tmp_path / ".hermes" / "cache" / sub
+            d.mkdir(parents=True)
+            roots.append(d)
+        # Write a file in each
+        files = []
+        for i, sub in enumerate(subdirs):
+            f = roots[i] / f"test.{'png' if sub == 'images' else 'ogg' if sub == 'audio' else 'mp4' if sub == 'videos' else 'pdf' if sub == 'documents' else 'png'}"
+            f.write_bytes(b"fake content")
+            files.append(f)
+        self._patch_roots(monkeypatch, *roots)
+
+        for f in files:
+            assert BasePlatformAdapter.validate_media_delivery_path(str(f)) == str(f.resolve()), f"Failed for {f}"
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

@@ -13,6 +13,8 @@ Environment variables:
     EMAIL_PASSWORD      — Email password or app-specific password
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    EMAIL_ALLOWED_RECIPIENTS — Comma-separated list of allowed outbound addresses (empty = unrestricted)
+    EMAIL_FROM_NAME    — Display name in From header (default: \"Hermes Agent\")
 """
 
 import asyncio
@@ -28,7 +30,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formataddr, formatdate
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -255,6 +257,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+
+        # Outbound recipient whitelist — agent can ONLY send to these addresses
+        raw = os.getenv("EMAIL_ALLOWED_RECIPIENTS", "")
+        self._allowed_recipients: set = set(
+            addr.strip().lower() for addr in raw.split(",") if addr.strip()
+        ) if raw else set()
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -508,6 +516,15 @@ class EmailAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an email reply to the given address."""
+        # Outbound recipient whitelist enforcement
+        if self._allowed_recipients and chat_id.lower() not in self._allowed_recipients:
+            logger.error(
+                "[Email] BLOCKED: %s not in EMAIL_ALLOWED_RECIPIENTS", chat_id
+            )
+            return SendResult(
+                success=False,
+                error=f"Recipient '{chat_id}' not in EMAIL_ALLOWED_RECIPIENTS",
+            )
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
@@ -526,7 +543,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((os.getenv("EMAIL_FROM_NAME", "Hermes Agent"), self._address))
         msg["To"] = to_addr
 
         # Thread context for reply
@@ -637,7 +654,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((os.getenv("EMAIL_FROM_NAME", "Hermes Agent"), self._address))
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
@@ -718,7 +735,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> str:
         """Send an email with a file attachment via SMTP."""
         msg = MIMEMultipart()
-        msg["From"] = self._address
+        msg["From"] = formataddr((os.getenv("EMAIL_FROM_NAME", "Hermes Agent"), self._address))
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})

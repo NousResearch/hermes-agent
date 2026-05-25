@@ -1293,6 +1293,19 @@ class AIAgent:
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                 )
             self._last_flushed_db_idx = len(messages)
+            # P30-11 FIX: persist turn counters to session DB so they survive
+            # agent restarts (gateway cache eviction, crash). _turns_since_memory
+            # reaching the nudge threshold drives memory tool invocation, so
+            # losing this counter on restart causes the cadence to reset.
+            if self._session_db and hasattr(self, "_user_turn_count"):
+                try:
+                    self._session_db.update_turn_count(
+                        session_id=self.session_id,
+                        user_turn_count=getattr(self, "_user_turn_count", 0),
+                        turns_since_memory=getattr(self, "_turns_since_memory", 0),
+                    )
+                except Exception as e:
+                    logger.debug("update_turn_count failed: %s", e)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
 

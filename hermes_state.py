@@ -215,6 +215,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     pricing_version TEXT,
     title TEXT,
     api_call_count INTEGER DEFAULT 0,
+    user_turn_count INTEGER DEFAULT 0,
+    turns_since_memory INTEGER DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
@@ -767,6 +769,25 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
+            )
+        self._execute_write(_do)
+
+    # P30-11 FIX: persist turn counters so they survive agent restarts.
+    # Without this, _user_turn_count and _turns_since_memory are in-memory
+    # only — a crash or gateway agent eviction resets them to 0, breaking
+    # the memory nudge cadence that depends on _turns_since_memory >= N.
+    def update_turn_count(
+        self,
+        session_id: str,
+        user_turn_count: int = 0,
+        turns_since_memory: int = 0,
+    ) -> None:
+        """Persist turn counters for crash/restart recovery."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET user_turn_count = ?, turns_since_memory = ? "
+                "WHERE id = ?",
+                (user_turn_count, turns_since_memory, session_id),
             )
         self._execute_write(_do)
 

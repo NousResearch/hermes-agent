@@ -427,7 +427,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_border": "#2A6FB9",
             "banner_title": "#A9DFFF",
             "banner_accent": "#5DB8F5",
-            "banner_dim": "#153C73",
+            "banner_dim": "#6BB8FF",
             "banner_text": "#EAF7FF",
             "ui_accent": "#5DB8F5",
             "ui_label": "#A9DFFF",
@@ -490,7 +490,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#153C73]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#5DB8F5]⠀⠀⠀⠀⠀≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈⠀⠀⠀⠀⠀[/]
 [#A9DFFF]⠀⠀⠀⠀⠀⠀≈≈≈≈≈≈≈≈≈≈≈≈≈⠀⠀⠀⠀⠀⠀[/]
-[dim #153C73]⠀⠀⠀⠀⠀⠀⠀deep waters hold⠀⠀⠀⠀⠀⠀⠀[/]""",
+        [dim #6BB8FF]⠀⠀⠀⠀⠀⠀⠀deep waters hold⠀⠀⠀⠀⠀⠀⠀[/]
     },
     "sisyphus": {
         "name": "sisyphus",

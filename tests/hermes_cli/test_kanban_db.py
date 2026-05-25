@@ -48,6 +48,154 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_write_txn_preserves_original_error_when_rollback_also_fails():
+    """A failed rollback must not mask the SQLite write failure being debugged."""
+
+    class _Rows:
+        def fetchall(self):
+            return []
+
+    class RollbackFailsConnection:
+        def execute(self, sql, *args):
+            if sql == "PRAGMA database_list":
+                return _Rows()
+            if sql == "ROLLBACK":
+                raise sqlite3.OperationalError("cannot rollback - no transaction is active")
+            return None
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        with kb.write_txn(RollbackFailsConnection()):  # type: ignore[arg-type]
+            raise sqlite3.OperationalError("disk I/O error")
+
+
+def test_dispatcher_lease_write_error_preserves_original_error_when_rollback_fails():
+    """Lease acquisition must not collapse disk I/O errors into rollback noise."""
+
+    class _Rows:
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return None
+
+    class DispatcherLeaseWriteFailsConnection:
+        def execute(self, sql, *args):
+            if sql == "PRAGMA database_list":
+                return _Rows()
+            if sql.startswith("SELECT owner, expires_at FROM dispatcher_leases"):
+                return _Rows()
+            if sql.startswith("INSERT INTO dispatcher_leases"):
+                raise sqlite3.OperationalError("disk I/O error")
+            if sql == "ROLLBACK":
+                raise sqlite3.OperationalError("cannot rollback - no transaction is active")
+            return _Rows()
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+        kb.acquire_dispatcher_lease(
+            DispatcherLeaseWriteFailsConnection(),  # type: ignore[arg-type]
+            board="default",
+            owner="test-owner",
+        )
+
+
+def test_write_txn_rechecks_database_file_before_starting_write(kanban_home):
+    """A long-lived connection must not write after the main DB is truncated."""
+    db_path = kb.kanban_db_path()
+    conn = kb.connect()
+    try:
+        kb.create_task(conn, title="before-corruption")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+        data = bytearray(db_path.read_bytes())
+        page_size = int.from_bytes(data[16:18], "big")
+        actual_pages = len(data) // page_size
+        data[28:32] = (actual_pages + 2).to_bytes(4, "big")
+        # Mark the header page-count as valid so the preflight catches the
+        # same durable truncation shape observed in production.
+        data[92:96] = data[24:28]
+        db_path.write_bytes(data)
+
+        with pytest.raises(sqlite3.DatabaseError, match="truncated SQLite file"):
+            with kb.write_txn(conn):
+                conn.execute("INSERT INTO tasks(id, title, status, created_at) VALUES ('t_after', 'after', 'ready', 1)")
+    finally:
+        conn.close()
+
+
+def test_write_txn_rejects_zero_byte_database_file_after_connect(kanban_home):
+    """Write-path validation is stricter than first-run connect() initialization."""
+    db_path = kb.kanban_db_path()
+    conn = kb.connect()
+    try:
+        kb.create_task(conn, title="before-zero-byte-truncation")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db_path.write_bytes(b"")
+
+        with pytest.raises(sqlite3.DatabaseError, match="truncated SQLite file"):
+            with kb.write_txn(conn):
+                conn.execute("INSERT INTO tasks(id, title, status, created_at) VALUES ('t_after_zero', 'after', 'ready', 1)")
+    finally:
+        conn.close()
+
+
+def test_connect_rejects_zero_byte_db_when_board_state_markers_exist(kanban_home):
+    """A zero-byte DB next to durable board artifacts is truncation, not first-run."""
+    db_path = kb.kanban_db_path()
+    with kb.connect() as conn:
+        kb.create_task(conn, title="before-zero-byte-marker")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    logs_dir = kanban_home / "kanban" / "logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "t_existing.log").write_text("prior worker log", encoding="utf-8")
+    db_path.write_bytes(b"")
+    with pytest.raises(kb.KanbanDbCorruptError, match="existing board state markers"):
+        kb.connect()
+
+
+def test_zero_byte_backup_marker_globs_escape_database_name(tmp_path):
+    """Backup marker detection must not expand metacharacters in explicit DB names."""
+    db_path = tmp_path / "kanban[abc].db"
+    db_path.write_bytes(b"")
+    # This sibling would match the unescaped glob pattern "kanban[abc].db.truncated*"
+    # even though it is not a marker for ``kanban[abc].db``.
+    (tmp_path / "kanbana.db.truncated-by-other-board").write_text("not this db", encoding="utf-8")
+
+    with kb.connect(db_path) as conn:
+        assert conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+
+
+def test_write_txn_rejects_missing_database_file_after_connect(kanban_home):
+    """A stale connection whose main DB disappeared must not accept writes."""
+    db_path = kb.kanban_db_path()
+    conn = kb.connect()
+    try:
+        kb.create_task(conn, title="before-missing-db")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db_path.unlink()
+
+        with pytest.raises(sqlite3.DatabaseError, match="missing SQLite file"):
+            with kb.write_txn(conn):
+                conn.execute("INSERT INTO tasks(id, title, status, created_at) VALUES ('t_after_missing', 'after', 'ready', 1)")
+    finally:
+        conn.close()
+
+
+def test_connect_rejects_zero_task_db_with_dependent_task_rows(kanban_home):
+    """Recovered child rows without parent tasks are not a healthy empty board."""
+    db_path = kb.kanban_db_path()
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="before-bad-recovery")
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.execute(
+            "INSERT INTO task_events(task_id, kind, payload, created_at) VALUES (?, 'note', NULL, 1)",
+            (task_id,),
+        )
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    with pytest.raises(sqlite3.DatabaseError, match="zero-task board with dependent task rows"):
+        kb.connect(db_path)
+
+
 def test_completion_reconciliation_manifest_finds_malformed_db_completion(
     kanban_home,
 ):

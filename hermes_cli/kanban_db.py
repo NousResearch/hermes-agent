@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import glob
 import json
 import os
 import re
@@ -983,14 +984,82 @@ def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     )
 
 
+def _dir_has_entries(path: Path) -> bool:
+    """Return True if ``path`` exists and contains at least one entry."""
+    try:
+        with os.scandir(path) as entries:
+            return next(entries, None) is not None
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        return False
+
+
+def _zero_byte_db_state_markers(path: Path) -> list[str]:
+    """Return nearby artifacts showing a zero-byte Kanban DB is suspicious.
+
+    A missing or intentionally empty DB is valid for first-run setup, but an
+    existing zero-byte DB next to board logs/workspaces/metadata/backups is a
+    likely truncation/recovery artifact. Treat that as corruption rather than
+    letting ``sqlite3.connect()`` silently initialize an empty board over the
+    evidence.
+    """
+    markers: list[str] = []
+    # Do not treat SQLite sidecars alone as prior-state markers. During a
+    # concurrent first connect, SQLite can create ``kanban.db-journal`` while
+    # the main DB is still zero bytes; rejecting that transient breaks fresh
+    # initialization. Durable Kanban artifacts below are what distinguish a
+    # lost live board from a first-run DB file.
+    escaped_name = glob.escape(path.name)
+    escaped_stem = glob.escape(path.stem)
+    for pattern in (
+        f"{escaped_name}.truncated*",
+        f"{escaped_name}.replaced-empty*",
+        f"{escaped_name}.*.bak",
+        f"{escaped_stem}.backup-*.db",
+    ):
+        try:
+            markers.extend(str(candidate) for candidate in path.parent.glob(pattern))
+        except OSError:
+            pass
+
+    try:
+        home = kanban_home().resolve(strict=False)
+        resolved = path.resolve(strict=False)
+    except OSError:
+        home = kanban_home()
+        resolved = path
+    default_db = (home / "kanban.db").resolve(strict=False)
+    if resolved == default_db:
+        default_logs = home / "kanban" / "logs"
+        default_workspaces = home / "kanban" / "workspaces"
+        if _dir_has_entries(default_logs):
+            markers.append(str(default_logs))
+        if _dir_has_entries(default_workspaces):
+            markers.append(str(default_workspaces))
+    else:
+        board_logs = path.parent / "logs"
+        board_workspaces = path.parent / "workspaces"
+        # board.json is created before the named board DB is initialized, so
+        # metadata alone is not durable task-state evidence. Require worker
+        # logs, workspaces, or backup/recovery artifacts for zero-byte rejection.
+        if _dir_has_entries(board_logs):
+            markers.append(str(board_logs))
+        if _dir_has_entries(board_workspaces):
+            markers.append(str(board_workspaces))
+
+    # Stable order + de-dupe keeps error strings deterministic for tests/logs.
+    return sorted(dict.fromkeys(markers))
+
+
 def _validate_sqlite_header(path: Path) -> None:
     """Fail early with an actionable error for non-SQLite Kanban DB files.
 
-    ``sqlite3.connect()`` creates missing and zero-byte files, so those are
-    allowed. Existing non-empty files must have the SQLite header before we
-    hand them to SQLite/WAL setup. This keeps corrupted page-0 failures from
-    being collapsed into a generic PRAGMA error and lets the gateway's corrupt
-    board handling identify the board by fingerprint.
+    ``sqlite3.connect()`` creates missing and truly new zero-byte files, so
+    those are allowed. Existing non-empty files must have the SQLite header
+    before we hand them to SQLite/WAL setup. Existing zero-byte files with
+    nearby board-state markers are treated as truncation, not as a fresh board.
+    This keeps corrupted page-0 failures from being collapsed into a generic
+    PRAGMA error and lets the gateway's corrupt board handling identify the
+    board by fingerprint.
     """
     try:
         stat = path.stat()
@@ -999,6 +1068,17 @@ def _validate_sqlite_header(path: Path) -> None:
     except OSError:
         return
     if stat.st_size == 0:
+        markers = _zero_byte_db_state_markers(path)
+        if markers:
+            marker_preview = ", ".join(markers[:5])
+            if len(markers) > 5:
+                marker_preview += f", … +{len(markers) - 5} more"
+            raise sqlite3.DatabaseError(
+                "truncated SQLite file for "
+                f"{path}: size_bytes=0 with existing board state markers; "
+                "refusing empty-board reinitialization; "
+                f"markers={marker_preview}"
+            )
         return
     try:
         with path.open("rb") as handle:
@@ -1178,6 +1258,77 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+def _validate_kanban_content_invariants(conn: sqlite3.Connection, path: Path) -> None:
+    """Reject impossible Kanban recovery shapes before callers use the board.
+
+    A healthy empty board has zero rows in every task-owned table. A recovered
+    DB with comments/events/runs/links but no tasks means recovery copied child
+    evidence while losing the parent task table; accepting that as a valid board
+    silently hides task loss and causes downstream triage to operate on an empty
+    queue.
+    """
+    table_rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall()
+    tables = {str(row["name"] if isinstance(row, sqlite3.Row) else row[0]) for row in table_rows}
+    required = {"tasks", "task_comments", "task_events", "task_runs", "task_links"}
+    if not required <= tables:
+        return
+
+    counts = {
+        "tasks": int(conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]),
+        "task_comments": int(conn.execute("SELECT COUNT(*) FROM task_comments").fetchone()[0]),
+        "task_events": int(conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0]),
+        "task_runs": int(conn.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0]),
+        "task_links": int(conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0]),
+    }
+    dependent_counts = {k: v for k, v in counts.items() if k != "tasks" and v > 0}
+    if counts["tasks"] == 0 and dependent_counts:
+        detail = " ".join(f"{name}={count}" for name, count in counts.items())
+        raise sqlite3.DatabaseError(
+            f"inconsistent Kanban DB for {path}: {detail}; "
+            "refusing zero-task board with dependent task rows"
+        )
+
+
+def _connection_main_db_path(conn: sqlite3.Connection) -> Optional[Path]:
+    """Return the backing file for a connection's main database, when known."""
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except (AttributeError, sqlite3.Error, TypeError):
+        return None
+    for row in rows:
+        try:
+            name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+            file_name = row["file"] if isinstance(row, sqlite3.Row) else row[2]
+        except (IndexError, KeyError, TypeError):
+            continue
+        if name == "main" and file_name:
+            return Path(str(file_name))
+    return None
+
+
+def _validate_write_target(conn: sqlite3.Connection) -> None:
+    """Re-check the on-disk main DB before starting a write transaction."""
+    path = _connection_main_db_path(conn)
+    if path is None:
+        return
+    try:
+        stat = path.stat()
+    except FileNotFoundError as exc:
+        raise sqlite3.DatabaseError(
+            f"missing SQLite file for {path}: refusing write transaction on stale connection"
+        ) from exc
+    except OSError:
+        stat = None
+    if stat is not None and stat.st_size == 0:
+        raise sqlite3.DatabaseError(
+            f"truncated SQLite file for {path}: size_bytes=0; "
+            "refusing write transaction on stale connection"
+        )
+    _validate_sqlite_header(path)
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1250,6 +1401,7 @@ def connect(
                 conn.executescript(SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)
+            _validate_kanban_content_invariants(conn, path)
     except Exception:
         conn.close()
         raise
@@ -1529,13 +1681,20 @@ def write_txn(conn: sqlite3.Connection):
 
     Use for any multi-statement write (creating a task + link, claiming a
     task + recording an event, etc.).  A claim CAS inside this context is
-    atomic -- at most one concurrent writer can succeed.
+    atomic -- at most one concurrent writer can succeed. If SQLite reports a
+    disk/VFS failure that already aborted the transaction, rollback may also
+    fail (``cannot rollback - no transaction is active``); preserve the
+    original exception so logs keep the actionable root cause.
     """
+    _validate_write_target(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
     except Exception:
-        conn.execute("ROLLBACK")
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            _log.debug("rollback after failed Kanban write transaction failed", exc_info=True)
         raise
     else:
         conn.execute("COMMIT")

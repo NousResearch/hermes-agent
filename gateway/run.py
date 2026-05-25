@@ -56,6 +56,13 @@ from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
+# Ensure context_orchestrator module is importable
+_hermes_root = Path(os.path.expanduser("~/.hermes"))
+_scripts_path = str(_hermes_root / "scripts")
+if _scripts_path not in sys.path:
+    sys.path.insert(0, _scripts_path)
+from context_orchestrator import get_orchestrator, drop_orchestrator  # noqa: E402
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -4460,6 +4467,12 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+                        # Drop context orchestrator for this session — triggers
+                        # end_session which persists working memory to the palace.
+                        try:
+                            drop_orchestrator(key)
+                        except Exception:
+                            pass
                         # Shut down memory provider and close tool resources
                         # on the cached agent.  Idle agents live in
                         # _agent_cache (not _running_agents), so look there.
@@ -7993,7 +8006,11 @@ class GatewayRunner:
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+
+        # Initialize context orchestrator for this session
+        _orch = get_orchestrator(session_key)
+        _orch_result = _orch.start_session(task="gateway", phase="message")
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         
@@ -8007,6 +8024,11 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+
+        # Prepend orchestrator-managed context (identity, memory, working state)
+        _orch_context = _orch_result.get("context", "")
+        if _orch_context:
+            context_prompt = _orch_context + "\n\n" + context_prompt
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -8110,7 +8132,24 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
+        # Mid-session context trim: orchestrator checks token usage and
+        # drops/compresses low-priority blocks BEFORE the expensive
+        # _hyg_agent compression runs.
+        if history:
+            _orch_trim = _orch.trim_context(
+                current_usage_tokens=sum(
+                    len(m.get("content", "")) for m in history
+                ) // 4,
+            )
+            if _orch_trim.get("trimmed_blocks"):
+                logger.info(
+                    "Context orchestrator: trimmed %d blocks, recovered ~%s tokens (%s)",
+                    _orch_trim["trimmed_blocks"],
+                    f"{_orch_trim.get('tokens_recovered', 0):,}",
+                    _orch_trim.get("message", ""),
+                )
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -8847,6 +8886,12 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+
+            # Register conversation turns with the orchestrator
+            if "prompt" in agent_result:
+                _orch.register_conversation_turn("user", agent_result.get("prompt", ""))
+            if response:
+                _orch.register_conversation_turn("assistant", response)
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))

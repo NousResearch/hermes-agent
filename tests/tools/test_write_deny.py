@@ -78,6 +78,14 @@ class TestWriteDenyExactPaths:
         for name in [".npmrc", ".pypirc", ".pgpass"]:
             assert _is_write_denied(os.path.join(home, name)) is True, f"{name} should be denied"
 
+    def test_vault_token(self):
+        path = os.path.join(str(Path.home()), ".vault-token")
+        assert _is_write_denied(path) is True
+
+    def test_cargo_credentials(self):
+        path = os.path.join(str(Path.home()), ".cargo", "credentials.toml")
+        assert _is_write_denied(path) is True
+
 
 class TestWriteDenyPrefixes:
     def test_ssh_prefix(self):
@@ -94,6 +102,14 @@ class TestWriteDenyPrefixes:
 
     def test_kube_prefix(self):
         path = os.path.join(str(Path.home()), ".kube", "config")
+        assert _is_write_denied(path) is True
+
+    def test_config_hub_prefix(self):
+        path = os.path.join(str(Path.home()), ".config", "hub", "config")
+        assert _is_write_denied(path) is True
+
+    def test_terraform_d_prefix(self):
+        path = os.path.join(str(Path.home()), ".terraform.d", "credentials.tfrc.json")
         assert _is_write_denied(path) is True
 
     def test_sudoers_d_prefix(self):

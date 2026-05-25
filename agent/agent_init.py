@@ -644,7 +644,17 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            from agent.request_headers import configured_default_headers as _configured_default_headers
+            agent._anthropic_client = build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+                default_headers=_configured_default_headers(
+                    provider=agent.provider,
+                    base_url=base_url,
+                    model=agent.model,
+                ),
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -835,6 +845,14 @@ def init_agent(
                         "configuration."
                     )
         
+        from agent.request_headers import apply_configured_default_headers_to_kwargs
+        apply_configured_default_headers_to_kwargs(
+            client_kwargs,
+            provider=agent.provider,
+            base_url=str(client_kwargs.get("base_url") or agent.base_url or ""),
+            model=agent.model,
+        )
+
         agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
         # Enable fine-grained tool streaming for Claude on OpenRouter.

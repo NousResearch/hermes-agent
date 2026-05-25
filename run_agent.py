@@ -2838,6 +2838,7 @@ class AIAgent:
         self.base_url = base_url.strip().rstrip("/")
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+        self._apply_client_headers_for_base_url(self.base_url)
 
         if not self._replace_primary_openai_client(reason=f"{self.provider}_credential_refresh"):
             return False
@@ -2881,6 +2882,17 @@ class AIAgent:
         self._client_kwargs["base_url"] = self.base_url
         # Nous requests should not inherit OpenRouter-only attribution headers.
         self._client_kwargs.pop("default_headers", None)
+        try:
+            from agent.request_headers import apply_configured_default_headers_to_kwargs
+
+            apply_configured_default_headers_to_kwargs(
+                self._client_kwargs,
+                provider=self.provider,
+                base_url=self.base_url,
+                model=self.model,
+            )
+        except Exception as exc:
+            logger.debug("Configured request headers were not applied: %s", exc)
 
         if not self._replace_primary_openai_client(reason="nous_credential_refresh"):
             return False
@@ -2955,10 +2967,16 @@ class AIAgent:
             pass
 
         try:
+            from agent.request_headers import configured_default_headers as _configured_default_headers
             self._anthropic_client = build_anthropic_client(
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                default_headers=_configured_default_headers(
+                    provider=self.provider,
+                    base_url=getattr(self, "_anthropic_base_url", None),
+                    model=self.model,
+                ),
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -3015,6 +3033,17 @@ class AIAgent:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:
                 self._client_kwargs.pop("default_headers", None)
+        try:
+            from agent.request_headers import apply_configured_default_headers_to_kwargs
+
+            apply_configured_default_headers_to_kwargs(
+                self._client_kwargs,
+                provider=self.provider,
+                base_url=base_url,
+                model=self.model,
+            )
+        except Exception as exc:
+            logger.debug("Configured request headers were not applied: %s", exc)
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
@@ -3030,9 +3059,15 @@ class AIAgent:
 
             self._anthropic_api_key = runtime_key
             self._anthropic_base_url = runtime_base
+            from agent.request_headers import configured_default_headers as _configured_default_headers
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                default_headers=_configured_default_headers(
+                    provider=self.provider,
+                    base_url=runtime_base,
+                    model=self.model,
+                ),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -3097,11 +3132,17 @@ class AIAgent:
             self._anthropic_client = build_anthropic_bedrock_client(region)
         else:
             from agent.anthropic_adapter import build_anthropic_client
+            from agent.request_headers import configured_default_headers as _configured_default_headers
             self._anthropic_client = build_anthropic_client(
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
+                default_headers=_configured_default_headers(
+                    provider=self.provider,
+                    base_url=getattr(self, "_anthropic_base_url", None),
+                    model=self.model,
+                ),
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):

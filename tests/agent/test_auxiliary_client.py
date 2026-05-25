@@ -28,6 +28,7 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _to_async_client,
 )
 
 
@@ -92,6 +93,48 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
+
+
+class TestAuxiliaryConfiguredHeaders:
+    def test_explicit_custom_provider_applies_configured_headers(self):
+        config = {
+            "custom_providers": [
+                {
+                    "name": "bdllm",
+                    "base_url": "http://127.0.0.1:18707/v1",
+                    "headers": {"comate_custom_header": "value"},
+                }
+            ]
+        }
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai, \
+             patch("agent.request_headers._load_config", return_value=config):
+            mock_openai.return_value = MagicMock(
+                api_key="test-key",
+                base_url="http://127.0.0.1:18707/v1",
+            )
+
+            resolve_provider_client(
+                "custom",
+                model="GLM-5-Turbo",
+                explicit_base_url="http://127.0.0.1:18707/v1",
+                explicit_api_key="test-key",
+            )
+
+        headers = mock_openai.call_args[1]["default_headers"]
+        assert headers["comate_custom_header"] == "value"
+
+    def test_to_async_client_preserves_sync_custom_headers(self):
+        sync_client = SimpleNamespace(
+            api_key="test-key",
+            base_url="https://api.example.com/v1",
+            _custom_headers={"comate_custom_header": "value"},
+        )
+
+        with patch("openai.AsyncOpenAI") as mock_async_openai:
+            _to_async_client(sync_client, "test-model")
+
+        headers = mock_async_openai.call_args[1]["default_headers"]
+        assert headers["comate_custom_header"] == "value"
 
 
 class TestReadCodexAccessToken:

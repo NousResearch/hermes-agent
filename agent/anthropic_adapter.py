@@ -566,12 +566,27 @@ def _common_betas_for_base_url(
     return betas
 
 
+def _merge_extra_default_headers(kwargs: dict, default_headers: dict | None) -> None:
+    if not default_headers:
+        return
+    try:
+        from agent.request_headers import merge_default_headers
+
+        merged = merge_default_headers(kwargs.get("default_headers"), default_headers)
+    except Exception:
+        merged = dict(kwargs.get("default_headers") or {})
+        merged.update(default_headers)
+    if merged:
+        kwargs["default_headers"] = merged
+
+
 def _build_anthropic_client_with_bearer_hook(
     token_provider,
     base_url: str = None,
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    default_headers: dict | None = None,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
 
@@ -636,6 +651,7 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _merge_extra_default_headers(kwargs, default_headers)
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
@@ -645,6 +661,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    default_headers: dict | None = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -686,6 +703,7 @@ def build_anthropic_client(
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
+            default_headers=default_headers,
         )
 
     normalize_proxy_env_vars()
@@ -756,6 +774,7 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _merge_extra_default_headers(kwargs, default_headers)
     return _anthropic_sdk.Anthropic(**kwargs)
 
 

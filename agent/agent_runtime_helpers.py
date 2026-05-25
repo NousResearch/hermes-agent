@@ -749,11 +749,17 @@ def try_recover_primary_transport(
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
+            from agent.request_headers import configured_default_headers as _configured_default_headers
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                default_headers=_configured_default_headers(
+                    provider=agent.provider,
+                    base_url=rt["anthropic_base_url"],
+                    model=agent.model,
+                ),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -913,11 +919,17 @@ def restore_primary_runtime(agent) -> bool:
         # ── Rebuild client for the primary provider ──
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
+            from agent.request_headers import configured_default_headers as _configured_default_headers
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                default_headers=_configured_default_headers(
+                    provider=agent.provider,
+                    base_url=rt["anthropic_base_url"],
+                    model=agent.model,
+                ),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1244,6 +1256,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs = dict(client_kwargs)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
+    try:
+        from agent.request_headers import apply_configured_default_headers_to_kwargs
+
+        apply_configured_default_headers_to_kwargs(
+            client_kwargs,
+            provider=getattr(agent, "provider", ""),
+            base_url=str(client_kwargs.get("base_url") or getattr(agent, "base_url", "") or ""),
+            model=getattr(agent, "model", ""),
+        )
+    except Exception as exc:
+        _ra().logger.debug("Configured request headers were not applied: %s", exc)
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
         from agent.copilot_acp_client import CopilotACPClient
 
@@ -1414,9 +1437,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         agent.api_key = effective_key
         agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+        from agent.request_headers import configured_default_headers as _configured_default_headers
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
+            default_headers=_configured_default_headers(
+                provider=agent.provider,
+                base_url=agent._anthropic_base_url,
+                model=agent.model,
+            ),
         )
         agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
         agent.client = None
@@ -1431,6 +1460,13 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
         if _sm_timeout is not None:
             agent._client_kwargs["timeout"] = _sm_timeout
+        from agent.request_headers import apply_configured_default_headers_to_kwargs
+        apply_configured_default_headers_to_kwargs(
+            agent._client_kwargs,
+            provider=agent.provider,
+            base_url=effective_base,
+            model=agent.model,
+        )
         agent.client = agent._create_openai_client(
             dict(agent._client_kwargs),
             reason="switch_model",

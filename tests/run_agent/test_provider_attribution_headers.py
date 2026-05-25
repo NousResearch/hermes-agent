@@ -29,6 +29,65 @@ def test_openrouter_base_url_applies_or_headers(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_model_headers_are_passed_to_openai_sdk_default_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    config = {
+        "model": {
+            "provider": "custom",
+            "default": "GLM-5-Turbo",
+            "base_url": "http://127.0.0.1:18707/v1",
+            "headers": {
+                "comate_custom_header": '{"username":"chengbo05","source":"openclaw"}',
+            },
+        }
+    }
+
+    with patch("agent.request_headers._load_config", return_value=config), \
+         patch("hermes_logging.setup_logging"):
+        AIAgent(
+            api_key="test-key",
+            base_url="http://127.0.0.1:18707/v1",
+            provider="custom",
+            model="GLM-5-Turbo",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    headers = mock_openai.call_args[1]["default_headers"]
+    assert headers["comate_custom_header"] == '{"username":"chengbo05","source":"openclaw"}'
+
+
+@patch("run_agent.OpenAI")
+def test_apply_client_headers_for_base_url_merges_configured_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    with patch("hermes_logging.setup_logging"):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="http://127.0.0.1:18707/v1",
+            provider="custom",
+            model="GLM-5-Turbo",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    config = {
+        "custom_providers": [
+            {
+                "name": "bdllm",
+                "base_url": "http://127.0.0.1:18707/v1",
+                "headers": {"comate_custom_header": "value"},
+            }
+        ]
+    }
+
+    with patch("agent.request_headers._load_config", return_value=config):
+        agent._apply_client_headers_for_base_url("http://127.0.0.1:18707/v1")
+
+    assert agent._client_kwargs["default_headers"]["comate_custom_header"] == "value"
+
+
+@patch("run_agent.OpenAI")
 def test_ai_gateway_base_url_applies_attribution_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(

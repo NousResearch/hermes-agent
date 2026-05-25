@@ -1030,12 +1030,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if fb_api_mode == "anthropic_messages":
             # Build native Anthropic client instead of using OpenAI client
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
+            from agent.request_headers import configured_default_headers as _configured_default_headers
             effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = fb_base_url
             agent._anthropic_client = build_anthropic_client(
-                effective_key, agent._anthropic_base_url, timeout=_fb_timeout,
+                effective_key,
+                agent._anthropic_base_url,
+                timeout=_fb_timeout,
+                default_headers=_configured_default_headers(
+                    provider=fb_provider,
+                    base_url=fb_base_url,
+                    model=fb_model,
+                ),
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
             agent.client = None
@@ -1060,6 +1068,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 "base_url": fb_base_url,
                 **({"default_headers": dict(fb_headers)} if fb_headers else {}),
             }
+            from agent.request_headers import apply_configured_default_headers_to_kwargs
+            apply_configured_default_headers_to_kwargs(
+                agent._client_kwargs,
+                provider=fb_provider,
+                base_url=fb_base_url,
+                model=fb_model,
+            )
             if _fb_timeout is not None:
                 agent._client_kwargs["timeout"] = _fb_timeout
                 # Rebuild the shared OpenAI client so the configured

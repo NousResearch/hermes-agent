@@ -2711,7 +2711,10 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+    try:
+        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -2755,7 +2758,11 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
     selected = profile or _find_cron_job_profile(job_id)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    if not _call_cron_for_profile(selected, "remove_job", job_id):
+    try:
+        removed = _call_cron_for_profile(selected, "remove_job", job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
 

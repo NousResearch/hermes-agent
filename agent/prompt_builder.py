@@ -1010,7 +1010,7 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
-    tags = frontmatter.get("tags") or []
+    tags = frontmatter.get("tags") or frontmatter.get("metadata", {}).get("hermes", {}).get("tags") or []
     if isinstance(tags, str):
         tags = [t.strip() for t in tags.split(",") if t.strip()]
 
@@ -1375,18 +1375,22 @@ def build_skills_system_prompt(
             bool(include_set), bool(exclude_set),
         )
         if index_format == "keywords":
-            # Keyword tags from frontmatter instead of descriptions.
-            # Format: name: [tag1, tag2, ...]
-            # Smallest format — ~90% smaller than full.
+            # Category-grouped with inline tags — same line count as tree
+            # but each skill shows its frontmatter tags.
+            # Format: |category:{name:[tags]|name:[tags]|...}
             lines_out = []
             for category in sorted(skills_by_category.keys()):
+                parts = []
                 seen = set()
                 for name, _desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                     if name not in seen:
                         seen.add(name)
-                        tags = skill_tags.get(name, [])
-                        tag_str = f"[{', '.join(tags)}]" if tags else ""
-                        lines_out.append(f"|{name}:{tag_str}")
+                        tags = skill_tags.get(name, [])[:3]  # cap at 3 most relevant tags
+                        if tags:
+                            parts.append(f"{name}:{','.join(tags)}")
+                        else:
+                            parts.append(name)
+                lines_out.append(f"|{category}:{{{ '|'.join(parts) }}}")
             result = "\n".join(lines_out) + "\n"
         elif index_format == "tree":
             # Hyper-compressed pipe-delimited lookup table (Vercel pattern).

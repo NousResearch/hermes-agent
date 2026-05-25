@@ -263,4 +263,3 @@ def test_compress_context_warns_extractive_fallback_without_fallback_marker():
     warnings = [call.args[0] for call in agent._emit_warning.call_args_list]
     assert any("本地提取式 fallback" in msg for msg in warnings)
     assert all("fallback context marker" not in msg for msg in warnings)
-

@@ -46,6 +46,30 @@ class TestQQAdapterInit:
         assert adapter._app_id == "123"
         assert adapter._client_secret == "sec"
 
+    def test_create_task_closes_coroutine_without_running_loop(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        async def noop():
+            return None
+
+        coro = noop()
+        try:
+            result = QQAdapter._create_task(coro)
+            assert result is None
+            assert coro.cr_frame is None
+        finally:
+            coro.close()
+
+    def test_dispatch_payload_message_event_is_safe_without_running_loop(self):
+        adapter = self._make(app_id="a", client_secret="b")
+
+        async def fake_on_message(event_type, data):
+            return None
+
+        adapter._on_message = fake_on_message
+
+        adapter._dispatch_payload({"op": 0, "t": "C2C_MESSAGE_CREATE", "s": 1, "d": {}})
+
     def test_env_fallback(self):
         with mock.patch.dict(os.environ, {"QQ_APP_ID": "env_id", "QQ_CLIENT_SECRET": "env_sec"}, clear=False):
             adapter = self._make()

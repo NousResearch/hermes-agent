@@ -671,6 +671,15 @@ class QQAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            # Drop any stale closed WebSocket so the next ``_read_events``
+            # call sees a missing socket and raises ``WebSocket not
+            # connected`` (rather than the closed socket silently
+            # short-circuiting the read loop).  This matters when
+            # ``_ensure_token`` or ``_get_gateway_url`` raises before
+            # ``_open_ws`` could clear ``self._ws`` itself — exactly the
+            # path observed in #31771 (`Failed to get QQ Bot gateway URL`).
+            if self._ws is not None and self._ws.closed:
+                self._ws = None
             return False
 
     async def _read_events(self) -> None:

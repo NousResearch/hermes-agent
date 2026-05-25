@@ -25,6 +25,7 @@ platforms:
   msgraph_webhook:
     enabled: true
     extra:
+      host: 127.0.0.1
       port: 8646
       client_state: "replace-with-a-strong-secret"
       accepted_resources:
@@ -35,6 +36,7 @@ Or via env vars in `~/.hermes/.env` (auto-merged on startup):
 
 ```bash
 MSGRAPH_WEBHOOK_ENABLED=true
+MSGRAPH_WEBHOOK_HOST=127.0.0.1
 MSGRAPH_WEBHOOK_PORT=8646
 MSGRAPH_WEBHOOK_CLIENT_STATE=<generate-with-openssl-rand-hex-32>
 MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES=communications/onlineMeetings
@@ -58,14 +60,14 @@ All settings go under `platforms.msgraph_webhook.extra`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `host` | `0.0.0.0` | Bind address for the HTTP listener. |
+| `host` | `0.0.0.0` | Bind address for the HTTP listener. Non-loopback binds require `allowed_source_cidrs`; loopback (`127.0.0.1` / `::1`) is the easiest dev-tunnel / reverse-proxy setup. |
 | `port` | `8646` | Bind port. |
 | `webhook_path` | `/msgraph/webhook` | URL path Graph POSTs to. |
 | `health_path` | `/health` | Readiness endpoint. |
 | `client_state` | — | Shared secret Graph echoes in every notification. Compared with `hmac.compare_digest` — generate with `openssl rand -hex 32`. |
 | `accepted_resources` | `[]` (accept all) | Allowlist of Graph resource paths/patterns. Trailing `*` acts as prefix match. Leading `/` is tolerated. Example: `["communications/onlineMeetings", "chats/*/messages"]`. |
 | `max_seen_receipts` | `5000` | Dedupe cache size for notification IDs. Oldest entries evicted when the cap is hit. |
-| `allowed_source_cidrs` | `[]` (allow all) | Optional source-IP allowlist. See below. |
+| `allowed_source_cidrs` | `[]` | Required for non-loopback binds. Leave empty only when the listener is bound to loopback and fronted by a local tunnel / reverse proxy. |
 
 Each setting also has an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
 
@@ -75,7 +77,7 @@ Each setting also has an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges in
 
 Every Graph notification includes the `clientState` string your subscription registered with. The listener rejects any notification whose `clientState` doesn't match, using timing-safe comparison. This is Microsoft's documented mechanism — treat the value as a strong shared secret.
 
-If `client_state` is unset, the listener accepts every well-formed POST. **Don't run without it in production.**
+If `client_state` is unset, the listener refuses to start.
 
 ### Source-IP allowlisting (production deployments)
 
@@ -86,6 +88,7 @@ platforms:
   msgraph_webhook:
     enabled: true
     extra:
+      host: 0.0.0.0
       client_state: "..."
       allowed_source_cidrs:
         - "52.96.0.0/14"
@@ -99,7 +102,7 @@ Or as an env var:
 MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS="52.96.0.0/14,52.104.0.0/14"
 ```
 
-Empty allowlist = accept from anywhere (default; preserves dev-tunnel workflows). Invalid CIDR strings log a warning and are ignored. **Review the Microsoft IP list quarterly** — it changes.
+Binding a non-loopback host such as `0.0.0.0`, `::`, or a LAN IP without `allowed_source_cidrs` is refused at startup. If you're using a dev tunnel or reverse proxy on the same machine, bind Hermes to `127.0.0.1` or `::1` and leave the allowlist empty there. Invalid CIDR strings log a warning and are ignored. **Review the Microsoft IP list quarterly** — it changes.
 
 ### HTTPS termination
 
@@ -107,7 +110,7 @@ The listener speaks plain HTTP. Terminate TLS at your reverse proxy (Caddy, Ngin
 
 ### Response hygiene
 
-On success the listener returns `202 Accepted` with an empty body — internal counters stay out of the wire response. Operators can observe counts via `/health`.
+On success the listener returns `202 Accepted` with an empty body — internal counters stay out of the wire response. Operators can observe counts via `/health`, which is guarded by the same source-IP rules as the webhook path.
 
 Status code table:
 
@@ -127,8 +130,9 @@ Status code table:
 | Graph subscription validation fails | Public URL is reachable, `/msgraph/webhook` path matches, GET with `validationToken` echoes the token verbatim as `text/plain` within 10 seconds. |
 | Notifications POST but nothing ingests | `client_state` matches what you registered the subscription with. Re-run `openssl rand -hex 32` and create a new subscription if the value drifted. Check `accepted_resources` includes the resource path Graph is sending. |
 | Every notification 403s | `clientState` mismatch (forged, or subscription registered with a different value). Re-create the subscription with `hermes teams-pipeline subscribe --client-state "$MSGRAPH_WEBHOOK_CLIENT_STATE" ...` (ships with the pipeline runtime PR). |
+| Listener refuses to start on `0.0.0.0` | Set `allowed_source_cidrs` to Microsoft's current webhook egress ranges, or bind Hermes to `127.0.0.1` / `::1` behind your tunnel or reverse proxy. |
 | Listener starts but `curl http://localhost:8646/health` hangs | Port binding collision. Check `ss -tlnp \| grep 8646` and change `port:` if needed. |
-| Real Graph requests from Microsoft get 403'd | Source IP allowlist is too narrow. Remove `allowed_source_cidrs` temporarily, confirm traffic flows, then widen the list to include the current Microsoft egress ranges. |
+| Real Graph requests from Microsoft get 403'd | Source IP allowlist is too narrow. Widen the list to include the current Microsoft egress ranges. If you're still validating the tunnel path, bind Hermes to loopback and let the tunnel handle public exposure. |
 
 ## Related Docs
 

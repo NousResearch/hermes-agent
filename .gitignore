@@ -88,9 +88,8 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
-# Working directory for the Hermes Agent's session state (~/.hermes/ at runtime;
-# also created in-repo when an agent operates in this checkout). Plans, audit
-# logs, and per-session caches are never artifacts of the codebase.
+Audits/
+build/
 .hermes/
 
 # Tool Search live-test harness output — non-deterministic model transcripts,

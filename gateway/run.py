@@ -5306,6 +5306,26 @@ class GatewayRunner:
             )
             stale_timeout_seconds = 0
 
+        # Read dispatch_boards filter — optional list of board slugs this
+        # gateway instance handles. If omitted, all non-archived boards
+        # are dispatched (backwards-compatible default).
+        _env_db = os.environ.get("HERMES_KANBAN_DISPATCH_BOARDS", "").strip()
+        _cfg_db = kanban_cfg.get("dispatch_boards") or []
+        if _env_db:
+            dispatch_boards_filter: "Optional[set[str]]" = {
+                s.strip() for s in _env_db.split(",") if s.strip()
+            }
+        elif _cfg_db:
+            dispatch_boards_filter = set(_cfg_db)
+        else:
+            dispatch_boards_filter = None  # None means all boards
+        _warned_unknown_slugs: set[str] = set()
+        if dispatch_boards_filter is not None:
+            logger.info(
+                "kanban dispatcher: scoped to boards %r",
+                sorted(dispatch_boards_filter),
+            )
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -5412,6 +5432,22 @@ class GatewayRunner:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            # If dispatch_boards is configured, only dispatch those slugs.
+            # Omitting the key dispatches all boards (backwards-compatible default).
+            if dispatch_boards_filter is not None:
+                known_slugs = {b.get("slug") or _kb.DEFAULT_BOARD for b in boards}
+                for slug in sorted(dispatch_boards_filter - known_slugs):
+                    if slug not in _warned_unknown_slugs:
+                        logger.warning(
+                            "kanban dispatcher: dispatch_boards includes unknown slug %r; skipping",
+                            slug,
+                        )
+                        _warned_unknown_slugs.add(slug)
+                boards = [
+                    b
+                    for b in boards
+                    if (b.get("slug") or _kb.DEFAULT_BOARD) in dispatch_boards_filter
+                ]
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
@@ -5434,6 +5470,12 @@ class GatewayRunner:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            if dispatch_boards_filter is not None:
+                boards = [
+                    b
+                    for b in boards
+                    if (b.get("slug") or _kb.DEFAULT_BOARD) in dispatch_boards_filter
+                ]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None

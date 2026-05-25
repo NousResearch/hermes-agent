@@ -1032,6 +1032,19 @@ display:
   skin: default
 
 # =============================================================================
+# Kanban dispatcher
+# =============================================================================
+# kanban:
+#   # Run the dispatcher inside the gateway process (default: true).
+#   dispatch_in_gateway: true
+#
+#   # dispatch_boards: Optional list of board slugs this gateway handles.
+#   #   - default               # When omitted, all non-archived boards are dispatched.
+#   #   - writing               # Useful when running multiple gateways to partition boards.
+#   # dispatch_boards:
+#   #   - default
+
+# =============================================================================
 # Model Aliases — short names for /model command
 # =============================================================================
 # Map short aliases to exact (model, provider, base_url) tuples.

@@ -1574,6 +1574,10 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Optional list of board slugs this gateway dispatcher handles.
+        # When set, only those boards are dispatched. Omit (null) to
+        # dispatch all non-archived boards (existing behavior).
+        "dispatch_boards": None,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

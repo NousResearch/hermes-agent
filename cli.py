@@ -6407,7 +6407,22 @@ class HermesCLI:
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
             # Trigger memory extraction on the old session before session_id rotates.
-            self.agent.commit_memory_session(self.conversation_history)
+            # Use a bounded timeout to avoid blocking /new on slow providers.
+            # Memory extraction is best-effort and should never block the UI.
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(
+                        self.agent.commit_memory_session,
+                        self.conversation_history,
+                    )
+                    fut.result(timeout=15)
+            except concurrent.futures.TimeoutError:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Memory commit timed out after 15s; continuing /new"
+                )
+            except Exception:
+                pass
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session

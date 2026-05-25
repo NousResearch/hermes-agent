@@ -80,32 +80,39 @@ def _resolve_home_dir() -> str:
     except Exception:
         pass
 
-    home = os.environ.get("HOME", "").strip()
-    if home:
-        return home
-
-    expanded = os.path.expanduser("~")
-    if expanded and expanded != "~":
-        return expanded
-
-    try:
-        import pwd
-
-        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
-        if resolved:
-            return resolved
-    except Exception:
-        pass
-
     # Last resort: /tmp (writable on any POSIX system). Avoids crashing the
     # subprocess with no HOME; callers can set HERMES_HOME explicitly if they
     # need a different writable dir.
     return "/tmp"
 
 
+_PROVIDER_SECRET_ENV_KEYS = {
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "XAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GLM_API_KEY",
+    "KIMI_API_KEY",
+    "MINIMAX_API_KEY",
+    "MINIMAX_CN_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "MISTRAL_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENROUTER_BASE_URL",
+}
+
+
 def _build_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env["HOME"] = _resolve_home_dir()
+    # ACP child processes should not inherit Hermes provider credentials by
+    # default. Keep the child environment minimally privileged unless a future
+    # caller explicitly opts specific secrets back in.
+    for key in _PROVIDER_SECRET_ENV_KEYS:
+        env.pop(key, None)
     return env
 
 

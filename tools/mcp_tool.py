@@ -93,6 +93,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from utils import normalize_proxy_env_vars
+
 logger = logging.getLogger(__name__)
 
 
@@ -1255,15 +1257,6 @@ class MCPServerTask:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
-        if not _MCP_AVAILABLE:
-            raise ImportError(
-                f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
-                "it is not installed. Install with:\n"
-                "  pip install 'hermes-agent[mcp]'\n"
-                "or (full install):\n"
-                "  pip install 'hermes-agent[all]'"
-            )
-
         command = config.get("command")
         args = config.get("args", [])
         user_env = config.get("env")
@@ -1452,6 +1445,11 @@ class MCPServerTask:
                 "verify": ssl_verify,
                 "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
             }
+            # Normalize proxy env vars in-process before httpx reads trust_env
+            # defaults. This fixes shells/services exporting SOCKS proxies as
+            # `socks://host:port`, which httpx rejects; canonicalize to
+            # `socks5://...` instead of failing remote HTTP MCP startup.
+            normalize_proxy_env_vars()
             if headers:
                 client_kwargs["headers"] = headers
             if _oauth_auth is not None:

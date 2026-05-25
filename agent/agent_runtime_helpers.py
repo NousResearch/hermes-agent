@@ -1855,6 +1855,77 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
 
 
 
+def _iter_pool_sockets(client: Any):
+    """Yield raw sockets reachable from an OpenAI/httpx client pool.
+
+    httpcore 1.x stores the concrete HTTP11/HTTP2 connection under
+    ``conn._connection``; older versions exposed stream attributes directly
+    on the pool entry. Keep the traversal defensive because these are private
+    transport internals and vary across httpx/httpcore releases.
+    """
+    try:
+        http_client = getattr(client, "_client", None)
+        if http_client is None:
+            return
+        transport = getattr(http_client, "_transport", None)
+        if transport is None:
+            return
+        pool = getattr(transport, "_pool", None)
+        if pool is None:
+            return
+        connections = (
+            getattr(pool, "_connections", None)
+            or getattr(pool, "_pool", None)
+            or []
+        )
+    except Exception:
+        return
+
+    seen: set[int] = set()
+    for conn in list(connections):
+        candidates = [conn]
+        inner = getattr(conn, "_connection", None)
+        if inner is not None:
+            candidates.append(inner)
+        for candidate in candidates:
+            stream = (
+                getattr(candidate, "_network_stream", None)
+                or getattr(candidate, "_stream", None)
+            )
+            if stream is None:
+                continue
+            sock = getattr(stream, "_sock", None)
+            if sock is None:
+                get_extra_info = getattr(stream, "get_extra_info", None)
+                if callable(get_extra_info):
+                    try:
+                        sock = get_extra_info("socket")
+                    except Exception:
+                        sock = None
+            if sock is None:
+                wrapped = getattr(stream, "stream", None)
+                if wrapped is not None:
+                    sock = getattr(wrapped, "_sock", None)
+            if sock is None:
+                # anyio-backed streams expose the raw socket through
+                # SocketAttribute.raw_socket when available.
+                wrapped = getattr(stream, "_stream", None)
+                extra = getattr(wrapped, "extra", None)
+                if callable(extra):
+                    try:
+                        from anyio.abc import SocketAttribute
+                        sock = extra(SocketAttribute.raw_socket)
+                    except Exception:
+                        sock = None
+            if sock is None:
+                continue
+            marker = id(sock)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            yield sock
+
+
 def cleanup_dead_connections(agent) -> bool:
     """Detect and clean up dead TCP connections on the primary client.
 
@@ -1868,36 +1939,9 @@ def cleanup_dead_connections(agent) -> bool:
     if client is None:
         return False
     try:
-        http_client = getattr(client, "_client", None)
-        if http_client is None:
-            return False
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
-            return False
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return False
-        connections = (
-            getattr(pool, "_connections", None)
-            or getattr(pool, "_pool", None)
-            or []
-        )
         dead_count = 0
-        for conn in list(connections):
+        for sock in _iter_pool_sockets(client):
             # Check for connections that are idle but have closed sockets
-            stream = (
-                getattr(conn, "_network_stream", None)
-                or getattr(conn, "_stream", None)
-            )
-            if stream is None:
-                continue
-            sock = getattr(stream, "_sock", None)
-            if sock is None:
-                sock = getattr(stream, "stream", None)
-                if sock is not None:
-                    sock = getattr(sock, "_sock", None)
-            if sock is None:
-                continue
             # Probe socket health with a non-blocking recv peek
             import socket as _socket
             try:
@@ -2059,62 +2103,56 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
 
 
 def force_close_tcp_sockets(client: Any) -> int:
-    """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
+    """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
 
-    When a provider drops a connection mid-stream, httpx's ``client.close()``
-    performs a graceful shutdown which leaves sockets in CLOSE-WAIT until the
-    OS times them out (often minutes).  This method walks the httpx transport
-    pool and issues ``socket.shutdown(SHUT_RDWR)`` + ``socket.close()`` to
-    force an immediate TCP RST, freeing the file descriptors.
+    When a provider drops a connection mid-stream — or the user issues an
+    interrupt — we want to unblock httpx's reader/writer immediately rather
+    than waiting for the kernel's per-connection timeout. ``shutdown(SHUT_RDWR)``
+    achieves that: it sends FIN, breaks any pending ``recv``/``send`` with EOF
+    or ``EPIPE``, but does NOT release the file descriptor.
 
-    Returns the number of sockets force-closed.
+    Historically this helper also called ``socket.close()`` so the FD got
+    released immediately, but that's unsafe when (as is the case for both the
+    interrupt-abort path and stale-call kill path) the helper runs on a
+    different thread than the one driving the request:
+
+      * The Python ``socket.socket`` we close here is the SAME object held by
+        httpx's pool, so closing it via Python sets its ``_fd`` to -1 and
+        future operations on that Python object fail safely.
+      * BUT the SSL wrapper (``ssl.SSLSocket``'s underlying OpenSSL ``BIO``)
+        caches the raw integer FD. Once ``os.close(fd)`` runs, the kernel may
+        immediately recycle that integer to the next ``open()`` call — e.g.
+        the kanban dispatcher opening ``kanban.db``.
+      * The owning worker thread then unwinds httpx, the SSL layer flushes a
+        pending TLS record, and the encrypted bytes get written into the
+        wrong file (issue #29507: 24-byte TLS application-data record
+        clobbering SQLite header bytes 5..28).
+
+    The fix is to let the owning thread own the close. ``shutdown()`` from any
+    thread is FD-safe; ``close()`` is not. The httpx connection's own close
+    path — which runs from the worker thread when it unwinds — will release
+    the FD via the same ``socket.socket`` object, and because Python's socket
+    close atomically swaps ``_fd`` to -1 *before* issuing ``os.close``, there
+    is no FD-aliasing window when only one thread closes.
+
+    Returns the number of sockets shut down. (Field kept as
+    ``tcp_force_closed=N`` in the log line for backwards-compatible parsing.)
     """
     import socket as _socket
 
-    closed = 0
+    shutdown_count = 0
     try:
-        http_client = getattr(client, "_client", None)
-        if http_client is None:
-            return 0
-        transport = getattr(http_client, "_transport", None)
-        if transport is None:
-            return 0
-        pool = getattr(transport, "_pool", None)
-        if pool is None:
-            return 0
-        # httpx uses httpcore connection pools; connections live in
-        # _connections (list) or _pool (list) depending on version.
-        connections = (
-            getattr(pool, "_connections", None)
-            or getattr(pool, "_pool", None)
-            or []
-        )
-        for conn in list(connections):
-            stream = (
-                getattr(conn, "_network_stream", None)
-                or getattr(conn, "_stream", None)
-            )
-            if stream is None:
-                continue
-            sock = getattr(stream, "_sock", None)
-            if sock is None:
-                sock = getattr(stream, "stream", None)
-                if sock is not None:
-                    sock = getattr(sock, "_sock", None)
-            if sock is None:
-                continue
+        for sock in _iter_pool_sockets(client):
             try:
                 sock.shutdown(_socket.SHUT_RDWR)
             except OSError:
+                # Already shut down / not connected / FD invalid — all benign.
                 pass
-            try:
-                sock.close()
-            except OSError:
-                pass
-            closed += 1
+            # IMPORTANT (#29507): do NOT call sock.close() here. See docstring.
+            shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)
-    return closed
+    return shutdown_count
 
 
 
@@ -2140,5 +2178,6 @@ __all__ = [
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
+    "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

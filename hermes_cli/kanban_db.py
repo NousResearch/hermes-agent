@@ -75,10 +75,12 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -983,6 +985,133 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+_SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
+    """Return True for a TLS record header at ``data[offset:]``."""
+    if len(data) < offset + 5:
+        return False
+    content_type = data[offset]
+    major = data[offset + 1]
+    minor = data[offset + 2]
+    length = int.from_bytes(data[offset + 3:offset + 5], "big")
+    return (
+        content_type in {0x14, 0x15, 0x16, 0x17}
+        and major == 0x03
+        and minor in {0x00, 0x01, 0x02, 0x03, 0x04}
+        and 0 < length <= 18432
+    )
+
+
+def _validate_sqlite_header(path: Path) -> None:
+    """Fail early with an actionable error for non-SQLite Kanban DB files."""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    if stat.st_size == 0:
+        return
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return
+    if head.startswith(_SQLITE_HEADER):
+        return
+    signature = ""
+    if head.startswith(b"SQLit") and _looks_like_tls_record_at(head, 5):
+        signature = " (TLS record header detected at byte offset 5)"
+    elif _looks_like_tls_record_at(head, 0):
+        signature = " (TLS record header detected at byte offset 0)"
+    raise sqlite3.DatabaseError(
+        "file is not a database: invalid SQLite header for "
+        f"{path}{signature}; first_32={head[:32].hex(' ')}"
+    )
+
+
+class KanbanDbCorruptError(RuntimeError):
+    """Raised when an existing kanban DB file fails integrity checks."""
+
+    def __init__(self, db_path: Path, backup_path: Optional[Path], reason: str):
+        self.db_path = db_path
+        self.backup_path = backup_path
+        self.reason = reason
+        backup_str = str(backup_path) if backup_path is not None else "<backup failed>"
+        super().__init__(
+            f"Refusing to open corrupt kanban DB at {db_path}: {reason}. "
+            f"Original preserved; backup at {backup_str}."
+        )
+
+
+def _backup_corrupt_db(path: Path) -> Optional[Path]:
+    """Copy a corrupt DB and WAL/SHM sidecars to a timestamped backup."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    parent = resolved.parent
+    base_name = resolved.name
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
+    if candidate.parent != parent:
+        return None
+    counter = 0
+    while candidate.exists():
+        counter += 1
+        candidate = parent / f"{base_name}.corrupt.{stamp}.{counter}.bak"
+        if candidate.parent != parent:
+            return None
+    try:
+        shutil.copy2(resolved, candidate)
+    except OSError:
+        return None
+    for suffix in ("-wal", "-shm"):
+        sidecar = parent / (base_name + suffix)
+        if sidecar.parent != parent or not sidecar.exists():
+            continue
+        try:
+            sidecar_backup = parent / (candidate.name + suffix)
+            if sidecar_backup.parent == parent:
+                shutil.copy2(sidecar, sidecar_backup)
+        except OSError:
+            pass
+    return candidate
+
+
+def _guard_existing_db_is_healthy(path: Path) -> None:
+    """Run integrity checks on existing non-empty DBs before auto-init."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return
+    try:
+        if not resolved.exists() or resolved.stat().st_size == 0:
+            return
+    except OSError:
+        return
+    if str(resolved) in _INITIALIZED_PATHS:
+        return
+    reason: Optional[str] = None
+    try:
+        _validate_sqlite_header(resolved)
+        probe = sqlite3.connect(str(resolved), timeout=5, isolation_level=None)
+        try:
+            row = probe.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            probe.close()
+        if not row or (row[0] or "").lower() != "ok":
+            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+    except sqlite3.OperationalError:
+        raise
+    except sqlite3.DatabaseError as exc:
+        reason = f"sqlite refused to open file: {exc}"
+    if reason is None:
+        return
+    backup = _backup_corrupt_db(resolved)
+    raise KanbanDbCorruptError(resolved, backup, reason)
 
 
 def connect(
@@ -1013,6 +1142,9 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Cheap byte-level + full integrity check before SQLite auto-init can
+    # silently create or migrate over a corrupt existing board.
+    _guard_existing_db_is_healthy(path)
     resolved = str(path.resolve())
     needs_init = resolved not in _INITIALIZED_PATHS
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)

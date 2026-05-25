@@ -62,6 +62,38 @@ def test_init_creates_expected_tables(kanban_home):
     assert link_cols["relation_type"]["dflt_value"] == "'dependency'"
 
 
+def test_connect_refuses_corrupt_existing_db_and_preserves_backup(tmp_path):
+    db = tmp_path / "kanban.db"
+    # Reproduce the #29507-style shape: SQLite prefix followed by a TLS record.
+    corrupt = b"SQLit" + bytes([0x17, 0x03, 0x03, 0x00, 0x20]) + b"x" * 64
+    db.write_bytes(corrupt)
+    (tmp_path / "kanban.db-wal").write_bytes(b"wal sidecar")
+    (tmp_path / "kanban.db-shm").write_bytes(b"shm sidecar")
+
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb.connect(db)
+
+    exc = excinfo.value
+    assert exc.db_path == db.resolve()
+    assert exc.backup_path is not None
+    assert exc.backup_path.exists()
+    assert exc.backup_path.read_bytes() == corrupt
+    assert exc.backup_path.with_name(exc.backup_path.name + "-wal").read_bytes() == b"wal sidecar"
+    assert exc.backup_path.with_name(exc.backup_path.name + "-shm").read_bytes() == b"shm sidecar"
+    assert "TLS record header detected at byte offset 5" in str(exc)
+
+
+def test_connect_allows_missing_and_zero_byte_db(tmp_path):
+    missing = tmp_path / "missing.db"
+    with kb.connect(missing) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    zero = tmp_path / "zero.db"
+    zero.write_bytes(b"")
+    with kb.connect(zero) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
 def test_init_migrates_legacy_task_links_to_dependency(tmp_path):
     db = tmp_path / "legacy-kanban.db"
     raw = sqlite3.connect(db)

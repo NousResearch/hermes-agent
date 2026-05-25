@@ -1,12 +1,20 @@
-"""Computer use toolset — universal (any-model) macOS desktop control.
+"""Computer use toolset — universal (any-model) desktop control.
 
 Architecture
 ------------
-This toolset drives macOS apps through cua-driver's background computer-use
+On macOS this toolset drives apps through cua-driver's background computer-use
 primitive (SkyLight private SPIs for focus-without-raise + pid-scoped event
 posting). Unlike #4562's pyautogui backend, it does NOT steal the user's
 cursor, keyboard focus, or Space — the agent and the user can co-work on the
 same machine.
+
+On Linux/X11 it drives via standard ``xdotool`` + ``scrot`` + ``wmctrl``
+utilities (see ``linux_backend.py``). The Linux backend is selected
+automatically when ``sys.platform`` is ``linux`` and the X11 dependencies
+are present; SOM (set-of-mark numbered overlays) degrades to vision-mode
+screenshots because Linux has no first-class accessibility tree comparable
+to macOS AX. Wayland is intentionally unsupported — by design, the
+compositor does not allow arbitrary clients to synthesize input.
 
 Unlike #4562's Anthropic-native `computer_20251124` tool, the schema here is
 a plain OpenAI function-calling schema that every tool-capable model can

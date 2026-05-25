@@ -126,14 +126,33 @@ _session_auto_approve = False
 _always_allow: set = set()  # action names the user unlocked for the session
 
 
+def _default_backend_name() -> str:
+    """Pick a sensible default backend for the current platform.
+
+    macOS keeps ``cua`` (the SkyLight-based driver). Linux gets ``linux``
+    so the X11 backend turns on automatically when its dependencies
+    (xdotool + scrot) are installed.
+    """
+    if sys.platform == "darwin":
+        return "cua"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return "cua"
+
+
 def _get_backend() -> ComputerUseBackend:
     global _backend
     with _backend_lock:
         if _backend is None:
-            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
+            backend_name = os.environ.get(
+                "HERMES_COMPUTER_USE_BACKEND", _default_backend_name()
+            ).lower()
             if backend_name in {"cua", "cua-driver", ""}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
                 _backend = CuaDriverBackend()
+            elif backend_name == "linux":
+                from tools.computer_use.linux_backend import LinuxBackend
+                _backend = LinuxBackend()
             elif backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             else:
@@ -736,12 +755,25 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    Platform dispatch:
+      * macOS — cua-driver binary present (SkyLight-based backend).
+      * Linux — xdotool + scrot present, ``$DISPLAY`` exported, session
+        is X11 (not Wayland).
+      * Other platforms / unknown overrides — False.
+
+    The ``HERMES_COMPUTER_USE_BACKEND`` env var can pin a backend for
+    testing (``noop`` is always considered available).
     """
-    if sys.platform != "darwin":
-        return False
-    from tools.computer_use.cua_backend import cua_driver_binary_available
-    return cua_driver_binary_available()
+    override = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "").lower()
+    if override == "noop":
+        return True
+    if override == "linux" or (not override and sys.platform.startswith("linux")):
+        from tools.computer_use.linux_backend import linux_backend_available
+        return linux_backend_available()
+    if override in {"cua", "cua-driver"} or (not override and sys.platform == "darwin"):
+        from tools.computer_use.cua_backend import cua_driver_binary_available
+        return cua_driver_binary_available()
+    return False
 
 
 def get_computer_use_schema() -> Dict[str, Any]:

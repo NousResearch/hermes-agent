@@ -2669,6 +2669,12 @@ def _append_event(
     # Notify any listening TUI gateway via FIFO (event-driven, zero polling).
     # Only fires for notification-worthy event kinds — avoids waking the TUI
     # for internal events like "created", "edited", "heartbeat".
+    #
+    # The actual FIFO write is deferred to _flush_pending_fifo_writes(),
+    # which runs after COMMIT in write_txn.  Writing before commit creates a
+    # race: the TUI reader sees the event immediately but the event row is
+    # not yet visible to other connections (the query in
+    # _dispatch_kanban_notification returns nothing).
     _notify_kinds = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
     if kind in _notify_kinds:
         _fifo_path = os.path.expanduser("~/.hermes/tui_kanban.fifo")

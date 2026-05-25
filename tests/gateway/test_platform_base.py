@@ -329,6 +329,19 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_extracts_markdown_document_path(self):
+        content = "Here is the review bundle:\nMEDIA:/tmp/claude-chat-review-prompt.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/claude-chat-review-prompt.md", False)]
+        assert "MEDIA:" not in cleaned
+        assert "Here is the review bundle" in cleaned
+
+    def test_media_tag_extracts_markdown_long_extension_path(self):
+        content = "MEDIA:/tmp/claude-chat-review-prompt.markdown"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/claude-chat-review-prompt.markdown", False)]
+        assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

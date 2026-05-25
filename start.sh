@@ -1,31 +1,32 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
-# Railway service variables can override PATH at runtime.
-# Re-add standard system dirs so mkdir/cp/touch/rm/python are always available.
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+# Make sure Hermes home folders exist
+mkdir -p /data/.hermes/cron \
+         /data/.hermes/sessions \
+         /data/.hermes/logs \
+         /data/.hermes/memories \
+         /data/.hermes/skills \
+         /data/.hermes/pairing \
+         /data/.hermes/hooks \
+         /data/.hermes/image_cache \
+         /data/.hermes/audio_cache \
+         /data/.hermes/workspace
 
-export HOME="${HOME:-/data}"
-export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
-
-mkdir -p \
-  "${HERMES_HOME}/cron" \
-  "${HERMES_HOME}/sessions" \
-  "${HERMES_HOME}/logs" \
-  "${HERMES_HOME}/memories" \
-  "${HERMES_HOME}/skills" \
-  "${HERMES_HOME}/pairing" \
-  "${HERMES_HOME}/hooks" \
-  "${HERMES_HOME}/image_cache" \
-  "${HERMES_HOME}/audio_cache" \
-  "${HERMES_HOME}/workspace"
-
-if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -f "/app/cli-config.yaml.example" ]; then
-  cp /app/cli-config.yaml.example "${HERMES_HOME}/config.yaml"
+# Create empty env file if missing
+if [ ! -f /data/.hermes/.env ]; then
+  touch /data/.hermes/.env
 fi
 
-if [ ! -f "${HERMES_HOME}/.env" ]; then
-  touch "${HERMES_HOME}/.env"
+# Seed config.yaml only if it does not exist yet
+# server.py will rewrite this later using the selected provider/model
+if [ ! -f /data/.hermes/config.yaml ] && [ -f /opt/hermes-agent/cli-config.yaml.example ]; then
+  cp /opt/hermes-agent/cli-config.yaml.example /data/.hermes/config.yaml
 fi
 
+# Ensure expected environment values exist
+export HOME=/data
+export HERMES_HOME=/data/.hermes
+
+# Start the admin wrapper
 exec python /app/server.py

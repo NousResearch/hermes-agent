@@ -1308,6 +1308,8 @@ AUTHOR_MAP = {
     "claw@openclaw.ai": "wanwan2qq",  # PR #10215 (strip brackets/quotes from /resume; gateway session-ID lookup)
     "simo.kiihamaki@gmail.com": "SimoKiihamaki",  # PR #30773 (Windows /reset+/new freeze; stdin fallback for modal)
     "66773372+Tranquil-Flow@users.noreply.github.com": "Tranquil-Flow",  # PR #27518 (bracketed-paste timeout)
+    "8bit64k@pm.me": "8bit64k",  # PR #14681 (TUI /q alias from quit to queue)
+    "chenglunhu@gmail.com": "hclsys",  # PR #31985 (TUI /q alias regression test)
 }
 
 

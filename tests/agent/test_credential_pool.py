@@ -1182,6 +1182,150 @@ def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, 
     assert entry.access_token == "env-override-token"
 
 
+def test_load_pool_api_key_path_skips_oauth_autodiscovery(tmp_path, monkeypatch):
+    """API-key auth path: autodiscovered OAuth creds must NOT be seeded.
+
+    When the user picks "Anthropic API key" at `hermes setup`,
+    `save_anthropic_api_key()` writes ANTHROPIC_API_KEY and zeros
+    ANTHROPIC_TOKEN.  That env-var pattern is the explicit signal that the
+    user opted into the API-key path and explicitly OUT of the OAuth
+    masquerade (Claude Code identity injection + `mcp_` tool-name rewrite
+    + claude-cli user-agent).  Autodiscovered Claude Code / Hermes PKCE
+    tokens from other tools' credential files must NOT be silently mixed
+    into the anthropic pool — otherwise rotation on a 401/429 could flip
+    the session onto OAuth credentials mid-conversation.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-explicit-user-key")
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+
+    pkce_called = {"n": 0}
+    cc_called = {"n": 0}
+
+    def _fake_pkce():
+        pkce_called["n"] += 1
+        return {
+            "accessToken": "sk-ant-oat01-pkce-token",
+            "refreshToken": "pkce-refresh",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        }
+
+    def _fake_cc():
+        cc_called["n"] += 1
+        return {
+            "accessToken": "sk-ant-oat01-claude-code-token",
+            "refreshToken": "cc-refresh",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        }
+
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", _fake_pkce)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", _fake_cc)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    sources = {entry.source for entry in pool.entries()}
+
+    # Only the explicit API-key entry should be in the pool.
+    assert sources == {"env:ANTHROPIC_API_KEY"}, f"got {sources}"
+    # And we should not have even called the autodiscovery readers.
+    assert pkce_called["n"] == 0
+    assert cc_called["n"] == 0
+
+
+def test_load_pool_api_key_path_prunes_stale_oauth_entries(tmp_path, monkeypatch):
+    """Switching OAuth -> API key must prune stale OAuth entries from auth.json.
+
+    Without this, a user who logs into OAuth (seeding `claude_code` or
+    `hermes_pkce` into auth.json) and later switches to the API key at
+    `hermes setup` would still have those OAuth entries dormant on disk.
+    Pool rotation on a transient 401 could revive them and flip the
+    session onto the OAuth masquerade.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-explicit-user-key")
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    # Plant a stale claude_code entry in the on-disk pool (as if a previous
+    # OAuth session seeded it).
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "stale1",
+                        "source": "claude_code",
+                        "auth_type": "oauth",
+                        "access_token": "sk-ant-oat01-stale-claude-code",
+                        "refresh_token": "stale-refresh",
+                        "expires_at_ms": int(time.time() * 1000) + 3_600_000,
+                        "priority": 0,
+                        "label": "stale-claude-code",
+                        "request_count": 0,
+                    },
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    sources = {entry.source for entry in pool.entries()}
+
+    # Stale claude_code entry must be gone, API key must be present.
+    assert "claude_code" not in sources
+    assert "env:ANTHROPIC_API_KEY" in sources
+
+
+def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
+    """OAuth path: ANTHROPIC_TOKEN set, autodiscovery still fires.
+
+    Regression guard: the API-key gate must not affect users who chose the
+    OAuth path at `hermes setup`.  When ANTHROPIC_TOKEN is set (and
+    ANTHROPIC_API_KEY is empty), autodiscovered Claude Code creds should
+    still be seeded into the pool as before.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-explicit-oauth-token")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "sk-ant-oat01-autodiscovered-cc",
+            "refreshToken": "cc-refresh",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    sources = {entry.source for entry in pool.entries()}
+
+    # Both env OAuth token and autodiscovered Claude Code creds should be there.
+    assert "env:ANTHROPIC_TOKEN" in sources
+    assert "claude_code" in sources
+
+
 def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
     """least_used strategy should select the credential with the lowest request_count."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

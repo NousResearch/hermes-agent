@@ -10436,7 +10436,21 @@ class GatewayRunner:
                         cfg = yaml.safe_load(f) or {}
                 else:
                     cfg = {}
-                model_cfg = cfg.setdefault("model", {})
+                # Coerce scalar/None ``model:`` into a dict before mutation —
+                # otherwise ``cfg.setdefault("model", {})`` returns the existing
+                # scalar and the next assignment raises
+                # ``TypeError: 'str' object does not support item assignment``.
+                # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
+                # string) instead of the proper nested ``model: {default: ...}``.
+                raw_model = cfg.get("model")
+                if isinstance(raw_model, dict):
+                    model_cfg = raw_model
+                elif isinstance(raw_model, str) and raw_model.strip():
+                    model_cfg = {"default": raw_model.strip()}
+                    cfg["model"] = model_cfg
+                else:
+                    model_cfg = {}
+                    cfg["model"] = model_cfg
                 model_cfg["default"] = result.new_model
                 model_cfg["provider"] = result.target_provider
                 if result.base_url:

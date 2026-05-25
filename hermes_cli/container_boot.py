@@ -193,6 +193,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
 
     from hermes_cli.service_manager import (
         S6ServiceManager,
+        _seed_supervise_skeleton,
         validate_profile_name,
     )
 
@@ -231,6 +232,17 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
         # _dispatch_via_service_manager_if_s6 helper to `s6-svc -u`).
         if not start:
             (tmp_dir / "down").touch()
+
+        # Pre-create the supervise/ skeleton with hermes ownership
+        # BEFORE we publish the slot. Mirrors the same pre-creation
+        # step in S6ServiceManager.register_profile_gateway — when
+        # s6-svscan picks the published slot up, the s6-supervise it
+        # spawns will EEXIST our dirs/FIFOs and inherit hermes
+        # ownership, so runtime s6-svc / s6-svstat / s6-svwait calls
+        # (all dispatched as the hermes user) won't hit EACCES. See
+        # ``_seed_supervise_skeleton`` in service_manager.py for the
+        # full rationale.
+        _seed_supervise_skeleton(tmp_dir)
 
         # Publish atomically. Path.replace handles the existing-target
         # case the same way os.rename does on POSIX: the target is

@@ -248,7 +248,8 @@ def _render_todo_checklist(result_str: str) -> str:
     for item in todos:
         content = (item.get("content") or "")[:80]
         status = _STATUS_MAP.get(item.get("status", "pending"), "[ ]")
-        lines.append(f"{status} {content}")
+        item_id = item.get("id", "")
+        lines.append(f"{status} {content} ({item_id})" if item_id else f"{status} {content}")
     return "\n".join(lines)
 
 

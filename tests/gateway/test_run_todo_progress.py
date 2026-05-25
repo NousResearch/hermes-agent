@@ -43,10 +43,10 @@ class TestRenderTodoChecklist:
         ])
         checklist = self._render(result)
         assert "📋 Task List" in checklist
-        assert "[ ] Set up CI/CD" in checklist
-        assert "[>] Write tests" in checklist
-        assert "[x] Deploy" in checklist
-        assert "[-] Cancel this" in checklist
+        assert "[ ] Set up CI/CD (1)" in checklist
+        assert "[>] Write tests (2)" in checklist
+        assert "[x] Deploy (3)" in checklist
+        assert "[-] Cancel this (4)" in checklist
 
     def test_empty_todos_returns_empty_string(self):
         """Empty todo list should return empty string (not crash)."""

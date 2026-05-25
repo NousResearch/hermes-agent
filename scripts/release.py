@@ -1240,6 +1240,8 @@ AUTHOR_MAP = {
     "165905879+davidcampbelldc@users.noreply.github.com": "davidcampbelldc",
     "hoangv.pham0803@gmail.com": "hehehe0803",  # PR #26212 salvage (codex kanban writable root)
     "26063003+hehehe0803@users.noreply.github.com": "hehehe0803",
+    "kasunvinod@users.noreply.github.com": "kasunvinod",  # PR #24126 salvage (codex timeout propagation)
+    "15059870+kasunvinod@users.noreply.github.com": "kasunvinod",
     "38348871+vaddisrinivas@users.noreply.github.com": "vaddisrinivas",  # PR #26394 salvage (Docker messaging extra)
     # batch salvage (May 2026 LHF run, group 7)
     "198679067+02356abc@users.noreply.github.com": "02356abc",  # PR #28286 salvage (wecom CLOSING)

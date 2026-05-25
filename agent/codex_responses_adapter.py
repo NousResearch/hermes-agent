@@ -745,7 +745,7 @@ def _preflight_codex_api_kwargs(
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers", "extra_body",
+        "extra_headers", "extra_body", "timeout",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -771,6 +771,13 @@ def _preflight_codex_api_kwargs(
     max_output_tokens = api_kwargs.get("max_output_tokens")
     if isinstance(max_output_tokens, (int, float)) and max_output_tokens > 0:
         normalized["max_output_tokens"] = int(max_output_tokens)
+    timeout = api_kwargs.get("timeout")
+    if (
+        isinstance(timeout, (int, float))
+        and not isinstance(timeout, bool)
+        and 0 < float(timeout) < float("inf")
+    ):
+        normalized["timeout"] = float(timeout)
     temperature = api_kwargs.get("temperature")
     if isinstance(temperature, (int, float)):
         normalized["temperature"] = float(temperature)

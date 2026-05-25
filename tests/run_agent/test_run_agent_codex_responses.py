@@ -306,7 +306,10 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["parallel_tool_calls"] is True
     assert isinstance(kwargs["prompt_cache_key"], str)
     assert len(kwargs["prompt_cache_key"]) > 0
-    assert "timeout" not in kwargs
+    # ``timeout`` is now wired from ``_resolved_api_call_timeout`` (default 1800s)
+    # so per-provider ``request_timeout_seconds`` actually reaches the SDK.
+    assert isinstance(kwargs.get("timeout"), float)
+    assert kwargs["timeout"] > 0
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
 
@@ -1051,6 +1054,29 @@ def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
     from agent.codex_responses_adapter import _preflight_codex_api_kwargs
     result = _preflight_codex_api_kwargs(kwargs)
     assert result["service_tier"] == "priority"
+
+
+def test_preflight_codex_api_kwargs_preserves_positive_timeout(monkeypatch):
+    """Positive numeric timeouts survive preflight so the SDK honors them."""
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["timeout"] = 600.0
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+    result = _preflight_codex_api_kwargs(kwargs)
+    assert result["timeout"] == 600.0
+
+
+def test_preflight_codex_api_kwargs_drops_invalid_timeout(monkeypatch):
+    """Zero, negative, inf, and booleans are all dropped — not passed to SDK."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    for bad in (0, -1, float("inf"), True, False, "300", None):
+        kwargs = _codex_request_kwargs()
+        kwargs["timeout"] = bad
+        result = _preflight_codex_api_kwargs(kwargs)
+        assert "timeout" not in result, f"timeout={bad!r} should be dropped"
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):

@@ -3079,6 +3079,20 @@ class TelegramAdapter(BasePlatformAdapter):
             # transport is up.
             self._start_post_connect_housekeeping()
 
+            # ── Local injection endpoint (HERMES-LOCAL PATCH) ─────────
+            # Allows trusted local processes (e.g. iphone_relay.py) to inject
+            # synthetic user messages into this Telegram session so they land in
+            # the same in-memory conversation as real Telegram messages. Bound
+            # to 127.0.0.1, gated by shared secret. Silently no-op if
+            # HERMES_TELEGRAM_INJECT_SECRET is not set.
+            try:
+                await self._start_injection_server()
+            except Exception as inj_err:
+                logger.warning(
+                    "[%s] Injection endpoint failed to start: %s",
+                    self.name, inj_err, exc_info=True,
+                )
+
             return True
             
         except Exception as e:
@@ -3087,6 +3101,100 @@ class TelegramAdapter(BasePlatformAdapter):
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
+
+    # ── HERMES-LOCAL PATCH: synthetic message injection ───────────────
+    async def _start_injection_server(self) -> None:
+        """Localhost HTTP endpoint for injecting synthetic user messages.
+
+        Used by iphone_relay.py to deliver voice transcripts into this
+        Telegram session as if the user had typed them. Result: voice
+        and text share the exact same in-memory conversation history.
+
+        Disabled unless HERMES_TELEGRAM_INJECT_SECRET is set.
+        Bound strictly to 127.0.0.1.
+        """
+        secret = os.getenv("HERMES_TELEGRAM_INJECT_SECRET", "").strip()
+        if not secret:
+            self._injection_runner = None
+            return
+
+        try:
+            from aiohttp import web
+        except ImportError:
+            logger.warning("[%s] aiohttp missing — injection endpoint disabled", self.name)
+            self._injection_runner = None
+            return
+
+        port = int(os.getenv("HERMES_TELEGRAM_INJECT_PORT", "8643"))
+
+        async def handler(request):
+            if request.headers.get("X-Inject-Secret") != secret:
+                return web.json_response({"error": "forbidden"}, status=403)
+            try:
+                data = await request.json()
+            except Exception:
+                return web.json_response({"error": "bad_json"}, status=400)
+
+            chat_id = data.get("chat_id")
+            text = data.get("text")
+            if not chat_id or not text:
+                return web.json_response({"error": "missing chat_id/text"}, status=400)
+
+            user_id = str(data.get("user_id") or chat_id)
+            user_name = data.get("user_name") or "User"
+
+            try:
+                event = self._build_synthetic_text_event(
+                    chat_id=str(chat_id),
+                    text=str(text),
+                    user_id=user_id,
+                    user_name=str(user_name),
+                )
+                asyncio.create_task(self.handle_message(event))
+            except Exception as e:
+                logger.error("[%s] Injection dispatch failed: %s", self.name, e, exc_info=True)
+                return web.json_response({"error": "dispatch_failed", "detail": str(e)}, status=500)
+
+            return web.json_response({"status": "queued"})
+
+        app = web.Application()
+        app.router.add_post("/inject", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", port)
+        await site.start()
+        self._injection_runner = runner
+        logger.info(
+            "[%s] Injection endpoint listening on 127.0.0.1:%d (POST /inject)",
+            self.name, port,
+        )
+
+    def _build_synthetic_text_event(
+        self,
+        chat_id: str,
+        text: str,
+        user_id: str,
+        user_name: str,
+    ) -> MessageEvent:
+        """Build a MessageEvent for a synthetic injected message."""
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=user_name,
+            chat_type="dm",
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=None,
+            chat_topic=None,
+            message_id=None,
+        )
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=None,
+            message_id=None,
+            timestamp=datetime.now(),
+        )
 
     async def _set_status_indicator(self, online: bool) -> None:
         """Set the bot's short description to the online/offline status text.
@@ -3200,6 +3308,16 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_status_indicator(online=False)
         except Exception:
             pass
+
+        # HERMES-LOCAL PATCH: tear down injection endpoint before cancelling
+        # delayed deliveries so new synthetic turns cannot enter teardown.
+        injection_runner = getattr(self, "_injection_runner", None)
+        if injection_runner is not None:
+            try:
+                await injection_runner.cleanup()
+            except Exception as e:
+                logger.warning("[%s] Injection endpoint cleanup failed: %s", self.name, e)
+            self._injection_runner = None
 
         await self._cancel_pending_delivery_tasks()
 

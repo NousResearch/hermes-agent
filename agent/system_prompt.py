@@ -97,6 +97,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # Runtime model identity — LLMs don't reliably know which model is
+    # serving them (Grok will claim "Claude Opus", Claude will claim
+    # "GPT-4") so we pin the fact in the stable tier of the system
+    # prompt. Placed after the persona but before behavioral guidance
+    # so SOUL.md still owns voice and the identity is just a fact the
+    # model can quote when asked. Stable across turns → upstream
+    # prompt cache stays warm.
+    _model = getattr(agent, "model", None)
+    _provider = getattr(agent, "provider", None)
+    if _model and _provider:
+        stable_parts.append(
+            f"Runtime identity: you are running on model `{_model}` "
+            f"via provider `{_provider}`. If a user asks which model "
+            "powers you, answer with exactly these two values; do not "
+            "guess or invent."
+        )
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 

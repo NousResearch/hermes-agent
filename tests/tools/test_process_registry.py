@@ -100,6 +100,49 @@ class TestGetAndPoll:
         assert result["status"] == "exited"
         assert result["exit_code"] == 0
 
+    def test_poll_does_not_mark_completion_consumed(self, registry):
+        """poll() must NOT mark completions consumed (regression guard for #10156).
+
+        notify_on_complete watcher notifications were silently suppressed
+        because poll() added sessions to _completion_consumed. This caused
+        drain_notifications() to skip completion events after a poll() call.
+
+        poll() is a read-only status query — it should not have the side
+        effect of consuming the notification event.
+        """
+        sid = "proc_poll_not_consumed"
+        s = _make_session(sid=sid, exited=True, exit_code=0, output="done")
+        registry._finished[s.id] = s
+
+        # Queue a completion event for this session
+        registry.completion_queue.put({
+            "type": "completion",
+            "session_id": sid,
+            "command": "echo done",
+            "exit_code": 0,
+            "output": "done",
+        })
+
+        try:
+            # Poll should return the exited status
+            result = registry.poll(sid)
+            assert result["status"] == "exited"
+            assert result["exit_code"] == 0
+
+            # After poll(), the session should NOT be marked as consumed
+            assert not registry.is_completion_consumed(sid), (
+                "poll() should not mark completions consumed"
+            )
+
+            # drain_notifications() should still return the event
+            notifications = registry.drain_notifications()
+            assert len(notifications) == 1
+            assert notifications[0][0]["session_id"] == sid
+        finally:
+            registry._completion_consumed.discard(sid)
+            while not registry.completion_queue.empty():
+                registry.completion_queue.get_nowait()
+
 
 # =========================================================================
 # Orphaned-pipe reconciliation (issue #17327)

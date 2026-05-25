@@ -12,7 +12,7 @@ No LLM, no real platform connections.
 import asyncio
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -379,7 +379,7 @@ def make_discord_message(
         guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
         type=getattr(discord, "MessageType", SimpleNamespace()).default,
-        reference=None, created_at=datetime.now(timezone.utc),
+        reference=None, created_at=datetime.now(UTC),
         create_thread=AsyncMock(),
     )
 

@@ -30,7 +30,7 @@ import secrets
 import time
 import urllib.parse
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, UTC
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
@@ -1455,7 +1455,7 @@ class RecallGuardMiddleware(InboundMiddleware):
         store.append_to_transcript(sid, {
             "role": "system",
             "content": f'[recall] message_id="{recalled_id}" has been recalled; do not quote or reference it.',
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
         })
         logger.info("[%s] Recall: system note for msg_id=%s (branch B)", adapter.name, recalled_id)
 
@@ -2087,7 +2087,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
             entry: dict = {
                 "role": "user",
                 "content": attributed,
-                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "timestamp": datetime.now(tz=UTC).isoformat(),
                 "observed": True,
             }
             if msg_id:

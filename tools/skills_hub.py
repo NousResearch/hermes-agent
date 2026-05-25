@@ -23,7 +23,7 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
@@ -2798,8 +2798,8 @@ class HubLockFile:
             "install_path": install_path,
             "files": files,
             "metadata": metadata or {},
-            "installed_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "installed_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         self.save(data)
 
@@ -2873,7 +2873,7 @@ def append_audit_log(action: str, skill_name: str, source: str,
                      trust_level: str, verdict: str, extra: str = "") -> None:
     """Append a line to the audit log."""
     AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     parts = [timestamp, action, skill_name, f"{source}:{trust_level}", verdict]
     if extra:
         parts.append(extra)

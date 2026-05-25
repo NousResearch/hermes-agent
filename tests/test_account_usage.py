@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 from agent.account_usage import (
     AccountUsageSnapshot,
@@ -91,7 +91,7 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert len(snapshot.windows) == 2
     assert snapshot.windows[0].label == "Session"
     assert snapshot.windows[0].used_percent == 15.0
-    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=UTC)
     assert "Credits balance: $12.50" in snapshot.details
 
 
@@ -99,13 +99,13 @@ def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",
         source="usage_api",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         plan="Pro",
         windows=(
             AccountUsageWindow(
                 label="Session",
                 used_percent=25,
-                reset_at=datetime.now(timezone.utc),
+                reset_at=datetime.now(UTC),
             ),
         ),
         details=("Credits balance: $9.99",),

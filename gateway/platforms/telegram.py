@@ -15,7 +15,7 @@ import os
 import tempfile
 import html as _html
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -4669,7 +4669,7 @@ class TelegramAdapter(BasePlatformAdapter):
             entry = {
                 "role": "user",
                 "content": self._telegram_group_observe_attributed_text(event),
-                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "timestamp": datetime.now(tz=UTC).isoformat(),
                 "observed": True,
             }
             if event.message_id:

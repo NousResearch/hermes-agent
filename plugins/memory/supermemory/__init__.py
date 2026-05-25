@@ -13,7 +13,7 @@ import re
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -169,7 +169,7 @@ def _detect_category(text: str) -> str:
 def _format_relative_time(iso_timestamp: str) -> str:
     try:
         dt = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         seconds = (now - dt).total_seconds()
         if seconds < 1800:
             return "just now"

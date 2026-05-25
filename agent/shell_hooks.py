@@ -66,7 +66,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
@@ -695,7 +695,7 @@ def _record_approval(event: str, command: str) -> None:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def revoke(command: str) -> int:
@@ -798,7 +798,7 @@ def script_mtime_iso(command: str) -> Optional[str]:
     try:
         expanded = os.path.expanduser(path)
         return datetime.fromtimestamp(
-            os.path.getmtime(expanded), tz=timezone.utc,
+            os.path.getmtime(expanded), tz=UTC,
         ).isoformat().replace("+00:00", "Z")
     except OSError:
         return None

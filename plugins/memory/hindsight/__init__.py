@@ -37,7 +37,7 @@ import os
 import queue
 import threading
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -378,7 +378,7 @@ def _normalize_retain_tags(value: Any) -> List[str]:
 
 def _utc_timestamp() -> str:
     """Return current UTC timestamp in ISO-8601 with milliseconds and Z suffix."""
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _embedded_profile_name(config: dict[str, Any]) -> str:
@@ -1342,7 +1342,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread.start()
 
     def _build_turn_messages(self, user_content: str, assistant_content: str) -> List[Dict[str, str]]:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         return [
             {
                 "role": "user",

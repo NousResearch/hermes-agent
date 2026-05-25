@@ -7,7 +7,7 @@ import json
 import os
 import threading
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Optional
@@ -19,7 +19,7 @@ DEFAULT_TEAMS_PIPELINE_STORE_FILENAME = "teams_pipeline_store.json"
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def resolve_teams_pipeline_store_path(path: str | Path | None = None) -> Path:

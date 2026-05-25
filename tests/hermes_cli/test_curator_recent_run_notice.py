@@ -12,7 +12,7 @@ is the high-attention surface where consolidations should land.
 from __future__ import annotations
 
 import importlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -56,7 +56,7 @@ def test_silent_when_no_curator_run_yet(curator_env):
 
 def test_silent_when_summary_is_single_line(curator_env):
     """No archives = no rename map = nothing to surface. But still stamps shown."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     _set_state(
         curator_env["curator"],
         last_run_at=now,
@@ -72,7 +72,7 @@ def test_silent_when_summary_is_single_line(curator_env):
 
 def test_prints_multiline_summary_with_rename_map(curator_env):
     """Multi-line summary (rename map appended) prints with timestamp + footer."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     summary = (
         "auto: 1 marked stale; llm: consolidated 2 into 1\n"
         "archived 2 skill(s):\n"
@@ -95,7 +95,7 @@ def test_prints_multiline_summary_with_rename_map(curator_env):
 
 def test_show_once_semantics(curator_env):
     """Calling twice prints once; second call is silent until a new run lands."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     summary = (
         "auto: no changes; llm: consolidated 1 into 1\n"
         "archived 1 skill(s):\n"
@@ -119,7 +119,7 @@ def test_show_once_semantics(curator_env):
 
 def test_new_run_resets_show_once(curator_env):
     """A newer curator run with rename data prints again, even though one was already shown."""
-    older = (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat()
+    older = (datetime.now(UTC) - timedelta(hours=8)).isoformat()
     _set_state(
         curator_env["curator"],
         last_run_at=older,
@@ -134,7 +134,7 @@ def test_new_run_resets_show_once(curator_env):
     curator_env["capsys"].readouterr()  # drain
 
     # New run lands.
-    newer = datetime.now(timezone.utc).isoformat()
+    newer = datetime.now(UTC).isoformat()
     _set_state(
         curator_env["curator"],
         last_run_at=newer,
@@ -154,7 +154,7 @@ def test_new_run_resets_show_once(curator_env):
 def test_format_time_ago_buckets(curator_env):
     """Smoke test the time formatter — drives the `last run Xh ago` line."""
     fmt = curator_env["main"]._format_time_ago
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     assert fmt((now - timedelta(seconds=10)).isoformat()) == "just now"
     assert fmt((now - timedelta(minutes=5)).isoformat()) == "5m ago"
     assert fmt((now - timedelta(hours=3)).isoformat()) == "3h ago"

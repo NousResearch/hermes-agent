@@ -19,7 +19,7 @@ import os
 import random
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
@@ -617,11 +617,11 @@ class SignalAdapter(BasePlatformAdapter):
         ts_ms = envelope_data.get("timestamp", 0)
         if ts_ms:
             try:
-                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
             except (ValueError, OSError):
-                timestamp = datetime.now(tz=timezone.utc)
+                timestamp = datetime.now(tz=UTC)
         else:
-            timestamp = datetime.now(tz=timezone.utc)
+            timestamp = datetime.now(tz=UTC)
 
         # Build and dispatch event.
         # Store raw envelope data in raw_message so on_processing_start/complete

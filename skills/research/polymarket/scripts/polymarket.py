@@ -17,6 +17,7 @@ import sys
 import urllib.request
 import urllib.parse
 import urllib.error
+from datetime import UTC
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
@@ -205,7 +206,7 @@ def cmd_history(condition_id: str, interval: str = "all", fidelity: int = 50):
     print(f"Price history ({len(history)} points, interval={interval}):\n")
     from datetime import datetime, timezone
     for pt in history:
-        ts = datetime.fromtimestamp(pt["t"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        ts = datetime.fromtimestamp(pt["t"], tz=UTC).strftime("%Y-%m-%d %H:%M")
         price = _fmt_pct(pt["p"])
         bar = "█" * int(float(pt["p"]) * 40)
         print(f"  {ts}  {price:>7}  {bar}")

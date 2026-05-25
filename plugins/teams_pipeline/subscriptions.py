@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Any
 
 from plugins.teams_pipeline.models import GraphSubscription
@@ -36,7 +36,7 @@ def _parse_int(value: Any, default: int) -> int:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _utc_now_iso() -> str:
@@ -53,8 +53,8 @@ def _parse_datetime(value: Any) -> datetime | None:
         text = f"{text[:-1]}+00:00"
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def resolve_store_path(path: str | None) -> str:

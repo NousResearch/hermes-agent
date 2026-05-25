@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
@@ -77,7 +77,7 @@ class CostResult:
     notes: tuple[str, ...] = ()
 
 
-_UTC_NOW = lambda: datetime.now(timezone.utc)
+_UTC_NOW = lambda: datetime.now(UTC)
 
 
 # Official docs snapshot entries. Models whose published pricing and cache

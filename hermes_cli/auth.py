@@ -38,7 +38,7 @@ import uuid
 import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
@@ -1034,7 +1034,7 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
     # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
     secure_parent_dir(auth_file)
     auth_store["version"] = AUTH_STORE_VERSION
-    auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
+    auth_store["updated_at"] = datetime.now(UTC).isoformat()
     payload = json.dumps(auth_store, indent=2) + "\n"
     tmp_path = auth_file.with_name(f"{auth_file.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
     try:
@@ -1534,7 +1534,7 @@ def _parse_iso_timestamp(value: Any) -> Optional[float]:
     except Exception:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 
@@ -1807,7 +1807,7 @@ def _nous_jwt_expires_at(token: Any, fallback_expires_at: Any = None) -> Optiona
     exp = claims.get("exp")
     if isinstance(exp, (int, float)):
         try:
-            return datetime.fromtimestamp(float(exp), tz=timezone.utc).isoformat()
+            return datetime.fromtimestamp(float(exp), tz=UTC).isoformat()
         except Exception:
             pass
     return fallback_expires_at if isinstance(fallback_expires_at, str) else None
@@ -1821,7 +1821,7 @@ def _set_nous_agent_key_from_invoke_jwt(
     access_token = state.get("access_token")
     if not isinstance(access_token, str) or not access_token.strip():
         return
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     existing_obtained_at = state.get("agent_key_obtained_at")
     if obtained_at:
         effective_obtained_at = obtained_at
@@ -2591,9 +2591,9 @@ def _spotify_token_payload_to_state(
     api_base_url: str,
     previous_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_in = _coerce_ttl_seconds(token_payload.get("expires_in", 0))
-    expires_at = datetime.fromtimestamp(now.timestamp() + expires_in, tz=timezone.utc)
+    expires_at = datetime.fromtimestamp(now.timestamp() + expires_in, tz=UTC)
     state = dict(previous_state or {})
     state.update({
         "client_id": client_id,
@@ -3179,7 +3179,7 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
-        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        last_refresh = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "openai-codex") or {}
@@ -3286,7 +3286,7 @@ def refresh_codex_oauth_pure(
     updated = {
         "access_token": refreshed_access.strip(),
         "refresh_token": refresh_token.strip(),
-        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "last_refresh": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
     next_refresh = refresh_payload.get("refresh_token")
     if isinstance(next_refresh, str) and next_refresh.strip():
@@ -3452,7 +3452,7 @@ def _save_xai_oauth_tokens(
     last_refresh: Optional[str] = None,
 ) -> None:
     if last_refresh is None:
-        last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        last_refresh = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "xai-oauth") or {}
@@ -3724,7 +3724,7 @@ def refresh_xai_oauth_pure(
         "id_token": str(payload.get("id_token") or "").strip(),
         "expires_in": payload.get("expires_in"),
         "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
-        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "last_refresh": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
     return updated
 
@@ -3817,7 +3817,7 @@ def resolve_xai_oauth_runtime_credentials(
                                 "message": str(exc),
                                 "reason": "runtime_refresh_failure",
                                 "relogin_required": True,
-                                "at": datetime.now(timezone.utc).isoformat(),
+                                "at": datetime.now(UTC).isoformat(),
                             }
                             _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
                             _save_auth_store(_q_store)
@@ -4223,7 +4223,7 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
         "inference_base_url": state.get("inference_base_url") or DEFAULT_NOUS_INFERENCE_URL,
         "obtained_at": state.get("obtained_at"),
         "expires_at": state.get("expires_at"),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
     }
     try:
         with _nous_shared_store_lock():
@@ -4382,7 +4382,7 @@ def _quarantine_nous_oauth_state(
         "message": str(error),
         "reason": reason,
         "relogin_required": True,
-        "at": datetime.now(timezone.utc).isoformat(),
+        "at": datetime.now(UTC).isoformat(),
     }
     _clear_shared_nous_state(reason)
     invalidate_nous_auth_status_cache()
@@ -4739,7 +4739,7 @@ def resolve_nous_access_token(
                         _save_auth_store(auth_store)
                     raise
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
             state["access_token"] = refreshed["access_token"]
             state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
@@ -4749,7 +4749,7 @@ def resolve_nous_access_token(
             state["expires_in"] = access_ttl
             state["expires_at"] = datetime.fromtimestamp(
                 now.timestamp() + access_ttl,
-                tz=timezone.utc,
+                tz=UTC,
             ).isoformat()
             state["portal_base_url"] = portal_base_url
             state["client_id"] = client_id
@@ -4835,7 +4835,7 @@ def refresh_nous_oauth_pure(
                 client_id=state["client_id"],
                 refresh_token=state["refresh_token"],
             )
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
             state["access_token"] = refreshed["access_token"]
             state["refresh_token"] = refreshed.get("refresh_token") or state["refresh_token"]
@@ -4847,7 +4847,7 @@ def refresh_nous_oauth_pure(
             state["obtained_at"] = now.isoformat()
             state["expires_in"] = access_ttl
             state["expires_at"] = datetime.fromtimestamp(
-                now.timestamp() + access_ttl, tz=timezone.utc
+                now.timestamp() + access_ttl, tz=UTC
             ).isoformat()
             if on_state_update is not None:
                 on_state_update(dict(state), "post_refresh_access_token")
@@ -4870,7 +4870,7 @@ def refresh_nous_oauth_pure(
                 access_token=state["access_token"],
                 min_ttl_seconds=min_key_ttl_seconds,
             )
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             state["agent_key"] = mint_payload.get("api_key")
             state["agent_key_id"] = mint_payload.get("key_id")
             state["agent_key_expires_at"] = mint_payload.get("expires_at")
@@ -5148,7 +5148,7 @@ def resolve_nous_runtime_credentials(
                                 )
                                 _persist_state("terminal_runtime_access_refresh_failure")
                             raise
-                        now = datetime.now(timezone.utc)
+                        now = datetime.now(UTC)
                         access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
                         previous_refresh_token = refresh_token
                         state["access_token"] = refreshed["access_token"]
@@ -5161,7 +5161,7 @@ def resolve_nous_runtime_credentials(
                         state["obtained_at"] = now.isoformat()
                         state["expires_in"] = access_ttl
                         state["expires_at"] = datetime.fromtimestamp(
-                            now.timestamp() + access_ttl, tz=timezone.utc
+                            now.timestamp() + access_ttl, tz=UTC
                         ).isoformat()
                         access_token = state["access_token"]
                         refresh_token = state["refresh_token"]
@@ -5257,7 +5257,7 @@ def resolve_nous_runtime_credentials(
                                         )
                                         _persist_state("terminal_runtime_mint_retry_refresh_failure")
                                     raise
-                                now = datetime.now(timezone.utc)
+                                now = datetime.now(UTC)
                                 access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
                                 state["access_token"] = refreshed["access_token"]
                                 state["refresh_token"] = refreshed.get("refresh_token") or latest_refresh_token
@@ -5269,7 +5269,7 @@ def resolve_nous_runtime_credentials(
                                 state["obtained_at"] = now.isoformat()
                                 state["expires_in"] = access_ttl
                                 state["expires_at"] = datetime.fromtimestamp(
-                                    now.timestamp() + access_ttl, tz=timezone.utc
+                                    now.timestamp() + access_ttl, tz=UTC
                                 ).isoformat()
                                 access_token = state["access_token"]
                                 refresh_token = state["refresh_token"]
@@ -5311,7 +5311,7 @@ def resolve_nous_runtime_credentials(
                         raise
 
             if mint_payload is not None:
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 state["agent_key"] = mint_payload.get("api_key")
                 state["agent_key_id"] = mint_payload.get("key_id")
                 state["agent_key_expires_at"] = mint_payload.get("expires_at")
@@ -6673,7 +6673,7 @@ def _xai_oauth_loopback_login(
         "discovery": discovery,
         "redirect_uri": redirect_uri,
         "base_url": base_url,
-        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "last_refresh": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "source": "oauth-loopback",
     }
 
@@ -6817,7 +6817,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
             "refresh_token": refresh_token,
         },
         "base_url": base_url,
-        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "last_refresh": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "auth_mode": "chatgpt",
         "source": "device-code",
     }
@@ -7015,7 +7015,7 @@ def _minimax_oauth_login(
             interval_ms=interval_ms,
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_at_unix = _minimax_resolve_token_expiry_unix(
         int(token_data["expired_in"]), now=now,
     )
@@ -7033,7 +7033,7 @@ def _minimax_oauth_login(
         "refresh_token": token_data["refresh_token"],
         "resource_url": token_data.get("resource_url"),
         "obtained_at": now.isoformat(),
-        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=UTC).isoformat(),
         "expires_in": expires_in_s,
     }
 
@@ -7093,7 +7093,7 @@ def _refresh_minimax_oauth_state(
             provider="minimax-oauth", code="refresh_failed",
             relogin_required=True,
         )
-    now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(UTC)
     expires_at_unix = _minimax_resolve_token_expiry_unix(
         int(payload["expired_in"]), now=now_dt,
     )
@@ -7103,7 +7103,7 @@ def _refresh_minimax_oauth_state(
         "access_token": payload["access_token"],
         "refresh_token": payload.get("refresh_token", state["refresh_token"]),
         "obtained_at": now_dt.isoformat(),
-        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at_unix, tz=UTC).isoformat(),
         "expires_in": expires_in_s,
     })
     _minimax_save_auth_state(new_state)
@@ -7127,7 +7127,7 @@ def _minimax_oauth_quarantine_on_terminal_refresh(state: Dict[str, Any], exc: Au
         "message": str(exc),
         "reason": "runtime_refresh_failure",
         "relogin_required": True,
-        "at": datetime.now(timezone.utc).isoformat(),
+        "at": datetime.now(UTC).isoformat(),
     }
     try:
         _minimax_save_auth_state(state)
@@ -7336,7 +7336,7 @@ def _nous_device_code_login(
             poll_interval=interval,
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
     expires_at = now.timestamp() + token_expires_in
     resolved_inference_url = (
@@ -7355,7 +7355,7 @@ def _nous_device_code_login(
         "access_token": token_data["access_token"],
         "refresh_token": token_data.get("refresh_token"),
         "obtained_at": now.isoformat(),
-        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at, tz=UTC).isoformat(),
         "expires_in": token_expires_in,
         "tls": {
             "insecure": verify is False,

@@ -1185,6 +1185,7 @@ def is_linux() -> bool:
 
 
 from hermes_constants import is_container, is_termux, is_wsl
+from datetime import UTC
 
 
 def _wsl_systemd_operational() -> bool:
@@ -3260,7 +3261,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
             from hermes_constants import get_hermes_home as _ghh
             log_dir = _ghh() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
-            ts = _dt.now(_tz.utc).isoformat()
+            ts = _dt.now(UTC).isoformat()
             line = {
                 "ts": ts,
                 "tag": tag,

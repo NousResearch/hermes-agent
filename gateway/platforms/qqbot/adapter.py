@@ -39,7 +39,7 @@ import mimetypes
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -3162,16 +3162,16 @@ class QQAdapter(BasePlatformAdapter):
         This handles both formats gracefully.
         """
         if not raw:
-            return datetime.now(tz=timezone.utc)
+            return datetime.now(tz=UTC)
         try:
             return datetime.fromisoformat(raw)
         except (ValueError, TypeError):
             pass
         try:
-            return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
+            return datetime.fromtimestamp(int(raw) / 1000, tz=UTC)
         except (ValueError, TypeError):
             pass
-        return datetime.now(tz=timezone.utc)
+        return datetime.now(tz=UTC)
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()

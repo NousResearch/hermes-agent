@@ -504,7 +504,7 @@ class TestInstalledAtStamp:
         class _FakeDT(_dt.datetime):
             @classmethod
             def now(cls, tz=None):
-                return _dt.datetime(2099, 1, 1, 0, 0, 0, tzinfo=tz or _dt.timezone.utc)
+                return _dt.datetime(2099, 1, 1, 0, 0, 0, tzinfo=tz or _dt.UTC)
         monkeypatch.setattr(
             "hermes_cli.profile_distribution.datetime", _FakeDT, raising=True
         )

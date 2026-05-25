@@ -4,7 +4,7 @@ import base64
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 import httpx
@@ -166,7 +166,7 @@ def _mint_payload(api_key: str = "agent-key") -> dict:
     return {
         "api_key": api_key,
         "key_id": "key-id-1",
-        "expires_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": datetime.now(UTC).isoformat(),
         "expires_in": 1800,
         "reused": False,
     }
@@ -181,7 +181,7 @@ def _jwt_with_claims(claims: dict) -> str:
 
 
 def _future_iso(seconds: int = 3600) -> str:
-    return datetime.fromtimestamp(time.time() + seconds, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(time.time() + seconds, tz=UTC).isoformat()
 
 
 def _invoke_jwt(*, seconds: int = 3600, scope: object = "inference:invoke inference:mint_agent_key") -> str:
@@ -240,7 +240,7 @@ def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     exp = int(time.time() + 3600)
-    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    expires_at = datetime.fromtimestamp(exp, tz=UTC).isoformat()
     token = _jwt_with_claims({
         "sub": "test-user",
         "scope": auth_mod.DEFAULT_NOUS_SCOPE,

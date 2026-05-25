@@ -10,7 +10,7 @@ import time
 import uuid
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
@@ -942,7 +942,7 @@ class CredentialPool:
                                             "message": str(exc),
                                             "reason": "credential_pool_refresh_failure",
                                             "relogin_required": True,
-                                            "at": datetime.now(timezone.utc).isoformat(),
+                                            "at": datetime.now(UTC).isoformat(),
                                         }
                                         _save_provider_state(auth_store, "xai-oauth", state)
                                         _save_auth_store(auth_store)
@@ -1008,7 +1008,7 @@ class CredentialPool:
                                             "message": str(exc),
                                             "reason": "credential_pool_refresh_failure",
                                             "relogin_required": True,
-                                            "at": datetime.now(timezone.utc).isoformat(),
+                                            "at": datetime.now(UTC).isoformat(),
                                         }
                                         _save_provider_state(auth_store, "openai-codex", state)
                                         _save_auth_store(auth_store)

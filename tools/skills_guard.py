@@ -25,7 +25,7 @@ Usage:
 import re
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
@@ -638,7 +638,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         trust_level=trust_level,
         verdict=verdict,
         findings=all_findings,
-        scanned_at=datetime.now(timezone.utc).isoformat(),
+        scanned_at=datetime.now(UTC).isoformat(),
         summary=summary,
     )
 

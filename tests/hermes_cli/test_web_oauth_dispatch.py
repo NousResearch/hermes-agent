@@ -21,7 +21,7 @@ These tests pin the corrected behavior.
 """
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from unittest.mock import patch
 
 import httpx
@@ -210,7 +210,7 @@ def test_minimax_dashboard_poller_accepts_absolute_ms_expired_in():
     """Dashboard MiniMax completion must accept unix-ms token expiry values."""
     from hermes_cli import web_server as ws
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     abs_ms = int((now.timestamp() + 1800) * 1000)
     session_id = "minimax-absolute-ms-test"
     ws._oauth_sessions[session_id] = {

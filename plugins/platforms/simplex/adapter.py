@@ -37,7 +37,7 @@ import logging
 import os
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
@@ -397,7 +397,7 @@ class SimplexAdapter(BasePlatformAdapter):
         try:
             timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
-            timestamp = datetime.now(tz=timezone.utc)
+            timestamp = datetime.now(tz=UTC)
 
         # Build source
         source = self.build_source(

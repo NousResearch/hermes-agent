@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -89,7 +89,7 @@ def _log(message: str) -> None:
     try:
         log_file = get_log_file()
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
     except OSError:
@@ -182,7 +182,7 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
 
     tracked.append({
         "path": str(path),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "category": category,
         "size": size,
     })
@@ -213,7 +213,7 @@ def forget(path_str: str) -> int:
 def dry_run() -> Tuple[List[Dict], List[Dict]]:
     """Return (auto_delete_list, needs_prompt_list) without touching files."""
     tracked = load_tracked()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     auto: List[Dict] = []
     prompt: List[Dict] = []
@@ -253,7 +253,7 @@ def quick() -> Dict[str, Any]:
                "errors": [str, ...]}``.
     """
     tracked = load_tracked()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     deleted = 0
     freed = 0
     new_tracked: List[Dict] = []
@@ -357,7 +357,7 @@ def deep(
         return {"quick": quick_result, "deep_deleted": 0, "deep_freed": 0}
 
     tracked = load_tracked()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     research, chrome, large = [], [], []
 
     for item in tracked:

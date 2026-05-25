@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from unittest.mock import patch
 
 import pytest
@@ -797,7 +797,7 @@ def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
     monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
     monkeypatch.setattr(
         "hermes_cli.auth_commands.time.time",
-        lambda: datetime(2026, 4, 5, 10, 30, tzinfo=timezone.utc).timestamp(),
+        lambda: datetime(2026, 4, 5, 10, 30, tzinfo=UTC).timestamp(),
     )
 
     class _Args:

@@ -39,7 +39,7 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -548,7 +548,7 @@ class WeComAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=f"quote:{msg_id}" if has_reply_context else None,
             reply_to_text=reply_text if has_reply_context else None,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=datetime.now(tz=UTC),
         )
 
         # Only batch plain text messages — commands, media, etc. dispatch

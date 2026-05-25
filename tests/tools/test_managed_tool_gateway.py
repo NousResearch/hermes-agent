@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
@@ -81,7 +81,7 @@ def test_resolve_managed_tool_gateway_is_disabled_without_subscription():
 def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkeypatch):
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
     (tmp_path / "auth.json").write_text(json.dumps({
         "providers": {
             "nous": {

@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -515,7 +515,7 @@ def create_quick_snapshot(
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     snap_id = f"{ts}-{label}" if label else ts
     snap_dir = root / snap_id
     snap_dir.mkdir(parents=True, exist_ok=True)

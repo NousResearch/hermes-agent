@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -522,7 +522,7 @@ def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
 
 def test_load_pool_mirrors_nous_invoke_jwt_agent_key_runtime_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    expires_at = datetime.fromtimestamp(time.time() + 3600, tz=timezone.utc).isoformat()
+    expires_at = datetime.fromtimestamp(time.time() + 3600, tz=UTC).isoformat()
     token = _jwt_with_claims({
         "sub": "test-user",
         "scope": ["inference:invoke", "inference:mint_agent_key"],

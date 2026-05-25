@@ -26,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from email.utils import parsedate_to_datetime
 from html import escape as xml_escape
 from pathlib import Path
@@ -229,7 +229,7 @@ def _parse_twilio_date(value: str | None) -> datetime | None:
         return None
     try:
         dt = parsedate_to_datetime(value)
-        return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
     except Exception:
         return None
 

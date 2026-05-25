@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
@@ -64,8 +64,8 @@ def refresh_token(token_data: dict) -> dict:
 
     token_data["token"] = result["access_token"]
     token_data["expiry"] = datetime.fromtimestamp(
-        datetime.now(timezone.utc).timestamp() + result["expires_in"],
-        tz=timezone.utc,
+        datetime.now(UTC).timestamp() + result["expires_in"],
+        tz=UTC,
     ).isoformat()
 
     get_token_path().write_text(
@@ -86,7 +86,7 @@ def get_valid_token() -> str:
     expiry = token_data.get("expiry", "")
     if expiry:
         exp_dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if now >= exp_dt:
             token_data = refresh_token(token_data)
 

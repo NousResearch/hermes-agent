@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any
 
@@ -151,7 +151,7 @@ def _graph_setup_hint() -> str:
 
 
 def _iso_utc_timestamp(hours_from_now: int) -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=hours_from_now)).replace(
+    return (datetime.now(UTC) + timedelta(hours=hours_from_now)).replace(
         microsecond=0
     ).isoformat().replace("+00:00", "Z")
 

@@ -50,6 +50,7 @@ from hermes_cli.config import (
 )
 from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
+from datetime import UTC
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -2039,7 +2040,7 @@ def _nous_poller(session_id: str) -> None:
                 poll_interval=interval,
             )
         # Same post-processing as _nous_device_code_login (mint agent key)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         token_ttl = int(token_data.get("expires_in") or 0)
         auth_state = {
             "portal_base_url": portal_base_url,
@@ -2051,7 +2052,7 @@ def _nous_poller(session_id: str) -> None:
             "refresh_token": token_data.get("refresh_token"),
             "obtained_at": now.isoformat(),
             "expires_at": (
-                datetime.fromtimestamp(now.timestamp() + token_ttl, tz=timezone.utc).isoformat()
+                datetime.fromtimestamp(now.timestamp() + token_ttl, tz=UTC).isoformat()
                 if token_ttl else None
             ),
             "expires_in": token_ttl,
@@ -2125,7 +2126,7 @@ def _minimax_poller(session_id: str) -> None:
         # the canonical record. Region is fixed to "global" for the
         # dashboard path; cn-region operators can still use the CLI
         # flow which supports `--region cn`.
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at_ts = _minimax_resolve_token_expiry_unix(
             int(token_data["expired_in"]), now=now,
         )
@@ -2143,7 +2144,7 @@ def _minimax_poller(session_id: str) -> None:
             "resource_url": token_data.get("resource_url"),
             "obtained_at": now.isoformat(),
             "expires_at": datetime.fromtimestamp(
-                expires_at_ts, tz=timezone.utc
+                expires_at_ts, tz=UTC
             ).isoformat(),
             "expires_in": expires_in_s,
         }

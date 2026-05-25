@@ -46,7 +46,7 @@ import json
 import logging
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -197,7 +197,7 @@ def _validate_date_range(from_date: str, to_date: str) -> None:
             f"to_date ({parsed_to.isoformat()})"
         )
     if parsed_from is not None:
-        today_utc = datetime.now(timezone.utc).date()
+        today_utc = datetime.now(UTC).date()
         if parsed_from > today_utc:
             raise ValueError(
                 f"from_date ({parsed_from.isoformat()}) is in the future; "

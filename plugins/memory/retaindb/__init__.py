@@ -28,7 +28,7 @@ import re
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import quote
@@ -367,7 +367,7 @@ class _WriteQueue:
         return conn.execute("SELECT id, user_id, session_id, messages_json FROM pending ORDER BY id ASC LIMIT 200").fetchall()
 
     def enqueue(self, user_id: str, session_id: str, messages: list) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         conn = self._get_conn()
         cur = conn.execute(
             "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
@@ -628,7 +628,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         """Queue turn for async ingest. Returns immediately."""
         if not self._queue or not user_content:
             return
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self._queue.enqueue(
             self._user_id,
             session_id or self._session_id,

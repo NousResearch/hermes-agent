@@ -7,7 +7,7 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -582,9 +582,9 @@ class FactRetriever:
                 ts = timestamp_str
 
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.replace(tzinfo=UTC)
 
-            age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400
+            age_days = (datetime.now(UTC) - ts).total_seconds() / 86400
             if age_days < 0:
                 return 1.0
 

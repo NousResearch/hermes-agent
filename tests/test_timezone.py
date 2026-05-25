@@ -13,7 +13,7 @@ import os
 import logging
 import sys
 import pytest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -281,8 +281,8 @@ class TestCronTimezone:
         # The UTC equivalent must match what we'd get by correctly interpreting
         # the naive dt as system-local time first, then converting
         system_tz = datetime.now().astimezone().tzinfo
-        expected_utc = naive_dt.replace(tzinfo=system_tz).astimezone(timezone.utc)
-        actual_utc = result.astimezone(timezone.utc)
+        expected_utc = naive_dt.replace(tzinfo=system_tz).astimezone(UTC)
+        actual_utc = result.astimezone(UTC)
         assert actual_utc == expected_utc, (
             f"Absolute time shifted: expected {expected_utc}, got {actual_utc}"
         )
@@ -295,7 +295,7 @@ class TestCronTimezone:
         _reset_hermes_time_cache()
 
         # Create an aware datetime in UTC
-        utc_dt = datetime(2026, 3, 11, 15, 0, 0, tzinfo=timezone.utc)
+        utc_dt = datetime(2026, 3, 11, 15, 0, 0, tzinfo=UTC)
         result = _ensure_aware(utc_dt)
 
         # Must be in Hermes tz (Kolkata) but same absolute instant

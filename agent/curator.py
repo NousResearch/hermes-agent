@@ -27,7 +27,7 @@ import os
 import re
 import tempfile
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
@@ -229,7 +229,7 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
         # first real pass. Report-only; do not auto-mutate the library the
         # very first time a gateway ticks after an update.
         if now is None:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
         try:
             state["last_run_at"] = now.isoformat()
             state["last_run_summary"] = (
@@ -242,9 +242,9 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
         return False
 
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
+        last = last.replace(tzinfo=UTC)
     interval = timedelta(hours=get_interval_hours())
     return (now - last) >= interval
 
@@ -260,7 +260,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     from tools import skill_usage as _u
 
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
@@ -277,7 +277,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         # immediately archive themselves.
         anchor = last_activity or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
-            anchor = anchor.replace(tzinfo=timezone.utc)
+            anchor = anchor.replace(tzinfo=UTC)
 
         current = row.get("state", _u.STATE_ACTIVE)
 
@@ -1389,7 +1389,7 @@ def run_curator_review(
     gets written and ``state.last_report_path`` still records it so users
     can read what the curator WOULD have done.
     """
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
     if dry_run:
         # Count candidates without mutating state.
         try:
@@ -1505,7 +1505,7 @@ def run_curator_review(
         except Exception as e:
             logger.debug("Curator rename summary build failed: %s", e, exc_info=True)
 
-        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        elapsed = (datetime.now(UTC) - start).total_seconds()
         state2 = load_state()
         state2["last_run_duration_seconds"] = elapsed
         state2["last_run_summary"] = final_summary

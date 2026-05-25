@@ -45,7 +45,7 @@ import shutil
 import tarfile
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -133,7 +133,7 @@ def _backup_cron_jobs_into(dest: Path) -> Dict[str, Any]:
 def _utc_id(now: Optional[datetime] = None) -> str:
     """UTC ISO-ish filesystem-safe timestamp: ``2026-05-01T13-05-42Z``."""
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     # isoformat → "2026-05-01T13:05:42.123456+00:00"; strip subseconds and tz.
     s = now.replace(microsecond=0).isoformat()
     if s.endswith("+00:00"):
@@ -190,7 +190,7 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path,
     manifest = {
         "id": dest.name,
         "reason": reason,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "archive": archive_path.name,
         "archive_bytes": archive_path.stat().st_size,
         "skill_files": skills_counted,

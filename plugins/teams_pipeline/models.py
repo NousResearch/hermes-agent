@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Literal
 
 
@@ -20,14 +20,14 @@ def _parse_datetime(value: Any) -> datetime | None:
         text = f"{text[:-1]}+00:00"
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=UTC)
     return parsed
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
-    normalized = value.astimezone(timezone.utc)
+    normalized = value.astimezone(UTC)
     return normalized.isoformat().replace("+00:00", "Z")
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -24,8 +24,8 @@ def _fmt_ts(ts: Optional[str]) -> str:
     except (TypeError, ValueError):
         return str(ts)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    delta = datetime.now(timezone.utc) - dt
+        dt = dt.replace(tzinfo=UTC)
+    delta = datetime.now(UTC) - dt
     secs = int(delta.total_seconds())
     if secs < 60:
         return f"{secs}s ago"
@@ -297,8 +297,8 @@ def _idle_days(record: dict) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return max(0, (datetime.now(timezone.utc) - dt).days)
+        dt = dt.replace(tzinfo=UTC)
+    return max(0, (datetime.now(UTC) - dt).days)
 
 
 def _cmd_prune(args) -> int:

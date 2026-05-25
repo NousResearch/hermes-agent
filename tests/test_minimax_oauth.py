@@ -14,7 +14,7 @@ import base64
 import hashlib
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -61,12 +61,12 @@ def _make_httpx_response(status_code: int, body: dict | None = None, text: str =
 
 def _future_iso(seconds_from_now: int = 3600) -> str:
     ts = time.time() + seconds_from_now
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
 def _past_iso(seconds_ago: int = 3600) -> str:
     ts = time.time() - seconds_ago
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -74,13 +74,13 @@ def _past_iso(seconds_ago: int = 3600) -> str:
 # ---------------------------------------------------------------------------
 
 def test_resolve_token_expiry_unix_ttl_seconds():
-    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=UTC)
     got = _minimax_resolve_token_expiry_unix(3600, now=now)
     assert abs(got - (now.timestamp() + 3600)) < 0.01
 
 
 def test_resolve_token_expiry_unix_absolute_ms():
-    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=UTC)
     abs_ms = int((now.timestamp() + 7200) * 1000)
     got = _minimax_resolve_token_expiry_unix(abs_ms, now=now)
     assert abs(got - (now.timestamp() + 7200)) < 0.01
@@ -383,7 +383,7 @@ def test_refresh_updates_access_token():
 
 def test_refresh_updates_access_token_absolute_ms_expired_in():
     """Refresh payload may use unix-ms absolute ``expired_in`` (same as device-code)."""
-    now0 = datetime.now(timezone.utc)
+    now0 = datetime.now(UTC)
     abs_ms = int((now0.timestamp() + 1800) * 1000)
 
     state = {
@@ -417,7 +417,7 @@ def test_refresh_updates_access_token_absolute_ms_expired_in():
     assert result["access_token"] == "new-access"
     assert 1790 <= result["expires_in"] <= 1810
     exp = datetime.fromisoformat(result["expires_at"].replace("Z", "+00:00"))
-    skew = exp.timestamp() - datetime.now(timezone.utc).timestamp()
+    skew = exp.timestamp() - datetime.now(UTC).timestamp()
     assert 1790 <= skew <= 1810
 
 

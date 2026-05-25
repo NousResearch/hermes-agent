@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, UTC
 from pathlib import Path
 
 import pytest
@@ -62,7 +62,7 @@ def test_reports_root_is_under_logs_not_skills(curator_env):
 def test_write_run_report_creates_both_files(curator_env):
     """Each run writes both a run.json (machine) and a REPORT.md (human)."""
     curator = curator_env["curator"]
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
 
     run_dir = curator._write_run_report(
         started_at=start,
@@ -86,7 +86,7 @@ def test_write_run_report_creates_both_files(curator_env):
 def test_run_json_has_expected_shape(curator_env):
     """run.json must carry the machine-readable fields downstream tooling needs."""
     curator = curator_env["curator"]
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
 
     before_report = [
         {"name": "old-thing", "state": "active", "pinned": False},
@@ -143,7 +143,7 @@ def test_run_json_has_expected_shape(curator_env):
 def test_report_md_is_human_readable(curator_env):
     """REPORT.md should be a valid markdown doc with the key sections visible."""
     curator = curator_env["curator"]
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
 
     run_dir = curator._write_run_report(
         started_at=start,
@@ -199,7 +199,7 @@ def test_same_second_reruns_get_unique_dirs(curator_env):
     """If the curator somehow runs twice in the same second, the second
     report still gets its own directory rather than overwriting the first."""
     curator = curator_env["curator"]
-    start = datetime(2026, 4, 29, 5, 33, 34, tzinfo=timezone.utc)
+    start = datetime(2026, 4, 29, 5, 33, 34, tzinfo=UTC)
 
     kwargs = dict(
         started_at=start,
@@ -224,7 +224,7 @@ def test_report_captures_llm_error_and_continues(curator_env):
     surfaces the error prominently."""
     curator = curator_env["curator"]
     run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         elapsed_seconds=2.0,
         auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
         auto_summary="no changes",
@@ -247,7 +247,7 @@ def test_state_transitions_captured_in_report(curator_env):
     """When a skill moves active → stale or stale → archived between
     before/after snapshots, the report records it."""
     curator = curator_env["curator"]
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
 
     before = [{"name": "getting-old", "state": "active", "pinned": False}]
     after = [{"name": "getting-old", "state": "stale", "pinned": False}]
@@ -323,7 +323,7 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
     after = [{"name": "foo-umbrella", "state": "active", "pinned": False}]
 
     run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         elapsed_seconds=3.0,
         auto_counts={"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
         auto_summary="no changes",
@@ -388,7 +388,7 @@ def test_curator_drops_pruned_skill_from_cron_job(curator_env_with_cron):
     after: list = []  # stale-one was archived with no target
 
     run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         elapsed_seconds=1.0,
         auto_counts={"checked": 1, "marked_stale": 0, "archived": 1, "reactivated": 0},
         auto_summary="1 archived",
@@ -416,7 +416,7 @@ def test_curator_report_has_no_cron_section_when_nothing_changes(curator_env_wit
     jobs.create_job(prompt="", schedule="every 1h", skills=["foo"])
 
     run_dir = curator._write_run_report(
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
         elapsed_seconds=1.0,
         auto_counts={"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0},
         auto_summary="no changes",

@@ -17,7 +17,7 @@ import os
 import signal
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
@@ -70,7 +70,7 @@ def _get_lock_dir() -> Path:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
@@ -779,7 +779,7 @@ def _get_planned_stop_marker_path() -> Path:
 def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
     try:
         written_dt = datetime.fromisoformat(written_at)
-        age = (datetime.now(timezone.utc) - written_dt).total_seconds()
+        age = (datetime.now(UTC) - written_dt).total_seconds()
         return age > ttl_s
     except (TypeError, ValueError):
         return True

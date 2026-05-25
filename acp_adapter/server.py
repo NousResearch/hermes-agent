@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import base64
 import contextvars
 import json
@@ -726,7 +726,7 @@ class HermesACPAgent(acp.Agent):
         # hermes_state.py schema — only started_at/ended_at). Use "now" as
         # the updated_at since we're emitting this notification precisely
         # because the title was just refreshed.
-        updated_at = datetime.now(timezone.utc).isoformat()
+        updated_at = datetime.now(UTC).isoformat()
         update = SessionInfoUpdate(
             session_update="session_info_update",
             title=title if isinstance(title, str) and title.strip() else None,

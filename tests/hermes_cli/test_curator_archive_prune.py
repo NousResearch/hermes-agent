@@ -79,7 +79,7 @@ def test_archive_reports_failure(monkeypatch, capsys):
 
 def _mk_record(name, *, idle_days=0, pinned=False, state="active", created_idle_days=None):
     import datetime as _dt
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     last_activity = (now - _dt.timedelta(days=idle_days)).isoformat() if idle_days else None
     created_delta = created_idle_days if created_idle_days is not None else idle_days
     created = (now - _dt.timedelta(days=created_delta)).isoformat()

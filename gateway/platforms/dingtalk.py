@@ -33,7 +33,7 @@ import os
 import re
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -675,12 +675,12 @@ class DingTalkAdapter(BasePlatformAdapter):
         create_at = getattr(message, "create_at", None)
         try:
             timestamp = (
-                datetime.fromtimestamp(int(create_at) / 1000, tz=timezone.utc)
+                datetime.fromtimestamp(int(create_at) / 1000, tz=UTC)
                 if create_at
-                else datetime.now(tz=timezone.utc)
+                else datetime.now(tz=UTC)
             )
         except (ValueError, OSError, TypeError):
-            timestamp = datetime.now(tz=timezone.utc)
+            timestamp = datetime.now(tz=UTC)
 
         event = MessageEvent(
             text=text,
@@ -1006,7 +1006,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         webhook, expired_time_ms = info
         # Check expiry with 5-minute safety margin
         if expired_time_ms and expired_time_ms > 0:
-            now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+            now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
             safety_margin_ms = 5 * 60 * 1000
             if now_ms + safety_margin_ms >= expired_time_ms:
                 # Expired, remove from cache

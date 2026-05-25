@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Optional
 
 import httpx
@@ -12,7 +12,7 @@ from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     if value in {None, ""}:
         return None
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        return datetime.fromtimestamp(float(value), tz=UTC)
     if isinstance(value, str):
         text = value.strip()
         if not text:
@@ -59,7 +59,7 @@ def _parse_dt(value: Any) -> Optional[datetime]:
             text = text[:-1] + "+00:00"
         try:
             dt = datetime.fromisoformat(text)
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
         except ValueError:
             return None
     return None

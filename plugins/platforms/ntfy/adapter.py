@@ -50,7 +50,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 try:
@@ -337,11 +337,11 @@ class NtfyAdapter(BasePlatformAdapter):
         unix_ts = event.get("time")
         try:
             timestamp = (
-                datetime.fromtimestamp(int(unix_ts), tz=timezone.utc)
-                if unix_ts else datetime.now(tz=timezone.utc)
+                datetime.fromtimestamp(int(unix_ts), tz=UTC)
+                if unix_ts else datetime.now(tz=UTC)
             )
         except (ValueError, OSError, TypeError):
-            timestamp = datetime.now(tz=timezone.utc)
+            timestamp = datetime.now(tz=UTC)
 
         message_event = MessageEvent(
             text=text,

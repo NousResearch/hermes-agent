@@ -34,7 +34,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -418,7 +418,7 @@ def judge_goal(
 
     # Build the prompt — pick the with-subgoals variant when applicable.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
-    current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    current_time = datetime.now(tz=UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     if clean_subgoals:
         subgoals_block = "\n".join(
             f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)

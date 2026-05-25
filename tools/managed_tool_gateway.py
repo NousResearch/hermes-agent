@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -60,15 +60,15 @@ def _parse_timestamp(value: object) -> Optional[datetime]:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _access_token_is_expiring(expires_at: object, skew_seconds: int) -> bool:
     expires = _parse_timestamp(expires_at)
     if expires is None:
         return True
-    remaining = (expires - datetime.now(timezone.utc)).total_seconds()
+    remaining = (expires - datetime.now(UTC)).total_seconds()
     return remaining <= max(0, int(skew_seconds))
 
 

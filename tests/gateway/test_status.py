@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from gateway import status
+from datetime import UTC
 
 
 class TestGatewayPidState:
@@ -721,7 +722,7 @@ class TestTakeoverMarker:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         marker_path = tmp_path / ".gateway-takeover.json"
         # Hand-craft a marker written 2 minutes ago
-        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        stale_time = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
         marker_path.write_text(json.dumps({
             "target_pid": os.getpid(),
             "target_start_time": 123,
@@ -805,7 +806,7 @@ class TestTakeoverMarker:
             "target_pid": os.getpid() + 10000,
             "target_start_time": 42,
             "replacer_pid": 99999,
-            "written_at": datetime.now(timezone.utc).isoformat(),
+            "written_at": datetime.now(UTC).isoformat(),
         }))
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
 
@@ -860,7 +861,7 @@ class TestPlannedStopMarker:
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         marker_path = tmp_path / ".gateway-planned-stop.json"
-        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        stale_time = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
         marker_path.write_text(json.dumps({
             "target_pid": os.getpid(),
             "target_start_time": 123,

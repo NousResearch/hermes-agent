@@ -75,3 +75,44 @@ class TestCliResumeCommand:
         assert "out of range" in printed.lower()
         assert "/resume" in printed
         assert cli_obj.session_id == "current_session"
+
+    def test_handle_resume_strips_outer_brackets(self):
+        """Users copy `<session_id>` from the usage hint literally.
+
+        Strip outer ``<>``, ``[]``, ``""``, and ``''`` before lookup so
+        ``/resume <abc123>`` works the same as ``/resume abc123``.
+        """
+        cli_obj = _make_cli()
+        cli_obj._session_db.get_session.return_value = {"id": "sess_alpha", "title": "Alpha"}
+        cli_obj._session_db.get_messages_as_conversation.return_value = []
+        cli_obj._session_db.resolve_resume_session_id.return_value = "sess_alpha"
+
+        for raw in ("<sess_alpha>", "[sess_alpha]", '"sess_alpha"', "'sess_alpha'"):
+            cli_obj.session_id = "current_session"
+            with (
+                patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="sess_alpha"),
+                patch("cli._cprint"),
+            ):
+                cli_obj._handle_resume_command(f"/resume {raw}")
+            assert cli_obj.session_id == "sess_alpha", (
+                f"bracket-stripping failed for {raw!r}: session_id stayed {cli_obj.session_id}"
+            )
+
+    def test_handle_resume_does_not_strip_partial_brackets(self):
+        """Mismatched or single brackets must pass through unmodified.
+
+        ``"<half`` (just an open angle) is not a wrapping pair, so the
+        lookup should treat it verbatim — preserving the existing
+        not-found error path instead of mangling the input.
+        """
+        cli_obj = _make_cli()
+        cli_obj._session_db.get_session.return_value = None
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            cli_obj._handle_resume_command("/resume <half")
+
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert "<half" in printed

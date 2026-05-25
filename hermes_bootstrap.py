@@ -1,24 +1,35 @@
-"""Windows UTF-8 bootstrap for Hermes entry points.
+"""Runtime bootstrap for Hermes entry points.
+
+Imported at the very top of every Hermes entry point (``hermes``,
+``hermes-agent``, ``hermes-acp``, ``python -m gateway.run``,
+``batch_runner.py``, ``cli.py``) before any other imports that might
+do file I/O or print to stdout, or load YAML.
+
+This module currently applies two unrelated runtime fixes:
+
+1. Windows UTF-8 stdio bootstrap — see ``apply_windows_utf8_bootstrap``.
+2. PyYAML CSafeLoader shim — see ``apply_yaml_csafe_shim``.
+
+Both are idempotent and silent (no logging, no raise) so they're safe
+to call from any entry point on any platform.
+
+==============================================================================
+1. Windows UTF-8 bootstrap
+==============================================================================
 
 Python on Windows has two long-standing text-encoding footguns:
 
-1. ``sys.stdout`` / ``sys.stderr`` are bound to the console code page
+a. ``sys.stdout`` / ``sys.stderr`` are bound to the console code page
    (``cp1252`` on US-locale installs), so ``print("café")`` crashes with
    ``UnicodeEncodeError: 'charmap' codec can't encode character``.
 
-2. Child processes spawned via ``subprocess`` don't know to use UTF-8
+b. Child processes spawned via ``subprocess`` don't know to use UTF-8
    unless ``PYTHONUTF8`` and/or ``PYTHONIOENCODING`` are set in their
    environment — so any Python subprocess (the execute_code sandbox,
    delegation children, linter subprocesses, etc.) inherits the same
    cp1252 defaults and hits the same UnicodeEncodeError.
 
-This module fixes both on Windows *only* — POSIX is untouched.  It
-should be imported at the very top of every Hermes entry point
-(``hermes``, ``hermes-agent``, ``hermes-acp``, ``python -m gateway.run``,
-``batch_runner.py``, ``cron/scheduler.py``) before any other imports
-that might do file I/O or print to stdout.
-
-What this module does on Windows:
+What ``apply_windows_utf8_bootstrap`` does on Windows:
 
   - Sets ``os.environ["PYTHONUTF8"] = "1"`` (PEP 540 UTF-8 mode) so
     every child process we spawn uses UTF-8 for ``open()`` and stdio.
@@ -29,22 +40,50 @@ What this module does on Windows:
     process, using the ``reconfigure()`` API (Python 3.7+).  This fixes
     ``print("café")`` in the parent without a re-exec.
 
-What this module does NOT do:
+It does NOT re-exec Python with ``-X utf8``, so ``open()`` calls in the
+*current* process still default to locale encoding.  Those need an
+explicit ``encoding="utf-8"`` at the call site (lint rule ``PLW1514`` /
+``PYI058``).  Ruff is the right tool for that sweep.
 
-  - It does not re-exec Python with ``-X utf8``, so ``open()`` calls in
-    the *current* process still default to locale encoding.  Those need
-    an explicit ``encoding="utf-8"`` at the call site (lint rule
-    ``PLW1514`` / ``PYI058``).  Ruff is the right tool for that sweep.
+On POSIX it is a complete no-op — POSIX systems are already UTF-8 by
+default in 99% of cases, and we don't want to touch ``LANG``/``LC_*``
+behavior that users may have configured intentionally.  If someone
+hits a C/POSIX locale on Linux, they can export ``PYTHONUTF8=1``
+themselves — we won't override.
 
-What this module does on POSIX:
+==============================================================================
+2. PyYAML CSafeLoader shim
+==============================================================================
 
-  - Nothing.  POSIX systems are already UTF-8 by default in 99% of cases,
-    and we don't want to touch ``LANG``/``LC_*`` behavior that users may
-    have configured intentionally.  If someone hits a C/POSIX locale on
-    Linux, they can export ``PYTHONUTF8=1`` themselves — we won't override.
+PyYAML 6.0.x's pure-Python ``safe_load`` parser corrupts CPython's
+internal object/refcount state under sustained load on at least some
+WSL2 / glibc / kernel combinations — observed as ``TypeError: 'X'
+object is not subscriptable`` mid-parse, ``AttributeError: 'dict'
+object has no attribute 'match'`` from compiled-regex caches getting
+overwritten, and segfaults inside ``Py_INCREF``/``Py_DECREF``.
 
-Idempotent: safe to call multiple times.  ``_bootstrap_once`` guards
-against double-reconfigure.
+The same crashes reproduce across:
+  - uv-managed cpython-3.11.14 / 3.11.15 (clang, python-build-standalone)
+  - Ubuntu 24.04 system python3.12.3 (gcc, apt)
+
+The libyaml-backed C parser (``yaml.CSafeLoader`` / ``yaml._yaml``)
+does NOT exhibit this — thousands of repeated parses are clean.
+PyYAML keeps ``safe_load`` and ``load(..., Loader=CSafeLoader)`` as
+separate code paths for legacy compatibility; users of plain
+``safe_load`` get the broken pure-Python implementation by default
+even when libyaml is installed.
+
+``apply_yaml_csafe_shim`` rebinds ``yaml.safe_load`` and
+``yaml.safe_load_all`` to use ``CSafeLoader`` whenever the libyaml C
+extension is available.  This makes every ``yaml.safe_load(...)`` in
+Hermes (and in any third-party dependency that ``import yaml`` after
+us) take the stable C path automatically — no call-site changes
+needed.
+
+If libyaml isn't available (rare — wheels ship it), the shim is a
+silent no-op and the original behavior is preserved.
+
+==============================================================================
 """
 
 from __future__ import annotations
@@ -54,6 +93,7 @@ import sys
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False
+_yaml_shim_applied = False
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -122,8 +162,75 @@ def apply_windows_utf8_bootstrap() -> bool:
     return True
 
 
-# Apply on import — entry points just need ``import hermes_bootstrap``
-# (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
-# the very top of their module, before importing anything else.  The
-# import side effect does the right thing.
+def apply_yaml_csafe_shim() -> bool:
+    """Rebind ``yaml.safe_load`` and ``yaml.safe_load_all`` to use the
+    libyaml-backed ``CSafeLoader`` when available.
+
+    PyYAML's pure-Python ``safe_load`` non-deterministically corrupts
+    CPython object state under sustained use on some WSL2 / glibc
+    combinations (segfaults inside ``Py_INCREF``, ``TypeError`` on
+    mid-parse parser-event objects, ``AttributeError`` on cached
+    compiled regexes that get clobbered).  The C-backed loader is
+    immune.  See the module docstring for the full rationale.
+
+    Returns True if the rebind was applied, False otherwise.  Reasons
+    for returning False:
+
+      - Already applied on a previous call (idempotent).
+      - PyYAML isn't importable in this venv.
+      - libyaml C extension isn't available (no ``CSafeLoader``).
+      - Something else already replaced ``yaml.safe_load`` with a
+        non-PyYAML implementation; we leave that alone.
+
+    This function is platform-agnostic — the underlying bug is in
+    PyYAML's parser code, not in any OS-specific layer, so the shim
+    runs on Linux, macOS, and Windows alike.  The performance side
+    effect is also positive: CSafeLoader is roughly 5-7× faster than
+    the pure-Python loader on typical config files.
+    """
+    global _yaml_shim_applied
+
+    if _yaml_shim_applied:
+        return False
+
+    try:
+        import yaml  # type: ignore[import-not-found]
+    except Exception:
+        return False
+
+    csafe = getattr(yaml, "CSafeLoader", None)
+    if csafe is None:
+        return False
+
+    current_safe_load = getattr(yaml, "safe_load", None)
+    if current_safe_load is None:
+        return False
+    if getattr(current_safe_load, "__module__", "") != "yaml":
+        return False
+
+    def safe_load(stream):  # type: ignore[no-redef]
+        return yaml.load(stream, Loader=csafe)
+
+    def safe_load_all(stream):  # type: ignore[no-redef]
+        return yaml.load_all(stream, Loader=csafe)
+
+    safe_load.__name__ = "safe_load"
+    safe_load.__qualname__ = "safe_load"
+    safe_load.__doc__ = (
+        "Parse a YAML document via the libyaml CSafeLoader.\n\n"
+        "Rebound by hermes_bootstrap.apply_yaml_csafe_shim to dodge "
+        "PyYAML pure-Python parser memory-corruption bugs."
+    )
+    safe_load_all.__name__ = "safe_load_all"
+    safe_load_all.__qualname__ = "safe_load_all"
+    safe_load_all.__doc__ = safe_load.__doc__
+
+    yaml.safe_load = safe_load
+    yaml.safe_load_all = safe_load_all
+
+    _yaml_shim_applied = True
+    return True
+
+
 apply_windows_utf8_bootstrap()
+apply_yaml_csafe_shim()

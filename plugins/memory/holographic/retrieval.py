@@ -29,6 +29,7 @@ class FactRetriever:
         fts_weight: float = 0.4,
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
+        vec_weight: float = 0.0,  # sqlite-vec dense vector (4th channel)
         hrr_dim: int = 1024,
     ):
         self.store = store
@@ -44,6 +45,8 @@ class FactRetriever:
         self.fts_weight = fts_weight
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
+        self.vec_weight = vec_weight
+        self._vec_available = getattr(store, "_vec_available", False)
 
     def search(
         self,
@@ -51,64 +54,129 @@ class FactRetriever:
         category: str | None = None,
         min_trust: float = 0.3,
         limit: int = 10,
+        rrf_k: int = 60,
     ) -> list[dict]:
-        """Hybrid search: FTS5 candidates → Jaccard rerank → trust weighting.
+        """) Three-channel RRF fusion: FTS5 + Jaccard + HRR (+ sqlite-vec optional).
+
+        RRF (Reciprocal Rank Fusion): Each channel produces a ranked list.
+        A result at rank r in any channel gets score 1/(k+r). Sum across
+        channels gives fused score. Robust to channel quality differences.
 
         Pipeline:
-        1. FTS5 search: Get limit*3 candidates from SQLite full-text search
-        2. Jaccard boost: Token overlap between query and fact content
-        3. Trust weighting: final_score = relevance * trust_score
-        4. Temporal decay (optional): decay = 0.5^(age_days / half_life)
+        1. FTS5: rank by BM25 score (already normalized 0-1)
+        2. Jaccard: rank by token overlap
+        3. HRR: rank by vector similarity
+        4. sqlite-vec: dense KNN (if vec_weight > 0 and extension available)
+        5. RRF fuse → apply trust weighting → optional temporal decay
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
-        # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
-        candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+        # Stage 1: Get candidates from FTS5 (base pool)
+        # Note: other channels (Jaccard/HRR/vec) search independently, so even if
+        # FTS5 returns 0 we continue — the RRF fusion needs a candidate pool but
+        # can work with other channels' results
+        fts_candidates = self._fts_candidates(query, category, min_trust, limit * 4)
 
-        if not candidates:
-            return []
+        # If FTS5 returned nothing, fall back to getting recent facts from DB
+        # so other channels (Jaccard/HRR/vec) still have candidates to score
+        if not fts_candidates:
+            fallback_rows = self.store._conn.execute(
+                "SELECT * FROM facts WHERE trust_score >= ? ORDER BY fact_id DESC LIMIT ?",
+                (min_trust, limit * 4),
+            ).fetchall()
+            if fallback_rows:
+                fts_candidates = [dict(row) for row in fallback_rows]
+            else:
+                return []
 
-        # Stage 2: Rerank with Jaccard + trust + optional decay
         query_tokens = self._tokenize(query)
-        scored = []
+        query_vec = hrr.encode_text(query, self.hrr_dim) if self.hrr_weight > 0 else None
 
-        for fact in candidates:
+        # Stage 2: sqlite-vec KNN query (if enabled and available)
+        vec_ranks: dict[int, float] = {}  # fact_id → normalized vec score [0,1]
+        if self.vec_weight > 0 and self._vec_available:
+            try:
+                import numpy as np
+                qv = query_vec if query_vec is not None else hrr.encode_text(query, self.hrr_dim)
+                q_list = qv.tolist() if hasattr(qv, 'tolist') else list(qv)
+                q_str = '[' + ','.join(str(x) for x in q_list) + ']'
+                rows = self.store._conn.execute(
+                    "SELECT fact_id FROM fact_vectors WHERE embedding MATCH ? LIMIT ?",
+                    (q_str, limit * 4),
+                ).fetchall()
+                # Results ordered by distance (closest first)
+                for rank, row in enumerate(rows):
+                    vec_ranks[row["fact_id"]] = 1.0 / (1.0 + rank)
+            except Exception:
+                pass
+
+        # Stage 3: Score all candidates with all three/four channels
+        scored: dict[int, dict] = {}  # fact_id → enriched fact
+
+        for fact in fts_candidates:
+            fid = fact["fact_id"]
             content_tokens = self._tokenize(fact["content"])
             tag_tokens = self._tokenize(fact.get("tags", ""))
             all_tokens = content_tokens | tag_tokens
 
-            jaccard = self._jaccard_similarity(query_tokens, all_tokens)
+            # Channel 1: FTS5 rank score
             fts_score = fact.get("fts_rank", 0.0)
 
-            # HRR similarity
+            # Channel 2: Jaccard
+            jaccard = self._jaccard_similarity(query_tokens, all_tokens)
+
+            # Channel 3: HRR
             if self.hrr_weight > 0 and fact.get("hrr_vector"):
                 fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
-                query_vec = hrr.encode_text(query, self.hrr_dim)
-                hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
+                hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0
             else:
-                hrr_sim = 0.5  # neutral
+                hrr_sim = 0.5
 
-            # Combine FTS5 + Jaccard + HRR
-            relevance = (self.fts_weight * fts_score
-                        + self.jaccard_weight * jaccard
-                        + self.hrr_weight * hrr_sim)
+            # Channel 4: sqlite-vec (defaults to 0.5 neutral if not ranked)
+            vec_score = vec_ranks.get(fid, 0.5)
 
-            # Trust weighting
-            score = relevance * fact["trust_score"]
+            fact["_fts_s"] = fts_score
+            fact["_jac_s"] = jaccard
+            fact["_hrr_s"] = hrr_sim
+            fact["_vec_s"] = vec_score
+            fact.pop("hrr_vector", None)
+            scored[fid] = fact
 
-            # Optional temporal decay
+        # Build ranked lists for RRF
+        fts_ranked = sorted(scored.values(), key=lambda x: x["_fts_s"], reverse=True)
+        jac_ranked = sorted(scored.values(), key=lambda x: x["_jac_s"], reverse=True)
+        hrr_ranked = sorted(scored.values(), key=lambda x: x["_hrr_s"], reverse=True)
+        vec_ranked = sorted(scored.values(), key=lambda x: x["_vec_s"], reverse=True)
+
+        rrf_scores: dict[int, float] = {fid: 0.0 for fid in scored}
+
+        for rank, fact in enumerate(fts_ranked):
+            rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.fts_weight
+        for rank, fact in enumerate(jac_ranked):
+            rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.jaccard_weight
+        for rank, fact in enumerate(hrr_ranked):
+            rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.hrr_weight
+        if self.vec_weight > 0:
+            for rank, fact in enumerate(vec_ranked):
+                rrf_scores[fact["fact_id"]] += 1.0 / (rrf_k + rank + 1) * self.vec_weight
+
+        # Apply trust weighting + optional temporal decay, then finalize
+        for fid, fact in scored.items():
+            score = rrf_scores[fid] * fact["trust_score"]
             if self.half_life > 0:
                 score *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
-
             fact["score"] = score
-            scored.append(fact)
 
-        # Sort by score descending, return top limit
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        results = scored[:limit]
-        # Strip raw HRR bytes — callers expect JSON-serializable dicts
+        # Sort by fused score descending
+        results = sorted(scored.values(), key=lambda x: x["score"], reverse=True)[:limit]
+
+        # Strip internal channel score fields
         for fact in results:
-            fact.pop("hrr_vector", None)
+            fact.pop("_fts_s", None)
+            fact.pop("_jac_s", None)
+            fact.pop("_hrr_s", None)
+            fact.pop("_vec_s", None)
+
         return results
 
     def probe(
@@ -492,11 +560,35 @@ class FactRetriever:
         """
         conn = self.store._conn
 
+        # Normalize query: for multi-character queries (no spaces), OR the tokens
+        # to maximize recall. FTS5 treats spaces as AND which returns 0 for compounds
+        # like "张哥偏好" that don't appear as-is in content.
+        # Single tokens (1 word) are left as-is for exact matching.
+        # Note: we must not OR single characters (FTS5 interprets OR as a search token
+        # rather than an operator when not surrounded by spaces).
+        tokens = query.split()
+        if len(tokens) == 1 and len(tokens[0]) > 3:
+            # Single compound query like "张哥偏好" or "微信图片"
+            # Split into 2-char Chinese chunks + remaining, OR them
+            # e.g., "张哥偏好" → "张哥 OR 偏好"
+            chars = tokens[0]
+            # Group into 2-char chunks (most meaningful Chinese unit)
+            chunks = [chars[i:i+2] for i in range(0, len(chars)-1, 2)]
+            if len(chunks) > 1:
+                normalized_query = " OR ".join(chunks)
+            else:
+                normalized_query = query
+        elif len(tokens) > 1:
+            # Multi-token query — OR the tokens for maximum recall
+            normalized_query = " OR ".join(tokens)
+        else:
+            normalized_query = query
+
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(normalized_query)
 
         if category:
             where_clauses.append("f.category = ?")

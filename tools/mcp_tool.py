@@ -1341,7 +1341,15 @@ class MCPServerTask:
                         from gateway.status import _pid_exists
                         if not _pid_exists(pid):
                             continue  # process already exited — nothing to do
-                        _orphan_stdio_pids.add(pid)
+                        # Track PGID so _kill_orphaned_mcp_children can kill the
+                        # whole process group (npx spawns node children in the
+                        # same group; killing the group leader kills them all).
+                        try:
+                            pgid = os.getpgid(pid)
+                            _orphan_stdio_pids.add(pid)
+                            _orphan_pgids.add(pgid)
+                        except OSError:
+                            _orphan_stdio_pids.add(pid)
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -2105,6 +2113,7 @@ _stdio_pids: Dict[int, str] = {}  # pid -> server_name
 # Separate from _stdio_pids so cleanup sweeps never race with active
 # sessions (e.g. concurrent cron jobs or live user chats).
 _orphan_stdio_pids: set = set()
+_orphan_pgids: set = set()
 
 
 def _snapshot_child_pids() -> set:
@@ -3536,6 +3545,8 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         if include_active:
             pids.update(dict(_stdio_pids))
             _stdio_pids.clear()
+        pgids = set(_orphan_pgids)
+        _orphan_pgids.clear()
 
     # Fast path: no tracked stdio PIDs to reap. Skip the SIGTERM/sleep/SIGKILL
     # dance entirely — otherwise every MCP-free shutdown pays a 2s sleep tax.
@@ -3570,6 +3581,22 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
+    # Phase 4: Kill any orphaned process groups (npx → node children that
+    # escaped the single-PID kill because they're in the same session group).
+    for pgid in pgids:
+        try:
+            os.kill(-pgid, _signal.SIGTERM)
+            logger.debug("Sent SIGTERM to orphaned MCP process group %d", pgid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    if pgids:
+        _time.sleep(2)
+        for pgid in pgids:
+            try:
+                os.kill(-pgid, _sigkill)
+                logger.warning("Force-killed MCP process group %d after SIGTERM timeout", pgid)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
 
 def _stop_mcp_loop():
     """Stop the background event loop and join its thread."""

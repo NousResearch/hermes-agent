@@ -2839,6 +2839,104 @@ class TestAdapterBehavior(unittest.TestCase):
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_cardkit_streaming_card_contains_streaming_element_and_reasoning(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        card = adapter._build_cardkit_streaming_card(
+            content="Answer body",
+            reasoning_text="checked docs",
+            streaming=True,
+        )
+
+        self.assertEqual(card["schema"], "2.0")
+        self.assertTrue(card["config"]["streaming_mode"])
+        elements = card["body"]["elements"]
+        self.assertEqual(elements[0]["tag"], "collapsible_panel")
+        self.assertIn("checked docs", elements[0]["elements"][0]["content"])
+        self.assertEqual(elements[1]["element_id"], "streaming_content")
+        self.assertEqual(elements[1]["content"], "Answer body")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_streaming_message_creates_cardkit_card_and_sends_reference(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace()
+        captured = {}
+
+        async def _create_card(card):
+            captured["created_card"] = card
+            return "card_1"
+
+        async def _send(**kwargs):
+            captured["send"] = kwargs
+            return SimpleNamespace(success=True, message_id="om_card")
+
+        async def _stream(**kwargs):
+            captured["stream"] = kwargs
+
+        adapter._create_cardkit_card = AsyncMock(side_effect=_create_card)
+        adapter._send_cardkit_card_reference = AsyncMock(side_effect=_send)
+        adapter._stream_cardkit_content = AsyncMock(side_effect=_stream)
+
+        result = asyncio.run(
+            adapter.send_streaming_message(
+                chat_id="oc_chat",
+                content="Hello ▉",
+                reply_to="om_user",
+                metadata={"thread_id": "omt_1"},
+                reasoning_text="checking",
+            )
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card")
+        self.assertEqual(captured["created_card"]["config"]["streaming_mode"], True)
+        self.assertEqual(captured["send"]["card_id"], "card_1")
+        self.assertEqual(captured["send"]["reply_to"], "om_user")
+        self.assertEqual(captured["stream"]["message_id"], "om_card")
+        self.assertEqual(captured["stream"]["content"], "Hello ▉")
+        self.assertEqual(adapter._cardkit_streams["om_card"]["card_id"], "card_1")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_streaming_message_closes_and_updates_final_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = SimpleNamespace()
+        adapter._cardkit_streams["om_card"] = {"card_id": "card_1", "sequence": 2}
+
+        adapter._set_cardkit_streaming_mode = AsyncMock()
+        adapter._update_cardkit_card = AsyncMock()
+
+        result = asyncio.run(
+            adapter.edit_streaming_message(
+                chat_id="oc_chat",
+                message_id="om_card",
+                content="Final answer",
+                finalize=True,
+                reasoning_text="checked docs",
+            )
+        )
+
+        self.assertTrue(result.success)
+        adapter._set_cardkit_streaming_mode.assert_called_once_with(
+            card_id="card_1",
+            streaming_mode=False,
+            sequence=3,
+        )
+        update_kwargs = adapter._update_cardkit_card.call_args.kwargs
+        self.assertEqual(update_kwargs["card_id"], "card_1")
+        self.assertEqual(update_kwargs["sequence"], 4)
+        self.assertFalse(update_kwargs["card"]["config"].get("streaming_mode", False))
+        self.assertIn("Final answer", update_kwargs["card"]["body"]["elements"][-1]["content"])
+        self.assertNotIn("om_card", adapter._cardkit_streams)
+
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestHydrateBotIdentity(unittest.TestCase):

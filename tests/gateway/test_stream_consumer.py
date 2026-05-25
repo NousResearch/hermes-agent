@@ -1346,6 +1346,108 @@ class TestFilterAndAccumulateIntegration:
         except asyncio.CancelledError:
             pass
 
+    @pytest.mark.asyncio
+    async def test_feishu_streaming_card_receives_reasoning_lane(self):
+        """Feishu CardKit streaming keeps hidden reasoning for the card panel."""
+        adapter = MagicMock()
+        adapter.SUPPORTS_STREAMING_CARDS = True
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send_streaming_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_streaming_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_test",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("<think>check context</think>Answer")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        adapter.send_streaming_message.assert_called()
+        first_kwargs = adapter.send_streaming_message.call_args.kwargs
+        assert first_kwargs["reasoning_text"] == "check context"
+        assert "Answer" in first_kwargs["content"]
+
+        adapter.edit_streaming_message.assert_called()
+        final_kwargs = adapter.edit_streaming_message.call_args.kwargs
+        assert final_kwargs["finalize"] is True
+        assert final_kwargs["reasoning_text"] == "check context"
+        assert final_kwargs["content"] == "Answer"
+
+    @pytest.mark.asyncio
+    async def test_feishu_streaming_card_can_start_with_reasoning_only(self):
+        """Reasoning-only deltas still create and finalize a Feishu card."""
+        adapter = MagicMock()
+        adapter.SUPPORTS_STREAMING_CARDS = True
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send_streaming_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_streaming_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_test",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("<think>checking tools</think>")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        adapter.send_streaming_message.assert_called_once()
+        assert adapter.send_streaming_message.call_args.kwargs["content"] == ""
+        assert adapter.send_streaming_message.call_args.kwargs["reasoning_text"] == "checking tools"
+
+        adapter.edit_streaming_message.assert_called_once()
+        assert adapter.edit_streaming_message.call_args.kwargs["finalize"] is True
+        assert adapter.edit_streaming_message.call_args.kwargs["content"] == ""
+        assert adapter.edit_streaming_message.call_args.kwargs["reasoning_text"] == "checking tools"
+
+    @pytest.mark.asyncio
+    async def test_feishu_streaming_card_accepts_structured_reasoning_delta(self):
+        """Provider reasoning_content deltas should feed the Feishu reasoning panel."""
+        adapter = MagicMock()
+        adapter.SUPPORTS_STREAMING_CARDS = True
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send_streaming_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_streaming_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_test",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_reasoning_delta("structured thought")
+        await asyncio.sleep(0.08)
+        consumer.on_delta("Answer")
+        consumer.finish()
+        await task
+
+        adapter.send_streaming_message.assert_called()
+        assert adapter.send_streaming_message.call_args.kwargs["reasoning_text"] == "structured thought"
+        assert adapter.edit_streaming_message.call_args.kwargs["finalize"] is True
+        assert adapter.edit_streaming_message.call_args.kwargs["reasoning_text"] == "structured thought"
+        assert adapter.edit_streaming_message.call_args.kwargs["content"] == "Answer"
+
 
 # ── buffer_only mode tests ─────────────────────────────────────────────
 

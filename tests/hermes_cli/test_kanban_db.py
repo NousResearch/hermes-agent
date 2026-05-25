@@ -3488,8 +3488,8 @@ def test_dispatch_once_still_reaps_via_extracted_fn(kanban_home):
         return 0, 0
 
     with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
-            with patch("hermes_cli.kanban_db._record_worker_exit"):
-                with patch("hermes_cli.kanban_db.os.name", "posix"):
-                    pids = kb.reap_worker_zombies()
+        with patch("hermes_cli.kanban_db._record_worker_exit"):
+            with patch("hermes_cli.kanban_db.os.name", "posix"):
+                pids = kb.reap_worker_zombies()
 
     assert pids == [99999]

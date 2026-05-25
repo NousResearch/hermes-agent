@@ -57,6 +57,29 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
+    """Toolsets a cron-spawned agent must never receive.
+
+    Three protected toolsets are always disabled in cron context:
+      - ``cronjob`` — would let a cron-spawned agent schedule more cron jobs
+      - ``messaging`` — interactive, needs a live gateway session
+      - ``clarify`` — interactive, blocks waiting for user input
+
+    User-level ``agent.disabled_toolsets`` from config.yaml is layered on top
+    so per-job ``enabled_toolsets`` cannot bypass policy that applies to
+    ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
+    past config.yaml's denylist).
+    """
+    disabled = ["cronjob", "messaging", "clarify"]
+    agent_cfg = (cfg or {}).get("agent") or {}
+    user_disabled = agent_cfg.get("disabled_toolsets") or []
+    for name in user_disabled:
+        name = str(name).strip()
+        if name and name not in disabled:
+            disabled.append(name)
+    return disabled
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -1574,7 +1597,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project

@@ -153,6 +153,15 @@ REQUIRED_BRIEF_FIELDS = {
     "expected output",
 }
 
+BRIEF_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "target repo or workspace": ("target_repo_or_workspace",),
+    "out of scope": ("out_of_scope",),
+    "acceptance criteria": ("acceptance_criteria",),
+    "stop conditions": ("stop_conditions",),
+    "approval boundaries": ("approval_boundaries",),
+    "expected output": ("expected_output",),
+}
+
 # Child card definitions for production Kanban graph (from spec section 7 + feature brief section 8)
 CHILD_CARD_DEFS = [
     (1, "OrchestratorOS - Triage + Graph",       "orchestrator_os", "ready"),
@@ -253,14 +262,113 @@ def detect_approval_phrase(text: str) -> Optional[str]:
 def validate_brief(brief: dict[str, Any]) -> list[str]:
     """Validate a brief dict has all required fields.
 
-    Returns a list of missing field names (empty list = valid).
+    Returns a list of missing field names (empty list = valid). Supports both
+    canonical human-label keys and backward-compatible snake_case aliases.
     """
     missing: list[str] = []
     for field_name in REQUIRED_BRIEF_FIELDS:
-        value = brief.get(field_name)
+        value = get_brief_value(brief, field_name)
         if value is None or (isinstance(value, str) and not value.strip()):
             missing.append(field_name)
     return missing
+
+
+def get_brief_value(
+    brief: dict[str, Any],
+    canonical_key: str,
+    default: Any = "",
+) -> Any:
+    """Return a brief value by canonical human label or snake_case alias."""
+    keys = (canonical_key, *BRIEF_FIELD_ALIASES.get(canonical_key, ()))
+    for key in keys:
+        if key in brief:
+            return brief[key]
+    return default
+
+
+def _parse_source_brief(source_brief: str) -> dict[str, Any]:
+    """Best-effort JSON parse for frozen brief metadata."""
+    if not source_brief:
+        return {}
+    try:
+        parsed = json.loads(source_brief)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _reconstruct_stage_history(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+) -> list[StageEntry]:
+    """Derive stage history from production_order_events."""
+    rows = conn.execute(
+        "SELECT timestamp, from_state, to_state, owner_profile "
+        "FROM production_order_events "
+        "WHERE production_order_id = ? "
+        "AND (to_state IS NOT NULL OR from_state IS NOT NULL) "
+        "ORDER BY id",
+        (production_order_id,),
+    ).fetchall()
+    return [
+        StageEntry(
+            row["from_state"] or "",
+            row["to_state"] or "",
+            row["owner_profile"] or "",
+            row["timestamp"] or 0,
+        )
+        for row in rows
+        if row["from_state"] or row["to_state"]
+    ]
+
+
+def _reconstruct_child_card_ids(
+    conn: sqlite3.Connection,
+    parent_kanban_card_id: str,
+) -> list[str]:
+    """Read child production-order card IDs from task_links in stage order."""
+    stage_order_cases = []
+    for idx, (_, title, _, _) in enumerate(CHILD_CARD_DEFS, 1):
+        escaped_title = title.replace("'", "''")
+        stage_order_cases.append(f"WHEN '{escaped_title}' THEN {idx}")
+    stage_order_sql = " ".join(stage_order_cases)
+    rows = conn.execute(
+        f"""
+        SELECT l.child_id
+        FROM task_links l
+        LEFT JOIN tasks t ON t.id = l.child_id
+        WHERE l.parent_id = ?
+        ORDER BY CASE t.title {stage_order_sql} ELSE 999 END, t.created_at, l.child_id
+        """,
+        (parent_kanban_card_id,),
+    ).fetchall()
+    return [row["child_id"] for row in rows]
+
+
+def _reconstruct_production_order(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> ProductionOrder:
+    """Reconstruct a trustworthy runtime view from Kanban + event rows."""
+    po_id = row["production_order_id"]
+    state = row["current_state"] or WORKFLOW_INITIAL_STATE
+    source_brief = row["body"] or ""
+    brief = _parse_source_brief(source_brief)
+    repo_or_workspace = get_brief_value(brief, "target repo or workspace", "")
+    return ProductionOrder(
+        production_order_id=po_id,
+        title=row["title"].replace("Production Order: ", "", 1),
+        source_brief=source_brief,
+        approved_by=row["created_by"] or "",
+        approved_at=row["created_at"] or 0,
+        priority_lane=brief.get("priority_lane", ""),
+        repo_or_workspace=repo_or_workspace or "",
+        current_state=state,
+        current_owner_profile=STATE_OWNERS.get(state, ""),
+        stage_history=_reconstruct_stage_history(conn, po_id),
+        parent_kanban_card_id=row["id"],
+        child_kanban_card_ids=_reconstruct_child_card_ids(conn, row["id"]),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +583,8 @@ def _find_existing_order(
     :class:`ProductionOrder`.  Returns ``None`` otherwise.
     """
     row = conn.execute(
-        "SELECT id, title, body, production_order_id, current_state "
+        "SELECT id, title, body, production_order_id, current_state, "
+        "created_by, created_at "
         "FROM tasks WHERE idempotency_key = ? "
         "AND status != 'archived' AND production_order_id IS NOT NULL "
         "ORDER BY created_at DESC LIMIT 1",
@@ -483,20 +592,7 @@ def _find_existing_order(
     ).fetchone()
     if row is None:
         return None
-    return ProductionOrder(
-        production_order_id=row["production_order_id"],
-        title=row["title"].replace("Production Order: ", "", 1),
-        source_brief=row["body"] or "",
-        approved_by="",
-        approved_at=0,
-        priority_lane="",
-        repo_or_workspace="",
-        current_state=row["current_state"] or WORKFLOW_INITIAL_STATE,
-        current_owner_profile=STATE_OWNERS.get(
-            row["current_state"] or WORKFLOW_INITIAL_STATE, ""
-        ),
-        parent_kanban_card_id=row["id"],
-    )
+    return _reconstruct_production_order(conn, row)
 
 
 # ---------------------------------------------------------------------------
@@ -855,18 +951,5 @@ def list_production_orders(
 
     orders: list[ProductionOrder] = []
     for row in rows:
-        po_id = row["production_order_id"]
-        state = row["current_state"] or WORKFLOW_INITIAL_STATE
-        orders.append(ProductionOrder(
-            production_order_id=po_id,
-            title=row["title"].replace("Production Order: ", "", 1),
-            source_brief=row["body"] or "",
-            approved_by=row["created_by"] or "",
-            approved_at=row["created_at"] or 0,
-            priority_lane="",
-            repo_or_workspace="",
-            current_state=state,
-            current_owner_profile=STATE_OWNERS.get(state, ""),
-            parent_kanban_card_id=row["id"],
-        ))
+        orders.append(_reconstruct_production_order(conn, row))
     return orders

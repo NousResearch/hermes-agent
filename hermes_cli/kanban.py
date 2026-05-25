@@ -2732,9 +2732,11 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
         ProductionOrder,
         create_production_order,
         format_production_order_status,
+        get_brief_value,
         list_production_orders,
         log_workflow_event,
         run_full_bridge,
+        validate_brief,
     )
     import json as stdlib_json
 
@@ -2763,7 +2765,7 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
             return 1
 
         # Validate required fields.
-        missing = _validate_brief_fields(brief)
+        missing = validate_brief(brief)
         if missing:
             print(
                 f"kanban production-order create: missing required brief "
@@ -2782,7 +2784,7 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
                     source_brief=stdlib_json.dumps(brief, indent=2),
                     approved_by=brief.get("approved_by", "Jarren"),
                     priority_lane=brief.get("priority_lane", "Hermes OS"),
-                    repo_or_workspace=brief.get("target repo or workspace", ""),
+                    repo_or_workspace=get_brief_value(brief, "target repo or workspace", ""),
                     idempotency_key=idempotency_key,
                     board=board,
                 )
@@ -2911,13 +2913,8 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
 
 def _validate_brief_fields(brief: dict) -> list[str]:
     """Validate a brief JSON dict has required fields."""
-    from hermes_cli.production_order_db import REQUIRED_BRIEF_FIELDS
-    missing: list[str] = []
-    for field in REQUIRED_BRIEF_FIELDS:
-        value = brief.get(field)
-        if value is None or (isinstance(value, str) and not value.strip()):
-            missing.append(field)
-    return missing
+    from hermes_cli.production_order_db import validate_brief
+    return validate_brief(brief)
 
 
 # Post-import: inline the child card def names so the CLI handler can display them.

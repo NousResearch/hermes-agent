@@ -19,6 +19,7 @@ fixture.  Covers:
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import time
@@ -50,6 +51,7 @@ from hermes_cli.production_order_db import (
     validate_brief,
     validate_state_transition,
 )
+from hermes_cli.kanban import _cmd_production_order
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +95,23 @@ def sample_brief() -> dict:
         "approval boundaries": "No spending, no publishing",
         "constraints": "Use existing Go module",
         "expected output": "Working auth endpoints with tests",
+    }
+
+
+@pytest.fixture
+def snake_case_brief(sample_brief) -> dict:
+    """Equivalent valid brief using supported snake_case aliases."""
+    return {
+        "title": sample_brief["title"],
+        "objective": sample_brief["objective"],
+        "target_repo_or_workspace": sample_brief["target repo or workspace"],
+        "scope": sample_brief["scope"],
+        "out_of_scope": sample_brief["out of scope"],
+        "acceptance_criteria": sample_brief["acceptance criteria"],
+        "stop_conditions": sample_brief["stop conditions"],
+        "approval_boundaries": sample_brief["approval boundaries"],
+        "constraints": sample_brief["constraints"],
+        "expected_output": sample_brief["expected output"],
     }
 
 
@@ -423,6 +442,50 @@ def test_approval_brief_validated(conn, sample_brief):
     assert missing == [], f"Unexpected missing fields: {missing}"
 
 
+def test_approval_brief_snake_case_aliases_validated(snake_case_brief):
+    """Snake_case aliases satisfy required brief fields."""
+    missing = validate_brief(snake_case_brief)
+    assert missing == [], f"Unexpected missing fields: {missing}"
+
+
+def test_cli_create_with_human_label_brief_keys_succeeds(kanban_home, tmp_path, sample_brief, capsys):
+    """CLI create accepts canonical human-label brief keys."""
+    brief_path = tmp_path / "human-brief.json"
+    brief_path.write_text(json.dumps(sample_brief), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="create",
+        brief_path=str(brief_path),
+        board=None,
+        idempotency_key=None,
+        json=True,
+    ))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["production_order_id"].startswith("PO-")
+    assert len(payload["child_card_ids"]) == 6
+
+
+def test_cli_create_with_snake_case_brief_keys_succeeds(kanban_home, tmp_path, snake_case_brief, capsys):
+    """CLI create accepts snake_case brief aliases."""
+    brief_path = tmp_path / "snake-brief.json"
+    brief_path.write_text(json.dumps(snake_case_brief), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="create",
+        brief_path=str(brief_path),
+        board=None,
+        idempotency_key=None,
+        json=True,
+    ))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["production_order_id"].startswith("PO-")
+    assert len(payload["child_card_ids"]) == 6
+
+
 def test_missing_brief_validation():
     """Empty brief raises validation with all fields missing."""
     missing = validate_brief({})
@@ -632,6 +695,46 @@ def test_list_production_orders(conn, sample_brief):
     found = [o for o in orders if o.production_order_id == po.production_order_id]
     assert len(found) == 1
     assert found[0].title == sample_brief["title"]
+
+
+def test_reconstructed_order_includes_children_repo_and_stage_history(conn, sample_brief):
+    """List/show reconstruction returns a trustworthy runtime view after create."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    reconstructed = [
+        o for o in list_production_orders(conn)
+        if o.production_order_id == po.production_order_id
+    ][0]
+
+    assert reconstructed.child_kanban_card_ids == po.child_kanban_card_ids
+    assert len(reconstructed.child_kanban_card_ids) == 6
+    assert reconstructed.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert reconstructed.stage_history
+    assert any(s.to_state == "ORCHESTRATOR_TRIAGE" for s in reconstructed.stage_history)
+
+
+def test_reconstructed_order_uses_snake_case_repo_alias(conn, snake_case_brief):
+    """Reconstruction populates repo/workspace from snake_case brief metadata."""
+    po = run_full_bridge(
+        conn,
+        title=snake_case_brief["title"],
+        source_brief=json.dumps(snake_case_brief),
+        priority_lane="Hermes OS",
+        repo_or_workspace=snake_case_brief["target_repo_or_workspace"],
+    )
+
+    reconstructed = [
+        o for o in list_production_orders(conn)
+        if o.production_order_id == po.production_order_id
+    ][0]
+
+    assert reconstructed.repo_or_workspace == snake_case_brief["target_repo_or_workspace"]
 
 
 # ---------------------------------------------------------------------------

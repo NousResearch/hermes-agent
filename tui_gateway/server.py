@@ -305,6 +305,16 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
                 if _sub["task_id"] != _task_id:
                     continue
 
+                # Skip delivery for tasks that are already done or archived.
+                # Workers can exit after a task was manually completed; their
+                # crash events are noise. Session-restart re-delivery (stale
+                # DB cursor) would otherwise flood the user with old events.
+                _task_status = _conn.execute(
+                    "SELECT status FROM tasks WHERE id = ?", (_task_id,)
+                ).fetchone()
+                if _task_status and _task_status["status"] in ("done", "archived"):
+                    continue
+
                 _cursors = session.setdefault("_kanban_cursors", {})
                 _ckey = (_task_id, _sub.get("chat_id", sid))
                 _last = _cursors.get(_ckey, _sub.get("last_event_id", 0))
@@ -314,6 +324,7 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
                     thread_id=_sub.get("thread_id") or "",
                     kinds=_fmt_kinds,
                 )
+                _max_id = _last  # stays at _last when there are no new events
                 if _events:
                     _max_id = max(
                         _last,
@@ -339,6 +350,22 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
                         except Exception:
                             with session["history_lock"]:
                                 session["running"] = False
+                # Advance the DB subscription cursor so completed-gateway
+                # events are not re-delivered on session restart.  Without
+                # this the ephemeral _kanban_cursors dict is the only dedup
+                # mechanism and it resets when the session ends.
+                if _events:
+                    try:
+                        _kb.advance_notify_cursor(
+                            _conn,
+                            task_id=_task_id,
+                            platform="cli",
+                            chat_id=_sub["chat_id"],
+                            thread_id=_sub.get("thread_id") or "",
+                            new_cursor=_max_id,
+                        )
+                    except Exception:
+                        pass
         finally:
             _conn.close()
     except Exception:
@@ -1410,7 +1437,7 @@ def _load_enabled_toolsets() -> list[str] | None:
         if fallback_notice is not None:
             print(fallback_notice, file=sys.stderr, flush=True)
         return enabled or None
-    except (ImportError, FileNotFoundError):
+    except (ImportError, FileNotFoundError, RuntimeError):
         if fallback_notice is not None:
             print(
                 "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",

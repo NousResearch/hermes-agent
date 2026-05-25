@@ -268,6 +268,39 @@ class TestMemoryManager:
 
         assert provider.synced_turns == [("Describe this\n\n[image attached]", "ok")]
 
+    def test_sync_all_drops_framework_boilerplate_per_side(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        mgr.sync_all(
+            '[IMPORTANT: The user has invoked the "hermes-agent" skill. Full skill content follows.]',
+            "Normal assistant response",
+        )
+
+        assert provider.synced_turns == [("", "Normal assistant response")]
+
+    def test_sync_all_drops_raw_base64_payloads_but_keeps_media_markers(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        mgr.sync_all(
+            "Here is an inline payload: data:image/png;base64,AAAA",
+            [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}],
+        )
+
+        assert provider.synced_turns == [("", "[image attached]")]
+
+    def test_sync_all_caps_excessive_turn_content(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        mgr.add_provider(provider)
+
+        mgr.sync_all("x" * 9000, "ok")
+
+        assert provider.synced_turns == [("x" * 8000, "ok")]
+
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
         mgr = MemoryManager()

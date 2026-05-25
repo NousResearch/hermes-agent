@@ -69,6 +69,31 @@ _MEDIA_BLOCK_MARKERS = {
     "audio": "[audio attached]",
     "video": "[video attached]",
 }
+_MAX_MEMORY_SYNC_CHARS = 8000
+_MEMORY_SYNC_BOILERPLATE_PREFIXES = (
+    "[IMPORTANT: The user has invoked",
+    "[CONTEXT COMPACTION",
+    "[System note:",
+    "Knowledge cutoff:",
+    "# Tools",
+    "# Instructions",
+)
+_MEMORY_SYNC_BOILERPLATE_MARKERS = (
+    "<memory-context>",
+    "<available_skills>",
+    "## Skills (mandatory)",
+    "Tool definitions",
+    "namespace functions",
+    "full skill content is loaded below",
+    "AGENTS.md",
+    "════════════════════════════════",
+)
+_MEMORY_SYNC_BINARY_PAYLOAD_MARKERS = (
+    "data:image/",
+    "data:video/",
+    "data:audio/",
+    ";base64,",
+)
 
 
 def normalize_memory_turn_content(content: Any) -> str:
@@ -80,8 +105,23 @@ def normalize_memory_turn_content(content: Any) -> str:
     media payloads. Keep human text and replace media blocks with short
     markers.
     """
-    normalized = _flatten_rich_content(content)
-    return sanitize_context(normalized).strip()
+    normalized = sanitize_context(_flatten_rich_content(content)).strip()
+    if not _should_store_memory_turn_content(normalized):
+        return ""
+    return normalized[:_MAX_MEMORY_SYNC_CHARS].rstrip()
+
+
+def _should_store_memory_turn_content(content: str) -> bool:
+    stripped = content.lstrip()
+    if not stripped:
+        return False
+    if any(stripped.startswith(prefix) for prefix in _MEMORY_SYNC_BOILERPLATE_PREFIXES):
+        return False
+    if any(marker in content for marker in _MEMORY_SYNC_BOILERPLATE_MARKERS):
+        return False
+    if any(marker in content for marker in _MEMORY_SYNC_BINARY_PAYLOAD_MARKERS):
+        return False
+    return True
 
 
 def _flatten_rich_content(content: Any) -> str:

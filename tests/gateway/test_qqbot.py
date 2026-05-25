@@ -49,18 +49,23 @@ class TestQQAdapterInit:
     def test_create_task_closes_coroutine_without_running_loop(self):
         from gateway.platforms.qqbot import QQAdapter
 
-        async def noop():
-            return None
+        class CloseableCoroutine:
+            def __init__(self):
+                self.closed = False
 
-        coro = noop()
-        try:
-            result = QQAdapter._create_task(coro)
-            assert result is None
-            assert coro.cr_frame is None
-        finally:
-            coro.close()
+            def close(self):
+                self.closed = True
 
-    def test_dispatch_payload_message_event_is_safe_without_running_loop(self):
+        coro = CloseableCoroutine()
+
+        result = QQAdapter._create_task(coro)
+
+        assert result is None
+        assert coro.closed is True
+
+    def test_dispatch_payload_message_event_is_safe_without_running_loop(self, recwarn):
+        import gc
+
         adapter = self._make(app_id="a", client_secret="b")
 
         async def fake_on_message(event_type, data):
@@ -69,6 +74,14 @@ class TestQQAdapterInit:
         adapter._on_message = fake_on_message
 
         adapter._dispatch_payload({"op": 0, "t": "C2C_MESSAGE_CREATE", "s": 1, "d": {}})
+        gc.collect()
+
+        assert not [
+            warning
+            for warning in recwarn
+            if issubclass(warning.category, RuntimeWarning)
+            and "never awaited" in str(warning.message)
+        ]
 
     def test_env_fallback(self):
         with mock.patch.dict(os.environ, {"QQ_APP_ID": "env_id", "QQ_CLIENT_SECRET": "env_sec"}, clear=False):

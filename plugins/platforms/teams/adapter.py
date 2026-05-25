@@ -1015,7 +1015,8 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return
         try:
-            await self._app.send(chat_id, TypingActivityInput())
+            activity = TypingActivityInput() if callable(TypingActivityInput) else {"type": "typing"}
+            await self._app.send(chat_id, activity)
         except Exception:
             pass
 

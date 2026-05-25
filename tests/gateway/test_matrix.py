@@ -2599,6 +2599,10 @@ class TestMatrixProxyConfig:
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                     "https_proxy", "http_proxy", "all_proxy", "MATRIX_PROXY"):
             monkeypatch.delenv(key, raising=False)
+        # Isolate tests from macOS system proxy auto-detection (scutil --proxy).
+        # Env-proxy behavior is still covered below via explicit proxy_env.
+        import gateway.platforms.base as platform_base
+        monkeypatch.setattr(platform_base, "_detect_macos_system_proxy", lambda: None)
         if proxy_env:
             for k, v in proxy_env.items():
                 monkeypatch.setenv(k, v)

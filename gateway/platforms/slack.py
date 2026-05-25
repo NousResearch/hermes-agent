@@ -22,13 +22,21 @@ try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.web.async_client import AsyncWebClient
-    import aiohttp
     SLACK_AVAILABLE = True
 except ImportError:
     SLACK_AVAILABLE = False
     AsyncApp = Any
     AsyncSocketModeHandler = Any
     AsyncWebClient = Any
+
+# aiohttp is used for slash-response_url callbacks and document downloads.
+# Keep it independent from the optional Slack SDK import so tests and partial
+# installs can patch gateway.platforms.slack.aiohttp.ClientSession even when
+# slack-bolt/slack-sdk are unavailable.
+try:
+    import aiohttp
+except ImportError:  # pragma: no cover - exercised only in minimal installs
+    aiohttp = None  # type: ignore[assignment]
 
 import sys
 from pathlib import Path as _Path

@@ -138,3 +138,201 @@ class TestApplyProfileOverrideHermesHomeGuard:
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") is None
+
+
+class TestApplyProfileOverrideCronJobPin:
+    """Regression guard for issue #32046.
+
+    ``hermes cron create|add|edit`` defines its own ``--profile`` argument with
+    job-pin semantics (write the job to the active scheduler's jobs.json with
+    ``profile=<name>``). The pre-parse hook must NOT consume those trailing
+    flags as a global HERMES_HOME switch — otherwise the job lands in
+    ``<name>``'s jobs.json with ``profile=null`` and is never ticked by the
+    default scheduler.
+    """
+
+    def test_cron_create_profile_flag_not_consumed_as_global(
+        self, tmp_path, monkeypatch
+    ):
+        """``hermes cron create ... --profile oracle`` must leave ``--profile
+        oracle`` in argv for the cron subparser and must NOT set
+        HERMES_HOME to oracle.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        argv = [
+            "hermes",
+            "cron",
+            "create",
+            "--name",
+            "oracle-nightly",
+            "0 3 * * *",
+            "do the thing",
+            "--profile",
+            "oracle",
+        ]
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None, (
+            "cron create --profile must not switch the global HERMES_HOME"
+        )
+        assert sys.argv == argv, (
+            "cron create --profile flag must survive in argv for the subparser"
+        )
+
+    def test_cron_edit_profile_flag_not_consumed_as_global(
+        self, tmp_path, monkeypatch
+    ):
+        """``hermes cron edit <id> --profile oracle`` likewise leaves the
+        cron subparser's ``--profile`` argument alone.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        argv = ["hermes", "cron", "edit", "f0467c04d70f", "--profile", "oracle"]
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None
+        assert sys.argv == argv
+
+    def test_cron_add_alias_also_protected(self, tmp_path, monkeypatch):
+        """The ``add`` alias of ``cron create`` is registered in argparse —
+        the pre-parse hook must treat it the same way.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        argv = [
+            "hermes",
+            "cron",
+            "add",
+            "0 3 * * *",
+            "do the thing",
+            "--profile",
+            "oracle",
+        ]
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None
+        assert sys.argv == argv
+
+    def test_cron_create_profile_equals_form_not_consumed(
+        self, tmp_path, monkeypatch
+    ):
+        """The ``--profile=oracle`` (single-token equals form) is likewise a
+        cron-subparser arg, not a global override.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        argv = ["hermes", "cron", "create", "0 3 * * *", "task", "--profile=oracle"]
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None
+        assert sys.argv == argv
+
+    def test_cron_create_short_p_flag_not_consumed_as_global(
+        self, tmp_path, monkeypatch
+    ):
+        """The cron subparser does not define ``-p`` for job-pin, but a
+        defensive read of the pre-parse hook ignores -p trailing the cron
+        subcommand too — otherwise we would mis-route a user-typed ``-p``
+        as global, breaking the subparser's later error message.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        argv = ["hermes", "cron", "create", "0 3 * * *", "task", "-p", "oracle"]
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None
+        assert sys.argv == argv
+
+    def test_global_dash_p_before_cron_still_consumed(self, tmp_path, monkeypatch):
+        """``hermes -p ozzy cron create ... --profile oracle`` keeps both
+        semantics intact: -p (before cron) is the global switch, and
+        --profile (after cron create) is the job pin.
+        """
+        hermes_root = tmp_path / ".hermes"
+        (hermes_root / "profiles" / "ozzy").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "hermes",
+                "-p",
+                "ozzy",
+                "cron",
+                "create",
+                "0 3 * * *",
+                "task",
+                "--profile",
+                "oracle",
+            ],
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        # Global -p ozzy was consumed → HERMES_HOME points at ozzy.
+        hermes_home = os.environ.get("HERMES_HOME")
+        assert hermes_home is not None and hermes_home.endswith("ozzy")
+        # ``-p ozzy`` was stripped from argv but ``--profile oracle`` survives
+        # for the cron subparser.
+        assert "-p" not in sys.argv
+        assert "ozzy" not in sys.argv
+        assert sys.argv[-2:] == ["--profile", "oracle"]
+
+    def test_cron_list_with_global_profile_still_consumed(
+        self, tmp_path, monkeypatch
+    ):
+        """``hermes cron list --profile ozzy`` has no cron-subparser
+        ``--profile`` arg on ``list``, but the pre-parse hook is gated on
+        ``create|add|edit`` only — so this remains a global switch, matching
+        the historical behaviour.
+        """
+        hermes_root = tmp_path / ".hermes"
+        (hermes_root / "profiles" / "ozzy").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            sys, "argv", ["hermes", "cron", "list", "--profile", "ozzy"]
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        hermes_home = os.environ.get("HERMES_HOME")
+        assert hermes_home is not None and hermes_home.endswith("ozzy")
+        assert "--profile" not in sys.argv
+        assert "ozzy" not in sys.argv

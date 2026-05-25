@@ -219,8 +219,23 @@ def _apply_profile_override() -> None:
     profile_name = None
     consume = 0
 
+    # ``cron create|add|edit`` has its own ``--profile`` argument with
+    # job-pin semantics (cf. ``hermes_cli/cron.py``). When the user writes
+    # ``hermes cron create ... --profile oracle``, the trailing flag belongs
+    # to the cron subparser, not to the global profile override — otherwise
+    # we silently switch HERMES_HOME to ``oracle`` at create time and the
+    # job lands in oracle's jobs.json with ``profile=null``, never firing
+    # from the default scheduler. See issue #32046.
+    cron_subcmd_pos = None
+    for i, arg in enumerate(argv):
+        if arg == "cron" and i + 1 < len(argv) and argv[i + 1] in {"create", "add", "edit"}:
+            cron_subcmd_pos = i
+            break
+
     # 1. Check for explicit -p / --profile flag
     for i, arg in enumerate(argv):
+        if cron_subcmd_pos is not None and i >= cron_subcmd_pos:
+            break
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
             consume = 2

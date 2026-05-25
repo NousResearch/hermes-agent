@@ -136,6 +136,38 @@ def atomic_json_write(
         raise
 
 
+class IndentDumper(yaml.SafeDumper):
+    """PyYAML dumper that indents list items under mapping keys (2-space).
+
+    Default PyYAML emits "indentless" sequences — list items start at the
+    same column as their parent mapping key:
+
+        custom_providers:
+        - name: NVIDIA      # ← column 0
+
+    ``ruamel.yaml`` (used by :func:`atomic_roundtrip_yaml_update` for
+    comment-preserving single-key updates) instead emits 2-space-indented
+    sequences:
+
+        custom_providers:
+          - name: NVIDIA    # ← column 2
+
+    Mixing both styles in the same ``config.yaml`` (one path writes flat,
+    the next writes indented, then the user adds a comment) produces a
+    file that PyYAML still tolerates but stricter parsers like ``js-yaml``
+    reject with ``bad indentation of a mapping entry``.  In production
+    that surfaced as the Gateway silently dropping ``custom_providers``
+    and falling back to defaults — model switching appeared to work in
+    the UI but every request used the wrong backend.  See issue #31999.
+
+    Forcing ``indentless=False`` on the PyYAML side aligns the two
+    serializers so all write paths emit byte-identical layouts.
+    """
+
+    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002 — signature locked by base class
+        return super().increase_indent(flow, False)
+
+
 def atomic_yaml_write(
     path: Union[str, Path],
     data: Any,
@@ -149,6 +181,13 @@ def atomic_yaml_write(
     Uses temp file + fsync + os.replace to ensure the target file is never
     left in a partially-written state.  If the process crashes mid-write,
     the previous version of the file remains intact.
+
+    The dump is routed through :class:`IndentDumper` so list-under-mapping
+    items emit at column 2 — matching the layout produced by
+    :func:`atomic_roundtrip_yaml_update` (ruamel.yaml).  Without this,
+    cross-path writes to ``config.yaml`` toggle indentation on every
+    save, eventually producing a mixed-indent file that ``js-yaml``
+    rejects (issue #31999).
 
     Args:
         path: Target file path (will be created or overwritten).
@@ -170,7 +209,14 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
+            yaml.dump(
+                data,
+                f,
+                Dumper=IndentDumper,
+                default_flow_style=default_flow_style,
+                sort_keys=sort_keys,
+                allow_unicode=True,
+            )
             if extra_content:
                 f.write(extra_content)
             f.flush()

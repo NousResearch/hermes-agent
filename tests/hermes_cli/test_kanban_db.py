@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -260,6 +261,50 @@ def test_kanban_filesystem_mutators_reject_kanban_db_as_only_pytest_isolation(
 
     with pytest.raises(RuntimeError, match="HERMES_KANBAN_DB only isolates sqlite DB writes"):
         mutator(*args)
+
+
+def test_resolve_workspace_rejects_kanban_db_as_only_pytest_isolation(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "isolated-kanban.db"))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    task = _make_task(id="t_workspace")
+
+    with pytest.raises(RuntimeError, match="HERMES_KANBAN_DB only isolates sqlite DB writes"):
+        kb.resolve_workspace(task)
+
+
+def test_rotate_worker_log_rejects_kanban_db_as_only_pytest_isolation(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "isolated-kanban.db"))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    with pytest.raises(RuntimeError, match="HERMES_KANBAN_DB only isolates sqlite DB writes"):
+        kb._rotate_worker_log(realish_home / ".hermes" / "kanban" / "logs" / "t.log", 1)
+
+
+def test_default_spawn_rejects_kanban_db_as_only_pytest_isolation(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "isolated-kanban.db"))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    def fail_if_spawn_reaches_popen(*_args, **_kwargs):
+        raise AssertionError("_default_spawn should fail before spawning worker")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_if_spawn_reaches_popen)
+    task = _make_task(id="t_spawn", assignee="teknium")
+
+    with pytest.raises(RuntimeError, match="HERMES_KANBAN_DB only isolates sqlite DB writes"):
+        kb._default_spawn(task, str(tmp_path), board="test-board")
 
 
 def test_remove_board_rejects_unisolated_pytest_root_before_path_access(monkeypatch):

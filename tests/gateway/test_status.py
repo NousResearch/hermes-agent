@@ -314,8 +314,8 @@ class TestGatewayRuntimeStatus:
         assert authority["python_executable"] == "/rescue/.venv/bin/python"
         assert authority["cwd"] == "/rescue"
         assert authority["sys_path0"] is not None
-        assert authority["gateway_file"].endswith("gateway/status.py")
-        assert authority["hermes_cli_file"].endswith("hermes_cli/__init__.py")
+        assert Path(authority["gateway_file"]).parts[-2:] == ("gateway", "status.py")
+        assert Path(authority["hermes_cli_file"]).parts[-2:] == ("hermes_cli", "__init__.py")
         assert Path(authority["project_root"]) == Path(status.__file__).resolve().parents[1]
         assert authority["hermes_home"] == str(tmp_path)
         assert authority["config_path"] == str(tmp_path / "config.yaml")

@@ -1922,7 +1922,16 @@ class FeishuAdapter(BasePlatformAdapter):
             image_file.name = os.path.basename(image_path)
             body = self._build_image_upload_body(image_type=_FEISHU_IMAGE_UPLOAD_TYPE, image=image_file)
             request = self._build_image_upload_request(body)
-            upload_response = await self._run_blocking(self._client.im.v1.image.create, request)
+            try:
+                upload_response = await self._run_blocking(self._client.im.v1.image.create, request)
+            except Exception as exc:
+                if not self._is_http2_stream_reset_error(exc):
+                    raise
+                image_file.seek(0)
+                upload_response = await self._http1_open_api_upload(
+                    kind="image", file=image_file, file_name=image_file.name,
+                    upload_type=_FEISHU_IMAGE_UPLOAD_TYPE,
+                )
             image_key = self._extract_response_field(upload_response, "image_key")
             if not image_key:
                 return self._response_error_result(
@@ -3673,7 +3682,16 @@ class FeishuAdapter(BasePlatformAdapter):
                     file_type=upload_file_type, file_name=display_name, file=file_obj, duration=duration_ms,
                 )
                 request = self._build_file_upload_request(body)
-                upload_response = await self._run_blocking(self._client.im.v1.file.create, request)
+                try:
+                    upload_response = await self._run_blocking(self._client.im.v1.file.create, request)
+                except Exception as exc:
+                    if not self._is_http2_stream_reset_error(exc):
+                        raise
+                    file_obj.seek(0)
+                    upload_response = await self._http1_open_api_upload(
+                        kind="file", file=file_obj, file_name=display_name,
+                        upload_type=upload_file_type, duration=duration_ms,
+                    )
             file_key = self._extract_response_field(upload_response, "file_key")
             if not file_key:
                 return self._response_error_result(
@@ -3776,6 +3794,73 @@ class FeishuAdapter(BasePlatformAdapter):
     def _extract_response_field(response: Any, field_name: str) -> Any:
         data = getattr(response, "data", None) if FeishuAdapter._response_succeeded(response) else None
         return getattr(data, field_name, None) if data else None
+
+    @staticmethod
+    def _is_http2_stream_reset_error(exc: BaseException) -> bool:
+        """Recognize urllib3-future's reset through requests exception wrapping."""
+        pending = [exc]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if "was reset by remote peer" in str(current):
+                return True
+            pending.extend(e for e in (current.__cause__, current.__context__) if e is not None)
+        return False
+
+    async def _http1_open_api_upload(
+        self, *, kind: str, file: Any, file_name: str, upload_type: str, duration: int = 0,
+    ) -> Any:
+        """Retry only the failed upload; keep SDK message routing and response handling.
+
+        The SDK's requests transport cannot disable urllib3-future HTTP/2 per call.
+        Reuse the rewound open stream, not another in-memory copy of large files.
+        """
+        import httpx
+
+        def error(code: Any, message: str) -> Any:
+            return SimpleNamespace(success=lambda: False, code=code, msg=message, data=None)
+
+        base_url = _onboard_open_base_url(self._domain_name)
+        data = {"image_type": upload_type} if kind == "image" else {
+            "file_type": upload_type, "file_name": file_name,
+        }
+        if kind == "file" and duration > 0:
+            data["duration"] = str(duration)
+        try:
+            async with httpx.AsyncClient(http2=False, trust_env=False, timeout=60.0) as client:
+                token_response = await client.post(
+                    f"{base_url}/open-apis/auth/v3/tenant_access_token/internal",
+                    json={"app_id": self._app_id, "app_secret": self._app_secret},
+                )
+                token_response.raise_for_status()
+                token_payload = token_response.json()
+                if not isinstance(token_payload, dict):
+                    return error(-1, "invalid tenant token response")
+                token = token_payload.get("tenant_access_token")
+                if token_payload.get("code") != 0 or not isinstance(token, str) or not token:
+                    return error(token_payload.get("code", -1), "tenant_access_token unavailable")
+                response = await client.post(
+                    f"{base_url}/open-apis/im/v1/{kind}s",
+                    headers={"Authorization": f"Bearer {token}"},
+                    files={kind: (file_name, file, "application/octet-stream")}, data=data,
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            return error(-1, f"HTTP/1.1 upload fallback failed: {type(exc).__name__}")
+        if not isinstance(payload, dict):
+            return error(-1, "invalid upload response")
+        if payload.get("code") != 0:
+            return error(payload.get("code", -1), "upload failed")
+        key_field = f"{kind}_key"
+        upload_data = payload.get("data")
+        key = upload_data.get(key_field) if isinstance(upload_data, dict) else None
+        if not isinstance(key, str) or not key:
+            return error(-1, f"{key_field} missing in response")
+        return SimpleNamespace(success=lambda: True, code=0, msg="ok", data=SimpleNamespace(**{key_field: key}))
 
     def _response_error_result(
         self, response: Any, *, default_message: str, override_error: Optional[str] = None,

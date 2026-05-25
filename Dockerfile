@@ -128,6 +128,9 @@ RUN npm install --prefer-offline --no-audit && \
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
 RUN uv sync --frozen --no-install-project --extra all --extra messaging
+# Pre-install voice transcription (faster-whisper) so voice memos Just Work
+# in production gateway deployments without lazy-install latency.
+RUN uv pip install --no-cache-dir faster-whisper==1.2.1
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.

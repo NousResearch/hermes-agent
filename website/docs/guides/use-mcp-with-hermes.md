@@ -486,5 +486,6 @@ Not-great first servers:
 ## Related docs
 
 - [MCP (Model Context Protocol)](/user-guide/features/mcp)
+- [List Hermes as an MCP server](/guides/list-hermes-mcp-server)
 - [FAQ](/reference/faq)
 - [Slash Commands](/reference/slash-commands)

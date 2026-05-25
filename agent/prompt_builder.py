@@ -35,7 +35,12 @@ logger = logging.getLogger(__name__)
 
 _CONTEXT_THREAT_PATTERNS = [
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (
+        r'do\s+not\s+tell\s+the\s+user\s+'
+        r'(?:about|that|you\s+are|we\s+are|this\s+is|these\s+instructions|'
+        r'the\s+(?:system\s+)?prompt|hidden|secret)',
+        "deception_hide",
+    ),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
@@ -957,6 +962,32 @@ def _load_agents_md(cwd_path: Path) -> str:
     return ""
 
 
+def _load_memd_bootstrap(cwd_path: Path) -> str:
+    """Load compact memd wake/memory context when a repo bundle exists."""
+    memd_dir = cwd_path / ".memd"
+    if not memd_dir.is_dir():
+        return ""
+
+    chunks = []
+    for name, limit in (("wake.md", 10_000), ("mem.md", 14_000), ("events.md", 6_000)):
+        path = memd_dir / name
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.debug("Could not read %s: %s", path, e)
+            continue
+        if not content:
+            continue
+        content = _scan_context_content(content, f".memd/{name}")
+        chunks.append(f"## .memd/{name}\n\n{_truncate_content(content, name, limit)}")
+
+    if not chunks:
+        return ""
+    return "# memd Bootstrap\n\nUse this durable memory before relying on transcript recall.\n\n" + "\n\n".join(chunks)
+
+
 def _load_claude_md(cwd_path: Path) -> str:
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
@@ -1023,6 +1054,10 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     cwd_path = Path(cwd).resolve()
     sections = []
+
+    memd_context = _load_memd_bootstrap(cwd_path)
+    if memd_context:
+        sections.append(memd_context)
 
     # Priority-based project context: first match wins
     project_context = (

@@ -55,6 +55,11 @@ def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
     return fake
 
 
+def _make_safe_tempdir(prefix: str) -> str:
+    """Create a temp dir outside macOS system-sensitive /private/var paths."""
+    return tempfile.mkdtemp(prefix=prefix, dir=os.getcwd())
+
+
 # ---------------------------------------------------------------------------
 # Device path blocking
 # ---------------------------------------------------------------------------
@@ -100,11 +105,47 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertFalse(_is_blocked_device("/tmp/test.py"))
         self.assertFalse(_is_blocked_device("/home/user/.bashrc"))
 
+    def test_symlink_to_blocked_device_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "zero-link")
+            try:
+                os.symlink("/dev/zero", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertTrue(_is_blocked_device(link_path))
+
+    def test_symlink_to_regular_file_not_blocked(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = os.path.join(tmpdir, "regular.txt")
+            link_path = os.path.join(tmpdir, "regular-link")
+            with open(target_path, "w", encoding="utf-8") as handle:
+                handle.write("safe\n")
+            try:
+                os.symlink(target_path, link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+            self.assertFalse(_is_blocked_device(link_path))
+
     def test_read_file_tool_rejects_device(self):
         """read_file_tool returns an error without any file I/O."""
         result = json.loads(read_file_tool("/dev/zero", task_id="dev_test"))
         self.assertIn("error", result)
         self.assertIn("device file", result["error"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_tool_rejects_device_symlink_before_io(self, mock_ops):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, "zero-link")
+            try:
+                os.symlink("/dev/zero", link_path)
+            except OSError as exc:
+                self.skipTest(f"symlink unavailable: {exc}")
+
+            result = json.loads(read_file_tool(link_path, task_id="dev_link_test"))
+
+        self.assertIn("error", result)
+        self.assertIn("device file", result["error"])
+        mock_ops.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +207,7 @@ class TestFileDedup(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
-        self._tmpdir = tempfile.mkdtemp()
+        self._tmpdir = _make_safe_tempdir("hermes-dedup-")
         self._tmpfile = os.path.join(self._tmpdir, "dedup_test.txt")
         with open(self._tmpfile, "w") as f:
             f.write("line one\nline two\n")
@@ -631,7 +672,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
-        self._tmpdir = tempfile.mkdtemp()
+        self._tmpdir = _make_safe_tempdir("hermes-write-dedup-")
         self._tmpfile = os.path.join(self._tmpdir, "write_dedup.txt")
         with open(self._tmpfile, "w") as f:
             f.write("original content\n")

@@ -238,6 +238,84 @@ services:
 
 Start with `docker compose up -d` and view logs with `docker compose logs -f`. Dashboard output is prefixed with `[dashboard]` so it's easy to filter from gateway logs.
 
+## Optional: Linux desktop audio bridge
+
+Voice mode in Docker needs two separate things to work: Hermes must be allowed to probe audio devices inside the container, and the container must be able to reach your host audio server. The setup below covers the host audio plumbing for Linux desktops that expose a PulseAudio-compatible socket, including many PipeWire setups.
+
+:::caution
+This is a Linux desktop workaround, not a general Docker Desktop feature. It is useful when you already have host audio working and want CLI voice mode inside the Hermes container. If Hermes still reports `Running inside Docker container -- no audio devices`, use a build that includes Docker audio probing support for `PULSE_SERVER` / `PIPEWIRE_REMOTE`.
+:::
+
+First, create an ALSA config next to your Compose file:
+
+```conf title="asound.conf"
+pcm.!default {
+    type pulse
+    hint {
+        show on
+        description "Default ALSA Output (PulseAudio)"
+    }
+}
+
+pcm.pulse {
+    type pulse
+}
+
+ctl.!default {
+    type pulse
+}
+```
+
+Then build a small derived image with the ALSA PulseAudio plugin installed:
+
+```dockerfile title="Dockerfile.audio"
+FROM nousresearch/hermes-agent:latest
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libasound2-plugins \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+Use that image in Compose and pass through the host user's PulseAudio socket and cookie:
+
+```yaml
+services:
+  hermes:
+    build:
+      context: .
+      dockerfile: Dockerfile.audio
+    image: hermes-agent-audio
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    volumes:
+      - ~/.hermes:/opt/data
+      - /run/user/${HERMES_UID}/pulse:/run/user/${HERMES_UID}/pulse
+      - ~/.config/pulse/cookie:/tmp/pulse-cookie:ro
+      - ./asound.conf:/etc/asound.conf:ro
+    environment:
+      - HERMES_UID=${HERMES_UID}
+      - HERMES_GID=${HERMES_GID}
+      - XDG_RUNTIME_DIR=/run/user/${HERMES_UID}
+      - PULSE_SERVER=unix:/run/user/${HERMES_UID}/pulse/native
+      - PULSE_COOKIE=/tmp/pulse-cookie
+```
+
+Start it with your host UID/GID so the container process can access the per-user audio socket:
+
+```sh
+export HERMES_UID="$(id -u)"
+export HERMES_GID="$(id -g)"
+docker compose up -d --build
+```
+
+To verify what PortAudio sees inside the container:
+
+```sh
+docker exec hermes /opt/hermes/.venv/bin/python -c "import sounddevice as sd; print(sd.query_devices())"
+```
+
 ## Resource limits
 
 The Hermes container needs moderate resources. Recommended minimums:

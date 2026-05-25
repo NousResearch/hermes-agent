@@ -1,5 +1,6 @@
 """Tests for cron job context_from feature (issue #5439 Option C)."""
 
+import logging
 import sys
 from pathlib import Path
 
@@ -266,6 +267,35 @@ class TestBuildJobPromptContextFrom:
         # Should not crash and should not inject anything malicious
         assert "Process" in prompt
         assert "etc/passwd" not in prompt
+
+    def test_invalid_job_id_log_includes_job_origin(self, cron_env, caplog):
+        """Invalid stored context_from refs log job/source provenance."""
+        from cron.jobs import create_job
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(
+            prompt="Process",
+            schedule="every 2h",
+            name="suspicious-chain",
+            origin={
+                "platform": "api_server",
+                "chat_id": "api",
+                "source_ip": "203.0.113.10",
+                "forwarded_for": "198.51.100.7",
+            },
+        )
+        job["context_from"] = ["../../../etc/passwd"]
+
+        caplog.set_level(logging.WARNING, logger="cron.scheduler")
+        prompt = _build_job_prompt(job)
+
+        assert "Process" in prompt
+        message = caplog.text
+        assert "context_from: skipping invalid job_id" in message
+        assert job["id"] in message
+        assert "suspicious-chain" in message
+        assert "203.0.113.10" in message
+        assert "198.51.100.7" in message
 
 
 

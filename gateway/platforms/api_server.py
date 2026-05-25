@@ -763,6 +763,58 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return "*" in self._cors_origins or origin in self._cors_origins
 
+    @staticmethod
+    def _clean_log_value(value: Any, *, max_len: int = 200) -> str:
+        """Sanitize request metadata before it reaches security logs."""
+        if value is None:
+            return ""
+        text = str(value).replace("\r", " ").replace("\n", " ").strip()
+        return text[:max_len]
+
+    def _request_audit_context(self, request: "web.Request") -> Dict[str, str]:
+        """Return non-secret source metadata for security/audit warnings."""
+        peer_ip = ""
+        try:
+            peer = request.transport.get_extra_info("peername") if request.transport else None
+            if isinstance(peer, (tuple, list)) and peer:
+                peer_ip = str(peer[0])
+        except Exception:
+            peer_ip = ""
+
+        return {
+            "remote": self._clean_log_value(getattr(request, "remote", "") or peer_ip),
+            "peer_ip": self._clean_log_value(peer_ip),
+            "forwarded_for": self._clean_log_value(request.headers.get("X-Forwarded-For", "")),
+            "real_ip": self._clean_log_value(request.headers.get("X-Real-IP", "")),
+            "method": self._clean_log_value(request.method, max_len=16),
+            "path": self._clean_log_value(request.path_qs, max_len=500),
+            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
+        }
+
+    def _request_audit_log_suffix(self, request: "web.Request") -> str:
+        ctx = self._request_audit_context(request)
+        fields = [f"{key}={value!r}" for key, value in ctx.items() if value]
+        return " ".join(fields) if fields else "source='unknown'"
+
+    def _cron_origin_from_request(self, request: "web.Request") -> Dict[str, str]:
+        """Persist safe API source metadata on cron jobs created over HTTP."""
+        ctx = self._request_audit_context(request)
+        origin = {
+            "platform": "api_server",
+            "chat_id": "api",
+        }
+        if ctx.get("remote"):
+            origin["source_ip"] = ctx["remote"]
+        if ctx.get("peer_ip"):
+            origin["peer_ip"] = ctx["peer_ip"]
+        if ctx.get("forwarded_for"):
+            origin["forwarded_for"] = ctx["forwarded_for"]
+        if ctx.get("real_ip"):
+            origin["real_ip"] = ctx["real_ip"]
+        if ctx.get("user_agent"):
+            origin["user_agent"] = ctx["user_agent"]
+        return origin
+
     # ------------------------------------------------------------------
     # Auth helper
     # ------------------------------------------------------------------
@@ -784,6 +836,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
+        logger.warning(
+            "API server rejected invalid API key: %s",
+            self._request_audit_log_suffix(request),
+        )
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
@@ -2454,6 +2510,11 @@ class APIServerAdapter(BasePlatformAdapter):
         """Validate and extract job_id. Returns (job_id, error_response)."""
         job_id = request.match_info["job_id"]
         if not self._JOB_ID_RE.fullmatch(job_id):
+            logger.warning(
+                "Cron jobs API rejected invalid job_id %r: %s",
+                job_id,
+                self._request_audit_log_suffix(request),
+            )
             return job_id, web.json_response(
                 {"error": "Invalid job ID format"}, status=400,
             )
@@ -2511,6 +2572,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "schedule": schedule,
                 "name": name,
                 "deliver": deliver,
+                "origin": self._cron_origin_from_request(request),
             }
             if skills:
                 kwargs["skills"] = skills

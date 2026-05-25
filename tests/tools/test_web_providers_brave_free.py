@@ -157,14 +157,56 @@ class TestBraveFreeProviderSearch:
         from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
         bad = MagicMock()
-        bad.status_code = 429
-        err = httpx.HTTPStatusError("429", request=MagicMock(), response=bad)
+        bad.status_code = 500
+        err = httpx.HTTPStatusError("500", request=MagicMock(), response=bad)
 
         with patch("httpx.get", side_effect=err):
             result = BraveFreeWebSearchProvider().search("q", limit=5)
 
         assert result["success"] is False
+        assert "500" in result["error"]
+
+    def test_http_429_retries_once_after_retry_after_delay(self, monkeypatch):
+        import httpx
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.headers = {"Retry-After": "0.01"}
+        err = httpx.HTTPStatusError("429", request=MagicMock(), response=rate_limited)
+        calls = []
+
+        def fake_get(*args, **kwargs):
+            calls.append((args, kwargs))
+            if len(calls) == 1:
+                raise err
+            return self._mock_resp(self._SAMPLE_RESPONSE)
+
+        sleeps = []
+        with patch("httpx.get", side_effect=fake_get), patch("time.sleep", side_effect=lambda delay: sleeps.append(delay)):
+            result = BraveFreeWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is True
+        assert len(calls) == 2
+        assert sleeps == [0.01]
+
+    def test_http_429_returns_failure_after_retry_is_exhausted(self, monkeypatch):
+        import httpx
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
+        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.headers = {}
+        err = httpx.HTTPStatusError("429", request=MagicMock(), response=rate_limited)
+
+        with patch("httpx.get", side_effect=err), patch("time.sleep", return_value=None) as sleep:
+            result = BraveFreeWebSearchProvider().search("q", limit=5)
+
+        assert result["success"] is False
         assert "429" in result["error"]
+        sleep.assert_called_once()
 
     def test_request_error_returns_failure(self, monkeypatch):
         import httpx

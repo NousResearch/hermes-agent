@@ -3484,94 +3484,132 @@ class BasePlatformAdapter(ABC):
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
-                # Auto-TTS: if voice message, generate audio FIRST (before sending text)
+                # Auto-TTS: if voice message, generate audio PER CHUNK (fixes #31969)
+                # instead of once on the full text which leaves all but the last
+                # chunk without audio. Each chunk that fits in a platform caption
+                # is delivered as a voice+bubble pair; longer chunks play voice
+                # first then text follows.
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
-                _tts_path = None
+                _tts_available = False
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
                         and not media_files):
                     try:
-                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
-                        if check_tts_requirements():
-                            import json as _json
-                            speech_text = self.prepare_tts_text(text_content)
-                            if not speech_text:
-                                raise ValueError("Empty text after markdown cleanup")
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
-                            )
-                            tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
-                    except Exception as tts_err:
-                        logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
+                        from tools.tts_tool import check_tts_requirements
+                        _tts_available = check_tts_requirements()
+                    except Exception:
+                        _tts_available = False
 
-                # Play TTS audio before text (voice-first experience)
-                _tts_caption_delivered = False
-                if _tts_path and Path(_tts_path).exists():
-                    try:
-                        telegram_tts_caption = None
-                        if (
-                            self.platform == Platform.TELEGRAM
-                            and text_content
-                            and text_content[:1024] == text_content
-                        ):
-                            telegram_tts_caption = text_content
-                        tts_result = await self.play_tts(
+                if _tts_available:
+                    import json as _json
+                    from tools.tts_tool import text_to_speech_tool
+
+                    # Split text into platform-appropriate chunks so TTS fires
+                    # per logical message rather than once on the full payload.
+                    max_len = getattr(self, 'MAX_MESSAGE_LENGTH', 4096)
+                    chunks = self.truncate_message(text_content, max_length=max_len)
+                    _reply_anchor = _reply_anchor_for_event(event)
+
+                    for chunk_index, chunk in enumerate(chunks):
+                        _tts_path = None
+                        try:
+                            speech_text = self.prepare_tts_text(chunk)
+                            if speech_text:
+                                tts_result_str = await asyncio.to_thread(
+                                    text_to_speech_tool, text=speech_text
+                                )
+                                tts_data = _json.loads(tts_result_str)
+                                _tts_path = tts_data.get("file_path")
+                        except Exception as tts_err:
+                            logger.warning(
+                                "[%s] Auto-TTS per-chunk %d failed: %s",
+                                self.name, chunk_index, tts_err,
+                            )
+
+                        _caption_delivered = False
+                        if _tts_path and Path(_tts_path).exists():
+                            try:
+                                caption = None
+                                if self.platform == Platform.TELEGRAM and chunk and len(chunk) <= 1024:
+                                    caption = chunk
+                                tts_result = await self.play_tts(
+                                    chat_id=event.source.chat_id,
+                                    audio_path=_tts_path,
+                                    caption=caption,
+                                    metadata=_thread_metadata,
+                                )
+                                _caption_delivered = bool(
+                                    caption and getattr(tts_result, "success", False)
+                                )
+                            finally:
+                                try:
+                                    os.remove(_tts_path)
+                                except OSError:
+                                    pass
+
+                        # Send text for chunks not delivered as TTS caption
+                        if chunk and not _caption_delivered:
+                            # Mark only the final chunk for notification delivery
+                            if chunk_index == len(chunks) - 1:
+                                if _thread_metadata is not None:
+                                    _send_meta = dict(_thread_metadata)
+                                    _send_meta["notify"] = True
+                                else:
+                                    _send_meta = {"notify": True}
+                            else:
+                                _send_meta = _thread_metadata
+
+                            result = await self._send_with_retry(
+                                chat_id=event.source.chat_id,
+                                content=chunk,
+                                reply_to=_reply_anchor,
+                                metadata=_send_meta,
+                            )
+
+                            if chunk_index == len(chunks) - 1:
+                                _record_delivery(result)
+                                if (
+                                    _ephemeral_ttl
+                                    and _ephemeral_ttl > 0
+                                    and result.success
+                                    and result.message_id
+                                ):
+                                    self._schedule_ephemeral_delete(
+                                        chat_id=event.source.chat_id,
+                                        message_id=result.message_id,
+                                        ttl_seconds=_ephemeral_ttl,
+                                    )
+                else:
+                    # No TTS — send as plain text (original single-send path)
+                    if text_content:
+                        logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                        _reply_anchor = _reply_anchor_for_event(event)
+                        if _thread_metadata is not None:
+                            _thread_metadata = dict(_thread_metadata)
+                            _thread_metadata["notify"] = True
+                        else:
+                            _thread_metadata = {"notify": True}
+                        result = await self._send_with_retry(
                             chat_id=event.source.chat_id,
-                            audio_path=_tts_path,
-                            caption=telegram_tts_caption,
+                            content=text_content,
+                            reply_to=_reply_anchor,
                             metadata=_thread_metadata,
                         )
-                        _tts_caption_delivered = bool(
-                            telegram_tts_caption and getattr(tts_result, "success", False)
-                        )
-                    finally:
-                        try:
-                            os.remove(_tts_path)
-                        except OSError:
-                            pass
-
-                # Send the text portion
-                if text_content and not _tts_caption_delivered:
-                    logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    _reply_anchor = _reply_anchor_for_event(event)
-                    # Mark final response messages for notification delivery.
-                    # Platform adapters that support per-message notification
-                    # control (e.g. Telegram's disable_notification) use this
-                    # flag to override silent-mode and ensure the final
-                    # response triggers a push notification.
-                    # Clone to avoid mutating the metadata shared with the
-                    # typing-indicator task (which must remain unmarked).
-                    if _thread_metadata is not None:
-                        _thread_metadata = dict(_thread_metadata)
-                        _thread_metadata["notify"] = True
-                    else:
-                        _thread_metadata = {"notify": True}
-                    result = await self._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=_reply_anchor,
-                        metadata=_thread_metadata,
-                    )
-                    _record_delivery(result)
-
-                    # Schedule auto-deletion of system-notice replies.
-                    # Detached so the handler returns immediately; errors
-                    # (permission denied, message too old) are swallowed.
-                    if (
-                        _ephemeral_ttl
-                        and _ephemeral_ttl > 0
-                        and result.success
-                        and result.message_id
-                    ):
-                        self._schedule_ephemeral_delete(
-                            chat_id=event.source.chat_id,
-                            message_id=result.message_id,
-                            ttl_seconds=_ephemeral_ttl,
-                        )
+                        _record_delivery(result)
+                        if (
+                            _ephemeral_ttl
+                            and _ephemeral_ttl > 0
+                            and result.success
+                            and result.message_id
+                        ):
+                            self._schedule_ephemeral_delete(
+                                chat_id=event.source.chat_id,
+                                message_id=result.message_id,
+                                ttl_seconds=_ephemeral_ttl,
+                            )
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()

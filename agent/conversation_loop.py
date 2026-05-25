@@ -2889,7 +2889,8 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors
                     if classified.is_auth or classified.reason == FailoverReason.billing:
-                        if _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
+                        if _provider in {"openai-codex", "xai-oauth", "nous",
+                                         "qwen-oauth", "google-gemini-cli", "minimax-oauth"} and status_code == 401:
                             if _provider == "openai-codex":
                                 agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 agent._vprint(f"{agent.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
@@ -2898,6 +2899,15 @@ def run_conversation(
                             elif _provider == "xai-oauth":
                                 agent._vprint(f"{agent.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
                                 agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.", force=True)
+                            elif _provider == "qwen-oauth":
+                                agent._vprint(f"{agent.log_prefix}   💡 Qwen OAuth token was rejected (HTTP 401). Your token may be expired. To fix:", force=True)
+                                agent._vprint(f"{agent.log_prefix}      re-authenticate: qwen auth qwen-oauth", force=True)
+                            elif _provider == "google-gemini-cli":
+                                agent._vprint(f"{agent.log_prefix}   💡 Google Gemini OAuth token was rejected (HTTP 401). Your token may be expired. To fix:", force=True)
+                                agent._vprint(f"{agent.log_prefix}      re-authenticate: hermes auth add google-gemini-cli --type oauth", force=True)
+                            elif _provider == "minimax-oauth":
+                                agent._vprint(f"{agent.log_prefix}   💡 MiniMax OAuth token was rejected (HTTP 401). Your token may be expired. To fix:", force=True)
+                                agent._vprint(f"{agent.log_prefix}      re-authenticate: hermes auth add minimax-oauth", force=True)
                             else:  # nous
                                 agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
                                 agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)

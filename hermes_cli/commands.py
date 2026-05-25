@@ -1027,6 +1027,46 @@ def _sanitize_slack_name(raw: str) -> str:
     return name[:_SLACK_NAME_LIMIT]
 
 
+def _iter_skill_bundle_entries() -> list[tuple[str, str, str]]:
+    """Yield ``(slug, description, usage_hint)`` for every installed bundle.
+
+    Bundles are YAML files under ``$HERMES_BUNDLES_DIR`` (default
+    ``$HERMES_HOME/skill-bundles``) that already declare a ``slug`` and
+    ``description`` (see :mod:`agent.skill_bundles`). They function as
+    user-defined slash commands once the gateway dispatcher resolves
+    them via :func:`agent.skill_bundles.resolve_bundle_command_key` —
+    which it already does in ``gateway/run.py`` for Telegram and the CLI.
+
+    Surfacing bundles here lets the Slack manifest register one slash
+    per bundle, which is the only piece keeping ``/<bundle>`` from
+    reaching the Slack adapter (Slack drops events for unregistered
+    slashes). The adapter's regex matcher and the gateway dispatcher
+    already handle the rest.
+
+    Errors are swallowed: a broken bundles directory must never break
+    Slack manifest generation.
+    """
+    try:
+        from agent.skill_bundles import get_skill_bundles
+    except Exception:  # pragma: no cover - import error is treated as "no bundles"
+        return []
+    try:
+        bundles = get_skill_bundles()
+    except Exception:  # pragma: no cover - bundle scan failures are non-fatal
+        return []
+
+    out: list[tuple[str, str, str]] = []
+    for cmd_key, info in bundles.items():
+        slug = (info or {}).get("slug") or cmd_key.lstrip("/")
+        if not slug:
+            continue
+        desc = (info or {}).get("description") or f"Run /{slug} skill bundle"
+        out.append((slug, desc, ""))
+    # Stable order makes manifest diffs review-friendly.
+    out.sort(key=lambda triple: triple[0])
+    return out
+
+
 def slack_native_slashes() -> list[tuple[str, str, str]]:
     """Return (slash_name, description, usage_hint) triples for Slack.
 
@@ -1037,7 +1077,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
 
     Both canonical names and aliases are included so users can type any
     documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
-    Plugin-registered slash commands are included too.
+    Plugin-registered slash commands and installed skill bundles are
+    included too — ``/<bundle>`` is already a first-class command in the
+    CLI and Telegram adapters; this brings Slack to parity.
 
     Commands whose sanitized name collides with a Slack built-in
     (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
@@ -1046,7 +1088,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     Results are clamped to Slack's 50-command limit with duplicate-name
     avoidance. ``/hermes`` is always reserved as the first entry so the
     legacy ``/hermes <subcommand>`` form keeps working for anything that
-    gets dropped by the clamp or for free-form questions.
+    gets dropped by the clamp or for free-form questions. Built-ins win
+    name collisions: a bundle that shadows a registry command is dropped
+    silently rather than overwriting the built-in's description.
     """
     overrides = _resolve_config_gates()
     entries: list[tuple[str, str, str]] = []
@@ -1074,7 +1118,19 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Second pass: installed skill bundles. They sit ahead of aliases and
+    # plugin commands because a user-installed bundle is a first-class
+    # command the user explicitly asked for, while aliases/plugins have
+    # a ``/hermes <alias>`` fallback through slack_subcommand_map(). The
+    # gateway bundle resolver in gateway/run.py runs for any
+    # ``/<bundle>`` event that reaches the adapter; registering the
+    # slash here is the only piece keeping bundles from being delivered
+    # by Slack. Bundles that collide with a registry name are dropped
+    # silently — built-ins keep their slot and description.
+    for slug, description, args_hint in _iter_skill_bundle_entries():
+        _add(slug, description, args_hint)
+
+    # Third pass: aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
@@ -1083,7 +1139,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             # normalization (already covered by _add dedup).
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    # Third pass: plugin commands.
+    # Fourth pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
         _add(name, description, args_hint or "")
 
@@ -1123,8 +1179,15 @@ def slack_subcommand_map() -> dict[str, str]:
     Maps both canonical names and aliases so /hermes bg do stuff works
     the same as /hermes background do stuff.
 
-    Plugin-registered slash commands are included so ``/hermes <plugin-cmd>``
-    routes through the plugin handler.
+    Plugin-registered slash commands and installed skill bundles are
+    included so ``/hermes <plugin-cmd>`` and ``/hermes <bundle>`` route
+    through the right handler. This matters for workspaces that haven't
+    refreshed their Slack manifest after installing a bundle: the
+    legacy ``/hermes <bundle>`` form keeps working until the user
+    reinstalls the manifest with the bundle's native slash registered.
+
+    Built-in commands always win name collisions with bundles or
+    plugins.
     """
     overrides = _resolve_config_gates()
     mapping: dict[str, str] = {}
@@ -1137,6 +1200,9 @@ def slack_subcommand_map() -> dict[str, str]:
     for name, _description, _args_hint in _iter_plugin_command_entries():
         if name not in mapping:
             mapping[name] = f"/{name}"
+    for slug, _description, _args_hint in _iter_skill_bundle_entries():
+        if slug not in mapping:
+            mapping[slug] = f"/{slug}"
     return mapping
 
 

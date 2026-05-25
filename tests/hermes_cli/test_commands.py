@@ -1,5 +1,6 @@
 """Tests for the central command registry and autocomplete."""
 
+import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -402,6 +403,132 @@ class TestSlackAppManifest:
         m = slack_app_manifest(request_url="https://example.com/slack")
         for entry in m["features"]["slash_commands"]:
             assert entry["url"] == "https://example.com/slack"
+
+
+# ---------------------------------------------------------------------------
+# Skill bundles → Slack slash integration
+# ---------------------------------------------------------------------------
+
+
+class TestSkillBundlesAsSlackSlashes:
+    """Installed skill bundles must surface as native Slack slash commands.
+
+    Hermes' bundle YAMLs already declare a ``slug`` (see
+    ``agent/skill_bundles.py``) which becomes the bundle's ``/<slug>``
+    command in CLI and gateway dispatch. The Slack manifest generator
+    needs to emit one slash per bundle so Slack actually delivers
+    ``/<slug>`` events to the adapter; otherwise the in-flight gateway
+    bundle resolver in ``gateway/run.py`` (which already handles
+    ``/<bundle>`` commands) never gets the chance to run.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_bundles(self, tmp_path, monkeypatch):
+        """Point bundles dir at tmp_path and reset the bundle cache."""
+        bundles_dir = tmp_path / "skill-bundles"
+        bundles_dir.mkdir()
+        monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
+        # Reset the module-level bundle cache so the new dir is honored
+        # without waiting for the mtime probe.
+        import agent.skill_bundles as _sb
+        monkeypatch.setattr(_sb, "_bundles_cache", {})
+        monkeypatch.setattr(_sb, "_bundles_cache_mtime", None)
+        return bundles_dir
+
+    @staticmethod
+    def _write_bundle(
+        bundles_dir,
+        slug: str,
+        skills=("skill-a",),
+        description: str = "",
+        name: str | None = None,
+    ):
+        lines = [f"name: {name or slug}"]
+        if description:
+            lines.append(f"description: {description}")
+        lines.append("skills:")
+        for s in skills:
+            lines.append(f"  - {s}")
+        (bundles_dir / f"{slug}.yaml").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8",
+        )
+
+    def test_bundle_appears_in_slack_native_slashes(self, _isolated_bundles):
+        self._write_bundle(_isolated_bundles, "route", description="Route a task")
+        names = {n for n, _d, _h in slack_native_slashes()}
+        assert "route" in names, (
+            "bundle slug 'route' must surface as a native Slack slash so "
+            "the manifest can register it"
+        )
+
+    def test_bundle_appears_in_slack_app_manifest(self, _isolated_bundles):
+        self._write_bundle(
+            _isolated_bundles, "route", description="Run my routing bundle",
+        )
+        m = slack_app_manifest()
+        commands = [c["command"] for c in m["features"]["slash_commands"]]
+        assert "/route" in commands
+
+    def test_bundle_description_propagates_to_manifest(self, _isolated_bundles):
+        self._write_bundle(
+            _isolated_bundles, "route", description="Run my routing bundle",
+        )
+        m = slack_app_manifest()
+        entry = next(
+            c for c in m["features"]["slash_commands"] if c["command"] == "/route"
+        )
+        assert "Run my routing bundle" in entry["description"]
+
+    def test_bundle_appears_in_slack_subcommand_map(self, _isolated_bundles):
+        """Legacy ``/hermes <bundle>`` form must still route to the bundle.
+
+        Workspaces that haven't refreshed their Slack manifest after
+        installing a bundle keep using ``/hermes route ...``; that path
+        goes through ``slack_subcommand_map()``.
+        """
+        self._write_bundle(_isolated_bundles, "route")
+        mapping = slack_subcommand_map()
+        assert mapping.get("route") == "/route"
+
+    def test_registry_command_wins_over_colliding_bundle_name(self, _isolated_bundles):
+        """A bundle that collides with a built-in name must not displace it.
+
+        ``/help`` is always a Hermes built-in; a user bundle named
+        ``help`` should not silently take over the description slot in
+        the manifest.
+        """
+        self._write_bundle(_isolated_bundles, "help", description="my help")
+        slashes = slack_native_slashes()
+        # First entry for /help must be the built-in (registered before
+        # bundles in the emit pass), not the user's bundle.
+        help_entries = [(n, d) for n, d, _h in slashes if n == "help"]
+        assert len(help_entries) == 1, "duplicate /help entries"
+        _, desc = help_entries[0]
+        assert desc != "my help", (
+            "built-in /help must take precedence over a colliding bundle"
+        )
+
+    def test_reserved_slack_name_excluded_for_bundle(self, _isolated_bundles):
+        """Slack built-ins (e.g. /status) cannot be registered by apps —
+        a bundle that happens to use a reserved name must be skipped."""
+        self._write_bundle(_isolated_bundles, "remind")
+        names = {n for n, _d, _h in slack_native_slashes()}
+        assert "remind" not in names, (
+            "/remind is a Slack built-in and must not appear in the manifest"
+        )
+
+    def test_under_fifty_command_cap_with_bundles(self, _isolated_bundles):
+        """Adding bundles must not push the manifest past the 50-slash cap."""
+        for i in range(60):
+            self._write_bundle(_isolated_bundles, f"bundle-{i}")
+        assert len(slack_native_slashes()) <= 50
+
+    def test_no_bundles_means_no_extra_slashes(self, _isolated_bundles):
+        """Empty bundles dir must not add extra slashes (regression guard)."""
+        baseline = {n for n, _d, _h in slack_native_slashes()}
+        # Sanity: /btw is in baseline and /route is not.
+        assert "btw" in baseline
+        assert "route" not in baseline
 
 
 # ---------------------------------------------------------------------------

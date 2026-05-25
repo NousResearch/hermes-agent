@@ -2406,6 +2406,112 @@ class TestSlashCommands:
 
 
 # ---------------------------------------------------------------------------
+# TestSkillBundleSlashes
+# ---------------------------------------------------------------------------
+
+
+class TestSkillBundleSlashes:
+    """Skill bundles must reach the gateway's bundle resolver via Slack.
+
+    Hermes already dispatches ``/<bundle>`` commands inside
+    ``gateway/run.py`` (via ``resolve_bundle_command_key``). The Slack
+    adapter only needs to deliver the command text — that is, build a
+    ``MessageEvent(text="/<bundle> [args]", message_type=COMMAND)`` —
+    once the manifest registers the slash. These tests cover the adapter
+    side: a registered bundle slash arriving as an event must produce
+    the right MessageEvent without regressing built-in slashes.
+    """
+
+    @pytest.fixture
+    def _bundles_dir(self, tmp_path, monkeypatch):
+        """Isolated bundle dir + cache reset."""
+        bundles_dir = tmp_path / "skill-bundles"
+        bundles_dir.mkdir()
+        monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
+        import agent.skill_bundles as _sb
+        monkeypatch.setattr(_sb, "_bundles_cache", {})
+        monkeypatch.setattr(_sb, "_bundles_cache_mtime", None)
+        return bundles_dir
+
+    @staticmethod
+    def _write_bundle(bundles_dir, slug: str, skills=("skill-a",)):
+        (bundles_dir / f"{slug}.yaml").write_text(
+            f"name: {slug}\nskills:\n" + "".join(f"  - {s}\n" for s in skills),
+            encoding="utf-8",
+        )
+
+    @pytest.mark.asyncio
+    async def test_native_bundle_slash_with_args(self, adapter, _bundles_dir):
+        """A registered bundle slash (e.g. ``/route``) must deliver the
+        full ``/route <args>`` text to ``handle_message`` so the gateway
+        bundle resolver can match it."""
+        self._write_bundle(_bundles_dir, "route")
+        command = {
+            "command": "/route",
+            "text": "this: fix the failing test",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/route this: fix the failing test"
+        assert msg.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_native_bundle_slash_no_args(self, adapter, _bundles_dir):
+        """Bundle slash with no args must still produce a COMMAND event."""
+        self._write_bundle(_bundles_dir, "route")
+        command = {
+            "command": "/route",
+            "text": "",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/route"
+        assert msg.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_legacy_hermes_bundle_subcommand(self, adapter, _bundles_dir):
+        """Legacy ``/hermes route ...`` must rewrite to ``/route ...``.
+
+        Workspaces that haven't refreshed their Slack manifest after
+        installing a bundle keep using ``/hermes <bundle>``. The
+        subcommand map in ``hermes_cli.commands`` must include bundles
+        so the legacy form continues to work.
+        """
+        self._write_bundle(_bundles_dir, "route")
+        command = {
+            "command": "/hermes",
+            "text": "route this: foo",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/route this: foo"
+        assert msg.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_help_still_routes_to_help(self, adapter, _bundles_dir):
+        """Regression: bundle dispatch must not shadow built-in /help."""
+        # Even with a colliding bundle name, /help must keep its
+        # COMMAND_REGISTRY routing.
+        self._write_bundle(_bundles_dir, "help")
+        command = {
+            "command": "/help",
+            "text": "",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/help"
+        assert msg.message_type == MessageType.COMMAND
+
+
+# ---------------------------------------------------------------------------
 # TestMessageSplitting
 # ---------------------------------------------------------------------------
 

@@ -1468,6 +1468,15 @@ def test_jobs_subpage_source_provenance_escapes_filename_only():
     assert "<img src=x" not in html
 
 
+def _jobs_row_html(html_doc: str, name: str) -> str:
+    rows = re.findall(
+        r'<div class="job-row\b.*?(?=\n<div class="job-row\b|\n\s*</section>)',
+        html_doc,
+        re.S,
+    )
+    return next(row for row in rows if name in row)
+
+
 def test_jobs_subpage_suppresses_unsafe_thread_links():
     item_cls = collect_situation_items.__globals__["CronSituationItem"]
     valid = item_cls(
@@ -1509,14 +1518,40 @@ def test_jobs_subpage_suppresses_unsafe_thread_links():
         excerpt="Subdomain thread.",
         telegram_url="https://evil.t.me/c/3566991387/86",
     )
+    no_thread = item_cls(
+        job_id="no-thread",
+        name="No Thread Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_07-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 7, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="No thread.",
+        telegram_url=None,
+    )
 
-    html = render_jobs_page([valid, unsafe, subdomain], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+    html = render_jobs_page([valid, unsafe, subdomain, no_thread], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
 
     assert 'href="https://t.me/c/3566991387/86"' in html
     assert "Unsafe Thread Brief" in html
     assert "Subdomain Thread Brief" in html
+    assert "No Thread Brief" in html
     assert "javascript:alert" not in html
     assert "evil.t.me" not in html
+    valid_row = _jobs_row_html(html, "Valid Thread Brief")
+    assert 'class="job-row fresh no-page" data-open-state="no-page"' in valid_row
+    assert 'href="https://t.me/c/3566991387/86"' in valid_row
+    assert "THREAD" in valid_row
+    assert 'aria-disabled="true"' not in valid_row
+    assert "data-open-url=" not in valid_row
+    assert "row-open-overlay" not in valid_row
+    assert '<span class="job-open-state muted">NO PAGE</span>' in valid_row
+    unsafe_row = _jobs_row_html(html, "Unsafe Thread Brief")
+    no_thread_row = _jobs_row_html(html, "No Thread Brief")
+    assert 'aria-disabled="true"' in unsafe_row
+    assert 'aria-disabled="true"' in no_thread_row
 
 
 def test_jobs_subpage_opens_safe_signed_artifact_and_preserves_thread_link():

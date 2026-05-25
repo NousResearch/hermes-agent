@@ -925,7 +925,13 @@ def _render_jobs_rows(items: Sequence[CronSituationItem], now: datetime) -> list
         source_label = source_path.name if source_path else "no-source"
         artifact_url = item.artifact_url if item.enabled and _is_safe_signed_acta_artifact_url(item.artifact_url) else None
         href = html.escape(artifact_url, quote=True) if artifact_url else ""
-        open_attr = f' data-open-url="{href}"' if href else ' aria-disabled="true"'
+        has_safe_thread = _is_safe_telegram_url(item.telegram_url)
+        if href:
+            open_attr = f' data-open-url="{href}"'
+        elif has_safe_thread:
+            open_attr = ' data-open-state="no-page"'
+        else:
+            open_attr = ' aria-disabled="true"'
         openable_class = " openable" if href else " no-page"
         open_overlay = (
             f'<a class="row-open-overlay job-open-overlay" href="{href}" aria-label="Open signed Acta artifact: {html.escape(item.name, quote=True)}"></a>'

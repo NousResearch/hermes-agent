@@ -62,3 +62,9 @@ mini-swe-agent/
 .direnv/
 result
 website/static/api/skills-index.json
+
+# memd runtime-only state
+.memd/state/heartbeat.json
+.memd/state/hermes-turn-cache.json
+.memd/state/last-resume.json
+.memd/logs/

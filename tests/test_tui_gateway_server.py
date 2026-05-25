@@ -1192,6 +1192,32 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_config_set_verbose_updates_tool_progress_without_agent_debug_logging(monkeypatch):
+    writes = []
+    agent = types.SimpleNamespace(verbose_logging=False)
+    server._sessions["sid"] = _session(agent=agent, tool_progress_mode="all")
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "verbose", "value": "verbose"},
+            }
+        )
+
+        assert resp["result"]["value"] == "verbose"
+        assert server._sessions["sid"]["tool_progress_mode"] == "verbose"
+        assert agent.verbose_logging is False
+        assert ("display.tool_progress", "verbose") in writes
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
     writes = []
     emits = []
@@ -1714,7 +1740,7 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
 
-def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
+def test_config_set_verbose_updates_session_mode_without_agent_debug_logging(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(verbose_logging=False)
     server._sessions["sid"] = _session(agent=agent)
@@ -1729,7 +1755,7 @@ def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch
 
     assert resp["result"]["value"] == "verbose"
     assert server._sessions["sid"]["tool_progress_mode"] == "verbose"
-    assert agent.verbose_logging is True
+    assert agent.verbose_logging is False
 
 
 def test_config_set_model_uses_live_switch_path(monkeypatch):

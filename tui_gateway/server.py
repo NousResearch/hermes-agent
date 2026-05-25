@@ -4022,9 +4022,10 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tool_progress", nv)
         if session:
             session["tool_progress_mode"] = nv
-            agent = session.get("agent")
-            if agent is not None:
-                agent.verbose_logging = nv == "verbose"
+            # Keep display.tool_progress scoped to structured TUI progress events.
+            # AIAgent.verbose_logging enables DEBUG logging to stderr, which the
+            # TUI treats as gateway.stderr and surfaces in Activity.  Verbose
+            # tool detail does not require mutating the agent logger level.
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "yolo":

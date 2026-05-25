@@ -680,11 +680,16 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path
-    import yaml
+    # Route through atomic_yaml_write so the Web UI's save path uses the
+    # same atomic temp-file + fsync + IndentDumper layout as every other
+    # writer.  A direct ``yaml.safe_dump`` (the previous shape) emitted
+    # 0-indent list items, which collided with the 2-indent output of
+    # ``atomic_roundtrip_yaml_update`` and corrupted ``config.yaml`` over
+    # time — the exact failure mode reported in #31999.
+    from utils import atomic_yaml_write
 
     path = _hermes_home / "config.yaml"
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f)
+    atomic_yaml_write(path, cfg)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path

@@ -1219,23 +1219,13 @@ class TelegramAdapter(BasePlatformAdapter):
                         break
 
             if changed:
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(config_path.parent),
-                    suffix=".tmp",
-                    prefix=".config_",
-                )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    atomic_replace(tmp_path, config_path)
-                except BaseException:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
+                # Use the shared writer so this path emits the same
+                # 2-indent layout as every other config writer (#31999).
+                # Without IndentDumper the dm_topics list would flip to
+                # 0-indent every time Telegram persisted a thread_id,
+                # corrupting the file alongside other writers' output.
+                from utils import atomic_yaml_write
+                atomic_yaml_write(config_path, config)
                 logger.info(
                     "[%s] Persisted thread_id=%s for topic '%s' in config.yaml",
                     self.name, thread_id, topic_name,

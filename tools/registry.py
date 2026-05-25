@@ -394,6 +394,33 @@ class ToolRegistry:
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
         """
+        skip_veto_guard = bool(kwargs.pop("skip_veto_guard", False))
+        try:
+            from agent.veto_guard import check_tool_call
+
+            veto_result = check_tool_call(
+                name,
+                args,
+                task_id=str(kwargs.get("task_id") or ""),
+                session_id=str(kwargs.get("session_id") or ""),
+                tool_call_id=str(kwargs.get("tool_call_id") or ""),
+                skip_veto_guard=skip_veto_guard,
+            )
+            if not veto_result.allowed:
+                return json.dumps({"error": veto_result.message}, ensure_ascii=False)
+        except Exception as e:
+            logger.exception("Veto guard crashed before tool %s dispatch: %s", name, e)
+            return json.dumps(
+                {
+                    "error": (
+                        "Veto guard crashed before tool execution. "
+                        "Set HERMES_VETO_FAIL_OPEN=1 only if you intentionally "
+                        "want Hermes to continue when policy validation is unavailable."
+                    )
+                },
+                ensure_ascii=False,
+            )
+
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})

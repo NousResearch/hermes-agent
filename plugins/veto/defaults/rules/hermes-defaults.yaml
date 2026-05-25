@@ -1,0 +1,55 @@
+rules:
+  - id: hermes-terminal-dangerous-command
+    name: Block destructive shell commands
+    enabled: true
+    severity: critical
+    action: block
+    tools: [terminal]
+    conditions:
+      - field: arguments.command
+        operator: matches
+        value: "(^|[;&|] )\\s*(sudo\\s+)?(rm\\s+-[^\\n]*(r[^\\n]*f|f[^\\n]*r)|mkfs|dd\\s+if=|chmod\\s+777|curl\\s+[^|]+\\|\\s*(sh|bash)|wget\\s+[^|]+\\|\\s*(sh|bash))"
+
+  - id: hermes-file-protected-secrets
+    name: Block writes to common secret locations
+    enabled: true
+    severity: critical
+    action: block
+    tools: [write_file, patch]
+    conditions:
+      - field: arguments.path
+        operator: matches
+        value: "(^|/)(\\.env|id_rsa|id_ed25519|\\.ssh|\\.aws|\\.config/gcloud|Library/Keychains)(/|$)"
+
+  - id: hermes-browser-private-network
+    name: Block browser navigation to private network targets
+    enabled: true
+    severity: high
+    action: block
+    tools: [browser_navigate]
+    conditions:
+      - field: arguments.url
+        operator: matches
+        value: "^(https?://)?(localhost|127\\.|10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.)"
+
+  - id: hermes-cron-create-requires-approval
+    name: Require approval before creating unattended cron jobs
+    enabled: true
+    severity: high
+    action: require_approval
+    tools: [cronjob]
+    conditions:
+      - field: arguments.action
+        operator: equals
+        value: create
+
+  - id: hermes-send-message-requires-approval
+    name: Require approval before sending cross-platform messages
+    enabled: true
+    severity: medium
+    action: require_approval
+    tools: [send_message]
+    conditions:
+      - field: arguments.action
+        operator: not_equals
+        value: list

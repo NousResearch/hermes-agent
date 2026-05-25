@@ -1,0 +1,6 @@
+mode: strict
+validation:
+  mode: local
+rules:
+  directory: rules
+  recursive: true

@@ -1,0 +1,8 @@
+name: veto
+version: 0.1.0
+description: "Guard Hermes tool calls with Veto policy before execution."
+author: "Plaw, Inc."
+hooks:
+  - pre_tool_call
+commands:
+  - veto-status

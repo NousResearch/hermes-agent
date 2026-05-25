@@ -508,6 +508,17 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "veto": {
+        # Optional Veto policy guard for Hermes tool calls. The bundled
+        # `plugins/veto` plugin also enables this at process level when
+        # explicitly listed in plugins.enabled.
+        "enabled": False,
+        # Empty means "$HERMES_HOME/veto"; set an absolute path to override.
+        "config_dir": "",
+        "validation_mode": "local",
+        "mode": "strict",
+        "fail_open": False,
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -3361,7 +3372,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "veto",
 }
 
 # Valid fields inside a custom_providers list entry

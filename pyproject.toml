@@ -221,6 +221,8 @@ plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",
   "*/dashboard/dist/**/*",
+  "veto/plugin.yaml",
+  "veto/defaults/**/*",
 ]
 
 [tool.setuptools.packages.find]

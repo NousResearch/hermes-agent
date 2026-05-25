@@ -443,14 +443,49 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     # endpoints used by Hermes can be much slower and smaller than hosted model
     # defaults, so retain needs caps/concurrency to avoid long timeout storms.
     passthrough_env = {
+        # Retain pipeline shape
         "retain_max_completion_tokens": "HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS",
         "retain_chunk_size": "HINDSIGHT_API_RETAIN_CHUNK_SIZE",
         "retain_extract_causal_links": "HINDSIGHT_API_RETAIN_EXTRACT_CAUSAL_LINKS",
+        # Concurrency caps (default + per-scope)
         "llm_max_concurrent": "HINDSIGHT_API_LLM_MAX_CONCURRENT",
         "retain_llm_max_concurrent": "HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT",
+        "reflect_llm_max_concurrent": "HINDSIGHT_API_REFLECT_LLM_MAX_CONCURRENT",
         "consolidation_llm_max_concurrent": "HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT",
+        # Timeouts (default + per-scope)
+        "llm_timeout": "HINDSIGHT_API_LLM_TIMEOUT",
         "retain_llm_timeout": "HINDSIGHT_API_RETAIN_LLM_TIMEOUT",
+        "reflect_llm_timeout": "HINDSIGHT_API_REFLECT_LLM_TIMEOUT",
         "consolidation_llm_timeout": "HINDSIGHT_API_CONSOLIDATION_LLM_TIMEOUT",
+        # Retry/backoff (default + per-scope)
+        "llm_max_retries": "HINDSIGHT_API_LLM_MAX_RETRIES",
+        "llm_initial_backoff": "HINDSIGHT_API_LLM_INITIAL_BACKOFF",
+        "llm_max_backoff": "HINDSIGHT_API_LLM_MAX_BACKOFF",
+        "retain_llm_max_retries": "HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES",
+        "retain_llm_initial_backoff": "HINDSIGHT_API_RETAIN_LLM_INITIAL_BACKOFF",
+        "retain_llm_max_backoff": "HINDSIGHT_API_RETAIN_LLM_MAX_BACKOFF",
+        "reflect_llm_max_retries": "HINDSIGHT_API_REFLECT_LLM_MAX_RETRIES",
+        "reflect_llm_initial_backoff": "HINDSIGHT_API_REFLECT_LLM_INITIAL_BACKOFF",
+        "reflect_llm_max_backoff": "HINDSIGHT_API_REFLECT_LLM_MAX_BACKOFF",
+        "consolidation_llm_max_retries": "HINDSIGHT_API_CONSOLIDATION_LLM_MAX_RETRIES",
+        "consolidation_llm_initial_backoff": "HINDSIGHT_API_CONSOLIDATION_LLM_INITIAL_BACKOFF",
+        "consolidation_llm_max_backoff": "HINDSIGHT_API_CONSOLIDATION_LLM_MAX_BACKOFF",
+        # Per-operation LLM endpoint routing — lets retain/reflect/consolidation
+        # target a different provider/model than the default LLM (e.g. route
+        # retain's structured-output fact extraction to a hosted model while
+        # keeping reflect on a fast local model).
+        "retain_llm_provider": "HINDSIGHT_API_RETAIN_LLM_PROVIDER",
+        "retain_llm_api_key": "HINDSIGHT_API_RETAIN_LLM_API_KEY",
+        "retain_llm_model": "HINDSIGHT_API_RETAIN_LLM_MODEL",
+        "retain_llm_base_url": "HINDSIGHT_API_RETAIN_LLM_BASE_URL",
+        "reflect_llm_provider": "HINDSIGHT_API_REFLECT_LLM_PROVIDER",
+        "reflect_llm_api_key": "HINDSIGHT_API_REFLECT_LLM_API_KEY",
+        "reflect_llm_model": "HINDSIGHT_API_REFLECT_LLM_MODEL",
+        "reflect_llm_base_url": "HINDSIGHT_API_REFLECT_LLM_BASE_URL",
+        "consolidation_llm_provider": "HINDSIGHT_API_CONSOLIDATION_LLM_PROVIDER",
+        "consolidation_llm_api_key": "HINDSIGHT_API_CONSOLIDATION_LLM_API_KEY",
+        "consolidation_llm_model": "HINDSIGHT_API_CONSOLIDATION_LLM_MODEL",
+        "consolidation_llm_base_url": "HINDSIGHT_API_CONSOLIDATION_LLM_BASE_URL",
     }
     for config_key, env_key in passthrough_env.items():
         value = config.get(config_key)

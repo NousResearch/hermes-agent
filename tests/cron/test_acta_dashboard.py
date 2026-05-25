@@ -1908,7 +1908,7 @@ def test_catalog_outputs_valid_hrefs_remain_readable_openable_rows():
     assert match is not None
     row = match.group(0)
 
-    assert '<article class="output-row readable read fresh"' in row
+    assert '<article class="output-row catalog-output-row readable read fresh"' in row
     assert 'data-read-key="output:valid-output"' in row
     assert 'data-read-initial="true"' in row
     assert 'data-open-url="/outputs/valid-output"' in row
@@ -1982,6 +1982,8 @@ def test_catalog_outputs_unread_stat_and_read_toggle_only_for_safe_rows():
     assert '<button class="read-toggle" type="button" aria-label="Mark output read: Safe Output">Mark read</button>' in safe_row
     assert ".output-actions a, .output-actions button { pointer-events:auto; }" in html
     assert ".output-actions button:focus-visible" in html
+    assert ".catalog-output-row .output-main p { -webkit-line-clamp:2; line-height:1.32; }" in html
+    assert ".catalog-output-row .output-main p { -webkit-line-clamp:3; line-height:1.34; }" in html
     unsafe_row = row_by_title["Unsafe Output"]
     assert "read-toggle" not in unsafe_row
     assert "data-read-key" not in unsafe_row

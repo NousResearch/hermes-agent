@@ -3103,6 +3103,39 @@ def test_review_task_is_not_dispatched(kanban_home, all_assignees_spawnable):
     assert task.status == "review"
 
 
+def test_review_required_handoff_is_not_reclaimed_by_dispatcher(
+    kanban_home, all_assignees_spawnable,
+):
+    """A review-required handoff stays parked until external review acts."""
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs review", assignee="alice")
+        assert kb.claim_task(conn, t) is not None
+        original_run_id = kb.get_task(conn, t).current_run_id
+        assert kb.block_task(
+            conn,
+            t,
+            reason="review-required: approve the handoff",
+            expected_run_id=original_run_id,
+        )
+        before_runs = kb.list_runs(conn, t)
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1)
+        task = kb.get_task(conn, t)
+        after_runs = kb.list_runs(conn, t)
+
+    assert not res.spawned
+    assert not spawns
+    assert task.status == "review"
+    assert task.current_run_id is None
+    assert [r.id for r in after_runs] == [r.id for r in before_runs]
+
+
 def test_dispatch_ready_ignores_review_for_max_spawn(
     kanban_home, all_assignees_spawnable,
 ):

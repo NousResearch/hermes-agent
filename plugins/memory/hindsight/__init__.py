@@ -1519,7 +1519,12 @@ class HindsightMemoryProvider(MemoryProvider):
     def _format_recall_results(self, results: list[Any]) -> str:
         if not results:
             return "No relevant memories found."
-        return "\n".join(f"{i}. {_memory_result_text(result)}" for i, result in enumerate(results, 1))
+        lines = []
+        for i, result in enumerate(results, 1):
+            document_id = _memory_document_id(result)
+            prefix = f"[{document_id}] " if document_id else ""
+            lines.append(f"{i}. {prefix}{_memory_result_text(result)}")
+        return "\n".join(lines)
 
     def _apply_memory_hygiene(self, results: list[Any]) -> tuple[list[Any], list[str], int]:
         hygiene_items = [

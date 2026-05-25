@@ -602,6 +602,27 @@ class TestToolHandlers:
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
 
+    def test_recall_includes_document_id_when_available(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(document_id="doc-1", text="Memory 1"),
+                SimpleNamespace(document=SimpleNamespace(id="doc-2"), text="Memory 2"),
+                SimpleNamespace(text="Memory without ID"),
+            ]
+        )
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "dark mode"}
+        ))
+
+        assert result["result"] == "\n".join(
+            [
+                "1. [doc-1] Memory 1",
+                "2. [doc-2] Memory 2",
+                "3. Memory without ID",
+            ]
+        )
+
     def test_recall_passes_max_tokens(self, provider_with_config):
         p = provider_with_config(recall_max_tokens=2048)
         p.handle_tool_call("hindsight_recall", {"query": "test"})
@@ -798,7 +819,7 @@ class TestToolHandlers:
         ))
 
         assert result["filtered_count"] == 1
-        assert "Le cron est horaire." in result["result"]
+        assert result["result"] == "1. [doc-2] Le cron est horaire."
         assert "18h" not in result["result"]
         assert result["corrections"] == []
 

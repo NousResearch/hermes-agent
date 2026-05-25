@@ -5781,11 +5781,13 @@ def dispatch_once(
       1. Reclaim stale running tasks (TTL expired).
       2. Reclaim stale running tasks (no recent heartbeat).
       3. Reclaim crashed running tasks (host-local PID no longer alive).
-      3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
+      4. Promote todo -> ready where all parents are done.
+      5. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
+      6. Leave ``review`` tasks alone. They are a manual / external-review
+         lane, not worker queue entries.
 
     Spawn failures are counted per-task. After ``failure_limit`` consecutive
     failures the task is auto-blocked with the last error as its reason —
@@ -5980,81 +5982,6 @@ def dispatch_once(
             # that keeps timing out after spawn loop forever. The
             # counter is cleared only on successful completion (see
             # complete_task).
-            result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
-            spawned += 1
-        except Exception as exc:
-            auto = _record_spawn_failure(
-                conn, claimed.id, str(exc),
-                failure_limit=failure_limit,
-            )
-            if auto:
-                result.auto_blocked.append(claimed.id)
-
-    # ---- review column dispatch ----
-    # Review tasks are tasks that a worker moved to 'review' after
-    # creating a PR.  The dispatcher spawns a review agent (loading
-    # sdlc-review skill) that verifies the PR and either merges (→ done)
-    # or rejects (→ back to running for the worker to fix).
-    #
-    # Same concurrency model as ready dispatch: review spawns count
-    # against max_spawn alongside ready tasks, so the total number of
-    # running workers stays bounded.
-    review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'review' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
-    for row in review_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
-            break
-        if not row["assignee"]:
-            result.skipped_unassigned.append(row["id"])
-            continue
-        try:
-            from hermes_cli.profiles import profile_exists
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
-            result.skipped_nonspawnable.append(row["id"])
-            continue
-        if dry_run:
-            result.spawned.append((row["id"], row["assignee"], ""))
-            continue
-        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
-        if claimed is None:
-            continue
-        try:
-            workspace = resolve_workspace(claimed, board=board)
-        except Exception as exc:
-            auto = _record_spawn_failure(
-                conn, claimed.id, f"workspace: {exc}",
-                failure_limit=failure_limit,
-            )
-            if auto:
-                result.auto_blocked.append(claimed.id)
-            continue
-        # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load sdlc-review skill for review agents.  The
-        # _default_spawn function already auto-loads kanban-worker, and
-        # appends task.skills via --skills.  Setting task.skills here
-        # means the review agent gets both kanban-worker (lifecycle)
-        # and sdlc-review (review logic: AC verification, merge, etc.).
-        claimed.skills = ["sdlc-review"]
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
-        try:
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
-                    pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
-            if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:

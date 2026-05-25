@@ -1034,10 +1034,12 @@ logger = logging.getLogger(__name__)
 
 
 def _is_fatal_kanban_board_db_error(exc: Exception) -> bool:
-    """Return True for SQLite failures that should disable a Kanban board."""
+    """Return True for storage failures that should disable a Kanban board."""
+    msg = str(exc).lower()
+    if exc.__class__.__name__ == "KanbanDbCorruptError":
+        return True
     if not isinstance(exc, sqlite3.DatabaseError):
         return False
-    msg = str(exc).lower()
     return (
         "disk i/o error" in msg
         or "file is not a database" in msg
@@ -5382,12 +5384,12 @@ class GatewayRunner:
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
-            except sqlite3.DatabaseError as exc:
+            except Exception as exc:
                 if _is_corrupt_board_db_error(exc):
                     disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
                         "kanban dispatcher: board %s database %s hit fatal "
-                        "SQLite error (%s); disabling dispatch for this board "
+                        "storage error (%s); disabling dispatch for this board "
                         "until the file changes or the gateway restarts. Move "
                         "or restore the file, then run `hermes kanban init` if "
                         "you need a fresh board.",
@@ -5396,9 +5398,6 @@ class GatewayRunner:
                         exc,
                     )
                     return None
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
-                return None
-            except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
             finally:

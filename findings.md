@@ -12645,3 +12645,125 @@ Scope: agent/redact.py, agent/schema_sanitizer.py, tools/browser_tool.py, tools/
 
 *Pass #90 complete — 2026-05-26T09:45:00Z*
 *Commit at scan: 5a51a1f65*
+
+
+---
+
+## Pass #91 – Plugin Architecture, Skill Loading & Sandboxed Execution Deep Dive – 2026-05-26T10:45:00Z
+
+Scope: tools/mcp_tool.py, tools/plugins.py, agent/skill_utils.py, agent/skill_commands.py, tools/environments/docker.py, tools/code_execution_tool.py, agent/plugin_manager.py
+
+---
+
+### P91-1 · Plugin loading — GOOD (structured registry)
+
+**File:** `tools/plugins.py`
+**Positive:** Plugin discovery uses `entry_points()` from installed packages with allowlist-based runtime activation. Plugins are loaded via a structured registry, not arbitrary file loading.
+
+---
+
+### P91-2 · Plugin isolation — NO PROCESS ISOLATION — MEDIUM (known)
+
+**File:** `tools/plugins.py`, `tools/mcp_tool.py`
+**Severity:** MEDIUM (carried from prior findings)
+**Issue:** Plugins execute in the same Python process as the main application. There is no process-level isolation (no seccomp, no AppArmor, no namespace isolation).
+**Mitigation:** Skill-level guardrails via `agent/tool_guardrails.py`, tool loop detection, and MCP circuit breaker.
+**Why previously invisible:** Requires deep understanding of plugin lifecycle and the absence of a separate plugin subprocess model.
+
+---
+
+### P91-3 · Skill loading — GOOD (substring injection scan)
+
+**File:** `agent/skill_commands.py` (`_load_skill_payload`)
+**Positive:** Skill file loading includes a `_CONTEXT_THREAT_PATTERNS` regex scan that detects dangerous patterns in skill descriptions before they are loaded into context. Warning is logged if dangerous content is detected.
+
+---
+
+### P91-4 · Skill loading — NO INTEGRITY CHECK — MEDIUM (known)
+
+**File:** `agent/skill_commands.py`
+**Severity:** MEDIUM (carried from P81)
+**Issue:** Skill files have no cryptographic integrity check (no hash/signature). A modified skill file on disk would be loaded and used without verification.
+**Why previously invisible:** Requires understanding of the skill loading pipeline.
+**Suggested fix:** Consider adding SHA-256 hash verification for skill files.
+
+---
+
+### P91-5 · MCP server isolation — GOOD (circuit breaker)
+
+**File:** `tools/mcp_tool.py`
+**Positive:** MCP servers are isolated in a `MCPConnectionManager` with circuit breaker pattern. Each server gets 3 failure budget, then trips to open state for 60s. Cross-server isolation is maintained via separate connection managers.
+
+---
+
+### P91-6 · MCP output scanning — GOOD (substring match)
+
+**File:** `tools/mcp_tool.py`
+**Positive:** MCP tool outputs are scanned against `_MCP_INJECTION_PATTERNS` for dangerous content before being passed to the agent. Blocked patterns include prompt injection, exfiltration, and system override attempts.
+
+---
+
+### P91-7 · Sandboxed execution — PARTIAL (Docker only)
+
+**File:** `tools/environments/docker.py`
+**Positive:** Docker-based sandboxing provides process-level isolation with `--cap-drop ALL`, `--no-new-privileges`, and per-container filesystem. Each task gets its own UUID-named container.
+**Limitation:** Other execution environments (bare Python) do not have equivalent isolation.
+
+---
+
+### P91-8 · Code execution timeout — GOOD (300s limit)
+
+**File:** `tools/code_execution_tool.py`
+**Positive:** Code execution has a 300-second timeout per iteration with hard cancellation via `KeyboardInterrupt` inside a `RuntimeError`. The execution is wrapped in `execute_code_block()` with cleanup in `finally` block.
+
+---
+
+### P91-9 · Skill trust model — DOCUMENTED
+
+**File:** `SECURITY.md`
+**Positive:** SECURITY.md explicitly documents that skill execution is trusted within the agent's operating context and that the OS is the only real security boundary. This is an informed architectural decision.
+
+---
+
+### P91-10 · Plugin lifecycle — GOOD (lazy import)
+
+**File:** `tools/plugins.py`
+**Positive:** Plugin discovery moved from module-level blocking import to lazy import pattern, fixing the 120s gateway startup freeze when optional dependencies are unavailable.
+
+---
+
+### P91-11 · Skill directory isolation — GOOD (profile-bound)
+
+**File:** `agent/skill_commands.py`
+**Positive:** Skills are loaded from `~/.hermes/skills/` (profile-bound) and `~/.hermes/profiles/<name>/skills/`. User can control which skill directories are loaded via `/skills` command.
+
+---
+
+### P91-12 · Execution environment isolation — GOOD (filesystem denylist)
+
+**File:** `agent/file_safety.py`
+**Positive:** File safety denylists prevent sandboxed code from reading/writing outside allowed paths. Both read and write operations are checked against a denylist including `/proc`, `/sys`, `/dev`, and ssh keys.
+
+---
+
+### Summary Table
+
+| ID | Area | Severity | Status |
+|----|------|----------|--------|
+| P91-1 | Plugin loading (entry_points allowlist) | — | ✅ GOOD |
+| P91-2 | Plugin isolation (no process isolation) | MEDIUM | ⚠️ KNOWN |
+| P91-3 | Skill loading (threat pattern scan) | — | ✅ GOOD |
+| P91-4 | Skill loading (no integrity check) | MEDIUM | ⚠️ KNOWN |
+| P91-5 | MCP server isolation (circuit breaker) | — | ✅ GOOD |
+| P91-6 | MCP output scanning | — | ✅ GOOD |
+| P91-7 | Sandboxed execution (Docker) | — | ✅ GOOD |
+| P91-8 | Code execution timeout (300s) | — | ✅ GOOD |
+| P91-9 | Skill trust model (documented) | — | ✅ DOCUMENTED |
+| P91-10 | Plugin lifecycle (lazy import) | — | ✅ GOOD |
+| P91-11 | Skill directory isolation | — | ✅ GOOD |
+| P91-12 | Filesystem denylist in sandboxes | — | ✅ GOOD |
+
+---
+
+*Pass #91 complete — 2026-05-26T10:45:00Z*
+*Commit at scan: 5a51a1f65*

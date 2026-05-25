@@ -33,16 +33,20 @@ def _build_filter(env_val: Optional[str], cfg_val) -> Optional[set]:
     return None
 
 
-def _apply_filter(boards, dispatch_boards_filter, warned=None):
+def _apply_filter(boards, dispatch_boards_filter, warned=None, all_boards=None):
     """Mirror the board-list filtering from _tick_once."""
     if dispatch_boards_filter is None:
         return boards
     DEFAULT_BOARD = "default"
     known_slugs = {b.get("slug") or DEFAULT_BOARD for b in boards}
+    _all = all_boards if all_boards is not None else boards
+    archived_slugs = {
+        b.get("slug") or DEFAULT_BOARD for b in _all if b.get("archived")
+    }
     warnings = []
     if warned is None:
         warned = set()
-    for slug in sorted(dispatch_boards_filter - known_slugs):
+    for slug in sorted(dispatch_boards_filter - known_slugs - archived_slugs):
         if slug not in warned:
             warnings.append(slug)
             warned.add(slug)
@@ -123,25 +127,15 @@ def test_dispatch_boards_unknown_slug_no_dispatch():
 
 
 def test_dispatch_boards_archived_slug_ignored():
-    """Archived board not in list_boards result — no dispatch, no warning."""
-    # include_archived=False means archived boards are absent from boards list.
-    # If dispatch_boards contains an archived board name that also doesn't appear
-    # in the live boards list, it gets warned as "unknown". The spec says
-    # archived boards should be silently skipped (no warning, no dispatch).
-    # This is handled by checking: if the slug was once known but is now
-    # archived/absent, it's a different case from "never existed".
-    #
-    # In practice, the gateway has no way to distinguish "archived" from
-    # "never existed" in the filter step (both are absent from list_boards).
-    # The spec says "silently ignored" for archived boards. We verify
-    # no dispatch happens (same as unknown), which is the correct behavior.
-    boards = []  # archived board absent from list
+    """Archived board in dispatch_boards: no dispatch, no warning."""
+    # include_archived=False omits archived boards from the live list.
+    # include_archived=True returns them with archived=True.
+    live_boards = []  # archived board absent from live list
+    all_boards = [{"slug": "archived_board", "archived": True}]
     filt = _build_filter(None, ["archived_board"])
-    filtered, warnings = _apply_filter(boards, filt)
+    filtered, warnings = _apply_filter(live_boards, filt, all_boards=all_boards)
     assert filtered == []
-    # Note: archived boards appear as warnings since the filter can't
-    # distinguish archived from truly unknown. This is acceptable per spec:
-    # the spec only requires no dispatch and no crash, not strict silence on warning.
+    assert warnings == [], f"expected no warning for archived board, got {warnings}"
 
 
 def test_ready_nonempty_respects_filter():

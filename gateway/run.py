@@ -5436,7 +5436,16 @@ class GatewayRunner:
             # Omitting the key dispatches all boards (backwards-compatible default).
             if dispatch_boards_filter is not None:
                 known_slugs = {b.get("slug") or _kb.DEFAULT_BOARD for b in boards}
-                for slug in sorted(dispatch_boards_filter - known_slugs):
+                try:
+                    all_boards = _kb.list_boards(include_archived=True)
+                except Exception:
+                    all_boards = boards
+                archived_slugs = {
+                    b.get("slug") or _kb.DEFAULT_BOARD
+                    for b in all_boards
+                    if b.get("archived")
+                }
+                for slug in sorted(dispatch_boards_filter - known_slugs - archived_slugs):
                     if slug not in _warned_unknown_slugs:
                         logger.warning(
                             "kanban dispatcher: dispatch_boards includes unknown slug %r; skipping",

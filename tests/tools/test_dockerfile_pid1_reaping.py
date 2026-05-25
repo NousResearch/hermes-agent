@@ -58,7 +58,7 @@ def _run_steps(dockerfile_text: str) -> list[str]:
 
 
 def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
-    """Some init (tini, dumb-init, catatonit) must be installed.
+    """Some init (tini, dumb-init, catatonit, s6-overlay) must be installed.
 
     Without a PID-1 init that handles SIGCHLD, hermes accumulates zombie
     processes from MCP stdio subprocesses, git operations, browser
@@ -66,8 +66,10 @@ def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
     exhausts the PID table.
     """
     # Accept any of the common reapers.  The contract is behavioural:
-    # something must be installed that reaps orphans.
-    known_inits = ("tini", "dumb-init", "catatonit")
+    # something must be installed that reaps orphans. s6-overlay was
+    # added in PR #30136 — its PID 1 is s6-svscan, which reaps zombies
+    # non-blockingly on SIGCHLD just like tini.
+    known_inits = ("tini", "dumb-init", "catatonit", "s6-overlay")
     installed = any(name in dockerfile_text for name in known_inits)
     assert installed, (
         "No PID-1 init detected in Dockerfile (looked for: "
@@ -80,8 +82,8 @@ def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
 def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
     """The ENTRYPOINT must invoke the init, not the entrypoint script directly.
 
-    Installing tini is only half the fix — the container must actually run
-    with tini as PID 1.  If the ENTRYPOINT executes the shell script
+    Installing an init is only half the fix — the container must actually run
+    with it as PID 1.  If the ENTRYPOINT executes the shell script
     directly, the shell becomes PID 1 and will ``exec`` into hermes,
     which then runs as PID 1 without any zombie reaping.
     """
@@ -96,11 +98,15 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
     assert entrypoint_line is not None, "Dockerfile is missing an ENTRYPOINT directive"
 
-    known_inits = ("tini", "dumb-init", "catatonit")
+    # Accept any of the common inits as the first element of ENTRYPOINT.
+    # s6-overlay installs its PID-1 binary at ``/init`` (no path prefix
+    # — it's a hard-coded location for the overlay). PR #30136 swapped
+    # tini for s6-overlay, so ``/init`` is the canonical marker now.
+    known_inits = ("tini", "dumb-init", "catatonit", "/init")
     routes_through_init = any(name in entrypoint_line for name in known_inits)
     assert routes_through_init, (
         f"ENTRYPOINT does not route through an init: {entrypoint_line!r}. "
-        "If tini is only installed but not wired into ENTRYPOINT, hermes "
+        "If an init is only installed but not wired into ENTRYPOINT, hermes "
         "still runs as PID 1 and zombies will accumulate (#15012)."
     )
 

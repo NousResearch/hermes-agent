@@ -1,5 +1,5 @@
 name: azure-foundry
 version: 1.0.0
-description: "Azure AI Foundry image generation backend (DALL-E-3 via AzureOpenAI). Saves generated images to $HERMES_HOME/cache/images/."
+description: "Azure AI Foundry image generation backend (gpt-image-2). Saves generated images to $HERMES_HOME/cache/images/."
 author: NousResearch
 kind: backend

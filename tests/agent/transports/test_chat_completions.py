@@ -46,6 +46,58 @@ class TestChatCompletionsBasic:
         assert "codex_reasoning_items" in msgs[0]
         assert "codex_message_items" in msgs[0]
 
+    def test_convert_messages_strips_tool_name(self, transport):
+        """Internal `tool_name` (used for FTS indexing in the SQLite store) is
+        not part of the OpenAI Chat Completions schema. Strict providers like
+        Moonshot/Kimi reject it with HTTP 400 'Extra inputs are not permitted'.
+        """
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "execute_code", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "tool_name": "execute_code",
+             "content": "result"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "tool_name" not in result[2]
+        assert result[2]["content"] == "result"
+        assert result[2]["tool_call_id"] == "call_1"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[2]["tool_name"] == "execute_code"
+
+    def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
+        """Hermes-internal ``_``-prefixed markers must never reach the wire.
+
+        The empty-response recovery path appends synthetic messages tagged
+        with ``_empty_recovery_synthetic``; permissive providers ignore the
+        unknown key, but strict gateways (opencode-go, codex.nekos.me)
+        reject the request, poisoning every later turn in the session.
+        """
+        msgs = [
+            {"role": "user", "content": "run the task"},
+            {"role": "assistant", "content": "(empty)", "_empty_recovery_synthetic": True},
+            {"role": "user", "content": "continue", "_empty_recovery_synthetic": True},
+            {"role": "assistant", "content": "done", "_thinking_prefill": True,
+             "_empty_terminal_sentinel": True},
+        ]
+        result = transport.convert_messages(msgs)
+        for m in result:
+            assert not any(k.startswith("_") for k in m), m
+        # Visible content preserved
+        assert result[1]["content"] == "(empty)"
+        assert result[2]["content"] == "continue"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[1]["_empty_recovery_synthetic"] is True
+
+    def test_convert_messages_clean_list_is_identity(self, transport):
+        """A list with no internal/codex keys is returned as-is (no copy)."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert transport.convert_messages(msgs) is msgs
+
 
 class TestChatCompletionsBuildKwargs:
 
@@ -83,12 +135,76 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["provider"] == {"only": ["openai"]}
 
+    def test_openrouter_pareto_min_coding_score(self, transport):
+        """Profile path: model=openrouter/pareto-code + score → plugins block."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=0.65,
+        )
+        assert kw["extra_body"]["plugins"] == [
+            {"id": "pareto-router", "min_coding_score": 0.65}
+        ]
+
+    def test_openrouter_pareto_score_ignored_for_other_models(self, transport):
+        """Score must not be emitted for any model other than openrouter/pareto-code."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=0.65,
+        )
+        assert "plugins" not in (kw.get("extra_body") or {})
+
+    def test_openrouter_pareto_score_omitted_when_unset(self, transport):
+        """No score → no plugins block (router uses its omission default = strongest coder)."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            provider_profile=profile,
+            openrouter_min_coding_score=None,
+        )
+        assert "plugins" not in (kw.get("extra_body") or {})
+
+    def test_openrouter_pareto_score_out_of_range_dropped(self, transport):
+        """Out-of-range scores must be silently dropped, not forwarded."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        for bad in (1.5, -0.1, "not-a-number"):
+            kw = transport.build_kwargs(
+                model="openrouter/pareto-code", messages=msgs,
+                provider_profile=profile,
+                openrouter_min_coding_score=bad,
+            )
+            assert "plugins" not in (kw.get("extra_body") or {}), f"bad={bad!r}"
+
+    def test_openrouter_pareto_legacy_path(self, transport):
+        """Legacy flag path (no profile loaded) must also emit the plugins block."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="openrouter/pareto-code", messages=msgs,
+            is_openrouter=True,
+            openrouter_min_coding_score=0.8,
+        )
+        assert kw["extra_body"]["plugins"] == [
+            {"id": "pareto-router", "min_coding_score": 0.8}
+        ]
+
     def test_nous_tags(self, transport):
+        from agent.portal_tags import nous_portal_tags
         from providers import get_provider_profile
         profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, provider_profile=profile)
-        assert kw["extra_body"]["tags"] == ["product=hermes-agent"]
+        assert kw["extra_body"]["tags"] == nous_portal_tags()
 
     def test_reasoning_default(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]

@@ -52,6 +52,11 @@ class TestCompressionBoundaryHook:
             compressor.last_completion_tokens = 0
             # Avoid the summary-error warning path
             compressor._last_summary_error = None
+            # MagicMock auto-creates truthy attrs; explicitly clear the abort
+            # flag so the post-compress abort branch in
+            # conversation_compression.py does not short-circuit before the
+            # session-id rotation we are asserting on.
+            compressor._last_compress_aborted = False
             agent.context_compressor = compressor
 
             original_sid = agent.session_id
@@ -137,6 +142,7 @@ class TestCompressionBoundaryHook:
             compressor.last_prompt_tokens = 0
             compressor.last_completion_tokens = 0
             compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
 
             # Raise only on the compression-boundary call, not on earlier calls.
             def _raise_on_compression(*args, **kwargs):

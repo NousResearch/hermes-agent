@@ -295,7 +295,7 @@ class WeComAdapter(BasePlatformAdapter):
 
         auth_payload = await self._wait_for_handshake(req_id)
         errcode = auth_payload.get("errcode", 0)
-        if errcode not in (0, None):
+        if errcode not in {0, None}:
             errmsg = auth_payload.get("errmsg", "authentication failed")
             raise RuntimeError(f"{errmsg} (errcode={errcode})")
 
@@ -320,7 +320,7 @@ class WeComAdapter(BasePlatformAdapter):
                 if self._payload_req_id(payload) == req_id:
                     return payload
                 logger.debug("[%s] Ignoring pre-auth payload: %s", self.name, payload.get("cmd"))
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WeCom websocket closed during authentication")
 
     async def _listen_loop(self) -> None:
@@ -345,6 +345,7 @@ class WeComAdapter(BasePlatformAdapter):
                 try:
                     await self._open_connection()
                     backoff_idx = 0
+                    self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
@@ -360,7 +361,7 @@ class WeComAdapter(BasePlatformAdapter):
                 payload = self._parse_json(msg.data)
                 if payload:
                     await self._dispatch_payload(payload)
-            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
@@ -615,6 +616,18 @@ class WeComAdapter(BasePlatformAdapter):
             else:
                 delay = self._text_batch_delay_seconds
             await asyncio.sleep(delay)
+            # Guard against the cancel-delivery race: when the sleep timer
+            # fires just before cancel() is called, CPython sets
+            # Task._must_cancel but cannot cancel the already-done sleep
+            # future, so CancelledError is delivered at the *next* await
+            # (handle_message) rather than here.  By that point this task
+            # has already popped the merged event, so the superseding task
+            # sees an empty batch and silently drops the message.
+            # This check is synchronous — no await between the sleep and
+            # the pop — so no other coroutine can modify the task registry
+            # in between.
+            if self._pending_text_batch_tasks.get(key) is not current_task:
+                return
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
@@ -998,7 +1011,7 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _response_error(response: Dict[str, Any]) -> Optional[str]:
         errcode = response.get("errcode", 0)
-        if errcode in (0, None):
+        if errcode in {0, None}:
             return None
         errmsg = str(response.get("errmsg") or "unknown error")
         return f"WeCom errcode {errcode}: {errmsg}"

@@ -514,3 +514,227 @@ class TestJudgeParseFailureAutoPause:
         reloaded = load_goal("parse-fail-sid-4")
         assert reloaded is not None
         assert reloaded.consecutive_parse_failures == 2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# /subgoal — user-added criteria
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestGoalStateSubgoalsBackcompat:
+    def test_old_state_meta_row_loads_without_subgoals(self):
+        """A goal serialized BEFORE the subgoals field existed must
+        round-trip with an empty list, not crash."""
+        import json
+        from hermes_cli.goals import GoalState
+
+        legacy = json.dumps({
+            "goal": "do a thing",
+            "status": "active",
+            "turns_used": 2,
+            "max_turns": 20,
+            "created_at": 1.0,
+            "last_turn_at": 2.0,
+            "consecutive_parse_failures": 0,
+        })
+        state = GoalState.from_json(legacy)
+        assert state.goal == "do a thing"
+        assert state.subgoals == []
+
+    def test_subgoals_round_trip(self):
+        from hermes_cli.goals import GoalState
+        state = GoalState(goal="g", subgoals=["a", "b", "c"])
+        rt = GoalState.from_json(state.to_json())
+        assert rt.subgoals == ["a", "b", "c"]
+
+
+class TestGoalManagerSubgoals:
+    def test_add_subgoal(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sub-add")
+        mgr.set("main goal")
+        text = mgr.add_subgoal("  use bullet points  ")
+        assert text == "use bullet points"
+        assert mgr.state.subgoals == ["use bullet points"]
+
+    def test_add_subgoal_requires_active_goal(self, hermes_home):
+        import pytest
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sub-noactive")
+        with pytest.raises(RuntimeError):
+            mgr.add_subgoal("oops")
+
+    def test_add_empty_subgoal_rejected(self, hermes_home):
+        import pytest
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sub-empty")
+        mgr.set("g")
+        with pytest.raises(ValueError):
+            mgr.add_subgoal("   ")
+
+    def test_remove_subgoal(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sub-remove")
+        mgr.set("g")
+        mgr.add_subgoal("first")
+        mgr.add_subgoal("second")
+        mgr.add_subgoal("third")
+        removed = mgr.remove_subgoal(2)
+        assert removed == "second"
+        assert mgr.state.subgoals == ["first", "third"]
+
+    def test_remove_subgoal_out_of_range(self, hermes_home):
+        import pytest
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sub-oob")
+        mgr.set("g")
+        mgr.add_subgoal("only")
+        with pytest.raises(IndexError):
+            mgr.remove_subgoal(5)
+        with pytest.raises(IndexError):
+            mgr.remove_subgoal(0)
+
+    def test_clear_subgoals(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sub-clear")
+        mgr.set("g")
+        mgr.add_subgoal("a")
+        mgr.add_subgoal("b")
+        prev = mgr.clear_subgoals()
+        assert prev == 2
+        assert mgr.state.subgoals == []
+
+    def test_subgoals_persist_across_reloads(self, hermes_home):
+        """Subgoals stored in SessionDB survive a fresh GoalManager."""
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sub-persist")
+        mgr.set("g")
+        mgr.add_subgoal("first")
+        mgr.add_subgoal("second")
+
+        mgr2 = GoalManager(session_id="sub-persist")
+        assert mgr2.state.subgoals == ["first", "second"]
+
+
+class TestContinuationPromptWithSubgoals:
+    def test_empty_subgoals_uses_original_template(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="cp-empty")
+        mgr.set("ship the feature")
+        prompt = mgr.next_continuation_prompt()
+        assert prompt is not None
+        assert "ship the feature" in prompt
+        assert "Additional criteria" not in prompt
+
+    def test_with_subgoals_includes_them(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="cp-with")
+        mgr.set("ship the feature")
+        mgr.add_subgoal("write tests")
+        mgr.add_subgoal("update docs")
+        prompt = mgr.next_continuation_prompt()
+        assert prompt is not None
+        assert "ship the feature" in prompt
+        assert "Additional criteria" in prompt
+        assert "1. write tests" in prompt
+        assert "2. update docs" in prompt
+
+
+class TestJudgeGoalWithSubgoals:
+    def test_judge_uses_subgoals_template_when_provided(self, hermes_home):
+        """judge_goal switches templates when subgoals is non-empty.
+
+        We don't actually call the model — we patch the aux client to
+        capture the prompt that would be sent.
+        """
+        from unittest.mock import patch, MagicMock
+        from hermes_cli import goals
+
+        captured = {}
+
+        class _FakeMsg:
+            content = '{"done": true, "reason": "all done"}'
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+        class _FakeClient:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured.update(kwargs)
+                        return _FakeResp()
+
+        with patch.object(goals, "get_text_auxiliary_client",
+                          return_value=(_FakeClient, "fake-model"), create=True), \
+             patch.object(goals, "get_auxiliary_extra_body",
+                          return_value=None, create=True), \
+             patch("agent.auxiliary_client.get_text_auxiliary_client",
+                   return_value=(_FakeClient, "fake-model")), \
+             patch("agent.auxiliary_client.get_auxiliary_extra_body",
+                   return_value=None):
+            verdict, reason, parse_failed = goals.judge_goal(
+                "ship the feature",
+                "ok shipped",
+                subgoals=["write tests", "update docs"],
+            )
+
+        # The aux client was called with a prompt that includes the subgoals.
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert "Additional criteria" in user_msg
+        assert "1. write tests" in user_msg
+        assert "2. update docs" in user_msg
+        assert "every additional criterion" in user_msg
+        assert verdict == "done"
+
+    def test_judge_uses_original_template_when_no_subgoals(self, hermes_home):
+        from unittest.mock import patch
+        from hermes_cli import goals
+
+        captured = {}
+
+        class _FakeMsg:
+            content = '{"done": true, "reason": "ok"}'
+        class _FakeChoice:
+            message = _FakeMsg()
+        class _FakeResp:
+            choices = [_FakeChoice()]
+        class _FakeClient:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured.update(kwargs)
+                        return _FakeResp()
+
+        with patch("agent.auxiliary_client.get_text_auxiliary_client",
+                   return_value=(_FakeClient, "fake-model")), \
+             patch("agent.auxiliary_client.get_auxiliary_extra_body",
+                   return_value=None):
+            goals.judge_goal("ship it", "done", subgoals=None)
+
+        sent_messages = captured.get("messages") or []
+        user_msg = next((m["content"] for m in sent_messages if m["role"] == "user"), "")
+        assert "Additional criteria" not in user_msg
+        assert "ship it" in user_msg
+
+
+class TestStatusLineSubgoalCount:
+    def test_status_line_no_subgoals(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sl-empty")
+        mgr.set("ship it")
+        line = mgr.status_line()
+        assert "ship it" in line
+        assert "subgoal" not in line.lower()
+
+    def test_status_line_with_subgoals(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        mgr = GoalManager(session_id="sl-with")
+        mgr.set("ship it")
+        mgr.add_subgoal("a")
+        mgr.add_subgoal("b")
+        line = mgr.status_line()
+        assert "2 subgoals" in line

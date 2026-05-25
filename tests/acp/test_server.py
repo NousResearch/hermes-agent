@@ -12,6 +12,8 @@ from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
     AgentMessageChunk,
+    AgentPlanUpdate,
+    AgentThoughtChunk,
     AuthenticateResponse,
     AvailableCommandsUpdate,
     Implementation,
@@ -22,10 +24,12 @@ from acp.schema import (
     PromptResponse,
     ResumeSessionResponse,
     SessionModelState,
+    SessionModeState,
     SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
     SessionInfo,
+    SessionInfoUpdate,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -33,6 +37,7 @@ from acp.schema import (
     UsageUpdate,
     UserMessageChunk,
 )
+from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
 from acp_adapter.server import HermesACPAgent, HERMES_VERSION
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
@@ -48,6 +53,35 @@ def mock_manager():
 def agent(mock_manager):
     """HermesACPAgent backed by a mock session manager."""
     return HermesACPAgent(session_manager=mock_manager)
+
+
+@pytest.mark.asyncio
+async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+    resp = await agent.new_session(cwd="/tmp")
+
+    assert resp.config_options is None
+    assert isinstance(resp.modes, SessionModeState)
+    assert resp.modes.current_mode_id == "default"
+    assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
+        ("default", "Default"),
+        ("accept_edits", "Accept Edits"),
+        ("dont_ask", "Don't Ask"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+    resp = await agent.new_session(cwd="/tmp")
+    update = await agent.set_config_option(
+        "edit_approval_policy",
+        resp.session_id,
+        "workspace_session",
+    )
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert update.config_options == []
+    assert getattr(state, "mode", None) == "accept_edits"
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +126,41 @@ class TestInitialize:
         assert "list" in session_caps
         assert "resume" in session_caps
 
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_provider_and_terminal_auth_methods(self, agent, monkeypatch):
+        monkeypatch.setattr("acp_adapter.auth.detect_provider", lambda: "openrouter")
+        monkeypatch.setattr("acp_adapter.server.detect_provider", lambda: "openrouter")
+
+        resp = await agent.initialize(protocol_version=1)
+        payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
+
+        assert payloads[0]["id"] == "openrouter"
+        assert payloads[0]["name"] == "openrouter runtime credentials"
+        terminal = next(payload for payload in payloads if payload["id"] == TERMINAL_SETUP_AUTH_METHOD_ID)
+        assert terminal["type"] == "terminal"
+        assert terminal["args"] == ["--setup"]
+
+    @pytest.mark.asyncio
+    async def test_initialize_advertises_terminal_setup_auth_when_no_provider(self, agent, monkeypatch):
+        monkeypatch.setattr("acp_adapter.auth.detect_provider", lambda: None)
+        monkeypatch.setattr("acp_adapter.server.detect_provider", lambda: None)
+
+        resp = await agent.initialize(protocol_version=1)
+        payloads = [method.model_dump(by_alias=True, exclude_none=True) for method in resp.auth_methods]
+
+        assert payloads == [
+            {
+                "args": ["--setup"],
+                "description": (
+                    "Open Hermes' interactive model/provider setup in a terminal. "
+                    "Use this when Hermes has not been configured on this machine yet."
+                ),
+                "id": TERMINAL_SETUP_AUTH_METHOD_ID,
+                "name": "Configure Hermes provider",
+                "type": "terminal",
+            }
+        ]
+
 
 # ---------------------------------------------------------------------------
 # authenticate
@@ -133,6 +202,24 @@ class TestAuthenticate:
             lambda: None,
         )
         resp = await agent.authenticate(method_id="openrouter")
+        assert resp is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_accepts_terminal_setup_after_provider_configured(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)
+        assert isinstance(resp, AuthenticateResponse)
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_terminal_setup_without_provider(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: None,
+        )
+        resp = await agent.authenticate(method_id=TERMINAL_SETUP_AUTH_METHOD_ID)
         assert resp is None
 
 
@@ -338,6 +425,57 @@ class TestSessionOps:
         assert "cli.py:42" in tool_updates[1].content[0].content.text
 
     @pytest.mark.asyncio
+    async def test_load_session_replays_native_plan_for_persisted_todo_tool(self, agent):
+        """Persisted todo tool results should rebuild Zed's native plan panel."""
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_todo_1",
+                        "type": "function",
+                        "function": {
+                            "name": "todo",
+                            "arguments": '{"todos":[{"id":"ship","content":"Ship it","status":"in_progress"}]}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_todo_1",
+                "content": '{"todos":[{"id":"ship","content":"Ship it","status":"in_progress"}]}',
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert isinstance(resp, LoadSessionResponse)
+        relevant_updates = [
+            update for update in (call.kwargs["update"] for call in mock_conn.session_update.await_args_list)
+            if getattr(update, "session_update", None) in {"tool_call", "tool_call_update", "plan"}
+        ]
+        assert [getattr(update, "session_update", None) for update in relevant_updates] == [
+            "tool_call",
+            "tool_call_update",
+            "plan",
+        ]
+        plan = relevant_updates[2]
+        assert isinstance(plan, AgentPlanUpdate)
+        assert [entry.content for entry in plan.entries] == ["Ship it"]
+        assert [entry.status for entry in plan.entries] == ["in_progress"]
+
+    @pytest.mark.asyncio
     async def test_resume_session_replays_persisted_history_to_client(self, agent):
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
@@ -361,25 +499,296 @@ class TestSessionOps:
         )
 
     @pytest.mark.asyncio
-    async def test_load_session_schedules_history_replay_after_response(self, agent):
-        """Zed only attaches replayed updates after session/load has completed."""
+    async def test_load_session_replays_reasoning_thought_before_message(self, agent):
+        """Thinking-model thoughts must be replayed via ``agent_thought_chunk``.
+
+        Regression for #12285 — when a session is loaded, persisted assistant
+        ``reasoning_content`` / ``reasoning`` fields must surface as ACP
+        ``AgentThoughtChunk`` notifications in the same relative position they
+        had live (thought streams before the assistant message text), so Zed's
+        collapsed Thinking pane rebuilds instead of vanishing on reconnect.
+        """
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "user", "content": "Walk me through it."},
+            {
+                "role": "assistant",
+                "reasoning_content": "Let me think step by step about the request.",
+                "content": "Here is the plan.",
+            },
+            {"role": "user", "content": "And the legacy case?"},
+            {
+                "role": "assistant",
+                # No reasoning_content — exercise the legacy "reasoning" fallback
+                # path so sessions persisted before #16892 still replay thoughts.
+                "reasoning": "Older sessions stored the trace under the internal key.",
+                "content": "Same idea, older field name.",
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert isinstance(resp, LoadSessionResponse)
+
+        replay_kinds = [
+            getattr(call.kwargs.get("update"), "session_update", None)
+            for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {"user_message_chunk", "agent_message_chunk", "agent_thought_chunk"}
+        ]
+        assert replay_kinds == [
+            "user_message_chunk",
+            "agent_thought_chunk",
+            "agent_message_chunk",
+            "user_message_chunk",
+            "agent_thought_chunk",
+            "agent_message_chunk",
+        ]
+
+        thought_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
+        ]
+        assert len(thought_updates) == 2
+        assert thought_updates[0].content.text == "Let me think step by step about the request."
+        assert thought_updates[1].content.text == "Older sessions stored the trace under the internal key."
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_reasoning_only_turn(self, agent):
+        """Assistant turns with reasoning but no content should still emit a thought.
+
+        Pure reasoning-only assistant entries (e.g. a thinking step before a
+        tool-call turn) commonly carry ``reasoning_content`` with empty
+        ``content``. The replay must still surface the thought so the editor's
+        Thinking pane rebuilds, even when there is no message text to follow.
+        """
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {
+                "role": "assistant",
+                "reasoning_content": "I should call the search tool next.",
+                "content": "",
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        thought_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
+        ]
+        message_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentMessageChunk)
+        ]
+        assert len(thought_updates) == 1
+        assert thought_updates[0].content.text == "I should call the search tool next."
+        assert message_updates == []
+
+    @pytest.mark.asyncio
+    async def test_load_session_skips_empty_reasoning_fields(self, agent):
+        """Empty/whitespace reasoning fields must not produce notifications."""
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {
+                "role": "assistant",
+                "reasoning_content": "",
+                "reasoning": "   \n\t",
+                "content": "Just a regular answer.",
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        thought_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if isinstance(call.kwargs.get("update"), AgentThoughtChunk)
+        ]
+        assert thought_updates == []
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_thought_then_tool_call_without_message(self, agent):
+        """Canonical thinking-model shape: reasoning + tool_call + no body text.
+
+        Thinking models commonly emit a pre-tool thought followed by a
+        tool_calls turn with empty ``content``. Replay must emit:
+        ``agent_thought_chunk`` then ``tool_call`` then ``tool_call_update``
+        for the matching tool result — and crucially, NO ``agent_message_chunk``
+        for the empty-text assistant body. Regression for the canonical
+        thinking-then-tool flow on #12285.
+        """
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "user", "content": "Find the bug."},
+            {
+                "role": "assistant",
+                "reasoning_content": "I should grep for the function name first.",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_grep_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_files",
+                            "arguments": '{"pattern":"foo","path":"."}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_grep_1",
+                "content": '{"total_count":1,"matches":[{"path":"x.py","line":1,"content":"foo"}]}',
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        kinds = [
+            getattr(call.kwargs.get("update"), "session_update", None)
+            for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {
+                "user_message_chunk",
+                "agent_thought_chunk",
+                "agent_message_chunk",
+                "tool_call",
+                "tool_call_update",
+            }
+        ]
+        # No agent_message_chunk for the empty-content assistant turn.
+        assert "agent_message_chunk" not in kinds
+        # Thought must precede the tool_call_start within the assistant turn,
+        # and the tool result follows.
+        assert kinds == [
+            "user_message_chunk",
+            "agent_thought_chunk",
+            "tool_call",
+            "tool_call_update",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_history_before_returning_response(self, agent):
+        """Per ACP spec, replay must complete BEFORE load_session returns.
+
+        Spec-compliant ACP clients (Codex, Claude Code, OpenCode, Pi, Zed)
+        attach their ``session/update`` listeners before awaiting the
+        ``loadSession`` RPC and rely on receiving the full transcript within
+        the request's lifetime. Deferring replay via ``loop.call_soon`` (the
+        prior behavior in May 2026) broke clients that read notification
+        counts synchronously against the load response — see #12285 follow-up.
+        """
         new_resp = await agent.new_session(cwd="/tmp")
         state = agent.session_manager.get_session(new_resp.session_id)
         state.history = [{"role": "user", "content": "hello from history"}]
-        events = []
+        events: list[str] = []
 
-        async def replay_after_response(_state):
+        async def replay_records(_state):
             events.append("replay")
 
-        with patch.object(agent, "_replay_session_history", side_effect=replay_after_response):
+        with patch.object(agent, "_replay_session_history", side_effect=replay_records):
             resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
             events.append("returned")
 
         assert isinstance(resp, LoadSessionResponse)
-        assert events == ["returned"]
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert events == ["returned", "replay"]
+        # Replay must have happened BEFORE the response was constructed —
+        # i.e. before the `events.append("returned")` after the await resolves.
+        assert events == ["replay", "returned"]
+
+    @pytest.mark.asyncio
+    async def test_resume_session_replays_history_before_returning_response(self, agent):
+        """Same spec rationale as ``load_session`` — replay before responding."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "hello from history"}]
+        events: list[str] = []
+
+        async def replay_records(_state):
+            events.append("replay")
+
+        with patch.object(agent, "_replay_session_history", side_effect=replay_records):
+            resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
+            events.append("returned")
+
+        assert isinstance(resp, ResumeSessionResponse)
+        assert events == ["replay", "returned"]
+
+    @pytest.mark.asyncio
+    async def test_load_session_survives_replay_helper_exception(self, agent, caplog):
+        """A replay helper raising must not turn load_session into an error.
+
+        With awaited replay, an exception in ``_replay_session_history`` now
+        propagates into the ``load_session`` handler. The defensive try/except
+        guard at the call site must catch and log it so the JSON-RPC client
+        still receives a ``LoadSessionResponse`` — partial transcripts are
+        acceptable, total load failure is not.
+        """
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "hi"}]
+
+        async def boom(_state):
+            raise RuntimeError("simulated replay helper crash")
+
+        with caplog.at_level("WARNING", logger="acp_adapter.server"):
+            with patch.object(agent, "_replay_session_history", side_effect=boom):
+                resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+
+        assert isinstance(resp, LoadSessionResponse)
+        assert "history replay raised during session/load" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_resume_session_survives_replay_helper_exception(self, agent, caplog):
+        """Same guarantee as ``load_session`` for the resume path."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "hi"}]
+
+        async def boom(_state):
+            raise RuntimeError("simulated replay helper crash")
+
+        with caplog.at_level("WARNING", logger="acp_adapter.server"):
+            with patch.object(agent, "_replay_session_history", side_effect=boom):
+                resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
+
+        assert isinstance(resp, ResumeSessionResponse)
+        assert "history replay raised during session/resume" in caplog.text
 
     @pytest.mark.asyncio
     async def test_resume_session_creates_new_if_missing(self, agent):
@@ -487,11 +896,11 @@ class TestSessionConfiguration:
     @pytest.mark.asyncio
     async def test_set_session_mode_returns_response(self, agent):
         new_resp = await agent.new_session(cwd="/tmp")
-        resp = await agent.set_session_mode(mode_id="chat", session_id=new_resp.session_id)
+        resp = await agent.set_session_mode(mode_id="accept_edits", session_id=new_resp.session_id)
         state = agent.session_manager.get_session(new_resp.session_id)
 
         assert isinstance(resp, SetSessionModeResponse)
-        assert getattr(state, "mode", None) == "chat"
+        assert getattr(state, "mode", None) == "accept_edits"
 
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
@@ -500,7 +909,7 @@ class TestSessionConfiguration:
 
         mode_result = await router(
             "session/set_mode",
-            {"modeId": "chat", "sessionId": new_resp.session_id},
+            {"modeId": "accept_edits", "sessionId": new_resp.session_id},
             False,
         )
         config_result = await router(
@@ -514,7 +923,7 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result == {"configOptions": []}
+        assert config_result["configOptions"] == []
 
     @pytest.mark.asyncio
     async def test_router_accepts_unstable_model_switch_when_enabled(self, agent):
@@ -561,6 +970,18 @@ class TestSessionConfiguration:
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
+        )
+        # Pin the parser so this test doesn't depend on live
+        # ``_KNOWN_PROVIDER_NAMES`` / ``_PROVIDER_ALIASES`` module state
+        # (sibling of the same hardening on
+        # ``test_model_switch_uses_requested_provider``).
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
         )
         manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
 
@@ -682,6 +1103,80 @@ class TestPrompt:
         assert any(update.session_update == "agent_message_chunk" for update in updates)
 
     @pytest.mark.asyncio
+    async def test_prompt_propagates_hermes_session_id_env(self, agent, monkeypatch):
+        """ACP must propagate the originating session id to the agent loop
+        via ``HERMES_SESSION_ID`` so tools that want to stamp side-effects
+        with it (e.g. ``kanban_create``) can read the env var inside
+        ``run_conversation``. The variable must be visible during the
+        agent call AND restored afterwards so a re-used executor thread
+        doesn't leak one session's id into another."""
+        # Pre-condition: env is clean.
+        monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        captured: dict[str, str | None] = {}
+
+        def mock_run(user_message, conversation_history=None, task_id=None, **kwargs):
+            # Inside the agent loop the env var must reflect the active
+            # ACP session id. ``task_id`` is also the session id at this
+            # boundary; assert both for symmetry.
+            captured["env"] = os.environ.get("HERMES_SESSION_ID")
+            captured["task_id"] = task_id
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hi")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert captured["env"] == new_resp.session_id, (
+            "HERMES_SESSION_ID must be set to the originating ACP session id "
+            "while the agent loop is running"
+        )
+        assert captured["task_id"] == new_resp.session_id
+        # Post-condition: must be restored to the prior value (None here).
+        assert os.environ.get("HERMES_SESSION_ID") is None, (
+            "HERMES_SESSION_ID must be restored after the agent call so "
+            "a re-used executor thread doesn't leak the id into the next "
+            "session's tools"
+        )
+
+    @pytest.mark.asyncio
+    async def test_prompt_restores_prior_hermes_session_id(self, agent, monkeypatch):
+        """If the env already had HERMES_SESSION_ID set (e.g. nested
+        agent loops), the prior value must be restored after the inner
+        prompt completes — not popped, not left at the inner id."""
+        monkeypatch.setenv("HERMES_SESSION_ID", "outer-sess")
+
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        captured: dict[str, str | None] = {}
+
+        def mock_run(*args, **kwargs):
+            captured["inner"] = os.environ.get("HERMES_SESSION_ID")
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hi")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert captured["inner"] == new_resp.session_id
+        # Outer scope must be restored.
+        assert os.environ.get("HERMES_SESSION_ID") == "outer-sess"
+
+    @pytest.mark.asyncio
     async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):
         """If ACP already streamed response chunks, final_response should not be sent again."""
         new_resp = await agent.new_session(cwd=".")
@@ -709,6 +1204,48 @@ class TestPrompt:
         assert agent_chunks[0].content.text == "streamed answer"
 
     @pytest.mark.asyncio
+    async def test_prompt_delivers_transformed_response_after_streaming(self, agent):
+        """If a transform_llm_output plugin hook modifies the response after
+        streaming, ACP must deliver the transformed final_response so the
+        appended/rewritten text reaches the client.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.agent.stream_delta_callback("original answer")
+            return {
+                "final_response": "original answer\n\n[plugin appended this]",
+                "response_transformed": True,
+                "messages": [],
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hello")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        # The streamed chunk and the post-stream transformed message should
+        # both be present (final delivery is a separate update_agent_message_text
+        # call carrying the full transformed text).
+        all_texts = [
+            getattr(getattr(u, "content", None), "text", None)
+            for u in updates
+        ]
+        assert any(
+            text and "[plugin appended this]" in text for text in all_texts
+        ), f"expected transformed final to be delivered, got: {all_texts!r}"
+
+
+    @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
@@ -732,6 +1269,48 @@ class TestPrompt:
         assert mock_title.call_args.args[1] == new_resp.session_id
         assert mock_title.call_args.args[2] == "fix the broken ACP history"
         assert mock_title.call_args.args[3] == "Here is the fix."
+        assert callable(mock_title.call_args.kwargs["title_callback"])
+
+    @pytest.mark.asyncio
+    async def test_prompt_sends_session_info_update_after_auto_title(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "Done.",
+            "messages": [
+                {"role": "user", "content": "fix zed titles"},
+                {"role": "assistant", "content": "Done."},
+            ],
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+        })
+
+        def fake_auto_title(db, session_id, user_text, final_response, history, **kwargs):
+            db.set_session_title(session_id, "Fix Zed titles")
+            kwargs["title_callback"]("Fix Zed titles")
+
+        with patch("agent.title_generator.maybe_auto_title", side_effect=fake_auto_title):
+            mock_conn.session_update.reset_mock()
+            await agent.prompt(
+                session_id=resp.session_id,
+                prompt=[TextContentBlock(type="text", text="fix zed titles")],
+            )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.await_args_list
+        ]
+        info_updates = [u for u in updates if isinstance(u, SessionInfoUpdate)]
+        assert len(info_updates) == 1
+        assert info_updates[0].session_update == "session_info_update"
+        assert info_updates[0].title == "Fix Zed titles"
 
     @pytest.mark.asyncio
     async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):
@@ -1017,6 +1596,20 @@ class TestSlashCommands:
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
+        )
+        # Pin the model-string parser independently of the live
+        # ``_KNOWN_PROVIDER_NAMES`` / ``_PROVIDER_ALIASES`` module state.
+        # Otherwise any test in the same xdist worker that mutates those
+        # globals (e.g. registers a custom provider that shadows
+        # ``anthropic``) flakes this one — observed once in CI as
+        # ``'custom' == 'anthropic'``.
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
         )
         manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
 

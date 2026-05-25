@@ -6,21 +6,17 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 9-strategy chain (inspired by OpenCode), tried in order:
+The 8-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
 3. Whitespace normalized - Collapse multiple spaces/tabs to single space
 4. Indentation flexible - Ignore indentation differences entirely
 5. Escape normalized - Convert \\n literals to actual newlines
 6. Trimmed boundary - Trim first/last line whitespace only
-7. Unicode normalized - Smart quotes/dashes to ASCII
-8. Block anchor - Match first+last lines, use similarity for middle
-9. Context-aware - 50% line similarity threshold
+7. Block anchor - Match first+last lines, use similarity for middle
+8. Context-aware - 50% line similarity threshold
 
 Multi-occurrence matching is handled via the replace_all flag.
-
-Timeout: strategies 8-9 use O(n²) SequenceMatcher and are capped at
-`timeout` seconds (default 5). If exceeded, falls back to simple re.sub.
 
 Usage:
     from tools.fuzzy_match import fuzzy_find_and_replace
@@ -29,39 +25,13 @@ Usage:
         content="def foo():\\n    pass",
         old_string="def foo():",
         new_string="def bar():",
-        replace_all=False,
-        timeout=5
+        replace_all=False
     )
 """
 
 import re
-import time
 from typing import Tuple, Optional, List, Callable
 from difflib import SequenceMatcher
-
-
-# Strategies that are O(n²) due to SequenceMatcher in nested loops.
-# These are the ones that can hang on large files.
-_SLOW_STRATEGY_NAMES = frozenset({"block_anchor", "context_aware"})
-
-
-def _replacement_fallback(content: str, old_string: str, new_string: str,
-                          replace_all: bool) -> Tuple[str, int, Optional[str], Optional[str]]:
-    """
-    Fallback when fuzzy strategies time out: simple regex substitution.
-    Only matches exact substrings (no fuzzy normalization).
-    """
-    escaped = re.escape(old_string)
-    if replace_all:
-        new_content = content.replace(old_string, new_string)
-        match_count = len(re.findall(escaped, content))
-    else:
-        pos = content.find(old_string)
-        if pos == -1:
-            return content, 0, None, "Could not find exact match for old_string (fuzzy strategies timed out)"
-        new_content = content[:pos] + new_string + content[pos + len(old_string):]
-        match_count = 1
-    return new_content, match_count, "re_fallback", None
 
 UNICODE_MAP = {
     "\u201c": '"', "\u201d": '"',  # smart double quotes
@@ -78,8 +48,7 @@ def _unicode_normalize(text: str) -> str:
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
-                            replace_all: bool = False,
-                            timeout: float = 5.0) -> Tuple[str, int, Optional[str], Optional[str]]:
+                            replace_all: bool = False) -> Tuple[str, int, Optional[str], Optional[str]]:
     """
     Find and replace text using a chain of increasingly fuzzy matching strategies.
 
@@ -88,14 +57,11 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         old_string: The text to find
         new_string: The replacement text
         replace_all: If True, replace all occurrences; if False, require uniqueness
-        timeout: Max seconds to spend on slow strategies (block_anchor, context_aware).
-                 Default 5. Strategies 1-7 have no per-strategy limit.
 
     Returns:
         Tuple of (new_content, match_count, strategy_name, error_message)
         - If successful: (modified_content, number_of_replacements, strategy_used, None)
         - If failed: (original_content, 0, None, error_description)
-        - If timeout: (content_with_replacements, count, "re_fallback", None)
     """
     if not old_string:
         return content, 0, None, "old_string cannot be empty"
@@ -117,21 +83,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     ]
 
     for strategy_name, strategy_fn in strategies:
-        # Time-based timeout for slow strategies (O(n²) SequenceMatcher)
-        _timed_out = False
-        if strategy_name in _SLOW_STRATEGY_NAMES:
-            _strategy_start = time.monotonic()
-
         matches = strategy_fn(content, old_string)
-
-        if strategy_name in _SLOW_STRATEGY_NAMES:
-            elapsed = time.monotonic() - _strategy_start
-            if elapsed > timeout:
-                _timed_out = True
-
-        if _timed_out:
-            # Give up on remaining slow strategies and use fallback
-            return _replacement_fallback(content, old_string, new_string, replace_all)
 
         if matches:
             # Found matches with this strategy
@@ -553,8 +505,7 @@ def _calculate_line_positions(content_lines: List[str], start_line: int,
     """
     start_pos = sum(len(line) + 1 for line in content_lines[:start_line])
     end_pos = sum(len(line) + 1 for line in content_lines[:end_line]) - 1
-    if end_pos >= content_length:
-        end_pos = content_length
+    end_pos = min(content_length, end_pos)
     return start_pos, end_pos
 
 

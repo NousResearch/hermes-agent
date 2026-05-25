@@ -93,7 +93,7 @@ FEISHU_WEBHOOK_PORT=8765         # default: 8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # default: /feishu/webhook
 ```
 
-When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console.
+When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. The challenge response is gated on `FEISHU_VERIFICATION_TOKEN` when set — challenge requests with a missing or mismatched token are rejected so an unauthenticated remote cannot prove endpoint control by echoing attacker-controlled challenge data.
 
 ## Step 3: Configure Hermes
 

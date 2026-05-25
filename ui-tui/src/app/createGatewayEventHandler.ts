@@ -1,6 +1,6 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { SETUP_REQUIRED_TITLE, buildSetupRequiredSections } from '../content/setup.js'
+import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -13,7 +13,7 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
-import type { Msg, SubagentProgress } from '../types.js'
+import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -53,6 +53,26 @@ const pushUnique =
 const pushThinking = pushUnique(6)
 const pushNote = pushUnique(6)
 const pushTool = pushUnique(8)
+
+const KNOWN_SUBAGENT_STATUSES = new Set<SubagentStatus>([
+  'completed',
+  'error',
+  'failed',
+  'interrupted',
+  'queued',
+  'running',
+  'timeout'
+])
+
+const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): SubagentStatus => {
+  if (typeof status !== 'string') {
+    return fallback
+  }
+
+  const normalized = status.toLowerCase() as SubagentStatus
+
+  return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
+}
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
@@ -180,8 +200,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   // Terminal statuses are never overwritten by late-arriving live events —
   // otherwise a stale `subagent.start` / `spawn_requested` can clobber a
-  // `failed` or `interrupted` terminal state (Copilot review #14045).
-  const isTerminalStatus = (s: SubagentProgress['status']) => s === 'completed' || s === 'failed' || s === 'interrupted'
+  // terminal state from complete (failed/interrupted/timeout/error).
+  const isTerminalStatus = (s: SubagentProgress['status']) =>
+    s === 'completed' || s === 'error' || s === 'failed' || s === 'interrupted' || s === 'timeout'
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
@@ -292,6 +313,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'thinking.delta': {
+        if (!getUiState().busy) {
+          return
+        }
+
         const text = ev.payload?.text
 
         if (text !== undefined) {
@@ -317,15 +342,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        if (p.kind === 'goal') {
+          sys(p.text)
+
+          const brief = p.text.startsWith('✓')
+            ? '✓ goal complete'
+            : p.text.startsWith('↻')
+              ? '↻ goal continuing'
+              : p.text.startsWith('⏸')
+                ? '⏸ goal paused'
+                : 'ready'
+
+          setStatus(brief)
+          restoreStatusAfter(6000)
+
+          return
+        }
+
         setStatus(p.text)
 
         if (p.kind === 'compressing') {
           sys(p.text)
-          return
-        }
 
-        if (p.kind === 'goal') {
-          sys(p.text)
           return
         }
 
@@ -461,13 +499,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'reasoning.delta':
         if (ev.payload?.text) {
-          turnController.recordReasoningDelta(ev.payload.text)
+          turnController.recordReasoningDelta(ev.payload.text, Boolean(ev.payload.verbose))
         }
 
         return
 
       case 'reasoning.available':
-        turnController.recordReasoningAvailable(String(ev.payload?.text ?? ''))
+        turnController.recordReasoningAvailable(String(ev.payload?.text ?? ''), Boolean(ev.payload?.verbose))
 
         return
 
@@ -487,12 +525,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'tool.start':
         turnController.recordTodos(ev.payload.todos)
-        turnController.recordToolStart(ev.payload.tool_id, ev.payload.name ?? 'tool', ev.payload.context ?? '')
+        turnController.recordToolStart(
+          ev.payload.tool_id,
+          ev.payload.name ?? 'tool',
+          ev.payload.context ?? '',
+          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined
+        )
 
         return
       case 'tool.complete': {
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
+
+        const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
 
         if (inlineDiffText) {
           turnController.recordInlineDiffToolComplete(
@@ -500,7 +545,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.tool_id,
             ev.payload.name,
             ev.payload.error,
-            ev.payload.duration_s
+            ev.payload.duration_s,
+            resultText
           )
         } else {
           turnController.recordToolComplete(
@@ -509,7 +555,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.error,
             ev.payload.summary,
             ev.payload.duration_s,
-            ev.payload.todos
+            ev.payload.todos,
+            resultText
           )
         }
 
@@ -551,7 +598,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
 
         return
-
       case 'review.summary': {
         // Self-improvement background review emitted a persistent summary
         // of what it saved to memory/skills. Surface it as a system line
@@ -559,6 +605,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // flash. Python-side already formats it as "💾 Self-improvement
         // review: …".
         const text = String(ev.payload?.text ?? '').trim()
+
         if (text) {
           sys(text)
         }
@@ -648,7 +695,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload,
           c => ({
             durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
-            status: ev.payload.status ?? 'completed',
+            status: normalizeSubagentStatus(ev.payload.status, 'completed'),
             summary: ev.payload.summary || ev.payload.text || c.summary
           }),
           { createIfMissing: false }

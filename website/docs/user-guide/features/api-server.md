@@ -10,6 +10,10 @@ The API server exposes hermes-agent as an OpenAI-compatible HTTP endpoint. Any f
 
 Your agent handles requests with its full toolset (terminal, file operations, web search, memory, skills) and returns the final response. When streaming, tool progress indicators appear inline so frontends can show what the agent is doing.
 
+:::tip One backend covers models + tools
+Hermes itself needs a configured provider and tool backends for the API server to be useful. A [Nous Portal](/docs/user-guide/features/tool-gateway) subscription handles both — 300+ models plus web/image/TTS/browser via the Tool Gateway. Run `hermes setup --portal` once before starting the API server and frontends like Open WebUI or LobeChat get a fully tool-equipped backend.
+:::
+
 ## Quick Start
 
 ### 1. Enable the API server
@@ -398,14 +402,19 @@ To give multiple users their own isolated Hermes instance (separate config, memo
 hermes profile create alice
 hermes profile create bob
 
-# Configure each profile's API server on a different port
-hermes -p alice config set API_SERVER_ENABLED true
-hermes -p alice config set API_SERVER_PORT 8643
-hermes -p alice config set API_SERVER_KEY alice-secret
+# Configure each profile's API server on a different port. API_SERVER_* are env
+# vars (not config.yaml keys), so write them to each profile's .env:
+cat >> ~/.hermes/profiles/alice/.env <<EOF
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8643
+API_SERVER_KEY=alice-secret
+EOF
 
-hermes -p bob config set API_SERVER_ENABLED true
-hermes -p bob config set API_SERVER_PORT 8644
-hermes -p bob config set API_SERVER_KEY bob-secret
+cat >> ~/.hermes/profiles/bob/.env <<EOF
+API_SERVER_ENABLED=true
+API_SERVER_PORT=8644
+API_SERVER_KEY=bob-secret
+EOF
 
 # Start each profile's gateway
 hermes -p alice gateway &

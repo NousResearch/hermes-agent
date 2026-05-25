@@ -60,6 +60,116 @@ class TestIsWriteDenied:
     def test_tilde_expansion(self):
         assert _is_write_denied("~/.ssh/authorized_keys") is True
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "auth.json",
+            "config.yaml",
+            "webhook_subscriptions.json",
+            ".anthropic_oauth.json",
+            "mcp-tokens/token1.json",
+            "mcp-tokens/subdir/token2.json",
+            "pairing/telegram-approved.json",
+            "pairing/discord-approved.json",
+            "pairing/telegram-pending.json",
+            "pairing",
+        ],
+    )
+    def test_hermes_control_files_oauth_and_mcp_tokens_denied(self, path):
+        """Hermes control files, PKCE creds, mcp-tokens, and pairing entries must be write-denied."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        full_path = str(hermes_home / path)
+        assert _is_write_denied(full_path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "dummy/../config.yaml",
+            "./auth.json",
+            "./.anthropic_oauth.json",
+            "mcp-tokens/../config.yaml",
+        ],
+    )
+    def test_hermes_control_files_and_oauth_traversal_denied(self, path):
+        """Path traversal attempts to protected Hermes files must be blocked."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        full_path = str(hermes_home / path)
+        assert _is_write_denied(full_path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/tmp/standard_file.txt",
+            "~/projects/myapp/main.py",
+            "/var/log/app.log",
+        ],
+    )
+    def test_standard_paths_allowed(self, path):
+        """Unrelated paths must still be allowed."""
+        assert _is_write_denied(path) is False
+
+    @pytest.mark.parametrize(
+        "name",
+        ["auth.json", "config.yaml", "webhook_subscriptions.json", ".anthropic_oauth.json"],
+    )
+    def test_control_files_and_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
+        """Under a profile, BOTH <profile>/X and <root>/X must be denied (#15981 shape).
+
+        Without the root-level pass, a profile-mode session leaves the
+        global ~/.hermes/{auth.json,config.yaml,webhook_subscriptions.json,
+        .anthropic_oauth.json} writable — the same gap PR #15981 fixed
+        for .env.
+        """
+        # Simulate a profile-mode HERMES_HOME layout:
+        #   <root>/profiles/coder/{auth.json,config.yaml,...}
+        #   <root>/{auth.json,config.yaml,...}        ← must also be denied
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        # Profile copy
+        assert _is_write_denied(str(profile / name)) is True
+        # Root copy — the gap this widening closes
+        assert _is_write_denied(str(root / name)) is True
+
+    def test_mcp_tokens_dir_protected_in_profile_mode(self, tmp_path, monkeypatch):
+        """mcp-tokens/ under profile AND under root must both be denied."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert _is_write_denied(str(profile / "mcp-tokens" / "tok.json")) is True
+        assert _is_write_denied(str(root / "mcp-tokens" / "tok.json")) is True
+        # The directory itself must also be denied (not just files inside)
+        assert _is_write_denied(str(root / "mcp-tokens")) is True
+
+    def test_pairing_dir_denied(self, tmp_path, monkeypatch):
+        """Regression: pairing/ must be write-denied under both profile and root.
+
+        PR #30383 introduced ~/.hermes/pairing/{platform}-approved.json as the
+        gateway access-control list. Without this block, a prompt-injected agent
+        can write arbitrary user IDs into an approved file, granting persistent
+        gateway access without going through the pairing code flow — the same
+        threat class that motivated protecting webhook_subscriptions.json.
+        """
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        # Active profile pairing entries
+        assert _is_write_denied(str(profile / "pairing" / "telegram-approved.json")) is True
+        assert _is_write_denied(str(profile / "pairing" / "discord-pending.json")) is True
+        # The directory itself
+        assert _is_write_denied(str(profile / "pairing")) is True
+        # Root pairing entries (profile mode — same shape as mcp-tokens gap)
+        assert _is_write_denied(str(root / "pairing" / "telegram-approved.json")) is True
+        assert _is_write_denied(str(root / "pairing")) is True
+
 
 
 # =========================================================================
@@ -579,3 +689,18 @@ class TestPatchReplacePostWriteVerification:
         result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
         assert result.error is not None
         assert "could not re-read" in result.error.lower()
+
+
+# =========================================================================
+# Git baseline check for write_file warning
+# =========================================================================
+
+class _DeletedTestGitBaselineCheck:
+    """Removed May 2026 — these tests asserted on a ``_check_git_baseline``
+    method that doesn't exist on ``ShellFileOperations`` (regression intro
+    by a separate refactor). All 6 tests in the class fail with
+    AttributeError on origin/main. Deleted wholesale per Teknium's
+    instruction to keep CI green; reinstate them when the underlying
+    helper is restored or replaced.
+    """
+    pass

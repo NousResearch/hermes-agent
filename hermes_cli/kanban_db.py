@@ -2671,8 +2671,17 @@ def _append_event(
         try:
             _fifo_path = os.path.expanduser("~/.hermes/tui_kanban.fifo")
             if os.path.exists(_fifo_path):
-                with open(_fifo_path, "w", encoding="utf-8") as _fifo:
+                # O_NONBLOCK: open(2) on a FIFO blocks until a reader
+                # connects; in CI (and any headless context) there is no
+                # reader, so the write op deadlocks the caller.  Non-blocking
+                # open + a zero-second select/poll lets us bail gracefully.
+                _fd = os.open(_fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+                try:
+                    _fifo = os.fdopen(_fd, "w", encoding="utf-8")
                     _fifo.write(json.dumps({"task_id": task_id, "kind": kind}) + "\n")
+                    _fifo.close()
+                except Exception:
+                    os.close(_fd)
         except Exception:
             pass  # Non-fatal — don't break the event write
 

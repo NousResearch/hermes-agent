@@ -1591,6 +1591,11 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "boolean",
                     "default": False,
                     "description": "If true, overlay numbered [N] labels on interactive elements. Each [N] maps to ref @eN for subsequent browser commands. Useful for QA and spatial reasoning about page layout."
+                },
+                "fullPage": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, capture the full scrollable page instead of just the viewport. Useful for capturing entire pages that require scrolling."
                 }
             },
             "required": ["question"]
@@ -3045,7 +3050,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None, fullPage: bool = False) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
 
@@ -3061,13 +3066,14 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         question: What you want to know about the page visually
         annotate: If True, overlay numbered [N] labels on interactive elements
         task_id: Task identifier for session isolation
+        fullPage: If True, capture the full scrollable page instead of just the viewport
 
     Returns:
         JSON string with vision analysis results and screenshot_path
     """
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
-        return camofox_vision(question, annotate, task_id)
+        return camofox_vision(question, annotate, task_id, fullPage=fullPage)
 
     import base64
     import uuid as uuid_mod

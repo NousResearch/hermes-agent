@@ -587,7 +587,7 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
 
 
 def camofox_vision(question: str, annotate: bool = False,
-                   task_id: Optional[str] = None) -> str:
+                   task_id: Optional[str] = None, fullPage: bool = False) -> str:
     """Take a screenshot and analyze it with vision AI via Camofox."""
     try:
         session = _get_session(task_id)
@@ -595,9 +595,12 @@ def camofox_vision(question: str, annotate: bool = False,
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
         # Get screenshot as binary PNG
+        params = {"userId": session["user_id"]}
+        if fullPage:
+            params["fullPage"] = "true"
         resp = _get_raw(
             f"/tabs/{session['tab_id']}/screenshot",
-            params={"userId": session["user_id"]},
+            params=params,
         )
 
         # Save screenshot to cache

@@ -23,9 +23,14 @@ class _CapturingAgent:
     """Fake agent that records init kwargs for assertions."""
 
     last_init = None
+    init_history = []
+    instances = []
 
     def __init__(self, *args, **kwargs):
-        type(self).last_init = dict(kwargs)
+        snapshot = dict(kwargs)
+        type(self).last_init = snapshot
+        type(self).init_history.append(snapshot)
+        type(self).instances.append(self)
         self.tools = []
 
     def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
@@ -124,6 +129,85 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     assert _CapturingAgent.last_init["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert _CapturingAgent.last_init["api_key"] == "***"
     assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_run_agent_reloads_provider_routing_and_busts_cached_agent(monkeypatch):
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _CapturingAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    route_a = {"only": ["alpha-provider"], "order": ["alpha-provider"]}
+    route_b = {"only": ["beta-provider"], "order": ["beta-provider"]}
+    route_state = {"current": route_a}
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"provider_routing": dict(route_state["current"])},
+    )
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_reload_runtime_env_preserving_config_authority", lambda: None)
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "***",
+        },
+    )
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+
+    _CapturingAgent.last_init = None
+    _CapturingAgent.init_history = []
+    _CapturingAgent.instances = []
+
+    runner = _make_runner()
+    runner._load_provider_routing = lambda: dict(route_state["current"])
+    runner._load_service_tier = lambda: None
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="c1",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = "agent:main:telegram:dm:c1"
+
+    first = await runner._run_agent(
+        message="first",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="session-1",
+        session_key=session_key,
+    )
+    first_cached_agent = runner._agent_cache[session_key][0]
+
+    route_state["current"] = route_b
+
+    second = await runner._run_agent(
+        message="second",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="session-1",
+        session_key=session_key,
+    )
+    second_cached_agent = runner._agent_cache[session_key][0]
+
+    assert first["final_response"] == "ok"
+    assert second["final_response"] == "ok"
+    assert len(_CapturingAgent.init_history) == 2
+    assert _CapturingAgent.init_history[0]["providers_allowed"] == ["alpha-provider"]
+    assert _CapturingAgent.init_history[1]["providers_allowed"] == ["beta-provider"]
+    assert first_cached_agent is not second_cached_agent
 
 
 @pytest.mark.asyncio

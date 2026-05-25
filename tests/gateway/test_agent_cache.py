@@ -201,6 +201,35 @@ class TestAgentConfigSignature:
 
         assert sig_before != sig_after
 
+    def test_provider_routing_change_busts_cache(self):
+        """Editing provider_routing in config must rebuild the cached agent."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "openrouter"}
+        cfg_before = {
+            "provider_routing": {
+                "only": ["alpha-provider"],
+                "order": ["alpha-provider"],
+            }
+        }
+        cfg_after = {
+            "provider_routing": {
+                "only": ["beta-provider"],
+                "order": ["beta-provider"],
+            }
+        }
+
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, ["telegram"], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_before),
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, ["telegram"], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_after),
+        )
+
+        assert sig_before != sig_after
+
 
 class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
@@ -239,6 +268,30 @@ class TestExtractCacheBustingConfig:
         assert out["compression.threshold"] == 0.6
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
+
+    def test_reads_provider_routing_subkeys(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {
+                "provider_routing": {
+                    "only": ["alpha-provider"],
+                    "ignore": ["beta-provider"],
+                    "order": ["alpha-provider", "gamma-provider"],
+                    "sort": "latency",
+                    "require_parameters": True,
+                    "data_collection": "deny",
+                    "extra": "ignored",
+                }
+            }
+        )
+
+        assert out["provider_routing.only"] == ["alpha-provider"]
+        assert out["provider_routing.ignore"] == ["beta-provider"]
+        assert out["provider_routing.order"] == ["alpha-provider", "gamma-provider"]
+        assert out["provider_routing.sort"] == "latency"
+        assert out["provider_routing.require_parameters"] is True
+        assert out["provider_routing.data_collection"] == "deny"
 
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""

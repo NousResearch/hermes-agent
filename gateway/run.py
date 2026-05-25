@@ -11596,7 +11596,7 @@ class GatewayRunner:
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
-            pr = self._provider_routing
+            pr = self._refresh_provider_routing()
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
@@ -14880,6 +14880,14 @@ class GatewayRunner:
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
     )
+    _PROVIDER_ROUTING_CACHE_KEYS: tuple = (
+        "only",
+        "ignore",
+        "order",
+        "sort",
+        "require_parameters",
+        "data_collection",
+    )
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
@@ -14903,6 +14911,13 @@ class GatewayRunner:
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
+        provider_routing = cfg.get("provider_routing")
+        if isinstance(provider_routing, dict):
+            for key in cls._PROVIDER_ROUTING_CACHE_KEYS:
+                out[f"provider_routing.{key}"] = provider_routing.get(key)
+        else:
+            for key in cls._PROVIDER_ROUTING_CACHE_KEYS:
+                out[f"provider_routing.{key}"] = None
         try:
             from tools.registry import registry
 
@@ -14910,6 +14925,14 @@ class GatewayRunner:
         except Exception:
             out["tools.registry_generation"] = None
         return out
+
+    def _refresh_provider_routing(self) -> dict:
+        """Reload provider routing from config.yaml for the next agent turn."""
+        provider_routing = self._load_provider_routing()
+        if not isinstance(provider_routing, dict):
+            provider_routing = {}
+        self._provider_routing = provider_routing
+        return provider_routing
 
     @staticmethod
     def _agent_config_signature(
@@ -16370,7 +16393,7 @@ class GatewayRunner:
                     "tools": [],
                 }
 
-            pr = self._provider_routing
+            pr = self._refresh_provider_routing()
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
                 session_key=session_key,

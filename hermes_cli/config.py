@@ -1059,6 +1059,11 @@ DEFAULT_CONFIG = {
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # TUI scroll buffer: rows pre-rendered above/below the visible
+        # viewport.  Higher values make scrolling up through history feel
+        # instant.  40 is a good default; 60-80 for 4K/ultrawide.  0
+        # uses the compiled-in hardcoded fallback (20).
+        "tui_overscan": 40,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,

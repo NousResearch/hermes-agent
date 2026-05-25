@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
+import { DEFAULT_OVERSCAN } from '../config/limits.js'
 import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -17,6 +18,7 @@ const buildUiState = (): UiState => ({
   info: null,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,
+  overscan: DEFAULT_OVERSCAN,
   sections: {},
   showCost: false,
   showReasoning: false,

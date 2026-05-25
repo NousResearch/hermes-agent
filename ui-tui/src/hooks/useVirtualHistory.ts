@@ -12,10 +12,8 @@ import {
 
 const ESTIMATE = 4
 // Overscan was 40 (= viewport) which is way more than needed when heights
-// are well-estimated.  Cutting in half saves ~20 mounted items per scroll
-// edge → smaller fiber tree → less buffer-compose work per frame.  HN/CC
-// dev (https://news.ycombinator.com/item?id=46699072) confirmed GC pressure
-// from large JSX trees was their main perf issue post-rewrite.
+// are well-estimated. Hardcoded fallback; runtime default comes from
+// display.tui_overscan (config/limits.ts DEFAULT_OVERSCAN=40).
 const OVERSCAN = 20
 // Hard cap on mounted items.  Was 260; profiling showed ~23k live Yoga
 // nodes during sustained PageUp catch-up (renderer p99=106ms).  The

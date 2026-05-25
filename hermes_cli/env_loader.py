@@ -21,7 +21,7 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
 
-# Map of env-var name → source label ("bitwarden", etc.) for credentials
+# Map of env-var name → source label ("bitwarden", "onepassword", etc.) for credentials
 # that were injected by an external secret source during load_hermes_dotenv().
 # Used by setup / `hermes model` flows to label detected credentials so
 # users understand WHERE a key came from when their .env doesn't contain it
@@ -42,12 +42,13 @@ _APPLIED_HOMES: set[str] = set()
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
 
-    Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager
-    during the current process's ``load_hermes_dotenv()`` call.  Returns
-    ``None`` for keys that came from ``.env``, the shell environment, or
-    aren't tracked.  The returned label is metadata only: credential-pool
-    persistence may store it to explain the origin of a borrowed secret, but
-    must never treat it as authorization to persist the raw value.
+    Returns labels such as ``"bitwarden"`` or ``"onepassword"`` for keys
+    pulled from external secret sources during the current process's
+    ``load_hermes_dotenv()`` call.  Returns ``None`` for keys that came from
+    ``.env``, the shell environment, or aren't tracked.  The returned label is
+    metadata only: credential-pool persistence may store it to explain the
+    origin of a borrowed secret, but must never treat it as authorization to
+    persist the raw value.
     """
     return _SECRET_SOURCES.get(env_var)
 
@@ -78,6 +79,8 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
+    if source == "onepassword":
+        return " (from 1Password)"
     # Generic fallback — future-proofing for additional secret sources
     # (e.g. 1Password, HashiCorp Vault) without having to update every
     # call site.
@@ -248,7 +251,7 @@ def load_hermes_dotenv(
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from external sources into env.
 
     Runs AFTER dotenv loads so .env values are visible (we use them to
     locate the access token) but BEFORE the rest of Hermes reads
@@ -274,6 +277,33 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
 
+    _apply_bitwarden_secret_source(cfg or {}, home_path)
+    _apply_onepassword_secret_source(cfg or {}, home_path)
+
+
+def _record_secret_source_result(result, *, source: str, display_name: str) -> None:  # noqa: ANN001
+    if result.applied:
+        # Re-run the ASCII sanitization pass: external values are user-supplied
+        # and might have the same copy-paste corruption as a manually edited
+        # .env (see #6843).
+        _sanitize_loaded_credentials()
+        # Remember where these came from so setup / `hermes model` flows can
+        # label detected credentials with their source.
+        for name in result.applied:
+            _SECRET_SOURCES[name] = source
+        print(
+            f"  {display_name}: applied {len(result.applied)} "
+            f"secret{'s' if len(result.applied) != 1 else ''} "
+            f"({', '.join(sorted(result.applied))})",
+            file=sys.stderr,
+        )
+    if result.error:
+        print(f"  {display_name}: {result.error}", file=sys.stderr)
+    for warn in result.warnings:
+        print(f"  {display_name}: {warn}", file=sys.stderr)
+
+
+def _apply_bitwarden_secret_source(cfg: dict, home_path: Path) -> None:
     bw_cfg = (cfg or {}).get("bitwarden") or {}
     if not bw_cfg.get("enabled"):
         return
@@ -293,34 +323,35 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         server_url=str(bw_cfg.get("server_url", "") or "").strip(),
         home_path=home_path,
     )
+    _record_secret_source_result(
+        result, source="bitwarden", display_name="Bitwarden Secrets Manager"
+    )
 
-    if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
-        _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
-        for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
-        print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
-            f"secret{'s' if len(result.applied) != 1 else ''} "
-            f"({', '.join(sorted(result.applied))})",
-            file=sys.stderr,
-        )
-    if result.error:
-        print(
-            f"  Bitwarden Secrets Manager: {result.error}",
-            file=sys.stderr,
-        )
-    for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+
+def _apply_onepassword_secret_source(cfg: dict, home_path: Path) -> None:
+    op_cfg = (cfg or {}).get("onepassword") or {}
+    if not op_cfg.get("enabled"):
+        return
+
+    try:
+        from agent.secret_sources.onepassword import apply_onepassword_secrets
+    except ImportError:
+        return
+
+    result = apply_onepassword_secrets(
+        enabled=True,
+        references=op_cfg.get("env") or op_cfg.get("references") or {},
+        override_existing=bool(op_cfg.get("override_existing", True)),
+        cache_ttl_seconds=float(op_cfg.get("cache_ttl_seconds", 300)),
+        account=str(op_cfg.get("account", "") or "").strip(),
+        service_account_token_env=op_cfg.get(
+            "service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN"
+        ),
+        home_path=home_path,
+    )
+    _record_secret_source_result(
+        result, source="onepassword", display_name="1Password"
+    )
 
 
 def _load_secrets_config(home_path: Path) -> dict:

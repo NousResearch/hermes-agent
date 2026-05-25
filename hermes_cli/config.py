@@ -2259,6 +2259,26 @@ DEFAULT_CONFIG = {
             # `hermes secrets bitwarden setup`.
             "server_url": "",
         },
+        "onepassword": {
+            # Master switch. When false, the op CLI is never contacted.
+            "enabled": False,
+            # Map env var names to 1Password secret references, e.g.
+            # OPENAI_API_KEY: op://Private/OpenAI/credential
+            "env": {},
+            # Optional 1Password account shorthand/email passed to `op read
+            # --account`. Empty means use the CLI's default account.
+            "account": "",
+            # Name of the env var that holds an optional 1Password service
+            # account token. This is metadata only; the op CLI reads it from
+            # the environment and Hermes refuses to overwrite it from a ref.
+            "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
+            # Seconds to cache fetched refs in-process and on disk under
+            # ~/.hermes/cache/op_cache.json. 0 disables both cache layers.
+            "cache_ttl_seconds": 300,
+            # When True, 1Password values overwrite existing env vars. Default
+            # True because the point is centralized rotation.
+            "override_existing": True,
+        },
     },
 
     # Paste collapse thresholds (TUI + CLI).

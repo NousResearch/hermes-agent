@@ -10,4 +10,7 @@ Currently shipped:
   - ``bitwarden`` — Bitwarden Secrets Manager (`bws` CLI).  See
     ``agent.secret_sources.bitwarden`` for the integration and
     ``hermes_cli.secrets_cli`` for the user-facing setup wizard.
+  - ``onepassword`` — 1Password CLI (`op`) secret references.  See
+    ``agent.secret_sources.onepassword`` for the integration and
+    ``hermes_cli.onepassword_secrets_cli`` for the user-facing commands.
 """

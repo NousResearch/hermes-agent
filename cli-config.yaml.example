@@ -142,6 +142,26 @@ model:
 #   response_cache_ttl: 300      # Cache TTL in seconds, 1-86400 (default: 300)
 
 # =============================================================================
+# External Secret Sources
+# =============================================================================
+# Optional: resolve credentials from external secret managers at startup instead
+# of storing every provider key directly in ~/.hermes/.env.
+#
+# 1Password uses the official `op` CLI. Install/sign in separately, or provide
+# OP_SERVICE_ACCOUNT_TOKEN for non-interactive service-account usage.
+#
+# secrets:
+#   onepassword:
+#     enabled: false
+#     account: ""                         # Optional `op read --account` value
+#     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
+#     cache_ttl_seconds: 300               # 0 disables in-process/disk cache
+#     override_existing: true              # 1Password refs override .env values
+#     env:
+#       # OPENAI_API_KEY: op://Private/OpenAI/credential
+#       # ANTHROPIC_API_KEY: op://Private/Anthropic/credential
+#
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

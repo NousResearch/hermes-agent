@@ -5,12 +5,21 @@ Feishu adapter: credentials, connection mode, DM policy, and group policy.
 """
 
 import os
+import tempfile
 from unittest.mock import patch
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+class _FeishuSetupResult(dict):
+    """Dict of saved env keys plus ``removed_keys`` from mocked ``remove_env_value``."""
+
+    def __init__(self, mapping, removed_keys):
+        super().__init__(mapping)
+        self.removed_keys = removed_keys
+
 
 def _run_setup_feishu(
     *,
@@ -22,9 +31,10 @@ def _run_setup_feishu(
 ):
     """Run _setup_feishu() with mocked I/O and return the env vars that were saved.
 
-    Returns a dict of {env_var_name: value} for all save_env_value calls.
+    Returns a :class:`_FeishuSetupResult`: mapping of ``save_env_value`` calls and
+    ``.removed_keys`` listing arguments passed to ``remove_env_value``.
     """
-    existing_env = existing_env or {}
+    existing_env = dict(existing_env or {})
     prompt_yes_no_responses = list(prompt_yes_no_responses or [True])
     # QR path: method(0), dm(0), group(0) — 3 choices (no connection mode)
     # Manual path: method(1), domain(0), connection(0), dm(0), group(0) — 5 choices
@@ -32,6 +42,7 @@ def _run_setup_feishu(
     prompt_responses = list(prompt_responses or [""])
 
     saved_env = {}
+    removed_keys = []
 
     def mock_save(name, value):
         saved_env[name] = value
@@ -39,8 +50,16 @@ def _run_setup_feishu(
     def mock_get(name):
         return existing_env.get(name, "")
 
+    def mock_remove(key):
+        removed_keys.append(key)
+        if key in existing_env:
+            del existing_env[key]
+            return True
+        return False
+
     with patch("hermes_cli.gateway.save_env_value", side_effect=mock_save), \
          patch("hermes_cli.gateway.get_env_value", side_effect=mock_get), \
+         patch("hermes_cli.gateway.remove_env_value", side_effect=mock_remove), \
          patch("hermes_cli.gateway.prompt_yes_no", side_effect=prompt_yes_no_responses), \
          patch("hermes_cli.gateway.prompt_choice", side_effect=prompt_choice_responses), \
          patch("hermes_cli.gateway.prompt", side_effect=prompt_responses), \
@@ -54,7 +73,7 @@ def _run_setup_feishu(
         from hermes_cli.gateway import _setup_feishu
         _setup_feishu()
 
-    return saved_env
+    return _FeishuSetupResult(saved_env, removed_keys)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +234,55 @@ class TestSetupFeishuGroupPolicy:
 
 
 # ---------------------------------------------------------------------------
+# Home channel (optional clear)
+# ---------------------------------------------------------------------------
+
+class TestSetupFeishuHomeChannel:
+    """Blank home-channel answer must clear FEISHU_HOME_CHANNEL (Issue #12423)."""
+
+    def test_blank_removes_existing_home_channel(self):
+        env = _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=[0, 0, 0],
+            prompt_responses=[""],
+            existing_env={"FEISHU_HOME_CHANNEL": "chat_old"},
+        )
+        assert "FEISHU_HOME_CHANNEL" in env.removed_keys
+        assert "FEISHU_HOME_CHANNEL" not in env
+
+    def test_blank_without_prior_home_still_attempts_remove(self):
+        env = _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=[0, 0, 0],
+            prompt_responses=[""],
+            existing_env={},
+        )
+        assert env.removed_keys.count("FEISHU_HOME_CHANNEL") == 1
+
+    def test_nonempty_saves_home_channel(self):
+        env = _run_setup_feishu(
+            qr_result={
+                "app_id": "cli_test", "app_secret": "s", "domain": "feishu",
+                "open_id": None, "bot_name": None, "bot_open_id": None,
+            },
+            prompt_yes_no_responses=[True],
+            prompt_choice_responses=[0, 0, 0],
+            prompt_responses=["oc_chat123"],
+            existing_env={},
+        )
+        assert env["FEISHU_HOME_CHANNEL"] == "oc_chat123"
+        assert env.removed_keys == []
+
+
+# ---------------------------------------------------------------------------
 # Adapter integration: env vars → FeishuAdapterSettings
 # ---------------------------------------------------------------------------
 
@@ -227,7 +295,7 @@ class TestSetupFeishuAdapterIntegration:
 
     def _make_env_from_setup(self, dm_idx=0, group_idx=0):
         """Run _setup_feishu via QR path and return the env vars it would write."""
-        return _run_setup_feishu(
+        return dict(_run_setup_feishu(
             qr_result={
                 "app_id": "cli_test_app",
                 "app_secret": "test_secret_value",
@@ -239,14 +307,15 @@ class TestSetupFeishuAdapterIntegration:
             prompt_yes_no_responses=[True],
             prompt_choice_responses=[0, dm_idx, group_idx],  # method=QR, dm, group
             prompt_responses=[""],
-        )
+        ))
 
     @patch.dict(os.environ, {}, clear=True)
     def test_qr_env_produces_valid_adapter_settings(self):
         """QR setup → adapter initializes with websocket mode."""
         env = self._make_env_from_setup()
+        fake_home = tempfile.mkdtemp(prefix="hermes_feishu_adapter_")
 
-        with patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, {**env, "HERMES_HOME": fake_home}, clear=True):
             from gateway.config import PlatformConfig
             from gateway.platforms.feishu import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())
@@ -259,8 +328,9 @@ class TestSetupFeishuAdapterIntegration:
     def test_open_dm_env_sets_correct_adapter_state(self):
         """Setup with 'allow all DMs' → adapter sees allow-all flag."""
         env = self._make_env_from_setup(dm_idx=1)
+        fake_home = tempfile.mkdtemp(prefix="hermes_feishu_adapter_")
 
-        with patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, {**env, "HERMES_HOME": fake_home}, clear=True):
             from gateway.platforms.feishu import FeishuAdapter
             from gateway.config import PlatformConfig
             # Verify adapter initializes without error and env var is correct.
@@ -271,8 +341,9 @@ class TestSetupFeishuAdapterIntegration:
     def test_group_open_env_sets_adapter_group_policy(self):
         """Setup with 'open groups' → adapter group_policy is 'open'."""
         env = self._make_env_from_setup(group_idx=0)
+        fake_home = tempfile.mkdtemp(prefix="hermes_feishu_adapter_")
 
-        with patch.dict(os.environ, env, clear=True):
+        with patch.dict(os.environ, {**env, "HERMES_HOME": fake_home}, clear=True):
             from gateway.config import PlatformConfig
             from gateway.platforms.feishu import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())

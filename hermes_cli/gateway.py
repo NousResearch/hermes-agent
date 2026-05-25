@@ -29,6 +29,7 @@ from hermes_cli.config import (
     is_managed,
     managed_error,
     read_raw_config,
+    remove_env_value,
     save_env_value,
 )
 # display_hermes_home is imported lazily at call sites to avoid ImportError
@@ -4502,10 +4503,17 @@ def _setup_feishu():
 
     # ── Home channel ──
     print()
-    home_channel = prompt("  Home chat ID (optional, for cron/notifications)", password=False)
+    print_info(
+        "  Leave blank to clear a previously saved home channel "
+        "(cron / notifications)."
+    )
+    home_raw = prompt("  Home chat ID (optional, for cron/notifications)", password=False)
+    home_channel = (home_raw or "").strip()
     if home_channel:
         save_env_value("FEISHU_HOME_CHANNEL", home_channel)
         print_success(f"  Home channel set to {home_channel}")
+    elif remove_env_value("FEISHU_HOME_CHANNEL"):
+        print_success("  Home channel cleared.")
 
     print()
     print_success("🪽 Feishu / Lark configured!")

@@ -3292,19 +3292,24 @@ import re
 import asyncio
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
-# Windows the import raises; catch and leave PtyBridge=None so the rest of
-# the dashboard (sessions, jobs, metrics, config editor) still loads and the
-# /api/pty endpoint cleanly refuses with a WSL-suggested message.
+# Windows, fall back to the ConPTY bridge (pywinpty).  If neither is available
+# the /api/pty endpoint cleanly refuses with a user-facing message.
 try:
     from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
     _PTY_BRIDGE_AVAILABLE = True
 except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
-    PtyBridge = None  # type: ignore[assignment]
-    _PTY_BRIDGE_AVAILABLE = False
+    # Try Windows ConPTY bridge as fallback
+    try:
+        from hermes_cli.pty_bridge_win import PtyBridge, PtyUnavailableError  # type: ignore[assignment,no-redef]
+        _PTY_BRIDGE_AVAILABLE = PtyBridge.is_available()
+    except ImportError:
+        PtyBridge = None  # type: ignore[assignment]
+        _PTY_BRIDGE_AVAILABLE = False
 
-    class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
-        """Stub on platforms where pty_bridge can't be imported."""
-        pass
+    if not _PTY_BRIDGE_AVAILABLE:
+        class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
+            """Stub on platforms where pty_bridge can't be imported."""
+            pass
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2

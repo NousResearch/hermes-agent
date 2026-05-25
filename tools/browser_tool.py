@@ -3243,6 +3243,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         except Exception as _api_err:
             from tools.vision_tools import (
                 _is_image_size_error, _resize_image_for_vision, _RESIZE_TARGET_BYTES,
+                _is_anthropic_provider,
             )
             if (_is_image_size_error(_api_err)
                     and len(data_url) > _RESIZE_TARGET_BYTES):
@@ -3253,7 +3254,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                     _RESIZE_TARGET_BYTES / (1024 * 1024),
                 )
                 data_url = _resize_image_for_vision(
-                    screenshot_path, mime_type="image/png")
+                    screenshot_path, mime_type="image/png",
+                    clamp_dimensions=_is_anthropic_provider())
                 call_kwargs["messages"][0]["content"][1]["image_url"]["url"] = data_url
                 response = call_llm(**call_kwargs)
             else:

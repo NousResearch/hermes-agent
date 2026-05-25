@@ -504,7 +504,7 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
         return False
 
     try:
-        from tools.vision_tools import _resize_image_for_vision
+        from tools.vision_tools import _resize_image_for_vision, _is_anthropic_provider
     except Exception as exc:
         logger.warning("image-shrink recovery: vision_tools unavailable — %s", exc)
         return False
@@ -546,6 +546,7 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
                     Path(tmp.name),
                     mime_type=mime,
                     max_base64_bytes=target_bytes,
+                    clamp_dimensions=_is_anthropic_provider(),
                 )
             finally:
                 try:

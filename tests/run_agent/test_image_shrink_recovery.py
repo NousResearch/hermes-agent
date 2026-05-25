@@ -145,7 +145,7 @@ class TestShrinkImagePartsHelper:
         oversized_url = _big_png_data_url(5000)  # ~5 MB raw → ~6.7 MB b64
         shrunk = "data:image/jpeg;base64," + "A" * 1000  # small
 
-        def _fake_resize(path, mime_type=None, max_base64_bytes=None):
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, clamp_dimensions=False):
             return shrunk
 
         monkeypatch.setattr(

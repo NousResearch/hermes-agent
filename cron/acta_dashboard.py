@@ -63,11 +63,12 @@ def _is_safe_signed_acta_artifact_url(value: str | None) -> bool:
 
 
 def _is_safe_telegram_url(value: str | None) -> bool:
-    """Return whether a Telegram URL is an absolute HTTPS Telegram link."""
+    """Return whether a Telegram URL is an absolute HTTPS t.me link."""
     if not _is_safe_http_or_root_url(value, host_suffix="t.me"):
         return False
     assert value is not None
-    return urlparse(value).scheme == "https"
+    parsed = urlparse(value)
+    return parsed.scheme == "https" and parsed.hostname == "t.me" and parsed.username is None and parsed.password is None
 
 
 def _inline_script_csp(script: str) -> str:

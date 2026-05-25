@@ -246,6 +246,52 @@ def test_detail_report_can_link_back_to_telegram_thread():
     assert 'target="_blank" rel="noopener"' in html
 
 
+def test_detail_report_rejects_telegram_subdomain_followup_link():
+    html = render_acta_detail_report(
+        "# Operator Brief\n\nUseful signal.",
+        {"job_id": "job1", "job_name": "Operator Brief", "run_time": "2026-05-19T10:00:00+00:00"},
+        telegram_url="https://evil.t.me/c/3566991387/86",
+    )
+
+    assert "Ask follow-up in Telegram" not in html
+    assert "evil.t.me" not in html
+
+
+def test_renderers_reject_telegram_userinfo_spoofing(tmp_path: Path):
+    spoofed_urls = [
+        "https://evil.t.me@t.me/c/3566991387/86",
+        "https://evil.t.me:secret@t.me/c/3566991387/86",
+    ]
+    CronSituationItem = collect_situation_items.__globals__["CronSituationItem"]
+
+    for telegram_url in spoofed_urls:
+        detail_html = render_acta_detail_report(
+            "# Operator Brief\n\nUseful signal.",
+            {"job_id": "job1", "job_name": "Operator Brief", "run_time": "2026-05-19T10:00:00+00:00"},
+            telegram_url=telegram_url,
+        )
+        assert "Ask follow-up in Telegram" not in detail_html
+        assert telegram_url not in detail_html
+
+    item = CronSituationItem(
+        job_id="job1",
+        name="Operator Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=tmp_path / "2026-05-19.md",
+        latest_html=None,
+        latest_time=None,
+        status="fresh",
+        excerpt="Useful signal.",
+        telegram_url=spoofed_urls[0],
+    )
+    dashboard_html = render_dashboard([item])
+
+    assert "ASK TELEGRAM" not in dashboard_html
+    assert spoofed_urls[0] not in dashboard_html
+
+
 def test_build_dashboard_local_only(tmp_path: Path):
     (tmp_path / "cron" / "output" / "job1").mkdir(parents=True)
     (tmp_path / "cron" / "jobs.json").write_text(json.dumps([{"id": "job1", "name": "Daily"}]))
@@ -623,14 +669,30 @@ def test_today_dashboard_allows_only_safe_absolute_telegram_followup_links():
         artifact_url="https://acta.imperatr.com/r/unsafe/detail.html?exp=1&sig=unsafe",
         telegram_url="javascript:alert(1)",
     )
+    subdomain = item_cls(
+        job_id="subdomain-followup",
+        name="Subdomain Follow-up Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_07-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 7, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Telegram subdomain should not render an href.",
+        artifact_url="https://acta.imperatr.com/r/subdomain/detail.html?exp=1&sig=subdomain",
+        telegram_url="https://evil.t.me/c/3566991387/86",
+    )
 
-    html = render_dashboard([lead, invalid, unsafe], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+    html = render_dashboard([lead, invalid, unsafe, subdomain], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
 
     assert 'href="https://t.me/c/3566991387/86"' in html
     assert "Invalid Follow-up Brief" in html
     assert "Unsafe Follow-up Brief" in html
+    assert "Subdomain Follow-up Brief" in html
     assert 'href="/c/3566991387/86"' not in html
     assert "javascript:alert" not in html
+    assert "evil.t.me" not in html
 
 
 def test_disabled_today_rows_do_not_get_keyboard_open_overlay():
@@ -1001,12 +1063,27 @@ def test_jobs_subpage_suppresses_unsafe_thread_links():
         excerpt="Unsafe thread.",
         telegram_url="javascript:alert(1)",
     )
+    subdomain = item_cls(
+        job_id="subdomain",
+        name="Subdomain Thread Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_08-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 8, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Subdomain thread.",
+        telegram_url="https://evil.t.me/c/3566991387/86",
+    )
 
-    html = render_jobs_page([valid, unsafe], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+    html = render_jobs_page([valid, unsafe, subdomain], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
 
     assert 'href="https://t.me/c/3566991387/86"' in html
     assert "Unsafe Thread Brief" in html
+    assert "Subdomain Thread Brief" in html
     assert "javascript:alert" not in html
+    assert "evil.t.me" not in html
 
 
 def test_outputs_page_uses_v9_shell_and_signed_source_rows():

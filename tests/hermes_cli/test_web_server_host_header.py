@@ -83,6 +83,37 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LOCALHOST", "127.0.0.1")
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
+    def test_trusted_hosts_allowlist_accepts_proxied_hostname(self):
+        """Reverse-proxied deployments (e.g. `tailscale serve` HTTPS in
+        front of 127.0.0.1) forward the public hostname against a
+        loopback bind. The operator-supplied trusted_hosts set allows
+        those hostnames without losing the rebinding defence for any
+        hostname NOT on the allowlist."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        trusted = frozenset({"hermes.example.ts.net"})
+        # Trusted host accepted with and without port
+        assert _is_accepted_host("hermes.example.ts.net", "127.0.0.1", trusted)
+        assert _is_accepted_host("hermes.example.ts.net:443", "127.0.0.1", trusted)
+        # Case-insensitive
+        assert _is_accepted_host("HERMES.EXAMPLE.TS.NET", "127.0.0.1", trusted)
+        # Loopback aliases still work
+        assert _is_accepted_host("127.0.0.1", "127.0.0.1", trusted)
+        # Hostname NOT on the allowlist is still rejected — rebinding
+        # defence retained.
+        assert not _is_accepted_host("evil.example", "127.0.0.1", trusted)
+        assert not _is_accepted_host("hermes.example.ts.net.evil", "127.0.0.1", trusted)
+
+    def test_trusted_hosts_none_or_empty_behaves_like_before(self):
+        """Passing trusted_hosts=None or an empty frozenset must not
+        change the existing bind-derived behaviour."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        assert _is_accepted_host("127.0.0.1", "127.0.0.1", None)
+        assert _is_accepted_host("127.0.0.1", "127.0.0.1", frozenset())
+        assert not _is_accepted_host("evil.example", "127.0.0.1", None)
+        assert not _is_accepted_host("evil.example", "127.0.0.1", frozenset())
+
 
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware
@@ -146,6 +177,38 @@ class TestHostHeaderMiddleware:
         resp = client.get("/api/status")
         # Should get through to the status endpoint, not a 400
         assert resp.status_code != 400
+
+    def test_trusted_hosts_proxied_request_accepted(self):
+        """End-to-end: when app.state.trusted_hosts contains a reverse-
+        proxy hostname, requests forwarded with that Host pass through
+        even with a 127.0.0.1 bind."""
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        app.state.bound_host = "127.0.0.1"
+        app.state.trusted_hosts = frozenset({"hermes.example.ts.net"})
+        try:
+            client = TestClient(app)
+            # Proxied request — public hostname, loopback bind
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "hermes.example.ts.net"},
+            )
+            assert resp.status_code != 400 or (
+                "Invalid Host header" not in resp.json().get("detail", "")
+            )
+            # Still rejects non-allowlisted hostnames
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "evil.example"},
+            )
+            assert resp.status_code == 400
+            assert "Invalid Host header" in resp.json()["detail"]
+        finally:
+            if hasattr(app.state, "bound_host"):
+                del app.state.bound_host
+            if hasattr(app.state, "trusted_hosts"):
+                del app.state.trusted_hosts
 
 
 class TestWebSocketHostOriginGuard:

@@ -160,7 +160,11 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    trusted_hosts: Optional[frozenset] = None,
+) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
@@ -168,6 +172,11 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     - Loopback aliases when bound to loopback
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
+    - Any name in ``trusted_hosts`` (operator-supplied allowlist for
+      reverse-proxied deployments — e.g. ``tailscale serve`` HTTPS in front
+      of a 127.0.0.1 bind: the proxy forwards the original hostname which
+      would otherwise be rejected as a rebinding attempt). Compared
+      case-insensitively after port stripping.
     """
     if not host_header:
         return False
@@ -188,6 +197,12 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
     host_only = host_only.lower()
+
+    # Operator-supplied trusted hostnames take precedence over bind-derived
+    # checks. Used for reverse-proxied deployments where the proxy forwards
+    # the public hostname against a loopback bind (e.g. tailscale serve).
+    if trusted_hosts and host_only in trusted_hosts:
+        return True
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -219,9 +234,10 @@ async def host_header_middleware(request: Request, call_next):
     # Store the bound host on app.state so this middleware can read it —
     # set by start_server() at listen time.
     bound_host = getattr(app.state, "bound_host", None)
+    trusted_hosts = getattr(app.state, "trusted_hosts", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        if not _is_accepted_host(host_header, bound_host, trusted_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -4665,8 +4681,21 @@ def start_server(
     allow_public: bool = False,
     *,
     embedded_chat: bool = False,
+    trusted_hosts: Optional[List[str]] = None,
 ):
-    """Start the web UI server."""
+    """Start the web UI server.
+
+    Parameters
+    ----------
+    trusted_hosts
+        Optional list of hostnames to accept in the ``Host`` header in
+        addition to the bind-derived defaults. Use this for reverse-proxied
+        deployments — e.g. when ``tailscale serve`` terminates HTTPS at
+        ``https://hermes.tailnet.ts.net`` and forwards to ``127.0.0.1:9119``;
+        the dashboard would otherwise reject the proxied request as a DNS
+        rebinding attempt because ``hermes.tailnet.ts.net`` isn't a loopback
+        alias. Operator vouches for the proxy chain.
+    """
     import uvicorn
 
     global _DASHBOARD_EMBEDDED_CHAT_ENABLED
@@ -4691,6 +4720,31 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+
+    # Normalise the trusted-hosts allowlist (lowercase, strip ports, drop
+    # blanks). Empty allowlist → no extra acceptance beyond bind-derived
+    # rules. We accept env-only entries to make systemd unit / docker /
+    # ansible-template ergonomics easier.
+    env_trusted = os.environ.get("HERMES_DASHBOARD_TRUSTED_HOSTS", "")
+    _raw = list(trusted_hosts or []) + [s for s in env_trusted.split(",") if s.strip()]
+    _norm: list[str] = []
+    for entry in _raw:
+        entry = entry.strip()
+        if not entry:
+            continue
+        # Strip optional port for normalised comparison.
+        if entry.startswith("["):
+            close = entry.find("]")
+            entry = entry[1:close] if close != -1 else entry.strip("[]")
+        else:
+            entry = entry.rsplit(":", 1)[0] if ":" in entry else entry
+        _norm.append(entry.lower())
+    app.state.trusted_hosts = frozenset(_norm) if _norm else None
+    if _norm:
+        _log.info(
+            "Dashboard accepting Host header from reverse-proxied "
+            "trusted hosts: %s", ", ".join(sorted(set(_norm))),
+        )
 
     if open_browser:
         import webbrowser

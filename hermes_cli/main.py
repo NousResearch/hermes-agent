@@ -10692,6 +10692,7 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         embedded_chat=embedded_chat,
+        trusted_hosts=getattr(args, "trusted_hosts", None),
     )
 
 
@@ -13749,6 +13750,21 @@ Examples:
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+    )
+    dashboard_parser.add_argument(
+        "--trusted-host",
+        action="append",
+        default=[],
+        metavar="HOSTNAME",
+        dest="trusted_hosts",
+        help=(
+            "Additional hostname to accept in the Host header beyond the "
+            "bind-derived defaults. Repeatable. Use when a reverse proxy "
+            "(e.g. `tailscale serve`) forwards the public hostname against "
+            "a 127.0.0.1 bind — without this, the dashboard rejects the "
+            "request as a DNS-rebinding attempt. May also be set via "
+            "HERMES_DASHBOARD_TRUSTED_HOSTS (comma-separated)."
+        ),
     )
     dashboard_parser.add_argument(
         "--tui",

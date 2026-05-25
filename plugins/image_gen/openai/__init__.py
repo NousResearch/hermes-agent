@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from hermes_cli.config import get_env_value
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -93,6 +96,30 @@ def _load_openai_config() -> Dict[str, Any]:
         return {}
 
 
+def _resolve_timeout(cfg: Optional[Dict[str, Any]] = None) -> float:
+    """Resolve OpenAI image timeout in seconds."""
+    env_value = get_env_value("OPENAI_IMAGE_TIMEOUT") or os.environ.get("OPENAI_IMAGE_TIMEOUT")
+    if env_value:
+        try:
+            return float(env_value)
+        except ValueError:
+            logger.warning("Invalid OPENAI_IMAGE_TIMEOUT=%r; ignoring", env_value)
+
+    cfg = cfg if isinstance(cfg, dict) else _load_openai_config()
+    openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
+    for section in (openai_cfg, cfg):
+        if isinstance(section, dict):
+            value = section.get("timeout")
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                logger.warning("Invalid image_gen timeout value=%r; ignoring", value)
+
+    return 180.0
+
+
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
@@ -134,7 +161,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not get_env_value("OPENAI_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
             return False
         try:
             import openai  # noqa: F401
@@ -156,6 +183,9 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
+
+    def supports_image_edit(self) -> bool:
+        return True
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
@@ -188,7 +218,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not get_env_value("OPENAI_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
             return error_response(
                 error=(
                     "OPENAI_API_KEY not set. Run `hermes tools` → Image "
@@ -211,6 +241,8 @@ class OpenAIImageGenProvider(ImageGenProvider):
             )
 
         tier_id, meta = _resolve_model()
+        cfg = _load_openai_config()
+        timeout_seconds = _resolve_timeout(cfg)
         size = _SIZES.get(aspect, _SIZES["square"])
 
         # gpt-image-2 returns b64_json unconditionally and REJECTS
@@ -224,7 +256,15 @@ class OpenAIImageGenProvider(ImageGenProvider):
         }
 
         try:
-            client = openai.OpenAI()
+            api_key = get_env_value("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+            base_url = get_env_value("OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+            client_kwargs: Dict[str, Any] = {
+                "api_key": api_key,
+                "timeout": timeout_seconds,
+            }
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            client = openai.OpenAI(**client_kwargs)
             response = client.images.generate(**payload)
         except Exception as exc:
             logger.debug("OpenAI image generation failed", exc_info=True)
@@ -300,6 +340,152 @@ class OpenAIImageGenProvider(ImageGenProvider):
             image=image_ref,
             model=tier_id,
             prompt=prompt,
+            aspect_ratio=aspect,
+            provider="openai",
+            extra=extra,
+        )
+
+    def edit_image(
+        self,
+        image_path: str,
+        instruction: str,
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        instruction = (instruction or "").strip()
+        aspect = resolve_aspect_ratio(aspect_ratio)
+
+        if not instruction:
+            return error_response(
+                error="Instruction is required and must be a non-empty string",
+                error_type="invalid_argument",
+                provider="openai",
+                aspect_ratio=aspect,
+            )
+
+        source = Path(image_path).expanduser()
+        if not source.is_absolute() or not source.exists() or not source.is_file():
+            return error_response(
+                error=f"Source image does not exist or is not a file: {source}",
+                error_type="invalid_argument",
+                provider="openai",
+                prompt=instruction,
+                aspect_ratio=aspect,
+            )
+
+        if not get_env_value("OPENAI_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+            return error_response(
+                error=(
+                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
+                    "Generation → OpenAI to configure, or `hermes setup` "
+                    "to add the key."
+                ),
+                error_type="auth_required",
+                provider="openai",
+                prompt=instruction,
+                aspect_ratio=aspect,
+            )
+
+        try:
+            import openai
+        except ImportError:
+            return error_response(
+                error="openai Python package not installed (pip install openai)",
+                error_type="missing_dependency",
+                provider="openai",
+                prompt=instruction,
+                aspect_ratio=aspect,
+            )
+
+        tier_id, meta = _resolve_model()
+        cfg = _load_openai_config()
+        timeout_seconds = _resolve_timeout(cfg)
+        size = _SIZES.get(aspect, _SIZES["square"])
+
+        try:
+            api_key = get_env_value("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+            base_url = get_env_value("OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+            client_kwargs: Dict[str, Any] = {
+                "api_key": api_key,
+                "timeout": timeout_seconds,
+            }
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            client = openai.OpenAI(**client_kwargs)
+
+            with source.open("rb") as image_file:
+                response = client.images.edit(
+                    model=API_MODEL,
+                    image=image_file,
+                    prompt=instruction,
+                    size=size,
+                    quality=meta["quality"],
+                )
+        except Exception as exc:
+            logger.debug("OpenAI image edit failed", exc_info=True)
+            return error_response(
+                error=f"OpenAI image edit failed: {exc}",
+                error_type="api_error",
+                provider="openai",
+                model=tier_id,
+                prompt=instruction,
+                aspect_ratio=aspect,
+            )
+
+        data = getattr(response, "data", None) or []
+        if not data:
+            return error_response(
+                error="OpenAI returned no image data",
+                error_type="empty_response",
+                provider="openai",
+                model=tier_id,
+                prompt=instruction,
+                aspect_ratio=aspect,
+            )
+
+        first = data[0]
+        b64 = getattr(first, "b64_json", None)
+        url = getattr(first, "url", None)
+        revised_prompt = getattr(first, "revised_prompt", None)
+
+        if b64:
+            try:
+                saved_path = save_b64_image(b64, prefix=f"openai_edit_{tier_id}")
+            except Exception as exc:
+                return error_response(
+                    error=f"Could not save edited image to cache: {exc}",
+                    error_type="io_error",
+                    provider="openai",
+                    model=tier_id,
+                    prompt=instruction,
+                    aspect_ratio=aspect,
+                )
+            image_ref = str(saved_path)
+        elif url:
+            image_ref = url
+        else:
+            return error_response(
+                error="OpenAI edit response contained neither b64_json nor URL",
+                error_type="empty_response",
+                provider="openai",
+                model=tier_id,
+                prompt=instruction,
+                aspect_ratio=aspect,
+            )
+
+        extra: Dict[str, Any] = {
+            "size": size,
+            "quality": meta["quality"],
+            "source_image": str(source),
+            "instruction": instruction,
+        }
+        if revised_prompt:
+            extra["revised_prompt"] = revised_prompt
+
+        return success_response(
+            image=image_ref,
+            model=tier_id,
+            prompt=instruction,
             aspect_ratio=aspect,
             provider="openai",
             extra=extra,

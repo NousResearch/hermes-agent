@@ -127,6 +127,30 @@ class ImageGenProvider(abc.ABC):
             return models[0].get("id")
         return None
 
+    def supports_image_edit(self) -> bool:
+        """Whether this provider supports mother-image editing / image-to-image."""
+        return False
+
+    def edit_image(
+        self,
+        image_path: str,
+        instruction: str,
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Edit an existing image.
+
+        Providers that support image editing should override this. The default
+        implementation returns a uniform unsupported response instead of raising.
+        """
+        return error_response(
+            error=f"Provider '{self.name}' does not support image editing",
+            error_type="unsupported_operation",
+            provider=self.name,
+            prompt=instruction,
+            aspect_ratio=resolve_aspect_ratio(aspect_ratio),
+        )
+
     @abc.abstractmethod
     def generate(
         self,

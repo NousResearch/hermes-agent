@@ -38,6 +38,7 @@ def _tmp_hermes_home(tmp_path, monkeypatch):
 @pytest.fixture
 def provider(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(openai_plugin, "get_env_value", lambda key: "test-key" if key == "OPENAI_API_KEY" else None)
     return openai_plugin.OpenAIImageGenProvider()
 
 
@@ -74,10 +75,12 @@ class TestMetadata:
 class TestAvailability:
     def test_no_api_key_unavailable(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(openai_plugin, "get_env_value", lambda key: None)
         assert openai_plugin.OpenAIImageGenProvider().is_available() is False
 
     def test_api_key_set_available(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "test")
+        monkeypatch.setattr(openai_plugin, "get_env_value", lambda key: "test" if key == "OPENAI_API_KEY" else None)
         assert openai_plugin.OpenAIImageGenProvider().is_available() is True
 
 
@@ -270,3 +273,75 @@ class TestGenerate:
 
         assert result["success"] is True
         assert result["image"] == "https://example.com/img.png"
+
+
+class TestImageEdit:
+    def test_supports_image_edit(self, provider):
+        assert provider.supports_image_edit() is True
+
+    def test_edit_image_uses_get_env_value_for_auth(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(openai_plugin, "get_env_value", lambda key: "test-key" if key == "OPENAI_API_KEY" else None)
+        provider = openai_plugin.OpenAIImageGenProvider()
+        image = tmp_path / "source.png"
+        image.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.edit_image(str(image), "Edit it")
+
+        assert result["success"] is True
+
+    def test_edit_image_rejects_missing_file(self, provider, tmp_path):
+        result = provider.edit_image(
+            str(tmp_path / "missing.png"),
+            "Turn this into a half-body work portrait.",
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_edit_image_calls_openai_images_edit(self, provider, tmp_path):
+        image = tmp_path / "source.png"
+        image.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.edit_image(
+                str(image),
+                "Turn this into a half-body work photo while preserving the same face.",
+                aspect_ratio="portrait",
+            )
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-medium"
+        assert result["provider"] == "openai"
+        assert result["aspect_ratio"] == "portrait"
+        assert result["source_image"] == str(image)
+        assert result["instruction"].startswith("Turn this into")
+
+        saved = Path(result["image"])
+        assert saved.exists()
+
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-image-2"
+        assert call_kwargs["quality"] == "medium"
+        assert call_kwargs["size"] == "1024x1536"
+        assert call_kwargs["prompt"].startswith("Turn this into")
+
+    def test_edit_image_api_error_returns_error_response(self, provider, tmp_path):
+        image = tmp_path / "source.png"
+        image.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        fake_client = MagicMock()
+        fake_client.images.edit.side_effect = RuntimeError("edit boom")
+
+        with _patched_openai(fake_client):
+            result = provider.edit_image(str(image), "Edit it")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "edit boom" in result["error"]

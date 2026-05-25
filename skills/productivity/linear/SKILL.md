@@ -190,6 +190,28 @@ curl -s -X POST https://api.linear.app/graphql \
   }' | python3 -m json.tool
 ```
 
+### Create an issue with label and assignee (via Python helper)
+
+The Python helper script (`linear_api.py`) resolves label and assignee **names to UUIDs automatically**:
+
+```bash
+SCRIPT=$(dirname "$(find ~/.hermes -path '*skills/productivity/linear/scripts/linear_api.py' 2>/dev/null | head -1)")/linear_api.py
+
+# Create issue with label and assignee (names, not UUIDs)
+python3 "$SCRIPT" create-issue \
+  --title "Fix login bug" \
+  --team ENG \
+  --label "bug" \
+  --assignee "John Doe" \
+  --priority 1
+
+# Lookup hints if names are not found:
+# Label not found: Run 'linear_api.py list-labels --team ENG'
+# User not found: Run 'linear_api.py list-users'
+```
+
+Note: Label and assignee lookups are **case-insensitive** and **trim whitespace** automatically.
+
 ### Update issue status
 First get the target state UUID from the workflow states query above, then:
 ```bash

@@ -60,9 +60,12 @@ def _get_key() -> str:
     key = os.environ.get("LINEAR_API_KEY", "").strip()
     if not key:
         sys.stderr.write(
-            "ERROR: LINEAR_API_KEY not set.\n"
-            "Create one at https://linear.app/settings/api and export it,\n"
-            "or add `LINEAR_API_KEY=lin_api_...` to ~/.hermes/.env\n"
+            "ERROR: LINEAR_API_KEY not set.
+"
+            "Create one at https://linear.app/settings/api and export it,
+"
+            "or add `LINEAR_API_KEY=lin_api_...` to ~/.hermes/.env
+"
         )
         sys.exit(2)
     return key
@@ -89,15 +92,18 @@ def gql(query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
-        sys.stderr.write(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')}\n")
+        sys.stderr.write(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')}
+")
         sys.exit(1)
     except urllib.error.URLError as e:
-        sys.stderr.write(f"Network error: {e}\n")
+        sys.stderr.write(f"Network error: {e}
+")
         sys.exit(1)
 
     result = json.loads(body)
     if "errors" in result and result["errors"]:
-        sys.stderr.write(f"GraphQL errors: {json.dumps(result['errors'], indent=2)}\n")
+        sys.stderr.write(f"GraphQL errors: {json.dumps(result['errors'], indent=2)}
+")
         # Still return data if partial success; let caller decide
         if not result.get("data"):
             sys.exit(1)
@@ -124,10 +130,65 @@ def _resolve_team_id(key_or_name: str) -> str | None:
     """Map a team key (ENG) or name to UUID."""
     q = "query { teams(first: 100) { nodes { id key name } } }"
     teams = gql(q).get("teams", {}).get("nodes", [])
-    kl = key_or_name.lower()
+    kl = key_or_name.strip().lower()
     for t in teams:
         if t["key"].lower() == kl or t["name"].lower() == kl:
             return t["id"]
+    return None
+
+
+def _resolve_label_id(name: str, team_id: str | None = None) -> str | None:
+    """Map a label name to UUID.
+
+    If team_id is provided, search within that team only.
+    Otherwise search across all labels visible to the user.
+
+    Returns None if the label is not found.
+    """
+    if not name or not name.strip():
+        return None
+    name_lower = name.strip().lower()
+
+    if team_id:
+        q = """query($teamId: String!) {
+          labels(first: 100, filter: { team: { id: { eq: $teamId } } }) {
+            nodes { id name }
+          }
+        }"""
+        labels = gql(q, {"teamId": team_id}).get("labels", {}).get("nodes", [])
+    else:
+        q = """query { labels(first: 100) { nodes { id name } } }"""
+        labels = gql(q).get("labels", {}).get("nodes", [])
+
+    for label in labels:
+        label_name = label.get("name")
+        if label_name and label_name.lower() == name_lower:
+            return label["id"]
+    return None
+
+
+def _resolve_assignee_id(name: str) -> str | None:
+    """Map a user name or email to UUID.
+
+    Searches workspace members by name, displayName, or email prefix.
+    Returns None if the user is not found.
+    """
+    if not name or not name.strip():
+        return None
+    name_lower = name.strip().lower()
+
+    # Search users by name or email
+    q = """query { users(first: 100) { nodes { id name displayName email } } }"""
+    users = gql(q).get("users", {}).get("nodes", [])
+
+    for user in users:
+        user_name = user.get("name") or user.get("displayName") or ""
+        if user_name.lower() == name_lower:
+            return user["id"]
+        # Also match email prefix (e.g., "john@company.com" matches "john")
+        email = user.get("email", "")
+        if email and email.lower().startswith(name_lower + "@"):
+            return user["id"]
     return None
 
 
@@ -135,7 +196,8 @@ def cmd_list_projects(args: argparse.Namespace) -> None:
     if args.team:
         tid = _resolve_team_id(args.team)
         if not tid:
-            sys.stderr.write(f"Team not found: {args.team}\n")
+            sys.stderr.write(f"Team not found: {args.team}
+")
             sys.exit(1)
         q = """query($id: String!) {
           team(id: $id) { projects(first: 100) { nodes { id name description state } } }
@@ -151,7 +213,8 @@ def cmd_list_states(args: argparse.Namespace) -> None:
     if args.team:
         tid = _resolve_team_id(args.team)
         if not tid:
-            sys.stderr.write(f"Team not found: {args.team}\n")
+            sys.stderr.write(f"Team not found: {args.team}
+")
             sys.exit(1)
         q = """query($id: String!) {
           team(id: $id) { states(first: 100) { nodes { id name type color } } }
@@ -229,7 +292,24 @@ def cmd_create_issue(args: argparse.Namespace) -> None:
         inp["priority"] = args.priority
     if args.parent:
         inp["parentId"] = args.parent
-    # TODO: label + assignee name->id lookup (omitted for v1 brevity)
+
+    # Resolve label name to ID
+    if args.label:
+        label_id = _resolve_label_id(args.label, tid)
+        if not label_id:
+            sys.stderr.write(f"Label not found: '{args.label}'\n")
+            sys.stderr.write(f"Hint: Run 'linear_api.py list-labels --team {args.team}' to see available labels\n")
+            sys.exit(1)
+        inp["labelIds"] = [label_id]
+
+    # Resolve assignee name to ID
+    if args.assignee:
+        assignee_id = _resolve_assignee_id(args.assignee)
+        if not assignee_id:
+            sys.stderr.write(f"User not found: '{args.assignee}'\n")
+            sys.stderr.write("Hint: Run 'linear_api.py list-users' to see available users\n")
+            sys.exit(1)
+        inp["assigneeId"] = assignee_id
 
     q = """mutation($input: IssueCreateInput!) {
       issueCreate(input: $input) {
@@ -248,7 +328,8 @@ def cmd_update_issue(args: argparse.Namespace) -> None:
     if args.priority is not None:
         inp["priority"] = args.priority
     if not inp:
-        sys.stderr.write("No update fields provided.\n")
+        sys.stderr.write("No update fields provided.
+")
         sys.exit(1)
     q = """mutation($id: String!, $input: IssueUpdateInput!) {
       issueUpdate(id: $id, input: $input) {
@@ -265,14 +346,16 @@ def cmd_update_status(args: argparse.Namespace) -> None:
     }"""
     issue = gql(get_q, {"id": args.identifier}).get("issue")
     if not issue:
-        sys.stderr.write(f"Issue not found: {args.identifier}\n")
+        sys.stderr.write(f"Issue not found: {args.identifier}
+")
         sys.exit(1)
     sl = args.state.lower()
     match = next((s for s in issue["team"]["states"]["nodes"] if s["name"].lower() == sl), None)
     if not match:
         sys.stderr.write(
             f"State '{args.state}' not found. Available: "
-            f"{[s['name'] for s in issue['team']['states']['nodes']]}\n"
+            f"{[s['name'] for s in issue['team']['states']['nodes']]}
+"
         )
         sys.exit(1)
 

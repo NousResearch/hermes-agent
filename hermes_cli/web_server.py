@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -52,7 +53,7 @@ from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
@@ -79,6 +80,21 @@ WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.enviro
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
+
+
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):
+    """Catch-all: log unhandled exceptions and return consistent JSON."""
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+    _log.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "type": "server_error"},
+    )
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -430,18 +446,19 @@ def _build_schema_from_config(
     return schema
 
 
-CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
+@lru_cache(maxsize=1)
+def _get_config_schema():
+    """Cached schema derivation — wraps build + virtual field injection."""
+    schema = _build_schema_from_config(DEFAULT_CONFIG)
+    _mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+    _ordered: Dict[str, Dict[str, Any]] = {}
+    for _k, _v in schema.items():
+        _ordered[_k] = _v
+        if _k == "model":
+            _ordered["model_context_length"] = _mcl_entry
+    return _ordered
 
-# Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
-# by the normalize/denormalize cycle.  Insert model_context_length right after
-# the "model" key so it renders adjacent in the frontend.
-_mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
-_ordered_schema: Dict[str, Dict[str, Any]] = {}
-for _k, _v in CONFIG_SCHEMA.items():
-    _ordered_schema[_k] = _v
-    if _k == "model":
-        _ordered_schema["model_context_length"] = _mcl_entry
-CONFIG_SCHEMA = _ordered_schema
+CONFIG_SCHEMA = _get_config_schema()
 
 
 class ConfigUpdate(BaseModel):
@@ -773,68 +790,60 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
-@app.get("/api/sessions")
-async def get_sessions(limit: int = 20, offset: int = 0):
+def _get_db():
+    """FastAPI dependency: yield a SessionDB with automatic cleanup."""
+    from hermes_state import SessionDB
+    db = SessionDB()
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
-            total = db.session_count()
-            now = time.time()
-            for s in sessions:
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
-        finally:
-            db.close()
-    except Exception:
-        _log.exception("GET /api/sessions failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        yield db
+    finally:
+        db.close()
+
+
+@app.get("/api/sessions")
+async def get_sessions(limit: int = 20, offset: int = 0, db=Depends(_get_db)):
+    sessions = db.list_sessions_rich(limit=limit, offset=offset)
+    total = db.session_count()
+    now = time.time()
+    for s in sessions:
+        s["is_active"] = (
+            s.get("ended_at") is None
+            and (now - s.get("last_active", s.get("started_at", 0))) < 300
+        )
+    return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
+async def search_sessions(q: str = "", limit: int = 20, db=Depends(_get_db)):
     """Full-text search across session message content using FTS5."""
     if not q or not q.strip():
         return {"results": []}
-    try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            # Auto-add prefix wildcards so partial words match
-            # e.g. "nimb" → "nimb*" matches "nimby"
-            # Preserve quoted phrases and existing wildcards as-is
-            import re
-            terms = []
-            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
-                if token.startswith('"') or token.endswith("*"):
-                    terms.append(token)
-                else:
-                    terms.append(token + "*")
-            prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
-            seen: dict = {}
-            for m in matches:
-                sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
-            return {"results": list(seen.values())}
-        finally:
-            db.close()
-    except Exception:
-        _log.exception("GET /api/sessions/search failed")
-        raise HTTPException(status_code=500, detail="Search failed")
+    # Auto-add prefix wildcards so partial words match
+    # e.g. "nimb" → "nimb*" matches "nimby"
+    # Preserve quoted phrases and existing wildcards as-is
+    import re
+    terms = []
+    for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+        if token.startswith('"') or token.endswith("*"):
+            terms.append(token)
+        else:
+            terms.append(token + "*")
+    prefix_query = " ".join(terms)
+    matches = db.search_messages(query=prefix_query, limit=limit)
+    # Group by session_id — return unique sessions with their best snippet
+    seen: dict = {}
+    for m in matches:
+        sid = m["session_id"]
+        if sid not in seen:
+            seen[sid] = {
+                "session_id": sid,
+                "snippet": m.get("snippet", ""),
+                "role": m.get("role"),
+                "source": m.get("source"),
+                "model": m.get("model"),
+                "session_started": m.get("session_started"),
+            }
+    return {"results": list(seen.values())}
 
 
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1191,12 +1200,8 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.put("/api/config")
 async def update_config(body: ConfigUpdate):
-    try:
-        save_config(_denormalize_config_from_web(body.config))
-        return {"ok": True}
-    except Exception:
-        _log.exception("PUT /api/config failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    save_config(_denormalize_config_from_web(body.config))
+    return {"ok": True}
 
 
 @app.get("/api/env")
@@ -1220,26 +1225,16 @@ async def get_env_vars():
 
 @app.put("/api/env")
 async def set_env_var(body: EnvVarUpdate):
-    try:
-        save_env_value(body.key, body.value)
-        return {"ok": True, "key": body.key}
-    except Exception:
-        _log.exception("PUT /api/env failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    save_env_value(body.key, body.value)
+    return {"ok": True, "key": body.key}
 
 
 @app.delete("/api/env")
 async def remove_env_var(body: EnvVarDelete):
-    try:
-        removed = remove_env_value(body.key)
-        if not removed:
-            raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
-        return {"ok": True, "key": body.key}
-    except HTTPException:
-        raise
-    except Exception:
-        _log.exception("DELETE /api/env failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    removed = remove_env_value(body.key)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
+    return {"ok": True, "key": body.key}
 
 
 @app.post("/api/env/reveal")
@@ -2455,17 +2450,12 @@ def _session_latest_descendant(session_id: str):
         db.close()
 
 @app.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
-    try:
-        sid = db.resolve_session_id(session_id)
-        session = db.get_session(sid) if sid else None
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-        return session
-    finally:
-        db.close()
+async def get_session_detail(session_id: str, db=Depends(_get_db)):
+    sid = db.resolve_session_id(session_id)
+    session = db.get_session(sid) if sid else None
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
 
 
 

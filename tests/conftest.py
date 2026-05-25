@@ -635,7 +635,7 @@ def _live_system_guard(request, monkeypatch):
                 return real_killpg(pgid, sig, *args, **kwargs)
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
-                f"os.killpg({pgid}, {sig}) — PGID is outside the test "
+                f"os.killpg({pgid}, {sig}) — PGID is outside the test "  # windows-footgun: ok
                 "process group. See _live_system_guard for the why."
             )
 

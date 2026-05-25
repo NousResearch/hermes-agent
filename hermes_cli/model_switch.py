@@ -1649,6 +1649,11 @@ def list_authenticated_providers(
         _section4_emitted_slugs: set = set()
         for grp_key, grp in groups.items():
             api_url, api_key = grp_key
+            api_key_is_placeholder = str(api_key).strip().lower() in {
+                "***",
+                "[redacted]",
+                "redacted",
+            }
             slug = grp["slug"]
             # If the slug is already claimed by a built-in / overlay /
             # user-provider row (sections 1-3), skip this custom group
@@ -1706,7 +1711,14 @@ def list_authenticated_providers(
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
-            should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            should_probe = bool(api_url) and not (
+                bool(current_base_url)
+                and _grp_url_norm == current_base_url.strip().rstrip("/").lower()
+                and bool(grp["models"])
+            ) and (
+                (bool(api_key) and not api_key_is_placeholder)
+                or not grp["models"]
+            )
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models

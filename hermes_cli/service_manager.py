@@ -416,21 +416,51 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     EEXIST handling in s6-supervise has been stable since 2015 — it's
     the same pattern ``s6-svperms`` and ``fix-attrs.d`` rely on.
     """
+    import errno
     import os
+
+    def _chmod_supervise_dir(path: Path, mode: int) -> None:
+        """Apply an s6 supervise/event directory mode without breaking dev hosts.
+
+        The production s6 container runs this helper as root, so the desired
+        ``03730`` event-dir mode is reachable and remains the authoritative
+        layout. Some developer/CI temp mounts are ``nosuid`` (WSL's ``/tmp`` is
+        one example) and reject setting the setgid bit even for the owning user.
+        Registration should still be testable there: keep the sticky bit plus
+        owner/group rwx contract and only drop setgid when the kernel refuses
+        it.
+        """
+        try:
+            path.chmod(mode)
+            return
+        except PermissionError:
+            if not (mode & 0o2000):
+                raise
+
+        # Preserve sticky + rwx bits; drop only setgid on nosuid/non-root
+        # filesystems that reject it. If this also fails, surface the platform
+        # problem to the caller instead of silently creating a broken supervise
+        # tree.
+        fallback_mode = mode & ~0o2000
+        path.chmod(fallback_mode)
 
     def _mkdir_owned(path: Path, mode: int) -> None:
         if path.exists():
             return
         path.mkdir(parents=False, exist_ok=False)
-        path.chmod(mode)
         try:
             os.chown(path, _HERMES_UID, _HERMES_GID)
-        except PermissionError:
+        except OSError as exc:
+            if exc.errno not in {errno.EPERM, errno.EINVAL}:
+                raise
             # Running as the hermes user already — directory is hermes-
             # owned by default. The chown is a no-op in that case, so
             # swallowing this keeps both root and unprivileged callers
-            # on one code path.
+            # on one code path. Some non-container developer filesystems
+            # (notably WSL temp mounts) report EINVAL rather than EPERM
+            # for synthetic container uid/gid values.
             pass
+        _chmod_supervise_dir(path, mode)
 
     # Top-level event/ dir (this is the s6-svlisten1 event-subscription
     # dir at the service root, distinct from supervise/event/).
@@ -455,7 +485,9 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         control.chmod(0o660)
         try:
             os.chown(control, _HERMES_UID, _HERMES_GID)
-        except PermissionError:
+        except OSError as exc:
+            if exc.errno not in {errno.EPERM, errno.EINVAL}:
+                raise
             pass
 
     # If a log/ subdir is present (the canonical s6 logger pattern —
@@ -475,7 +507,9 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
             log_control.chmod(0o660)
             try:
                 os.chown(log_control, _HERMES_UID, _HERMES_GID)
-            except PermissionError:
+            except OSError as exc:
+                if exc.errno not in {errno.EPERM, errno.EINVAL}:
+                    raise
                 pass
 
 

@@ -6107,7 +6107,9 @@ class GatewayRunner:
             if hasattr(self, '_busy_ack_ts'):
                 self._busy_ack_ts.clear()
             self._shutdown_event.set()
-            self._stop_liveness_thread()
+            _stop_liveness_thread = getattr(self, "_stop_liveness_thread", None)
+            if callable(_stop_liveness_thread):
+                _stop_liveness_thread()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
             # to a specific agent (catch-all for zombie prevention). On the

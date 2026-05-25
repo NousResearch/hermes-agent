@@ -29,6 +29,14 @@ except ImportError:  # pragma: no cover - exercised in environments without aioh
 
 LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
 DEFAULT_REPLAY_TOLERANCE_MS = 60_000
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8667
+
+ACCESS_TOKEN_ENV = "HERMES_LINEAR_AIG_ACCESS_TOKEN"
+WEBHOOK_SECRET_ENV = "HERMES_LINEAR_AIG_WEBHOOK_SECRET"
+HOST_ENV = "HERMES_LINEAR_AIG_HOST"
+PORT_ENV = "HERMES_LINEAR_AIG_PORT"
+GRAPHQL_URL_ENV = "HERMES_LINEAR_AIG_GRAPHQL_URL"
 
 ActivitySender = Callable[[str, dict[str, Any]], Awaitable[None]]
 TaskDispatcher = Callable[["AgentSessionEvent"], Awaitable[str | None]]
@@ -43,6 +51,16 @@ class AgentSessionEvent:
     issue_identifier: str | None = None
     issue_title: str | None = None
     comment_body: str | None = None
+
+
+@dataclass(frozen=True)
+class LinearAIGRuntimeConfig:
+    access_token: str
+    webhook_secret: str
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    graphql_url: str = LINEAR_GRAPHQL_URL
+    ack_only: bool = False
 
 
 def _header(headers: Mapping[str, str], name: str) -> str:
@@ -164,6 +182,86 @@ def build_activity_content(kind: str, body: str, **extra: Any) -> dict[str, Any]
     return content
 
 
+def _redact(value: str) -> str:
+    if not value:
+        return "<missing>"
+    if len(value) <= 8:
+        return "<set>"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _env(env: Mapping[str, str], name: str) -> str:
+    return str(env.get(name) or "").strip()
+
+
+def _parse_port(value: str | int | None, *, default: int) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Linear AIG port must be an integer") from exc
+    if port <= 0 or port > 65535:
+        raise ValueError("Linear AIG port must be between 1 and 65535")
+    return port
+
+
+def load_runtime_config(args: Any, env: Mapping[str, str]) -> LinearAIGRuntimeConfig:
+    access_token = (
+        str(getattr(args, "access_token", "") or "").strip()
+        or _env(env, ACCESS_TOKEN_ENV)
+    )
+    webhook_secret = (
+        str(getattr(args, "webhook_secret", "") or "").strip()
+        or _env(env, WEBHOOK_SECRET_ENV)
+    )
+    host = str(getattr(args, "host", "") or "").strip() or _env(env, HOST_ENV) or DEFAULT_HOST
+    port = _parse_port(
+        getattr(args, "port", None) or _env(env, PORT_ENV),
+        default=DEFAULT_PORT,
+    )
+    graphql_url = (
+        str(getattr(args, "graphql_url", "") or "").strip()
+        or _env(env, GRAPHQL_URL_ENV)
+        or LINEAR_GRAPHQL_URL
+    )
+    ack_only = bool(getattr(args, "ack_only", False))
+
+    missing = []
+    if not access_token:
+        missing.append(ACCESS_TOKEN_ENV)
+    if not webhook_secret:
+        missing.append(WEBHOOK_SECRET_ENV)
+    if missing:
+        raise ValueError(
+            "Linear AIG is missing required environment variables: "
+            + ", ".join(missing)
+        )
+
+    return LinearAIGRuntimeConfig(
+        access_token=access_token,
+        webhook_secret=webhook_secret,
+        host=host,
+        port=port,
+        graphql_url=graphql_url,
+        ack_only=ack_only,
+    )
+
+
+def describe_runtime_config(config: LinearAIGRuntimeConfig) -> str:
+    return "\n".join(
+        [
+            "Linear AIG runtime config:",
+            f"  {ACCESS_TOKEN_ENV}: {_redact(config.access_token)}",
+            f"  {WEBHOOK_SECRET_ENV}: {_redact(config.webhook_secret)}",
+            f"  host: {config.host}",
+            f"  port: {config.port}",
+            f"  graphql_url: {config.graphql_url}",
+            f"  ack_only: {config.ack_only}",
+        ]
+    )
+
+
 def build_agent_activity_input(
     agent_session_id: str,
     content: Mapping[str, Any],
@@ -220,6 +318,30 @@ async def send_agent_activity(
             raise RuntimeError("Linear agentActivityCreate did not return success")
 
     await asyncio.to_thread(_post)
+
+
+def build_activity_sender(
+    *,
+    access_token: str,
+    graphql_url: str = LINEAR_GRAPHQL_URL,
+) -> ActivitySender:
+    async def _sender(agent_session_id: str, content: dict[str, Any]) -> None:
+        await send_agent_activity(
+            api_key=access_token,
+            agent_session_id=agent_session_id,
+            content=content,
+            graphql_url=graphql_url,
+        )
+
+    return _sender
+
+
+async def ack_only_dispatcher(event: AgentSessionEvent) -> str:
+    target = f" for {event.issue_identifier}" if event.issue_identifier else ""
+    return (
+        f"Hermes Linear AIG bridge received the session{target}. "
+        "Full task execution is not wired in this runtime yet."
+    )
 
 
 class LinearAIGReceiver:
@@ -295,3 +417,50 @@ def create_app(receiver: LinearAIGReceiver) -> Any:
     app.router.add_post("/linear/aig", receiver.handle_request)
     app.router.add_get("/linear/aig/health", health)
     return app
+
+
+def run_server(config: LinearAIGRuntimeConfig) -> None:
+    if not AIOHTTP_AVAILABLE:
+        raise RuntimeError(
+            "aiohttp is required for the Linear AIG receiver. Install with: "
+            "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
+        )
+
+    receiver = LinearAIGReceiver(
+        signing_secret=config.webhook_secret,
+        activity_sender=build_activity_sender(
+            access_token=config.access_token,
+            graphql_url=config.graphql_url,
+        ),
+        task_dispatcher=None if config.ack_only else ack_only_dispatcher,
+    )
+    app = create_app(receiver)
+    web.run_app(app, host=config.host, port=config.port)
+
+
+def linear_aig_command(args: Any) -> int:
+    import os
+
+    subcommand = getattr(args, "linear_aig_action", None)
+    if not subcommand:
+        print("Usage: hermes linear-aig {serve|check-config}")
+        return 2
+
+    try:
+        config = load_runtime_config(args, os.environ)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    if subcommand == "check-config":
+        print(describe_runtime_config(config))
+        return 0
+
+    if subcommand == "serve":
+        print(describe_runtime_config(config))
+        print(f"Listening on http://{config.host}:{config.port}/linear/aig")
+        run_server(config)
+        return 0
+
+    print(f"Unknown linear-aig command: {subcommand}")
+    return 2

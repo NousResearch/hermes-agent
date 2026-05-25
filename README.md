@@ -81,6 +81,41 @@ hermes doctor       # Diagnose any issues
 
 ---
 
+## Linear Agent App Preview
+
+Hermes can run a Linear Agent Session webhook receiver for early Linear AIG app
+testing. Configure a Linear OAuth app installation with `actor=app`, request the
+`app:assignable` and `app:mentionable` scopes, enable Agent session event
+webhooks, then point the webhook URL at `/linear/aig` on your public Hermes
+receiver.
+
+Set credentials in your shell or secret manager; do not commit them:
+
+```bash
+export HERMES_LINEAR_AIG_ACCESS_TOKEN="..."
+export HERMES_LINEAR_AIG_WEBHOOK_SECRET="..."
+export HERMES_LINEAR_AIG_HOST="0.0.0.0"
+export HERMES_LINEAR_AIG_PORT="8667"
+```
+
+Validate without starting the server:
+
+```bash
+hermes linear-aig check-config
+```
+
+Start the receiver:
+
+```bash
+hermes linear-aig serve
+```
+
+The MVP receiver validates Linear webhook signatures, acknowledges
+`AgentSessionEvent` webhooks quickly, and emits Agent Activities back to Linear.
+Full Hermes task execution wiring is still separate from this preview receiver.
+
+---
+
 ## Skip the API-key collection — Nous Portal
 
 Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:

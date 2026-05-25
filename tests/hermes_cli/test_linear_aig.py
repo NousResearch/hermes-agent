@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from argparse import Namespace
 
 import pytest
 
@@ -36,6 +37,20 @@ def _payload(**overrides):
     return payload
 
 
+def _args(**overrides):
+    defaults = {
+        "linear_aig_action": "check-config",
+        "access_token": "",
+        "webhook_secret": "",
+        "host": "",
+        "port": None,
+        "graphql_url": "",
+        "ack_only": False,
+    }
+    defaults.update(overrides)
+    return Namespace(**defaults)
+
+
 def test_verify_linear_signature_accepts_valid_signature():
     payload = _payload()
     raw_body = _body(payload)
@@ -47,6 +62,127 @@ def test_verify_linear_signature_accepts_valid_signature():
         payload=payload,
         now_ms=NOW_MS,
     )
+
+
+def test_load_runtime_config_uses_environment_defaults():
+    config = linear_aig.load_runtime_config(
+        _args(),
+        {
+            linear_aig.ACCESS_TOKEN_ENV: "lin_access_token",
+            linear_aig.WEBHOOK_SECRET_ENV: "signing_secret",
+            linear_aig.HOST_ENV: "127.0.0.1",
+            linear_aig.PORT_ENV: "9999",
+            linear_aig.GRAPHQL_URL_ENV: "https://linear.test/graphql",
+        },
+    )
+
+    assert config.access_token == "lin_access_token"
+    assert config.webhook_secret == "signing_secret"
+    assert config.host == "127.0.0.1"
+    assert config.port == 9999
+    assert config.graphql_url == "https://linear.test/graphql"
+
+
+def test_load_runtime_config_cli_args_override_environment():
+    config = linear_aig.load_runtime_config(
+        _args(
+            access_token="arg_token",
+            webhook_secret="arg_secret",
+            host="localhost",
+            port=8668,
+            graphql_url="https://override.test/graphql",
+            ack_only=True,
+        ),
+        {
+            linear_aig.ACCESS_TOKEN_ENV: "env_token",
+            linear_aig.WEBHOOK_SECRET_ENV: "env_secret",
+            linear_aig.PORT_ENV: "9999",
+        },
+    )
+
+    assert config.access_token == "arg_token"
+    assert config.webhook_secret == "arg_secret"
+    assert config.host == "localhost"
+    assert config.port == 8668
+    assert config.graphql_url == "https://override.test/graphql"
+    assert config.ack_only is True
+
+
+def test_load_runtime_config_requires_token_and_webhook_secret():
+    with pytest.raises(ValueError, match=linear_aig.ACCESS_TOKEN_ENV):
+        linear_aig.load_runtime_config(_args(), {})
+
+
+def test_describe_runtime_config_redacts_sensitive_values():
+    config = linear_aig.LinearAIGRuntimeConfig(
+        access_token="lin_very_secret_token",
+        webhook_secret="webhook_secret_value",
+        host="127.0.0.1",
+        port=8667,
+    )
+
+    description = linear_aig.describe_runtime_config(config)
+
+    assert "lin_very_secret_token" not in description
+    assert "webhook_secret_value" not in description
+    assert "lin_...oken" in description
+    assert "webh...alue" in description
+
+
+def test_linear_aig_command_check_config_prints_redacted_config(monkeypatch, capsys):
+    monkeypatch.setenv(linear_aig.ACCESS_TOKEN_ENV, "lin_very_secret_token")
+    monkeypatch.setenv(linear_aig.WEBHOOK_SECRET_ENV, "webhook_secret_value")
+
+    rc = linear_aig.linear_aig_command(_args(linear_aig_action="check-config"))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Linear AIG runtime config" in out
+    assert "lin_very_secret_token" not in out
+    assert "webhook_secret_value" not in out
+
+
+def test_linear_aig_command_fails_when_config_missing(monkeypatch, capsys):
+    monkeypatch.delenv(linear_aig.ACCESS_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(linear_aig.WEBHOOK_SECRET_ENV, raising=False)
+
+    rc = linear_aig.linear_aig_command(_args(linear_aig_action="check-config"))
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert linear_aig.ACCESS_TOKEN_ENV in out
+    assert linear_aig.WEBHOOK_SECRET_ENV in out
+
+
+def test_run_server_builds_receiver_and_starts_aiohttp(monkeypatch):
+    calls = []
+
+    class FakeWeb:
+        @staticmethod
+        def run_app(app, *, host, port):
+            calls.append({"app": app, "host": host, "port": port})
+
+    app = object()
+
+    monkeypatch.setattr(linear_aig, "AIOHTTP_AVAILABLE", True)
+    monkeypatch.setattr(linear_aig, "web", FakeWeb)
+    monkeypatch.setattr(linear_aig, "create_app", lambda receiver: app)
+
+    linear_aig.run_server(
+        linear_aig.LinearAIGRuntimeConfig(
+            access_token="lin_token",
+            webhook_secret="webhook_secret",
+            host="127.0.0.1",
+            port=8668,
+            graphql_url="https://linear.test/graphql",
+            ack_only=True,
+        )
+    )
+
+    assert calls
+    assert calls[0]["app"] is app
+    assert calls[0]["host"] == "127.0.0.1"
+    assert calls[0]["port"] == 8668
 
 
 def test_verify_linear_signature_accepts_sha256_prefix():

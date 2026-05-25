@@ -6146,6 +6146,15 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_linear_aig(args):
+    """Linear Agent Interaction Guidelines receiver."""
+    from hermes_cli.linear_aig import linear_aig_command
+
+    rc = linear_aig_command(args)
+    if isinstance(rc, int) and rc != 0:
+        raise SystemExit(rc)
+
+
 def cmd_portal(args):
     """Nous Portal status and Tool Gateway routing surface."""
     from hermes_cli.portal_cli import portal_command
@@ -11979,6 +11988,74 @@ def main():
     )
 
     webhook_parser.set_defaults(func=cmd_webhook)
+
+    # =========================================================================
+    # linear-aig command
+    # =========================================================================
+    linear_aig_parser = subparsers.add_parser(
+        "linear-aig",
+        help="Run a Linear Agent Session webhook receiver",
+        description=(
+            "Receive Linear AgentSessionEvent webhooks and emit Agent Activities "
+            "back to Linear."
+        ),
+    )
+    linear_aig_subparsers = linear_aig_parser.add_subparsers(
+        dest="linear_aig_action"
+    )
+    linear_aig_check = linear_aig_subparsers.add_parser(
+        "check-config",
+        help="Validate Linear AIG environment without starting the server",
+    )
+    linear_aig_serve = linear_aig_subparsers.add_parser(
+        "serve",
+        help="Start the Linear AIG webhook receiver",
+    )
+    for _linear_aig_sub in (linear_aig_check, linear_aig_serve):
+        _linear_aig_sub.add_argument(
+            "--access-token",
+            default="",
+            help=(
+                "Linear app OAuth access token. Defaults to "
+                "HERMES_LINEAR_AIG_ACCESS_TOKEN."
+            ),
+        )
+        _linear_aig_sub.add_argument(
+            "--webhook-secret",
+            default="",
+            help=(
+                "Linear webhook signing secret. Defaults to "
+                "HERMES_LINEAR_AIG_WEBHOOK_SECRET."
+            ),
+        )
+        _linear_aig_sub.add_argument(
+            "--host",
+            default="",
+            help="Host to bind. Defaults to HERMES_LINEAR_AIG_HOST or 0.0.0.0.",
+        )
+        _linear_aig_sub.add_argument(
+            "--port",
+            default=None,
+            type=int,
+            help="Port to bind. Defaults to HERMES_LINEAR_AIG_PORT or 8667.",
+        )
+        _linear_aig_sub.add_argument(
+            "--graphql-url",
+            default="",
+            help=(
+                "Linear GraphQL endpoint. Defaults to "
+                "HERMES_LINEAR_AIG_GRAPHQL_URL or Linear production."
+            ),
+        )
+        _linear_aig_sub.add_argument(
+            "--ack-only",
+            action="store_true",
+            help=(
+                "Only emit the immediate thought activity; skip the transparent "
+                "bridge response used by the MVP smoke path."
+            ),
+        )
+    linear_aig_parser.set_defaults(func=cmd_linear_aig)
 
     # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing

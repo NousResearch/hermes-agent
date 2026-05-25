@@ -374,15 +374,9 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["prompt"] == skin.get_color("prompt")
         assert overrides["input-rule"] == skin.get_color("input_rule")
-        assert overrides["status-bar"] == (
-            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_text')}"
-        )
-        assert overrides["status-bar-strong"] == (
-            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_strong')} bold"
-        )
-        assert overrides["status-bar-critical"] == (
-            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_critical')} bold"
-        )
+        assert overrides["status-bar"] == skin.get_color("status_bar_text")
+        assert overrides["status-bar-strong"] == f"{skin.get_color('status_bar_strong')} bold"
+        assert overrides["status-bar-critical"] == f"{skin.get_color('status_bar_critical')} bold"
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"
         assert overrides["approval-title"] == f"{skin.get_color('ui_warn')} bold"
@@ -390,5 +384,26 @@ class TestCliBrandingHelpers:
         set_active_skin("daylight")
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()
-        assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
+        assert overrides["status-bar"] == skin.get_color("banner_text")
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+    def test_status_bar_styles_are_transparent_foreground_only(self):
+        from hermes_cli.skin_engine import set_active_skin, get_prompt_toolkit_style_overrides
+
+        set_active_skin("default")
+        overrides = get_prompt_toolkit_style_overrides()
+        status_keys = [
+            "status-bar",
+            "status-bar-strong",
+            "status-bar-dim",
+            "status-bar-good",
+            "status-bar-warn",
+            "status-bar-bad",
+            "status-bar-critical",
+        ]
+        for key in status_keys:
+            assert "bg:" not in overrides[key]
+
+        # Floating overlays still need explicit backgrounds for legibility.
+        assert "bg:" in overrides["completion-menu"]
+        assert "bg:" in overrides["voice-status"]

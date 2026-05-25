@@ -890,13 +890,18 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "prompt": prompt,
         "prompt-working": f"{dim} italic",
         "hint": f"{dim} italic",
-        "status-bar": f"bg:{status_bg} {status_text}",
-        "status-bar-strong": f"bg:{status_bg} {status_strong} bold",
-        "status-bar-dim": f"bg:{status_bg} {status_dim}",
-        "status-bar-good": f"bg:{status_bg} {status_good} bold",
-        "status-bar-warn": f"bg:{status_bg} {status_warn} bold",
-        "status-bar-bad": f"bg:{status_bg} {status_bad} bold",
-        "status-bar-critical": f"bg:{status_bg} {status_critical} bold",
+        # Keep the runtime footer/status bar transparent.  The bar should
+        # inherit the user's terminal background; forcing bg:<color> creates
+        # a visible filled strip (black in dark defaults, white in light skins)
+        # inside SSH/tmux/zellij stacks.  Floating overlays below intentionally
+        # keep explicit backgrounds for legibility.
+        "status-bar": status_text,
+        "status-bar-strong": f"{status_strong} bold",
+        "status-bar-dim": status_dim,
+        "status-bar-good": f"{status_good} bold",
+        "status-bar-warn": f"{status_warn} bold",
+        "status-bar-bad": f"{status_bad} bold",
+        "status-bar-critical": f"{status_critical} bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
         "completion-menu": f"bg:{menu_bg} {text}",

@@ -1921,8 +1921,25 @@ class AIAgent:
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
-        self._last_activity_ts = time.time()
+        now = time.time()
+        self._last_activity_ts = now
         self._last_activity_desc = desc
+        if not os.environ.get("HERMES_KANBAN_TASK"):
+            return
+
+        last_auto_heartbeat = getattr(
+            self, "_last_kanban_auto_heartbeat_ts", 0.0
+        )
+        if (now - last_auto_heartbeat) < 60.0:
+            return
+
+        self._last_kanban_auto_heartbeat_ts = now
+        try:
+            from tools.kanban_tools import heartbeat_current_worker_from_env
+
+            heartbeat_current_worker_from_env()
+        except Exception:
+            logger.debug("kanban auto-heartbeat bridge failed", exc_info=True)
 
     def _capture_rate_limits(self, http_response: Any) -> None:
         """Parse x-ratelimit-* headers from an HTTP response and cache the state.

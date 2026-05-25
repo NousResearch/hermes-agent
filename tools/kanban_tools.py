@@ -176,6 +176,37 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
+def heartbeat_current_worker_from_env(*, note: Optional[str] = None) -> bool:
+    """Bridge in-process worker activity to Kanban liveness state.
+
+    This is intentionally a plain Python helper, not a tool handler, so
+    runtime code like ``AIAgent._touch_activity()`` can keep board
+    heartbeat timestamps fresh without synthesizing a model-visible tool
+    call or persisting the activity description itself.
+    """
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return False
+
+    run_id = _worker_run_id(task_id)
+    claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+
+    kb, conn = _connect()
+    try:
+        if not kb.heartbeat_claim(conn, task_id, claimer=claim_lock):
+            return False
+        return bool(
+            kb.heartbeat_worker(
+                conn,
+                task_id,
+                note=note,
+                expected_run_id=run_id,
+            )
+        )
+    finally:
+        conn.close()
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 

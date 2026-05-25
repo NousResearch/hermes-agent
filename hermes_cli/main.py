@@ -2253,6 +2253,7 @@ def select_provider_and_model(args=None):
                 "api_key": entry.get("api_key", ""),
                 "key_env": entry.get("key_env", ""),
                 "model": entry.get("model", ""),
+                "models": entry.get("models", {}) if isinstance(entry.get("models"), dict) else {},
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
                 "api_key_ref": _lookup_ref(
@@ -4422,6 +4423,14 @@ def _model_flow_named_custom(config, provider_info):
     if api_mode:
         fetch_kwargs["api_mode"] = api_mode
     models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+    declared_models = []
+    raw_declared_models = provider_info.get("models")
+    if isinstance(raw_declared_models, dict) and raw_declared_models:
+        declared_models = [mid.strip() for mid in raw_declared_models.keys() if isinstance(mid, str) and mid.strip()]
+
+    if not models and declared_models:
+        models = declared_models
+        print(f"Endpoint /models unavailable; using {len(models)} configured model(s) from config.yaml.")
 
     if models:
         default_idx = 0

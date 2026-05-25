@@ -37,11 +37,12 @@ import tempfile
 import time
 import uuid
 import textwrap
+import socket
 from collections import deque
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,143 @@ from utils import base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+
+
+def _single_query_slots_dir() -> Path:
+    return _hermes_home / "runtime" / "single-query-slots"
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _cleanup_stale_single_query_slot(slot_path: Path) -> bool:
+    try:
+        raw = slot_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    try:
+        payload = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
+    except Exception:
+        payload = {}
+    pid = int(payload.get("pid") or 0)
+    if _pid_is_running(pid):
+        return False
+    try:
+        slot_path.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _single_query_guard_config() -> tuple[int, float]:
+    limit = 0
+    wait_seconds = 0.0
+    try:
+        from hermes_cli.config import load_config as _load_full_config
+        _agent_cfg = ((_load_full_config() or {}).get("agent") or {})
+        limit = int(_agent_cfg.get("single_query_max_concurrency", 20) or 0)
+        wait_seconds = float(_agent_cfg.get("single_query_concurrency_wait_seconds", 0) or 0)
+    except Exception:
+        limit = 20
+        wait_seconds = 0.0
+
+    _env_limit = os.getenv("HERMES_SINGLE_QUERY_MAX_CONCURRENCY", "").strip()
+    if _env_limit:
+        try:
+            limit = int(_env_limit)
+        except ValueError:
+            pass
+    _env_wait = os.getenv("HERMES_SINGLE_QUERY_CONCURRENCY_WAIT_SECONDS", "").strip()
+    if _env_wait:
+        try:
+            wait_seconds = float(_env_wait)
+        except ValueError:
+            pass
+    return max(0, limit), max(0.0, wait_seconds)
+
+
+@contextmanager
+def _single_query_concurrency_guard(query_label: str = ""):
+    limit, wait_seconds = _single_query_guard_config()
+    if limit <= 0:
+        yield None
+        return
+
+    slots_dir = _single_query_slots_dir()
+    slots_dir.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + wait_seconds
+    slot_path = None
+    fd = None
+    meta = json.dumps(
+        {
+            "pid": os.getpid(),
+            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "host": socket.gethostname(),
+            "query": (query_label or "")[:200],
+        },
+        ensure_ascii=False,
+    )
+
+    try:
+        while True:
+            for idx in range(limit):
+                candidate = slots_dir / f"slot-{idx}.lock"
+                try:
+                    fd = os.open(str(candidate), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    os.write(fd, meta.encode("utf-8"))
+                    slot_path = candidate
+                    logger.info(
+                        "Single-query concurrency slot acquired: slot=%s limit=%s pid=%s query=%r",
+                        idx, limit, os.getpid(), (query_label or "")[:120],
+                    )
+                    yield slot_path
+                    return
+                except FileExistsError:
+                    if _cleanup_stale_single_query_slot(candidate):
+                        try:
+                            fd = os.open(str(candidate), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                            os.write(fd, meta.encode("utf-8"))
+                            slot_path = candidate
+                            logger.info(
+                                "Single-query concurrency slot acquired after stale cleanup: slot=%s limit=%s pid=%s query=%r",
+                                idx, limit, os.getpid(), (query_label or "")[:120],
+                            )
+                            yield slot_path
+                            return
+                        except OSError:
+                            pass
+                    continue
+                except OSError:
+                    continue
+
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"single-query concurrency limit reached ({limit}). "
+                    f"Set agent.single_query_max_concurrency / HERMES_SINGLE_QUERY_MAX_CONCURRENCY to adjust."
+                )
+            time.sleep(0.1)
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if slot_path is not None:
+            try:
+                slot_path.unlink()
+            except OSError:
+                pass
 
 
 _REASONING_TAGS = (
@@ -14946,133 +15084,137 @@ def main(
     # Handle single query mode
     if query or image:
         query, single_query_images = _collect_query_images(query, image)
-        if quiet:
-            # Quiet mode: suppress banner, spinner, tool previews.
-            # Only print the final response and parseable session info.
-            cli.tool_progress_mode = "off"
-            if cli._ensure_runtime_credentials():
-                effective_query: Any = query
-                if single_query_images:
-                    # Honour the same image-routing decision used by the
-                    # interactive path. With a vision-capable model (incl.
-                    # custom-provider models declared via
-                    # `model.supports_vision: true`), attach images natively
-                    # as image_url content parts. Otherwise fall back to the
-                    # text-pipeline (vision_analyze pre-description).
-                    _img_mode = "text"
-                    _build_parts = None
-                    try:
-                        from agent.image_routing import (
-                            build_native_content_parts as _build_parts,  # noqa: F811
-                        )
-                        from agent.image_routing import decide_image_input_mode
-                        from hermes_cli.config import load_config
-
-                        _img_mode = decide_image_input_mode(
-                            (cli.provider or "").strip(),
-                            (cli.model or "").strip(),
-                            load_config(),
-                        )
-                    except Exception:
-                        _img_mode = "text"
-
-                    if _img_mode == "native" and _build_parts is not None:
-                        try:
-                            _parts, _skipped = _build_parts(
-                                query if isinstance(query, str) else "",
-                                [str(p) for p in single_query_images],
-                            )
-                            if any(p.get("type") == "image_url" for p in _parts):
-                                effective_query = _parts
-                            else:
-                                # All images unreadable — text fallback.
-                                effective_query = cli._preprocess_images_with_vision(
-                                    query, single_query_images, announce=False,
+        _query_label = query or ("[image attached]" if single_query_images else "")
+        try:
+            with _single_query_concurrency_guard(_query_label):
+                if quiet:
+                    # Quiet mode: suppress banner, spinner, tool previews.
+                    # Only print the final response and parseable session info.
+                    cli.tool_progress_mode = "off"
+                    if cli._ensure_runtime_credentials():
+                        effective_query: Any = query
+                        if single_query_images:
+                            # Honour the same image-routing decision used by the
+                            # interactive path. With a vision-capable model (incl.
+                            # custom-provider models declared via
+                            # `model.supports_vision: true`), attach images natively
+                            # as image_url content parts. Otherwise fall back to the
+                            # text-pipeline (vision_analyze pre-description).
+                            _img_mode = "text"
+                            _build_parts = None
+                            try:
+                                from agent.image_routing import (
+                                    build_native_content_parts as _build_parts,  # noqa: F811
                                 )
-                        except Exception:
-                            effective_query = cli._preprocess_images_with_vision(
-                                query, single_query_images, announce=False,
+                                from agent.image_routing import decide_image_input_mode
+                                from hermes_cli.config import load_config
+
+                                _img_mode = decide_image_input_mode(
+                                    (cli.provider or "").strip(),
+                                    (cli.model or "").strip(),
+                                    load_config(),
+                                )
+                            except Exception:
+                                _img_mode = "text"
+
+                            if _img_mode == "native" and _build_parts is not None:
+                                try:
+                                    _parts, _skipped = _build_parts(
+                                        query if isinstance(query, str) else "",
+                                        [str(p) for p in single_query_images],
+                                    )
+                                    if any(p.get("type") == "image_url" for p in _parts):
+                                        effective_query = _parts
+                                    else:
+                                        # All images unreadable — text fallback.
+                                        effective_query = cli._preprocess_images_with_vision(
+                                            query, single_query_images, announce=False,
+                                        )
+                                except Exception:
+                                    effective_query = cli._preprocess_images_with_vision(
+                                        query, single_query_images, announce=False,
+                                    )
+                            else:
+                                effective_query = cli._preprocess_images_with_vision(
+                                    query,
+                                    single_query_images,
+                                    announce=False,
+                                )
+                        turn_route = cli._resolve_turn_agent_config(effective_query)
+                        if turn_route["signature"] != cli._active_agent_route_signature:
+                            cli.agent = None
+                        if cli._init_agent(
+                            model_override=turn_route["model"],
+                            runtime_override=turn_route["runtime"],
+                            request_overrides=turn_route.get("request_overrides"),
+                        ):
+                            cli.agent.quiet_mode = True
+                            cli.agent.suppress_status_output = True
+                            # Suppress streaming display callbacks so stdout stays
+                            # machine-readable (no styled "Hermes" box, no tool-gen
+                            # status lines).  The response is printed once below.
+                            cli.agent.stream_delta_callback = None
+                            cli.agent.tool_gen_callback = None
+                            result = cli.agent.run_conversation(
+                                user_message=effective_query,
+                                conversation_history=cli.conversation_history,
                             )
-                    else:
-                        effective_query = cli._preprocess_images_with_vision(
-                            query,
-                            single_query_images,
-                            announce=False,
-                        )
-                turn_route = cli._resolve_turn_agent_config(effective_query)
-                if turn_route["signature"] != cli._active_agent_route_signature:
-                    cli.agent = None
-                if cli._init_agent(
-                    model_override=turn_route["model"],
-                    runtime_override=turn_route["runtime"],
-                    request_overrides=turn_route.get("request_overrides"),
-                ):
-                    cli.agent.quiet_mode = True
-                    cli.agent.suppress_status_output = True
-                    # Suppress streaming display callbacks so stdout stays
-                    # machine-readable (no styled "Hermes" box, no tool-gen
-                    # status lines).  The response is printed once below.
-                    cli.agent.stream_delta_callback = None
-                    cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                    )
-                    # Sync session_id if mid-run compression created a
-                    # continuation session. The exit line below reports
-                    # session_id to stderr for automation wrappers; without
-                    # this sync it would point at the ended parent.
-                    if (
-                        getattr(cli.agent, "session_id", None)
-                        and cli.agent.session_id != cli.session_id
-                    ):
-                        cli.session_id = cli.agent.session_id
-                    response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                    # Surface backend errors that produced no visible output
-                    # (e.g. invalid model slug → provider 4xx). Mirrors the
-                    # interactive CLI path. Write to stderr so piped stdout
-                    # stays clean for automation wrappers.
-                    if (
-                        not response
-                        and isinstance(result, dict)
-                        and result.get("error")
-                        and (result.get("failed") or result.get("partial"))
-                    ):
-                        print(f"Error: {result['error']}", file=sys.stderr)
-                    elif response:
-                        print(response)
-                    # Session ID goes to stderr so piped stdout is clean.
-                    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                    
-                    # Ensure proper exit code for automation wrappers
-                    sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
-            
-            # Exit with error code if credentials or agent init fails
+                            # Sync session_id if mid-run compression created a
+                            # continuation session. The exit line below reports
+                            # session_id to stderr for automation wrappers; without
+                            # this sync it would point at the ended parent.
+                            if (
+                                getattr(cli.agent, "session_id", None)
+                                and cli.agent.session_id != cli.session_id
+                            ):
+                                cli.session_id = cli.agent.session_id
+                            response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                            # Surface backend errors that produced no visible output
+                            # (e.g. invalid model slug → provider 4xx). Mirrors the
+                            # interactive CLI path. Write to stderr so piped stdout
+                            # stays clean for automation wrappers.
+                            if (
+                                not response
+                                and isinstance(result, dict)
+                                and result.get("error")
+                                and (result.get("failed") or result.get("partial"))
+                            ):
+                                print(f"Error: {result['error']}", file=sys.stderr)
+                            elif response:
+                                print(response)
+                            # Session ID goes to stderr so piped stdout is clean.
+                            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+
+                            # Ensure proper exit code for automation wrappers
+                            sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
+
+                    # Exit with error code if credentials or agent init fails
+                    sys.exit(1)
+                else:
+                    # Single-query mode (`hermes chat -q "…"`): skip the welcome
+                    # banner. Building the banner takes ~420 ms on cold start —
+                    # ~200 ms of that is the version-update check, the rest is
+                    # toolset / skill enumeration and Rich panel rendering. None
+                    # of that is useful for a one-shot query: the user already
+                    # picked the prompt, doesn't need a toolset reference, and
+                    # gets the session ID + resume hint from
+                    # ``_print_exit_summary()`` after the response prints.
+                    #
+                    # The fully-quiet ``-Q`` / ``--quiet`` machine-readable path
+                    # above was already banner-free; this brings the human-
+                    # facing single-query path in line so all non-interactive
+                    # invocations are fast.
+                    if _query_label:
+                        cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+                    # Surface security advisories before the agent runs — short
+                    # banner, doesn't depend on the welcome banner being shown.
+                    cli._show_security_advisories()
+                    cli.chat(query, images=single_query_images or None)
+                    cli._print_exit_summary()
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-        else:
-            # Single-query mode (`hermes chat -q "…"`): skip the welcome
-            # banner. Building the banner takes ~420 ms on cold start —
-            # ~200 ms of that is the version-update check, the rest is
-            # toolset / skill enumeration and Rich panel rendering. None
-            # of that is useful for a one-shot query: the user already
-            # picked the prompt, doesn't need a toolset reference, and
-            # gets the session ID + resume hint from
-            # ``_print_exit_summary()`` after the response prints.
-            #
-            # The fully-quiet ``-Q`` / ``--quiet`` machine-readable path
-            # above was already banner-free; this brings the human-
-            # facing single-query path in line so all non-interactive
-            # invocations are fast.
-            _query_label = query or ("[image attached]" if single_query_images else "")
-            if _query_label:
-                cli.console.print(f"[bold blue]Query:[/] {_query_label}")
-            # Surface security advisories before the agent runs — short
-            # banner, doesn't depend on the welcome banner being shown.
-            cli._show_security_advisories()
-            cli.chat(query, images=single_query_images or None)
-            cli._print_exit_summary()
         return
-    
     # Run interactive mode
     cli.run()
 

@@ -510,6 +510,15 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Global cap for one-shot `hermes chat -q ...` processes on this host.
+        # 0 disables the guard. Set conservatively by default because these
+        # single-query workers are the easiest path to accidental process storms
+        # from wrappers, web UIs, kanban dispatchers, or bad retry loops.
+        "single_query_max_concurrency": 20,
+        # Optional wait time (seconds) for a free single-query slot before the
+        # CLI exits with an error. 0 = fail fast immediately when the host is
+        # already at the concurrency cap.
+        "single_query_concurrency_wait_seconds": 0,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -3183,13 +3192,20 @@ def _normalize_custom_provider_entry(
     if isinstance(models, dict) and models:
         normalized["models"] = models
     elif isinstance(models, list) and models:
-        # Hand-edited configs (and older Hermes versions) write ``models`` as
-        # a plain list of model ids. Preserve them by converting to the dict
-        # shape downstream code expects; otherwise normalize silently drops
-        # the list and /model shows the provider with (0) models.
-        normalized["models"] = {
-            str(m): {} for m in models if isinstance(m, str) and m.strip()
-        }
+        # Preserve both simple ``list[str]`` and enriched ``list[dict]`` forms.
+        # Older/local configs often store model metadata objects here; dropping
+        # them forces downstream pickers to fall back to incomplete endpoint
+        # /models listings.
+        normalized_models: Dict[str, Any] = {}
+        for item in models:
+            if isinstance(item, str) and item.strip():
+                normalized_models[item.strip()] = {}
+            elif isinstance(item, dict):
+                mid = item.get("id") or item.get("name")
+                if isinstance(mid, str) and mid.strip():
+                    normalized_models[mid.strip()] = item
+        if normalized_models:
+            normalized["models"] = normalized_models
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:

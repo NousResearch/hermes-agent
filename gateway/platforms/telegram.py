@@ -2675,12 +2675,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             provider_label = get_label(current_provider)
             text = self.format_message(
-                (
+                
                     f"⚙ *Model Configuration*\n\n"
                     f"Current model: `{current_model or 'unknown'}`\n"
                     f"Provider: {provider_label}\n\n"
                     f"Select a provider:"
-                )
+                
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
@@ -2800,11 +2800,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
             await query.edit_message_text(
                 text=self.format_message(
-                    (
+                    
                         f"⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
                         f"Select a model:{extra}"
-                    )
+                    
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
@@ -2836,11 +2836,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
             await query.edit_message_text(
                 text=self.format_message(
-                    (
+                    
                         f"⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
                         f"Select a model:{extra}"
-                    )
+                    
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,
@@ -2919,12 +2919,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             await query.edit_message_text(
                 text=self.format_message(
-                    (
+                    
                         f"⚙ *Model Configuration*\n\n"
                         f"Current model: `{state['current_model'] or 'unknown'}`\n"
                         f"Provider: {provider_label}\n\n"
                         f"Select a provider:"
-                    )
+                    
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=keyboard,

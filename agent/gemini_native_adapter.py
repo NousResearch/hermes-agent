@@ -312,7 +312,7 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
             for tool_call in tool_calls:
                 if isinstance(tool_call, dict):
                     tool_call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
-                    tool_name = str(((tool_call.get("function") or {}).get("name") or ""))
+                    tool_name = str((tool_call.get("function") or {}).get("name") or "")
                     if tool_call_id and tool_name:
                         tool_name_by_call_id[tool_call_id] = tool_name
                     parts.append(_translate_tool_call_to_gemini(tool_call))

@@ -110,14 +110,39 @@ class TestApplyWalWithFallback:
         assert mode == "delete"
         conn.close()
 
-    def test_falls_back_on_disk_io_error(self, tmp_path):
-        """Flaky network FS → disk I/O error → still fall back."""
+    def test_reraises_disk_io_error_without_delete_fallback(self, tmp_path):
+        """Transient disk I/O is not WAL-incompat; don't mask it as DELETE fallback."""
         conn, _ = _open_blocking(
             tmp_path / "flaky.db", reason="disk I/O error", isolation_level=None
         )
-        mode = apply_wal_with_fallback(conn)
-        assert mode == "delete"
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            apply_wal_with_fallback(conn)
         conn.close()
+
+    def test_delete_fallback_failure_reraises_delete_error_once(self, tmp_path, caplog):
+        """If WAL is truly incompatible but DELETE also fails, surface DELETE failure."""
+        class _BothJournalModesFailConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                normalized = sql.lower().replace(" ", "")
+                if "journal_mode=wal" in normalized:
+                    raise sqlite3.OperationalError("locking protocol")
+                if "journal_mode=delete" in normalized:
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(
+            str(tmp_path / "fallback-delete-fails.db"),
+            factory=_BothJournalModesFailConnection,
+            isolation_level=None,
+        )
+        with caplog.at_level("WARNING", logger="hermes_state"):
+            with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+                apply_wal_with_fallback(conn, db_label="broken-kanban.db")
+        conn.close()
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert sum("WAL journal_mode unsupported" in msg for msg in messages) == 1
+        assert sum("DELETE fallback failed" in msg for msg in messages) == 1
 
     def test_reraises_unrelated_operational_error(self, tmp_path):
         """Non-WAL-compat errors must NOT be silently swallowed by the fallback."""

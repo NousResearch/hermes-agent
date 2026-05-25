@@ -5318,6 +5318,7 @@ class GatewayRunner:
         bad_ticks = 0
         last_warn_at = 0
         disabled_corrupt_boards: dict[str, tuple[str, int | None, int | None]] = {}
+        transient_disk_io_failures: dict[str, tuple[str, int | None, int | None]] = {}
 
         def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
             path = _kb.kanban_db_path(slug)
@@ -5339,6 +5340,11 @@ class GatewayRunner:
                 "file is not a database" in msg
                 or "database disk image is malformed" in msg
             )
+
+        def _is_transient_board_disk_io_error(exc: Exception) -> bool:
+            if not isinstance(exc, sqlite3.DatabaseError):
+                return False
+            return "disk i/o error" in str(exc).lower()
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
@@ -5368,7 +5374,7 @@ class GatewayRunner:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
-                return _kb.dispatch_once(
+                result = _kb.dispatch_once(
                     conn,
                     board=slug,
                     max_spawn=max_spawn,
@@ -5376,6 +5382,8 @@ class GatewayRunner:
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
+                transient_disk_io_failures.pop(slug, None)
+                return result
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
                     disabled_corrupt_boards[slug] = fingerprint
@@ -5388,6 +5396,26 @@ class GatewayRunner:
                         slug,
                         fingerprint[0],
                     )
+                    return None
+                if _is_transient_board_disk_io_error(exc):
+                    if transient_disk_io_failures.get(slug) != fingerprint:
+                        transient_disk_io_failures[slug] = fingerprint
+                        logger.warning(
+                            "kanban dispatcher: transient SQLite disk I/O error "
+                            "on board %s database %s; suppressing repeated "
+                            "tick tracebacks until the DB file changes or a "
+                            "dispatch tick succeeds: %s",
+                            slug,
+                            fingerprint[0],
+                            exc,
+                        )
+                    else:
+                        logger.debug(
+                            "kanban dispatcher: repeated SQLite disk I/O error "
+                            "on board %s suppressed: %s",
+                            slug,
+                            exc,
+                        )
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None

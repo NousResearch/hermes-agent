@@ -54,7 +54,6 @@ SCHEMA_VERSION = 13
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
-    "disk i/o error",         # Flaky network FS during WAL setup
 )
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
@@ -157,7 +156,17 @@ def apply_wal_with_fallback(
             # Unrelated OperationalError — don't silently swallow.
             raise
         _log_wal_fallback_once(db_label, exc)
-        conn.execute("PRAGMA journal_mode=DELETE")
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+        except sqlite3.OperationalError as fallback_exc:
+            logger.warning(
+                "%s: DELETE fallback failed after WAL journal_mode was "
+                "unsupported (%s); propagating the DELETE failure so callers "
+                "can diagnose the underlying SQLite/filesystem problem.",
+                db_label,
+                fallback_exc,
+            )
+            raise
         return "delete"
 
 

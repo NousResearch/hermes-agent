@@ -1,0 +1,26 @@
+manifest_version: 1
+name: project-management
+version: 1.1.0
+description: >
+  Autonomous project bootstrap workflow for Hermes. Provides /createproject and
+  /newproject, creates workspaces under ~/projects, initializes Beads as the
+  canonical issue graph, creates a Kanban execution board, writes Serena project
+  config, captures Context7 docs, adds a designer-owned mockup prompt/reference
+  step before UI implementation, and enforces no approval gates after intake, expands requested lists into scope-ledger items, and creates final scope audit gates before project completion.
+author: NousResearch
+kind: standalone
+hooks:
+  - pre_gateway_dispatch
+
+# Optional environment variable overrides:
+#   HERMES_PROJECTS_ROOT                 — workspace root (default: ~/projects)
+#   HERMES_PROJECT_ORCHESTRATOR          — default coordination assignee profile (default: default)
+#   HERMES_PROJECT_DESIGNER              — design/mockup assignee profile (default: design)
+#   HERMES_PROJECT_DEVELOPER             — implementation assignee profile (default: fullstack)
+#   HERMES_PROJECT_MANAGEMENT_HOME       — plugin state dir
+#   HERMES_PROJECT_PENDING_TTL_SECONDS   — pending-draft TTL (default: 86400)
+#   HERMES_BEADS_BIN                     — bd binary (default: bd)
+#   HERMES_SERENA_BIN                    — serena binary (default: serena)
+#   HERMES_CONTEXT7_BIN                  — ctx7 binary (default: ctx7 or npx ctx7)
+#   WIKI_PATH                            — project-memory wiki root (default: ~/project-memory)
+#   OBSIDIAN_VAULT_PATH                  — optional same path for Obsidian/LLM wiki tools

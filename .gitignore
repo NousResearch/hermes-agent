@@ -74,3 +74,13 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+/bd.db
+/db.sqlite
+.beads/*.db
+.beads/*.db-journal
+.beads/*.db-wal
+.beads/*.db-shm
+.beads-credential-key

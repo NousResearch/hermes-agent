@@ -1,0 +1,1 @@
+{"id":"int-698c03bb","kind":"field_change","created_at":"2026-05-25T04:50:04.883638375Z","actor":"brumsey","issue_id":"hermes-agent-e3q","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Configured global Git identity for Beads auto-commit and verified Beads commands work."}}

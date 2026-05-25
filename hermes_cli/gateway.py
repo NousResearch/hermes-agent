@@ -207,9 +207,9 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
 
     SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
     which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
-    seconds), then exits with code 75.  Both systemd (``Restart=always``
-    + ``RestartForceExitStatus=75``) and launchd (``KeepAlive.SuccessfulExit
-    = false``) relaunch the process after the graceful exit.
+    seconds), then exits with code 75.  systemd restarts on failures and
+    force-restarts exit code 75 via ``RestartForceExitStatus=75``; launchd
+    relaunches via ``KeepAlive.SuccessfulExit = false``.
 
     This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
     which SIGKILL in-flight agents after a short timeout.
@@ -2195,7 +2195,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+Restart=on-failure
 RestartSec=5
 RestartMaxDelaySec=300
 RestartSteps=5
@@ -2230,7 +2230,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+Restart=on-failure
 RestartSec=5
 RestartMaxDelaySec=300
 RestartSteps=5
@@ -3214,7 +3214,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print()
     
     # Exit with code 1 if gateway fails to connect any platform,
-    # so systemd Restart=always will retry on transient errors
+    # so systemd Restart=on-failure will retry on transient errors
     verbosity = None if quiet else verbose
 
     # ── Exit-path diagnostics ────────────────────────────────────────────

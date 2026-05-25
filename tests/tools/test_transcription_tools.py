@@ -18,6 +18,11 @@ import pytest
 if "faster_whisper" not in sys.modules:
     faster_whisper_stub = types.ModuleType("faster_whisper")
     faster_whisper_stub.WhisperModel = MagicMock(name="WhisperModel")
+    # Set ``__spec__`` so ``importlib.util.find_spec("faster_whisper")``
+    # doesn't raise ``ValueError: faster_whisper.__spec__ is None`` during
+    # collection (used by skipif markers further down in this file).
+    from importlib.machinery import ModuleSpec
+    faster_whisper_stub.__spec__ = ModuleSpec("faster_whisper", loader=None)
     sys.modules["faster_whisper"] = faster_whisper_stub
 
 

@@ -84,16 +84,24 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
 def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     """A ZIP with only regular file members must extract without raising.
 
-    Sanity check that the symlink reject didn't break the happy path.
-    Wraps just enough of _update_via_zip's I/O to verify extraction
-    proceeds past the symlink check. We let the rest of the function
-    fail naturally (no real git checkout to update); the assertion is
-    just that we got past the ZIP validation.
+    Sanity check that the symlink reject didn't break the happy path.  We
+    point ``PROJECT_ROOT`` at an isolated tmp dir so the function's
+    ``shutil.copytree(src, dst)`` over PROJECT_ROOT lands in a sandbox, NOT
+    the real repo checkout (which previously stomped on README.md whenever
+    this test ran, leaving 'ok\\n' there and breaking
+    ``test_readme_mentions_powershell_installer`` for everyone else).
     """
     zip_path = tmp_path / "normal.zip"
     _build_normal_zip(str(zip_path))
 
-    from hermes_cli.main import _update_via_zip
+    # Sandbox PROJECT_ROOT so the file-copy phase can't escape the test's
+    # tmp tree. The function only reads PROJECT_ROOT to derive dst paths.
+    fake_root = tmp_path / "install_dir"
+    fake_root.mkdir()
+
+    from hermes_cli import main as hermes_main
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
 
     args = type("Args", (), {})()
 
@@ -102,15 +110,23 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
             dst.write(src.read())
         return dest, None
 
-    with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve):
-        # The function will fail later (no real install dir to update into),
-        # but it must get past the ZIP validation without raising
-        # ValueError("symlink member").
+    # Stub the post-extract pip/uv reinstall so we don't actually run pip.
+    # The function may sys.exit(1) when those commands fail; that's fine —
+    # we only care that ZIP validation + extraction completed without
+    # raising "symlink member".
+    with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
+         patch("subprocess.run") as fake_run, \
+         patch("subprocess.check_call"):
+        fake_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         try:
-            _update_via_zip(args)
+            hermes_main._update_via_zip(args)
         except SystemExit:
             pass
 
     captured = capsys.readouterr()
     assert "symlink member" not in captured.out
     assert "symlink member" not in captured.err
+    # The fake README from the ZIP should have landed in our sandbox root,
+    # confirming the extraction + copy phases ran past the validation gate.
+    assert (fake_root / "README.md").exists()
+    assert (fake_root / "README.md").read_text() == "ok\n"

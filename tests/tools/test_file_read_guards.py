@@ -82,7 +82,16 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertTrue(_is_blocked_device("/proc/12345/fd/2"))
 
     def test_proc_fd_other_not_blocked(self):
-        self.assertFalse(_is_blocked_device("/proc/self/fd/3"))
+        # The path-pattern check only blocklists /fd/0, /fd/1, /fd/2 as stdio
+        # aliases.  Higher-numbered fds are not pattern-blocked; whether they
+        # ultimately get blocked depends on realpath resolution (a separate
+        # concern, handled in test_symlink_to_blocked_device_is_blocked).
+        # Using the lower-level _is_blocked_device_path here keeps the
+        # assertion stable across environments where pytest workers happen to
+        # have fd 3 dup'd to a blocked device.
+        from tools.file_tools import _is_blocked_device_path
+
+        self.assertFalse(_is_blocked_device_path("/proc/self/fd/3"))
 
     def test_proc_sensitive_pseudo_files_blocked(self):
         """environ/cmdline/maps under /proc/<pid> must be blocked (issue #4427)."""

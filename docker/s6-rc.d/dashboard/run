@@ -1,0 +1,40 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Dashboard service. Always declared so s6 has a supervised slot; if
+# HERMES_DASHBOARD isn't truthy the run script exits cleanly and the
+# companion finish script returns 125 (s6's "permanent failure, do
+# not restart" marker), so s6-svstat reports the slot as down. See
+# also docker/s6-rc.d/dashboard/finish.
+
+case "${HERMES_DASHBOARD:-}" in
+    1|true|TRUE|True|yes|YES|Yes) ;;
+    *)
+        # Exit 0; the finish script will exit 125 → s6-supervise won't
+        # restart us and the slot reports down. Using a clean exit
+        # (rather than `exec sleep infinity`) means s6-svstat reflects
+        # reality: when HERMES_DASHBOARD is unset, the service is NOT
+        # running, just supervised-with-permanent-failure. See PR
+        # #30136 review item I3.
+        exit 0
+        ;;
+esac
+
+cd /opt/data
+# shellcheck disable=SC1091
+. /opt/hermes/.venv/bin/activate
+
+dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
+dash_port="${HERMES_DASHBOARD_PORT:-9119}"
+
+# Binding to anything other than localhost requires --insecure — the
+# dashboard refuses otherwise because it exposes API keys. Inside a
+# container this is the expected deployment.
+insecure=""
+case "$dash_host" in
+    127.0.0.1|localhost) ;;
+    *) insecure="--insecure" ;;
+esac
+
+# shellcheck disable=SC2086  # word-splitting of $insecure is intentional
+exec s6-setuidgid hermes hermes dashboard \
+    --host "$dash_host" --port "$dash_port" --no-open $insecure

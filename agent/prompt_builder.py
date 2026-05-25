@@ -1423,6 +1423,33 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
+def _load_bootstrap_dir(cwd_path: Path) -> str:
+    """Load all *.md files from a bootstrap/ directory in cwd or HERMES_HOME.
+    
+    Provides an additive mechanism for multi-file bootstrapping without overriding
+    the primary project context (AGENTS.md, .hermes.md, etc.).
+    """
+    bootstrap_content = ""
+    # Check cwd/bootstrap and HERMES_HOME/bootstrap
+    # Profile-specific bootstrap takes precedence in order if names collide
+    for base in [cwd_path, get_hermes_home()]:
+        boot_dir = base / "bootstrap"
+        if boot_dir.exists() and boot_dir.is_dir():
+            md_files = sorted(boot_dir.glob("*.md"))
+            for md_file in md_files:
+                try:
+                    content = md_file.read_text(encoding="utf-8").strip()
+                    if content:
+                        content = _scan_context_content(content, f"bootstrap/{md_file.name}")
+                        bootstrap_content += f"### bootstrap/{md_file.name}\n\n{content}\n\n"
+                except Exception as e:
+                    logger.debug("Could not read bootstrap file %s: %s", md_file, e)
+    
+    if not bootstrap_content:
+        return ""
+    return _truncate_content(bootstrap_content.strip(), "bootstrap/")
+
+
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
@@ -1432,8 +1459,9 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
+    SOUL.md from HERMES_HOME and the bootstrap/ directory (from cwd or HERMES_HOME)
+    are independent and always included when present. Each context source is
+    capped at 20,000 chars.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -1459,6 +1487,11 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
         soul_content = load_soul_md()
         if soul_content:
             sections.append(soul_content)
+
+    # Bootstrap directory (additive)
+    bootstrap_context = _load_bootstrap_dir(cwd_path)
+    if bootstrap_context:
+        sections.append(bootstrap_context)
 
     if not sections:
         return ""

@@ -15,6 +15,7 @@ from agent.prompt_builder import (
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
+    _load_bootstrap_dir,
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
@@ -1195,3 +1196,44 @@ class TestOpenAIModelExecutionGuidance:
 
 
 
+
+class TestBootstrapDir:
+    def test_empty_bootstrap_returns_empty(self, tmp_path):
+        assert _load_bootstrap_dir(tmp_path) == ""
+
+    def test_loads_files_from_cwd_bootstrap(self, tmp_path):
+        boot_dir = tmp_path / "bootstrap"
+        boot_dir.mkdir()
+        (boot_dir / "setup.md").write_text("Context A")
+        (boot_dir / "extra.md").write_text("Context B")
+        
+        result = _load_bootstrap_dir(tmp_path)
+        assert "bootstrap/setup.md" in result
+        assert "Context A" in result
+        assert "bootstrap/extra.md" in result
+        assert "Context B" in result
+
+    def test_loads_files_from_hermes_home_bootstrap(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        boot_dir = tmp_path / "hermes_home" / "bootstrap"
+        boot_dir.mkdir(parents=True)
+        (boot_dir / "global.md").write_text("Global Context")
+        
+        result = _load_bootstrap_dir(tmp_path)
+        assert "bootstrap/global.md" in result
+        assert "Global Context" in result
+
+    def test_additive_in_build_context_files_prompt(self, tmp_path):
+        # AGENTS.md exists
+        (tmp_path / "AGENTS.md").write_text("Primary Agent Rules")
+        
+        # bootstrap/ exists
+        boot_dir = tmp_path / "bootstrap"
+        boot_dir.mkdir()
+        (boot_dir / "secondary.md").write_text("Secondary Rules")
+        
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        
+        assert "Primary Agent Rules" in result
+        assert "Secondary Rules" in result
+        assert "bootstrap/secondary.md" in result

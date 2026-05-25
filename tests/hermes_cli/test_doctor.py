@@ -356,6 +356,45 @@ class TestDoctorMemoryProviderSection:
         assert "Built-in memory active" not in out
 
 
+class TestDoctorMemoryHygieneSection:
+    def test_reports_codex_summary_staleness_and_raw_archive_size(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(doctor_mod, "_MEMORY_HYGIENE_RAW_LARGE_FILE_BYTES", 8)
+        monkeypatch.setattr(doctor_mod, "_MEMORY_HYGIENE_STALE_SUMMARY_SECONDS", 60)
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_memories = hermes_home / "memories"
+        hermes_memories.mkdir(parents=True)
+        (hermes_memories / "MEMORY.md").write_text("memory\n", encoding="utf-8")
+        (hermes_memories / "USER.md").write_text("user\n", encoding="utf-8")
+
+        codex_memories = tmp_path / ".codex" / "memories"
+        codex_memories.mkdir(parents=True)
+        codex_memory = codex_memories / "MEMORY.md"
+        codex_summary = codex_memories / "memory_summary.md"
+        codex_memory.write_text("fresh memory\n", encoding="utf-8")
+        codex_summary.write_text("old summary\n", encoding="utf-8")
+        (codex_memories / "raw_memories.md").write_text("raw memory archive\n", encoding="utf-8")
+        notes_dir = codex_memories / "extensions" / "ad_hoc" / "notes"
+        notes_dir.mkdir(parents=True)
+        (notes_dir / "one.md").write_text("one\n", encoding="utf-8")
+        (notes_dir / "two.md").write_text("two\n", encoding="utf-8")
+
+        os.utime(codex_memory, (200_000, 200_000))
+        os.utime(codex_summary, (100_000, 100_000))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod._run_memory_hygiene_checks(hermes_home, codex_memories)
+
+        out = buf.getvalue()
+        assert "Memory Hygiene" in out
+        assert "Hermes MEMORY.md readable" in out
+        assert "Codex memory_summary.md older than MEMORY.md" in out
+        assert "Codex raw_memories.md is large" in out
+        assert "Codex ad-hoc memory notes present (2)" in out
+        assert "Codex desktop memory and Chronicle toggles are app-level" in out
+
+
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
     monkeypatch.setenv("TERMUX_VERSION", "0.118.3")

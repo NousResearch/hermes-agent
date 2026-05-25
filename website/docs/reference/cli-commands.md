@@ -502,6 +502,12 @@ hermes doctor [--fix]
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
 
+`hermes doctor` also includes a read-only **Memory Hygiene** section. It
+checks Hermes memory files, Codex memory files, summary freshness, raw memory
+archive size, and ad-hoc memory note backlog without deleting or rewriting any
+memory. Codex desktop memory and Chronicle toggles are app-level settings, so
+doctor reports the boundary instead of trying to mutate those settings.
+
 ## `hermes dump`
 
 ```bash

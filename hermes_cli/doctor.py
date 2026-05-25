@@ -9,6 +9,7 @@ import sys
 import subprocess
 import shutil
 import importlib.util
+import time
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -18,6 +19,11 @@ from hermes_constants import display_hermes_home
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
 _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
+
+_MEMORY_HYGIENE_LARGE_FILE_BYTES = 512 * 1024
+_MEMORY_HYGIENE_RAW_LARGE_FILE_BYTES = 1024 * 1024
+_MEMORY_HYGIENE_STALE_SUMMARY_SECONDS = 24 * 60 * 60
+_MEMORY_HYGIENE_AD_HOC_WARN_COUNT = 50
 
 # Load environment variables from ~/.hermes/.env so API key checks work
 _env_path = get_env_path()
@@ -180,6 +186,107 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
         except Exception:
             return False
     return False
+
+
+def _format_bytes(size: int) -> str:
+    """Return a compact human-readable byte count for doctor output."""
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} B"
+
+
+def _codex_memory_root() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home).expanduser() / "memories"
+    return Path.home() / ".codex" / "memories"
+
+
+def _check_memory_file(path: Path, label: str, large_threshold: int = _MEMORY_HYGIENE_LARGE_FILE_BYTES) -> None:
+    if not path.exists():
+        check_info(f"{label} not found")
+        return
+    if not path.is_file():
+        check_warn(f"{label} is not a file")
+        return
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.read(1)
+    except OSError as exc:
+        check_warn(f"{label} not readable", f"({exc})")
+        return
+    detail = f"({_format_bytes(size)})"
+    if size > large_threshold:
+        check_warn(f"{label} is large", f"{detail}; consider summarizing or pruning")
+    else:
+        check_ok(f"{label} readable", detail)
+
+
+def _run_memory_hygiene_checks(
+    hermes_home: Path | None = None,
+    codex_memory_root: Path | None = None,
+) -> None:
+    """Report read-only memory hygiene signals for Hermes and Codex memories."""
+    _section("Memory Hygiene")
+
+    home = hermes_home or HERMES_HOME
+    memories_dir = home / "memories"
+    if memories_dir.exists():
+        check_ok("Hermes memories directory readable", f"({memories_dir})")
+        _check_memory_file(memories_dir / "MEMORY.md", "Hermes MEMORY.md")
+        _check_memory_file(memories_dir / "USER.md", "Hermes USER.md")
+    else:
+        check_info("Hermes memories directory not created yet")
+
+    codex_root = codex_memory_root or _codex_memory_root()
+    if not codex_root.exists():
+        check_info("Codex memories directory not found")
+        check_info("Codex desktop memory and Chronicle toggles are app-level; verify them in Codex settings when screen context is required")
+        return
+
+    check_ok("Codex memories directory readable", f"({codex_root})")
+    codex_memory = codex_root / "MEMORY.md"
+    codex_summary = codex_root / "memory_summary.md"
+    codex_raw = codex_root / "raw_memories.md"
+    _check_memory_file(codex_memory, "Codex MEMORY.md")
+    _check_memory_file(codex_summary, "Codex memory_summary.md")
+    _check_memory_file(codex_raw, "Codex raw_memories.md", _MEMORY_HYGIENE_RAW_LARGE_FILE_BYTES)
+
+    if codex_memory.exists() and codex_summary.exists():
+        try:
+            memory_mtime = codex_memory.stat().st_mtime
+            summary_mtime = codex_summary.stat().st_mtime
+            if summary_mtime + _MEMORY_HYGIENE_STALE_SUMMARY_SECONDS < memory_mtime:
+                age_hours = max(0.0, (time.time() - summary_mtime) / 3600)
+                check_warn("Codex memory_summary.md older than MEMORY.md", f"({age_hours:.1f}h old)")
+            else:
+                check_ok("Codex memory summary freshness", "(summary is current enough)")
+        except OSError as exc:
+            check_warn("Codex memory summary freshness unknown", f"({exc})")
+
+    ad_hoc_notes_dir = codex_root / "extensions" / "ad_hoc" / "notes"
+    if ad_hoc_notes_dir.exists():
+        try:
+            note_count = sum(1 for p in ad_hoc_notes_dir.iterdir() if p.is_file())
+        except OSError as exc:
+            check_warn("Codex ad-hoc memory notes not readable", f"({exc})")
+        else:
+            if note_count > _MEMORY_HYGIENE_AD_HOC_WARN_COUNT:
+                check_warn("Codex ad-hoc memory notes backlog", f"({note_count} files)")
+            elif note_count:
+                check_info(f"Codex ad-hoc memory notes present ({note_count})")
+            else:
+                check_ok("Codex ad-hoc memory notes directory empty")
+    else:
+        check_info("Codex ad-hoc memory notes directory not found")
+
+    check_info("Codex desktop memory and Chronicle toggles are app-level; verify them in Codex settings when screen context is required")
 
 
 def check_ok(text: str, detail: str = ""):
@@ -1940,6 +2047,8 @@ def run_doctor(args):
         check_ok("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)")
     else:
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
+
+    _run_memory_hygiene_checks(HERMES_HOME)
 
     _section("Memory Provider")
     _active_memory_provider = ""

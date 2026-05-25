@@ -27,6 +27,8 @@ Security:
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -377,9 +379,21 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature FIRST (skip for INSECURE_NO_AUTH testing mode)
+        # Validate HMAC signature FIRST (skip only for the explicit local-test
+        # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
+        # not only during connect(), so direct handler reuse cannot turn a
+        # network webhook route into an unauthenticated agent-dispatch surface.
         secret = route_config.get("secret", self._global_secret)
-        if secret and secret != _INSECURE_NO_AUTH:
+        if not secret:
+            logger.error(
+                "[webhook] Route %s has no HMAC secret; refusing request",
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Webhook route is missing an HMAC secret"},
+                status=403,
+            )
+        if secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
@@ -419,6 +433,7 @@ class WebhookAdapter(BasePlatformAdapter):
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
+            or payload.get("type", "")
             or "unknown"
         )
         allowed_events = route_config.get("events", [])
@@ -471,7 +486,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # Build a unique delivery ID
         delivery_id = request.headers.get(
             "X-GitHub-Delivery",
-            request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+            request.headers.get(
+                "svix-id",
+                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+            ),
         )
 
         # ── Idempotency ─────────────────────────────────────────
@@ -616,7 +634,32 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        def _header(name: str) -> str:
+            return (
+                request.headers.get(name, "")
+                or request.headers.get(name.lower(), "")
+                or request.headers.get(name.upper(), "")
+            )
+
+        # Svix / AgentMail:
+        #   svix-id: msg_...
+        #   svix-timestamp: unix seconds
+        #   svix-signature: v1,<base64-hmac> [v1,<base64-hmac> ...]
+        # Signed content is: "{id}.{timestamp}.{raw_body}".  Svix secrets
+        # usually start with "whsec_" and the remainder is base64-encoded.
+        svix_id = _header("svix-id")
+        svix_timestamp = _header("svix-timestamp")
+        svix_signature = _header("svix-signature")
+        if svix_id or svix_timestamp or svix_signature:
+            return self._validate_svix_signature(
+                body=body,
+                secret=secret,
+                msg_id=svix_id,
+                timestamp=svix_timestamp,
+                signature_header=svix_signature,
+            )
+
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")
         if gh_sig:
@@ -642,6 +685,56 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.debug(
             "[webhook] Secret configured but no signature header found"
         )
+        return False
+
+    def _validate_svix_signature(
+        self,
+        body: bytes,
+        secret: str,
+        msg_id: str,
+        timestamp: str,
+        signature_header: str,
+        tolerance_seconds: int = 300,
+    ) -> bool:
+        """Validate Svix-compatible signatures used by AgentMail webhooks."""
+        if not (msg_id and timestamp and signature_header and secret):
+            return False
+
+        try:
+            ts = int(timestamp)
+        except (TypeError, ValueError):
+            return False
+        if abs(int(time.time()) - ts) > tolerance_seconds:
+            logger.warning("[webhook] Svix signature timestamp outside replay window")
+            return False
+
+        if secret.startswith("whsec_"):
+            encoded_secret = secret.removeprefix("whsec_")
+            try:
+                key = base64.b64decode(encoded_secret, validate=True)
+            except (binascii.Error, ValueError):
+                logger.debug("[webhook] Invalid whsec_ Svix signing secret")
+                return False
+        else:
+            # Be permissive for providers that document Svix-style headers but
+            # hand out raw shared secrets rather than whsec_ base64 secrets.
+            logger.debug("[webhook] Validating Svix-style signature with raw secret")
+            key = secret.encode()
+
+        signed_content = msg_id.encode() + b"." + timestamp.encode() + b"." + body
+        expected = base64.b64encode(
+            hmac.new(key, signed_content, hashlib.sha256).digest()
+        ).decode()
+
+        # Svix can send multiple signatures separated by spaces during secret
+        # rotation. Each entry is formatted as "vN,<base64>".
+        for part in signature_header.split():
+            try:
+                version, signature = part.split(",", 1)
+            except ValueError:
+                continue
+            if version == "v1" and hmac.compare_digest(signature, expected):
+                return True
         return False
 
     # ------------------------------------------------------------------

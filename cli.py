@@ -415,6 +415,12 @@ def load_cli_config() -> Dict[str, Any]:
         "display": {
             "compact": False,
             "resume_display": "full",
+            # Recap tuning for /resume — see hermes_cli/config.py DEFAULT_CONFIG.
+            "resume_exchanges": 10,
+            "resume_max_user_chars": 300,
+            "resume_max_assistant_chars": 200,
+            "resume_max_assistant_lines": 3,
+            "resume_skip_tool_only": True,
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
@@ -468,7 +474,9 @@ def load_cli_config() -> Dict[str, Any]:
     if config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                file_config = yaml.safe_load(f) or {}
+                from hermes_cli.config import _normalize_root_model_keys
+
+                file_config = _normalize_root_model_keys(yaml.safe_load(f) or {})
             
             _file_has_terminal_config = "terminal" in file_config
 
@@ -489,21 +497,6 @@ def load_cli_config() -> Dict[str, Any]:
                     if "model" in file_config["model"] and "default" not in file_config["model"]:
                         defaults["model"]["default"] = file_config["model"]["model"]
 
-            # Legacy root-level provider/base_url fallback.
-            # Some users (or old code) put provider: / base_url: at the
-            # config root instead of inside the model: section.  These are
-            # only used as a FALLBACK when model.provider / model.base_url
-            # is not already set — never as an override.  The canonical
-            # location is model.provider (written by `hermes model`).
-            if not defaults["model"].get("provider"):
-                root_provider = file_config.get("provider")
-                if root_provider:
-                    defaults["model"]["provider"] = root_provider
-            if not defaults["model"].get("base_url"):
-                root_base_url = file_config.get("base_url")
-                if root_base_url:
-                    defaults["model"]["base_url"] = root_base_url
-            
             # Deep merge file_config into defaults.
             # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)
             for key in defaults:
@@ -775,8 +768,6 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
 
-import fire
-
 # Import agent and tool systems lazily. Bare interactive startup only needs the
 # prompt; the full agent/tool registry is initialized on first use.
 def AIAgent(*args, **kwargs):
@@ -817,6 +808,13 @@ def validate_toolset(*args, **kwargs):
     from toolsets import validate_toolset as _validate_toolset
 
     return _validate_toolset(*args, **kwargs)
+
+
+def _sync_process_session_id(session_id: str) -> None:
+    """Keep process-local session-id consumers aligned after CLI switches."""
+    from gateway.session_context import set_current_session_id
+
+    set_current_session_id(session_id)
 
 # Cron job system for scheduled tasks (execution is handled by the gateway)
 def get_job(*args, **kwargs):
@@ -2814,7 +2812,7 @@ class HermesCLI:
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
-        verbose: bool = False,
+        verbose: Optional[bool] = None,
         compact: bool = False,
         resume: str = None,
         checkpoints: bool = False,
@@ -2865,7 +2863,12 @@ class HermesCLI:
         else:
             self.busy_input_mode = "interrupt"
 
-        self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
+        # self.verbose ONLY controls global DEBUG logging (root logger level).
+        # display.tool_progress="verbose" controls tool-call rendering (full args,
+        # results, think blocks) and is independent — see _apply_logging_levels.
+        # Coupling the two (PR #6a1aa420e) caused all module DEBUG logs to spew
+        # to console whenever a user set tool_progress: verbose in config.
+        self.verbose = bool(verbose) if verbose is not None else False
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
@@ -4955,20 +4958,22 @@ class HermesCLI:
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._show_tool_availability_warnings()
 
-        # Warn about very low context lengths (common with local servers)
-        if ctx_len and ctx_len <= 8192:
+        # Warn about low context lengths (common with local servers). Keep
+        # this tied to the runtime guard so guidance cannot drift again.
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(
                 f"[yellow]⚠️  Context length is only {ctx_len:,} tokens — "
                 f"this is likely too low for agent use with tools.[/]"
             )
             self._console_print(
-                "[dim]   Hermes needs 16k–32k minimum. Tool schemas + system prompt alone use ~4k–8k.[/]"
+                f"[dim]   Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
             )
             base_url = getattr(self, "base_url", "") or ""
             if "11434" in base_url or "ollama" in base_url.lower():
                 self._console_print(
-                    "[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH=32768 ollama serve[/]"
+                    f"[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve[/]"
                 )
             elif "1234" in base_url:
                 self._console_print(
@@ -5091,10 +5096,13 @@ class HermesCLI:
         if self.resume_display == "minimal":
             return
 
-        MAX_DISPLAY_EXCHANGES = 10   # max user+assistant pairs to show
-        MAX_USER_LEN = 300           # truncate user messages
-        MAX_ASST_LEN = 200           # truncate assistant text
-        MAX_ASST_LINES = 3           # max lines of assistant text
+        # Read limits from config (with hardcoded defaults)
+        _disp = CLI_CONFIG.get("display", {})
+        MAX_DISPLAY_EXCHANGES = int(_disp.get("resume_exchanges", 10))
+        MAX_USER_LEN = int(_disp.get("resume_max_user_chars", 300))
+        MAX_ASST_LEN = int(_disp.get("resume_max_assistant_chars", 200))
+        MAX_ASST_LINES = int(_disp.get("resume_max_assistant_lines", 3))
+        SKIP_TOOL_ONLY = _disp.get("resume_skip_tool_only", True)
 
         # Collect displayable entries (skip system, tool-result messages)
         entries = []  # list of (role, display_text)
@@ -5156,6 +5164,10 @@ class HermesCLI:
                     full_parts.append(tc_summary)
                 if not parts:
                     # Skip pure-reasoning messages that have no visible output
+                    continue
+                # Skip tool-call-only entries when SKIP_TOOL_ONLY is enabled
+                has_text = bool(text)
+                if SKIP_TOOL_ONLY and not has_text and tool_calls:
                     continue
                 entries.append(("assistant", " ".join(parts)))
                 _last_asst_idx = len(entries) - 1
@@ -6162,15 +6174,16 @@ class HermesCLI:
         else:
             print("  Recent sessions:")
         print()
-        print(f"  {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
-        for session in sessions:
-            title = (session.get("title") or "—")[:30]
+        print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        for idx, session in enumerate(sessions, start=1):
+            title = session.get("title") or "—"
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
         print()
-        print("  Use /resume <session id or title> to continue where you left off.")
+        print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
+        print("  Example: /resume 2")
         print()
         return True
 
@@ -6281,6 +6294,7 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        _sync_process_session_id(self.session_id)
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -6514,7 +6528,7 @@ class HermesCLI:
         target = parts[1].strip() if len(parts) > 1 else ""
 
         if not target:
-            _cprint("  Usage: /resume <session_id_or_title>")
+            _cprint("  Usage: /resume <number|session_id_or_title>")
             if self._show_recent_sessions(reason="resume"):
                 return
             _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
@@ -6525,10 +6539,20 @@ class HermesCLI:
             _cprint(f"  {format_session_db_unavailable()}")
             return
 
-        # Resolve title or ID
-        from hermes_cli.main import _resolve_session_by_name_or_id
-        resolved = _resolve_session_by_name_or_id(target)
-        target_id = resolved or target
+        # Resolve numbered selection, title, or ID
+        if target.isdigit():
+            sessions = self._list_recent_sessions(limit=10)
+            index = int(target)
+            if index < 1 or index > len(sessions):
+                _cprint(f"  Resume index {index} is out of range.")
+                _cprint("  Use /resume with no arguments to see available sessions.")
+                return
+            selected = sessions[index - 1]
+            target_id = selected["id"]
+        else:
+            from hermes_cli.main import _resolve_session_by_name_or_id
+            resolved = _resolve_session_by_name_or_id(target)
+            target_id = resolved or target
 
         session_meta = self._session_db.get_session(target_id)
         if not session_meta:
@@ -6567,6 +6591,7 @@ class HermesCLI:
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
+        _sync_process_session_id(target_id)
 
         # Load conversation history (strip transcript-only metadata entries)
         restored = self._session_db.get_messages_as_conversation(target_id)
@@ -6618,6 +6643,7 @@ class HermesCLI:
                 f" ({msg_count} user message{'s' if msg_count != 1 else ''},"
                 f" {len(self.conversation_history)} total)"
             )
+            self._display_resumed_history()
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
@@ -6740,6 +6766,7 @@ class HermesCLI:
         self.session_start = now
         self._pending_title = None
         self._resumed = True  # Prevents auto-title generation
+        _sync_process_session_id(new_session_id)
 
         # Sync the agent
         if self.agent:
@@ -8101,6 +8128,7 @@ class HermesCLI:
                 "clear",
                 "This clears the screen and starts a new session.\n"
                 "The current conversation history will be discarded.",
+                cmd_original=cmd_original,
             ) is None:
                 return
             self.new_session(silent=True)
@@ -8225,12 +8253,16 @@ class HermesCLI:
             if not self._handle_handoff_command(cmd_original):
                 return False
         elif canonical == "new":
-            parts = cmd_original.split(maxsplit=1)
-            title = parts[1].strip() if len(parts) > 1 else None
+            # Strip inline-skip tokens (now/--yes/-y) before deriving the title
+            # so "/new now My Session" yields title="My Session" instead of
+            # title="now My Session". See _split_destructive_skip.
+            _new_args, _ = self._split_destructive_skip(cmd_original)
+            title = _new_args.strip() or None
             if self._confirm_destructive_slash(
                 "new",
                 "This starts a fresh session.\n"
                 "The current conversation history will be discarded.",
+                cmd_original=cmd_original,
             ) is None:
                 return
             self.new_session(title=title)
@@ -8257,6 +8289,7 @@ class HermesCLI:
             if self._confirm_destructive_slash(
                 "undo",
                 "This removes the last user/assistant exchange from history.",
+                cmd_original=cmd_original,
             ) is None:
                 return
             self.undo_last()
@@ -9334,18 +9367,23 @@ class HermesCLI:
             _cprint("  Failed to save runtime_footer setting to config.yaml")
 
     def _toggle_verbose(self):
-        """Cycle tool progress mode: off → new → all → verbose → off."""
+        """Cycle tool progress mode: off → new → all → verbose → off.
+
+        Tool-progress display (full args / results / think blocks at the
+        ``verbose`` step) is INDEPENDENT of global DEBUG logging.  Cycling
+        through here does not change ``self.verbose`` or the agent's
+        ``verbose_logging`` / ``quiet_mode`` — those remain under the
+        explicit ``-v``/``--verbose`` flag and the ``/verbose-logging``
+        toggle.  See PR #6a1aa420e for the history that decoupled them.
+        """
         cycle = ["off", "new", "all", "verbose"]
         try:
             idx = cycle.index(self.tool_progress_mode)
         except ValueError:
             idx = 2  # default to "all"
         self.tool_progress_mode = cycle[(idx + 1) % len(cycle)]
-        self.verbose = self.tool_progress_mode == "verbose"
 
         if self.agent:
-            self.agent.verbose_logging = self.verbose
-            self.agent.quiet_mode = not self.verbose
             self.agent.reasoning_callback = self._current_reasoning_callback()
 
         # Use raw ANSI codes via _cprint so the output is routed through
@@ -9357,7 +9395,7 @@ class HermesCLI:
             "off": f"{_Colors.DIM}Tool progress: OFF{_Colors.RESET} — silent mode, just the final response.",
             "new": f"{_Colors.YELLOW}Tool progress: NEW{_Colors.RESET} — show each new tool (skip repeats).",
             "all": f"{_Colors.GREEN}Tool progress: ALL{_Colors.RESET} — show every tool call.",
-            "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
+            "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, and think blocks.",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
 
@@ -9903,7 +9941,49 @@ class HermesCLI:
         if _reload_thread.is_alive():
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
 
-    def _confirm_destructive_slash(self, command: str, detail: str) -> Optional[str]:
+    # Inline-skip tokens that bypass the destructive-slash confirmation modal.
+    # Matches the escape-hatch pattern users on broken modal platforms
+    # (currently native Windows PowerShell — issue #30768) need to self-serve
+    # without having to flip approvals.destructive_slash_confirm in config.
+    _DESTRUCTIVE_SKIP_TOKENS = frozenset({"now", "--yes", "-y"})
+
+    @classmethod
+    def _split_destructive_skip(cls, cmd_text: Optional[str]) -> tuple[str, bool]:
+        """Split inline-skip tokens out of a destructive slash command.
+
+        Returns ``(remainder, skip)`` where ``remainder`` is the original
+        text with the command word and any recognized skip tokens removed,
+        and ``skip`` is True iff at least one skip token was found.
+
+        Examples:
+            "/reset now"            -> ("", True)
+            "/reset --yes My title" -> ("My title", True)
+            "/new My title"         -> ("My title", False)
+            "/clear"                -> ("", False)
+        """
+        if not cmd_text:
+            return "", False
+        tokens = cmd_text.strip().split()
+        if not tokens:
+            return "", False
+        # Drop leading "/cmd" word — callers pass the full command text.
+        if tokens[0].startswith("/"):
+            tokens = tokens[1:]
+        skip = False
+        kept: list[str] = []
+        for tok in tokens:
+            if tok.lower() in cls._DESTRUCTIVE_SKIP_TOKENS:
+                skip = True
+                continue
+            kept.append(tok)
+        return " ".join(kept), skip
+
+    def _confirm_destructive_slash(
+        self,
+        command: str,
+        detail: str,
+        cmd_original: Optional[str] = None,
+    ) -> Optional[str]:
         """Prompt the user to confirm a destructive session slash command.
 
         Used by ``/clear``, ``/new``/``/reset``, and ``/undo`` before they
@@ -9919,9 +9999,24 @@ class HermesCLI:
         gate is off the function returns ``"once"`` immediately without
         prompting.
 
+        Inline-skip: if ``cmd_original`` contains ``now``, ``--yes``, or
+        ``-y`` as an argument (e.g. ``/reset now``, ``/new --yes My title``),
+        the modal is bypassed and ``"once"`` is returned immediately. This is
+        an escape hatch for platforms where the prompt_toolkit modal hangs
+        (issue #30768 — native Windows PowerShell). Callers are responsible
+        for stripping the skip tokens from any remaining argument parsing
+        (see :meth:`_split_destructive_skip`).
+
         Returns ``"once"``, ``"always"``, or ``None`` (cancelled).  Callers
         proceed with the destructive action when the result is non-None.
         """
+        # Inline-skip escape hatch — works regardless of platform/modal state.
+        # See class-level _DESTRUCTIVE_SKIP_TOKENS for the accepted tokens.
+        if cmd_original:
+            _, _skip = self._split_destructive_skip(cmd_original)
+            if _skip:
+                return "once"
+
         # Gate check — respects prior "Always Approve" clicks.
         try:
             cfg = load_cli_config()
@@ -10256,9 +10351,7 @@ class HermesCLI:
                 self._last_scrollback_tool = function_name
                 try:
                     from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration)
-                    if is_error:
-                        line = f"{line} [error]"
+                    line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
                     _cprint(f"  {line}")
                 except Exception:
                     pass
@@ -14431,7 +14524,7 @@ def main(
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
-    verbose: bool = False,
+    verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
     list_tools: bool = False,
@@ -14777,4 +14870,6 @@ def main(
 
 
 if __name__ == "__main__":
+    import fire
+
     fire.Fire(main)

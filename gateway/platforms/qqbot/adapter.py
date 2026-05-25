@@ -1054,6 +1054,46 @@ class QQAdapter(BasePlatformAdapter):
         "deny": "deny",
     }
 
+    @staticmethod
+    def _parse_gateway_session_key(session_key: str) -> Optional[Dict[str, str]]:
+        """Parse ``agent:main:<platform>:<chat_type>:<chat_id>[:<user_id>]``."""
+        parts = str(session_key or "").split(":")
+        if len(parts) < 5 or parts[0] != "agent" or parts[1] != "main":
+            return None
+        parsed = {
+            "platform": parts[2],
+            "chat_type": parts[3],
+            "chat_id": parts[4],
+        }
+        if len(parts) > 5:
+            parsed["user_id"] = parts[5]
+        return parsed
+
+    def _is_authorized_interaction_for_session(
+            self,
+            event: InteractionEvent,
+            session_key: str,
+    ) -> bool:
+        """Authorize approval/update interactions against session + operator."""
+        parsed = self._parse_gateway_session_key(session_key)
+        operator = str(event.operator_openid or "").strip()
+        if not parsed or parsed.get("platform") != "qqbot" or not operator:
+            return False
+
+        chat_type = parsed.get("chat_type", "")
+        chat_id = parsed.get("chat_id", "")
+        if chat_type == "c2c":
+            return bool(chat_id) and operator == chat_id
+
+        if chat_type in {"group", "guild"}:
+            event_chat = str(event.group_openid or event.guild_id or "").strip()
+            if not event_chat or event_chat != chat_id:
+                return False
+            session_user = str(parsed.get("user_id", "")).strip()
+            return bool(session_user) and operator == session_user
+
+        return False
+
     async def _default_interaction_dispatch(
             self,
             event: InteractionEvent,
@@ -1087,6 +1127,13 @@ class QQAdapter(BasePlatformAdapter):
                     self._log_tag, decision, session_key,
                 )
                 return
+            if not self._is_authorized_interaction_for_session(event, session_key):
+                logger.warning(
+                    "[%s] Rejected unauthorized approval click for session %s "
+                    "(operator=%s)",
+                    self._log_tag, session_key, event.operator_openid,
+                )
+                return
             try:
                 # Import lazily to keep the adapter importable in tests that
                 # don't exercise the approval subsystem.
@@ -1107,6 +1154,13 @@ class QQAdapter(BasePlatformAdapter):
 
         update_answer = parse_update_prompt_button_data(button_data)
         if update_answer is not None:
+            update_session_key = f"agent:main:qqbot:{event.scene}:{event.group_openid or event.guild_id or event.user_openid}"
+            if not self._is_authorized_interaction_for_session(event, update_session_key):
+                logger.warning(
+                    "[%s] Rejected unauthorized update prompt click (operator=%s)",
+                    self._log_tag, event.operator_openid,
+                )
+                return
             self._write_update_response(update_answer, event.operator_openid)
             return
 

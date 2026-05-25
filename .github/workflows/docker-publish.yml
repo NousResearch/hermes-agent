@@ -80,6 +80,56 @@ jobs:
         with:
           image: ${{ env.IMAGE_NAME }}:test
 
+      # ---------------------------------------------------------------------
+      # Run the docker-integration test suite against the freshly-built
+      # image already loaded into the local daemon (`:test`).  These tests
+      # are excluded from the sharded `tests.yml :: test` matrix on purpose
+      # (see `_SKIP_PARTS` in scripts/run_tests_parallel.py) because each
+      # shard would otherwise reach the session-scoped ``built_image``
+      # fixture in ``tests/docker/conftest.py`` and start a 3-7min
+      # ``docker build`` under a 180s pytest-timeout cap — guaranteed to
+      # die in fixture setup.
+      #
+      # Piggybacking here avoids a second image build: the smoke test
+      # already proved the image loads + runs, so the daemon has it under
+      # `${IMAGE_NAME}:test` and we just point ``HERMES_TEST_IMAGE`` at
+      # that.  The fixture's ``HERMES_TEST_IMAGE`` branch (see
+      # tests/docker/conftest.py:62-63) short-circuits the rebuild.
+      #
+      # Why this job and not a standalone one: the image is 5GB+; passing
+      # it between jobs via ``docker save``/``upload-artifact`` is slower
+      # than the build itself.  Reusing the existing daemon state is the
+      # cheapest path to coverage on every PR that touches docker code.
+      # ---------------------------------------------------------------------
+      - name: Install uv (for docker tests)
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Set up Python 3.11 (for docker tests)
+        run: uv python install 3.11
+
+      - name: Install Python dependencies (for docker tests)
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          # ``dev`` extra pulls in pytest, pytest-asyncio, pytest-timeout —
+          # everything tests/docker/ needs.  We deliberately avoid ``all``
+          # here because the docker tests only drive the container via
+          # subprocess and don't import hermes_agent's optional deps.
+          uv pip install -e ".[dev]"
+
+      - name: Run docker integration tests
+        env:
+          # Skip rebuild; use the image already loaded by the build step.
+          HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
+          # Match the policy in tests.yml :: test job — no accidental
+          # real-API calls from inside the harness.
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/docker/ -v --tb=short
+
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0

@@ -1688,8 +1688,15 @@ def create_task(
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
-    # caller did not specify one explicitly.
-    if workspace_path is None:
+    # caller did not specify one explicitly. Board defaults represent
+    # persistent project checkouts, so only persistent workspace kinds may
+    # inherit them. Scratch workspaces are auto-deleted on completion and
+    # must stay under the per-board scratch root created by
+    # ``resolve_workspace``; inheriting ``default_workdir`` for a scratch
+    # task would point cleanup at the user's source tree (#28818). The
+    # containment guard in ``_cleanup_workspace`` is the safety rail, but
+    # we also stop the bad state from being created in the first place.
+    if workspace_path is None and workspace_kind in {"dir", "worktree"}:
         board_slug = board if board else get_current_board()
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
@@ -3186,6 +3193,81 @@ def complete_task(
 # Workspace / tmux cleanup
 # ---------------------------------------------------------------------------
 
+def _is_managed_scratch_path(p: Path) -> bool:
+    """Return True iff *p* is a strict descendant of a kanban-managed scratch root.
+
+    A managed root is exclusively a ``workspaces/`` directory — never the
+    broader kanban home, a board root, or sibling subtrees like ``logs/`` or
+    ``boards/<slug>/`` itself. Allowed roots:
+
+    * ``HERMES_KANBAN_WORKSPACES_ROOT`` when set (worker-side override
+      injected by the dispatcher).
+    * ``<kanban_home>/kanban/workspaces`` — legacy default-board scratch root.
+    * ``<kanban_home>/kanban/boards/<slug>/workspaces`` for each board slug
+      that currently exists on disk.
+
+    The check requires strict descendancy: a path equal to one of these
+    roots is NOT managed (deleting the workspaces root would wipe every
+    task's scratch dir at once), and a path that resolves to ``<kanban_home>
+    /kanban`` itself, ``<kanban_home>/kanban/logs``, or
+    ``<kanban_home>/kanban/boards/<slug>`` is rejected because those
+    subtrees hold Hermes' own DB, metadata, and logs, not task workspaces.
+
+    Used by :func:`_cleanup_workspace` to refuse to ``shutil.rmtree`` paths
+    outside Hermes-managed storage. A board ``default_workdir`` pointing at a
+    real source tree can otherwise pair with ``workspace_kind='scratch'`` and
+    cause task completion to delete user data (#28818).
+    """
+    try:
+        p_abs = p.resolve(strict=False)
+    except OSError:
+        return False
+    roots: list[Path] = []
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        try:
+            roots.append(Path(override).expanduser().resolve(strict=False))
+        except OSError:
+            pass
+    try:
+        home = kanban_home()
+    except OSError:
+        home = None
+    if home is not None:
+        try:
+            roots.append((home / "kanban" / "workspaces").resolve(strict=False))
+        except OSError:
+            pass
+        try:
+            boards_parent = (home / "kanban" / "boards").resolve(strict=False)
+        except OSError:
+            boards_parent = None
+        if boards_parent is not None:
+            try:
+                entries = list(boards_parent.iterdir())
+            except OSError:
+                entries = []
+            for entry in entries:
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    roots.append((entry / "workspaces").resolve(strict=False))
+                except OSError:
+                    continue
+    for root in roots:
+        if p_abs == root:
+            continue
+        try:
+            if p_abs.is_relative_to(root):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
 
@@ -3208,8 +3290,21 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         import shutil
         wp = Path(path)
         if wp.is_dir():
-            shutil.rmtree(wp, ignore_errors=True)
-            _log.debug("Removed scratch workspace: %s", wp)
+            # Containment guard (#28818): a board's ``default_workdir`` can
+            # pair ``workspace_kind='scratch'`` with a user-supplied path
+            # pointing at a real source tree. Without this check, task
+            # completion would unconditionally ``shutil.rmtree`` that path
+            # and silently delete the user's source data.
+            if _is_managed_scratch_path(wp):
+                shutil.rmtree(wp, ignore_errors=True)
+                _log.debug("Removed scratch workspace: %s", wp)
+            else:
+                _log.warning(
+                    "Refusing to remove out-of-scratch workspace for task %s: %s "
+                    "(workspace_kind='scratch' but path is outside any "
+                    "kanban-managed workspaces root)",
+                    task_id, wp,
+                )
         # Also kill the tmux session for the worker that owned this task,
         # if the tmux session is now dead (worker process exited).
         _cleanup_worker_tmux(conn, task_id)
@@ -3450,6 +3545,77 @@ def block_task(
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         return True
+
+
+
+def promote_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    reason: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = False,
+) -> tuple[bool, Optional[str]]:
+    """Manually promote a `todo` or `blocked` task to `ready`.
+
+    Mirrors the automatic promotion done by ``recompute_ready`` but
+    drives it from a deliberate operator action with an audit-trail
+    entry. Refuses to promote if any parent dep is not in a terminal
+    state (`done`/`archived`) unless ``force=True``. Does NOT change
+    assignee or claim state. Returns ``(True, None)`` on success and
+    ``(False, reason)`` if refused. ``dry_run=True`` validates the
+    promotion would succeed without mutating state.
+    """
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False, f"task {task_id} not found"
+
+    cur_status = row["status"]
+    if cur_status not in ("todo", "blocked"):
+        return False, (
+            f"task {task_id} is {cur_status!r}; promote only applies to "
+            f"'todo' or 'blocked'"
+        )
+
+    if not force:
+        parents = conn.execute(
+            "SELECT t.id, t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        unsatisfied = [
+            p["id"] for p in parents
+            if p["status"] not in ("done", "archived")
+        ]
+        if unsatisfied:
+            return False, (
+                f"unsatisfied parent dependencies: "
+                f"{', '.join(unsatisfied)} (use --force to override)"
+            )
+
+    if dry_run:
+        return True, None
+
+    with write_txn(conn):
+        upd = conn.execute(
+            "UPDATE tasks SET status = 'ready' "
+            "WHERE id = ? AND status IN ('todo', 'blocked')",
+            (task_id,),
+        )
+        if upd.rowcount != 1:
+            return False, f"task {task_id} status changed during promotion"
+        _append_event(
+            conn,
+            task_id,
+            "promoted_manual",
+            {"actor": actor, "reason": reason, "forced": force},
+        )
+
+    return True, None
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:

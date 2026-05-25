@@ -174,6 +174,37 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     return None
 
 
+def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
+    """Return a cross-profile warning string when ``filepath`` lands in
+    another Hermes profile's skills/plugins/cron/memories directory.
+
+    Returns ``None`` when the write is in-scope (same profile) or outside
+    Hermes scope entirely. Soft guard — the agent can override by passing
+    ``cross_profile=True`` to its write tool after explicit user direction.
+
+    Defense-in-depth, NOT a security boundary — the terminal tool runs
+    as the same OS user and can write any of these paths directly.
+    See ``agent/file_safety.classify_cross_profile_target`` for the
+    detection rules.
+    """
+    try:
+        from agent.file_safety import get_cross_profile_warning
+    except Exception:
+        # Fail open on import error — the existing sensitive-path guard
+        # plus the write_denied list still apply.
+        return None
+
+    # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
+    # in a session that cd'd into ``~/.hermes/profiles/other/`` is
+    # classified against the right base.
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        resolved = filepath
+
+    return get_cross_profile_warning(resolved)
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -795,11 +826,23 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
-def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
-    """Write content to a file."""
+def write_file_tool(path: str, content: str, task_id: str = "default",
+                    cross_profile: bool = False) -> str:
+    """Write content to a file.
+
+    ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
+    guard fires only on writes that land in another profile's
+    skills/plugins/cron/memories directory; everything else is unaffected.
+    Pass ``True`` after explicit user direction — same shape as ``force``
+    on the terminal tool.
+    """
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    if not cross_profile:
+        cross_warning = _check_cross_profile_path(path, task_id)
+        if cross_warning:
+            return tool_error(cross_warning)
     if _is_internal_file_status_text(content):
         return tool_error(
             "Refusing to write internal read_file status text as file content. "
@@ -854,8 +897,13 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default") -> str:
-    """Patch a file using replace mode or V4A patch format."""
+               task_id: str = "default", cross_profile: bool = False) -> str:
+    """Patch a file using replace mode or V4A patch format.
+
+    ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
+    targets under another profile's skills/plugins/cron/memories
+    directory. Same shape as ``write_file``'s flag.
+    """
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
@@ -868,6 +916,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        if not cross_profile:
+            cross_warning = _check_cross_profile_path(_p, task_id)
+            if cross_warning:
+                return tool_error(cross_warning)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -1052,7 +1104,12 @@ WRITE_FILE_SCHEMA = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
-            "content": {"type": "string", "description": "Complete content to write to the file"}
+            "content": {"type": "string", "description": "Complete content to write to the file"},
+            "cross_profile": {
+                "type": "boolean",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
+                "default": False,
+            },
         },
         "required": ["path", "content"]
     }
@@ -1098,6 +1155,11 @@ PATCH_SCHEMA = {
             "patch": {
                 "type": "string",
                 "description": "REQUIRED when mode='patch'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+            },
+            "cross_profile": {
+                "type": "boolean",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Hermes profile's skills/plugins/cron/memories.",
+                "default": False,
             },
         },
         "required": ["mode"],
@@ -1149,7 +1211,10 @@ def _handle_write_file(args, **kw):
             f"write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
         )
-    return write_file_tool(path=args["path"], content=args["content"], task_id=tid)
+    return write_file_tool(
+        path=args["path"], content=args["content"], task_id=tid,
+        cross_profile=bool(args.get("cross_profile", False)),
+    )
 
 
 def _handle_patch(args, **kw):
@@ -1157,7 +1222,9 @@ def _handle_patch(args, **kw):
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
+        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
+        cross_profile=bool(args.get("cross_profile", False)),
+    )
 
 
 def _handle_search_files(args, **kw):

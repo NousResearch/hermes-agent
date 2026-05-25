@@ -105,9 +105,9 @@ def _xai_credentials_present() -> bool:
     """Cheap, side-effect-free check for usable xAI credentials.
 
     Used to auto-enable the ``x_search`` toolset when the user has either
-    completed xAI Grok OAuth (SuperGrok subscription) or set
-    ``XAI_API_KEY``. Does NOT hit the network, only inspects the local
-    auth store and environment. The tool runtime ``check_fn`` still
+    completed xAI Grok OAuth (SuperGrok / Premium+) or set
+    ``XAI_API_KEY``. Does NOT hit the network — only inspects the local
+    auth store and environment. The tool's runtime ``check_fn`` still
     gates schema registration if creds later expire or get revoked.
     """
     try:
@@ -360,7 +360,7 @@ TOOL_CATEGORIES = {
         "icon": "🐦",
         "providers": [
             {
-                "name": "xAI Grok OAuth (SuperGrok Subscription)",
+                "name": "xAI Grok OAuth (SuperGrok / Premium+)",
                 "badge": "subscription",
                 "tag": "Browser login at accounts.x.ai — no API key required",
                 "env_vars": [],
@@ -1012,7 +1012,7 @@ def _run_post_setup(post_setup_key: str):
 
         if oauth_logged_in:
             _print_success(
-                "    xAI will use your xAI Grok OAuth (SuperGrok Subscription) credentials"
+                "    xAI will use your xAI Grok OAuth (SuperGrok / Premium+) credentials"
             )
             return
         if existing_api_key:
@@ -1035,7 +1035,7 @@ def _run_post_setup(post_setup_key: str):
         idx = prompt_choice(
             "    How do you want xAI to authenticate?",
             choices=[
-                "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
+                "Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
                 "Paste an xAI API key (console.x.ai)",
                 "Skip — configure later via `hermes auth add xai-oauth`",
             ],
@@ -1757,6 +1757,62 @@ def _plugin_browser_providers() -> list[dict]:
     return rows
 
 
+def _plugin_tts_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered TTS providers.
+
+    Issue #30398 — the ``register_tts_provider()`` plugin hook
+    coexists alongside the 10 built-in TTS providers
+    (``edge``/``openai``/``elevenlabs``/…) and the
+    ``tts.providers.<name>: type: command`` registry from PR #17843.
+    Built-in rows stay hardcoded in ``TOOL_CATEGORIES["tts"]``; this
+    function only injects PLUGIN-registered providers.
+
+    Defensive: plugins whose name collides with a built-in TTS provider
+    are filtered out — even though the registry already rejects them
+    at registration time, a future code path that registers directly
+    via :func:`agent.tts_registry.register_provider` could slip
+    through. Filtering here keeps the picker invariant.
+    """
+    try:
+        from agent.tts_registry import _BUILTIN_NAMES, list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if not name:
+            continue
+        # Defensive: reject built-in shadowing at the picker layer too.
+        if name.lower().strip() in _BUILTIN_NAMES:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            # Selecting this row writes ``tts.provider: <name>`` — the
+            # same write-path used by hardcoded rows. The plugin
+            # dispatcher picks it up automatically from there.
+            "tts_provider": name,
+            "tts_plugin_name": name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -1793,6 +1849,12 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     # local fallback, and the REST-API anti-detection backend respectively).
     if cat.get("name") == "Browser Automation":
         visible.extend(_plugin_browser_providers())
+
+    # Inject plugin-registered TTS backends (issue #30398). Plugin rows
+    # render BELOW the 10 hardcoded built-in rows. Built-in shadowing
+    # is filtered out by ``_plugin_tts_providers`` defensively.
+    if cat.get("name") == "Text-to-Speech":
+        visible.extend(_plugin_tts_providers())
 
     return visible
 

@@ -49,6 +49,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
+from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -196,9 +197,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
     ),
+    "openai-api": ProviderConfig(
+        id="openai-api",
+        name="OpenAI API",
+        auth_type="api_key",
+        inference_base_url="https://api.openai.com/v1",
+        api_key_env_vars=("OPENAI_API_KEY",),
+        base_url_env_var="OPENAI_BASE_URL",
+    ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
-        name="xAI Grok OAuth (SuperGrok Subscription)",
+        name="xAI Grok OAuth (SuperGrok / Premium+)",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL,
     ),
@@ -553,6 +562,7 @@ _PLACEHOLDER_SECRET_VALUES = {
     "***",
     "changeme",
     "your_api_key",
+    "your_api_key_here",
     "your-api-key",
     "placeholder",
     "example",
@@ -1167,14 +1177,23 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
-    """Persist one provider's credential pool under auth.json."""
+    """Persist one provider's credential pool under auth.json.
+
+    This is the final disk-boundary guard for borrowed/reference-only
+    credentials. Callers may pass raw dictionaries, so sanitize here even when
+    ``PooledCredential.to_dict()`` already did the same work upstream.
+    """
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
             auth_store["credential_pool"] = pool
-        pool[provider_id] = list(entries)
+        pool[provider_id] = [
+            sanitize_borrowed_credential_payload(entry, provider_id)
+            if isinstance(entry, dict) else entry
+            for entry in entries
+        ]
         return _save_auth_store(auth_store)
 
 
@@ -2065,7 +2084,10 @@ def resolve_qwen_runtime_credentials(
 def get_qwen_auth_status() -> Dict[str, Any]:
     auth_path = _qwen_cli_auth_path()
     try:
-        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        # Validate the runtime credentials, including refresh when the cached
+        # CLI token is expired. Otherwise stale tokens show up as "logged in"
+        # and `hermes model` walks users into a broken Qwen setup flow.
+        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
         return {
             "logged_in": True,
             "auth_file": str(auth_path),
@@ -2466,6 +2488,32 @@ def _make_xai_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequest
                 "error_description": params.get("error_description", [None])[0],
             }
 
+            # Diagnostic logging — emits at INFO so reporters of loopback bugs
+            # (#27385 — "callback received but Hermes times out") can produce
+            # actionable evidence without a code change.  Logged values are
+            # fingerprints / booleans only; no actual code/state strings leak
+            # into the log file.  Run with ``HERMES_LOG_LEVEL=INFO`` (or check
+            # ``~/.hermes/logs/agent.log`` which captures INFO+ unconditionally).
+            try:
+                logger.info(
+                    "xAI loopback callback received: path=%s has_code=%s has_state=%s has_error=%s "
+                    "ua=%s",
+                    parsed.path,
+                    incoming["code"] is not None,
+                    incoming["state"] is not None,
+                    incoming["error"] is not None,
+                    (self.headers.get("User-Agent") or "")[:80],
+                )
+                if incoming["error"]:
+                    logger.info(
+                        "xAI loopback callback carries error=%s error_description=%s",
+                        incoming["error"],
+                        (incoming["error_description"] or "")[:200],
+                    )
+            except Exception:
+                # Logging must never break the OAuth flow.
+                pass
+
             # Treat a hit on the callback path with neither `code` nor `error`
             # as a missing OAuth callback (e.g. xAI's auth backend failed to
             # redirect and the user navigated to the bare loopback URL by hand).
@@ -2570,6 +2618,17 @@ def _xai_wait_for_callback(
         server.shutdown()
         server.server_close()
         thread.join(timeout=1.0)
+    # Diagnostic: distinguish "no callback ever arrived" from "callback
+    # arrived but result wasn't populated" (#27385).  The per-hit handler
+    # also logs at INFO; if neither line appears, xAI's IDP never reached
+    # the loopback at all (firewall, port-binding, IPv6/IPv4 mismatch).
+    logger.info(
+        "xAI loopback wait timed out after %.0fs with no usable callback "
+        "(result.code=%s result.error=%s)",
+        max(5.0, timeout_seconds),
+        result["code"] is not None,
+        result["error"] is not None,
+    )
     raise AuthError(
         "xAI authorization timed out waiting for the local callback.",
         provider="xai-oauth",
@@ -3403,7 +3462,7 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     state = _load_provider_state(auth_store, "xai-oauth")
     if not state:
         raise AuthError(
-            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok Subscription) in `hermes model`.",
+            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
             provider="xai-oauth",
             code="xai_auth_missing",
             relogin_required=True,
@@ -6334,7 +6393,7 @@ def _login_xai_oauth(
             pass
 
     print()
-    print("Signing in to xAI Grok OAuth (SuperGrok Subscription)...")
+    print("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     print("(Hermes creates its own local OAuth session)")
     print()
 

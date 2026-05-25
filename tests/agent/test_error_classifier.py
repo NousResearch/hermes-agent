@@ -293,6 +293,64 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
 
+    # ── 5xx that are actually request-validation errors ──
+    # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
+    # request-validation failures with a 5xx status. These are
+    # deterministic, so they must NOT be retried — otherwise the retry
+    # loop hammers the identical bad request into a flood.
+
+    def test_502_with_unknown_parameter_is_non_retryable(self):
+        e = MockAPIError(
+            "Unknown parameter: 'input[617]._empty_recovery_synthetic'",
+            status_code=502,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "[ObjectParam] [input[617]._empty_recovery_synthetic] "
+                        "[unknown_parameter] Unknown parameter: "
+                        "'input[617]._empty_recovery_synthetic'."
+                    ),
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_502_with_unsupported_parameter_is_non_retryable(self):
+        e = MockAPIError(
+            "Unsupported parameter: logprobs",
+            status_code=502,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Unsupported parameter: logprobs",
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_500_with_invalid_request_error_type_is_non_retryable(self):
+        e = MockAPIError(
+            "bad request",
+            status_code=500,
+            body={"error": {"type": "invalid_request_error", "message": "bad request"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_502_plain_bad_gateway_still_retryable(self):
+        """A genuine 502 with no request-validation signal stays retryable."""
+        e = MockAPIError("Bad Gateway", status_code=502)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
     # ── Model not found ──
 
     def test_404_model_not_found(self):

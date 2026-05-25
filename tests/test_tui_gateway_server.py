@@ -1619,6 +1619,26 @@ def test_complete_slash_includes_provider_alias():
     assert any(item["text"] == "provider" for item in resp["result"]["items"])
 
 
+def test_complete_slash_returns_plain_string_fields():
+    # prompt_toolkit hands us FormattedText (a list subclass) for
+    # display/display_meta; the TUI's CompletionItem contract is plain
+    # strings, and shipping the raw list trips Ink's row layout into
+    # 1-char truncation of the next column (/goal → /goa).
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/g"}}
+    )
+
+    items = resp["result"]["items"]
+    goal = next((it for it in items if it["text"] == "goal"), None)
+    assert goal is not None
+    assert isinstance(goal["display"], str), goal["display"]
+    assert isinstance(goal["meta"], str), goal["meta"]
+    assert goal["display"] == "/goal"
+    for item in items:
+        assert isinstance(item["display"], str), item
+        assert isinstance(item["meta"], str), item
+
+
 def test_complete_slash_includes_tui_details_command():
     resp = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/det"}}

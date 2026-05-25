@@ -373,7 +373,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         main_mod._try_termux_fast_cli_launch()
 
     assert exc.value.code == 17
-    assert prepared == [None]
+    assert prepared == []
     assert captured == {
         "prompt": "hello",
         "model": "gpt-test",

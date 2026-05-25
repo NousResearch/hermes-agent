@@ -10945,7 +10945,10 @@ def _try_termux_fast_cli_launch() -> bool:
         return True
 
     if getattr(args, "oneshot", None):
-        _prepare_agent_startup(args)
+        # Note: _prepare_agent_startup intentionally NOT called here —
+        # run_oneshot() handles its own plugin/config initialization
+        # internally, and calling prepare-agents on a piped stdout
+        # can trigger prompt_toolkit renderer crashes (#30623).
         from hermes_cli.oneshot import run_oneshot
 
         sys.exit(
@@ -13904,15 +13907,11 @@ Examples:
         cmd_version(args)
         return
 
-    # Discover Python plugins and register shell hooks once, before any
-    # command that can fire lifecycle hooks.  Both are idempotent; gated
-    # so introspection/management commands (hermes hooks list, cron
-    # list, gateway status, mcp add, ...) don't pay discovery cost or
-    # trigger consent prompts for hooks the user is still inspecting.
-    _prepare_agent_startup(args)
-
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
-    # response only, nothing else. Bypasses cli.py entirely.
+    # response only, nothing else.  Must dispatch BEFORE _prepare_agent_startup
+    # to avoid initializing the prompt_toolkit renderer when stdout is
+    # non-TTY (e.g. piped or SSH ForceCommand).  run_oneshot() handles
+    # its own plugin/config initialization internally (#30623).
     if getattr(args, "oneshot", None):
         from hermes_cli.oneshot import run_oneshot
 
@@ -13924,6 +13923,13 @@ Examples:
                 toolsets=getattr(args, "toolsets", None),
             )
         )
+
+    # Discover Python plugins and register shell hooks once, before any
+    # command that can fire lifecycle hooks.  Both are idempotent; gated
+    # so introspection/management commands (hermes hooks list, cron
+    # list, gateway status, mcp add, ...) don't pay discovery cost or
+    # trigger consent prompts for hooks the user is still inspecting.
+    _prepare_agent_startup(args)
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

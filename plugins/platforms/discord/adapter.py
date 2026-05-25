@@ -2333,9 +2333,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     if parent_id:
                         channel_ids.add(str(parent_id))
 
-            allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_raw:
-                allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
+            allowed = self._discord_allowed_channels()
+            if allowed:
                 if "*" not in allowed:
                     if not channel_ids:
                         # Channel policy is configured but the interaction
@@ -2350,9 +2349,8 @@ class DiscordAdapter(BasePlatformAdapter):
             # Ignored beats allowed: even when a thread's parent channel
             # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
             # entry on the thread or its parent rejects the interaction.
-            ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            if ignored_raw and channel_ids:
-                ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
+            ignored = self._discord_ignored_channels()
+            if ignored and channel_ids:
                 if "*" in ignored or (channel_ids & ignored):
                     return (False, "channel in DISCORD_IGNORED_CHANNELS")
 
@@ -3663,6 +3661,47 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_allowed_channels(self) -> set:
+        """Return the whitelist of channel IDs the bot will respond in.
+
+        When non-empty, messages from channels NOT in this set are silently
+        ignored — even if the bot is @mentioned. DMs are never filtered.
+        A single ``"*"`` entry disables filtering (respond everywhere).
+        Empty set means no restriction (fully backward compatible).
+
+        Reads from ``discord.allowed_channels`` in config.yaml with fallback
+        to ``DISCORD_ALLOWED_CHANNELS`` env var.
+        """
+        raw = self.config.extra.get("allowed_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _discord_ignored_channels(self) -> set:
+        """Return channel IDs where the bot never responds (blacklist).
+
+        When a channel is in this set, the bot ignores all messages there,
+        even when @mentioned. DMs are never filtered.
+        A single ``"*"`` entry ignores all channels (rarely useful).
+
+        Reads from ``discord.ignored_channels`` in config.yaml with fallback
+        to ``DISCORD_IGNORED_CHANNELS`` env var.
+        """
+        raw = self.config.extra.get("ignored_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -4500,17 +4539,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel_ids.add(parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+            allowed_channels = self._discord_allowed_channels()
+            if allowed_channels:
                 if "*" not in allowed_channels and not (channel_ids & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
 
             # Check ignored channels - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if "*" in ignored_channels or (channel_ids & ignored_channels):
+            ignored_channels = self._discord_ignored_channels()
+            if "*" in ignored_channels or (ignored_channels and (channel_ids & ignored_channels)):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
 

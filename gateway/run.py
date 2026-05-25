@@ -10728,7 +10728,14 @@ class GatewayRunner(GatewayKanbanWatchersMixin):
         if not sid:
             return None, None
         max_turns = self._goal_max_turns_from_config()
-        return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+        mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+        # Expose to the goal_manage tool so the agent can self-signal completion.
+        try:
+            from tools.goal_manage_tool import set_goal_manager
+            set_goal_manager(mgr)
+        except Exception:
+            pass
+        return mgr, session_entry
 
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.

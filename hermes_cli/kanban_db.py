@@ -108,6 +108,90 @@ _IS_WINDOWS = sys.platform == "win32"
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
+# Cache remote account-usage checks so the dispatcher does not hit the provider
+# API on every board/tick when several boards are active.
+_CODEX_QUOTA_CACHE: dict[str, Any] = {"checked_at": 0.0, "ok": True, "reason": "unchecked"}
+
+
+def _codex_dispatch_quota_ok() -> tuple[bool, str]:
+    """Return whether it is safe to spawn Codex-backed Kanban workers.
+
+    Controlled by config/env:
+    - kanban.quota_guard_enabled / HERMES_KANBAN_QUOTA_GUARD_ENABLED
+    - kanban.min_codex_session_remaining_percent /
+      HERMES_KANBAN_MIN_CODEX_SESSION_REMAINING_PERCENT
+
+    The guard fails open when the usage API is unavailable so Kanban does not
+    deadlock on telemetry failures, but it fails closed when the live Codex
+    session window is below the configured remaining-percentage threshold.
+    """
+    env_enabled = os.environ.get("HERMES_KANBAN_QUOTA_GUARD_ENABLED")
+    env_threshold = os.environ.get("HERMES_KANBAN_MIN_CODEX_SESSION_REMAINING_PERCENT")
+    enabled = True
+    threshold = 25.0
+    try:
+        from hermes_cli.config import load_config  # local import avoids startup cycles
+        cfg = load_config() or {}
+        kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        enabled = bool(kcfg.get("quota_guard_enabled", True))
+        threshold = float(kcfg.get("min_codex_session_remaining_percent", threshold) or threshold)
+    except Exception:
+        pass
+    if env_enabled is not None:
+        enabled = env_enabled.strip().lower() not in {"0", "false", "no", "off"}
+    if env_threshold:
+        try:
+            threshold = float(env_threshold)
+        except ValueError:
+            pass
+    if not enabled or threshold <= 0:
+        return True, "quota guard disabled"
+
+    now = time.time()
+    if now - float(_CODEX_QUOTA_CACHE.get("checked_at") or 0.0) < 120:
+        return bool(_CODEX_QUOTA_CACHE.get("ok", True)), str(_CODEX_QUOTA_CACHE.get("reason") or "cached")
+
+    ok = True
+    reason = "quota window unavailable; fail-open"
+    try:
+        from agent.account_usage import fetch_account_usage
+        snap = fetch_account_usage("openai-codex")
+        if getattr(snap, "unavailable_reason", None):
+            reason = "quota unavailable; fail-open"
+        else:
+            for window in getattr(snap, "windows", ()) or ():
+                if str(getattr(window, "label", "")).lower() == "session":
+                    used = float(getattr(window, "used_percent", 0.0) or 0.0)
+                    remaining = 100.0 - used
+                    if remaining < threshold:
+                        ok = False
+                        reason = f"quota_low: Codex session {remaining:.0f}% remaining below {threshold:.0f}% threshold"
+                    else:
+                        reason = f"Codex session {remaining:.0f}% remaining"
+                    break
+    except Exception as exc:
+        reason = f"quota check failed open: {exc}"
+    _CODEX_QUOTA_CACHE.update({"checked_at": now, "ok": ok, "reason": reason})
+    return ok, reason
+
+
+def _assignee_is_spawnable(assignee: Optional[str]) -> bool:
+    """Return whether an assignee maps to a Hermes profile we can spawn.
+
+    If profile probing fails, preserve historical fail-open behavior: assume
+    the assignee is spawnable and let the later spawn path surface errors.
+    """
+    if not assignee:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        return True
+    try:
+        return bool(profile_exists(assignee))
+    except Exception:
+        return True
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -3709,7 +3793,10 @@ class DispatchResult:
 
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
-    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    ``"active_pr"`` (GitHub PR URL in a recent comment), or
+    ``"quota_low"`` (Codex session quota below the configured guard threshold)."""
+    quota_guarded: list[tuple[str, str]] = field(default_factory=list)
+    """Ready task ids skipped before spawn because provider quota is low."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4809,6 +4896,25 @@ def dispatch_once(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if ready_rows:
+        spawnable_ready_rows = []
+        nonspawnable_ready_ids = []
+        for row in ready_rows:
+            assignee = row["assignee"]
+            if not assignee:
+                continue
+            if _assignee_is_spawnable(assignee):
+                spawnable_ready_rows.append(row)
+            else:
+                nonspawnable_ready_ids.append(row["id"])
+        if spawnable_ready_rows:
+            quota_ok, quota_reason = _codex_dispatch_quota_ok()
+            if not quota_ok:
+                result.skipped_nonspawnable.extend(nonspawnable_ready_ids)
+                for row in spawnable_ready_rows:
+                    result.quota_guarded.append((row["id"], quota_reason))
+                    result.respawn_guarded.append((row["id"], "quota_low"))
+                return result
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -4840,11 +4946,7 @@ def dispatch_once(
         # subprocess would crash on startup, get reaped as a zombie,
         # the task would loop back to ``ready`` on next tick, and we'd
         # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
-        try:
-            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if not _assignee_is_spawnable(row["assignee"]):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses

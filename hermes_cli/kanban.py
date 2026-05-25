@@ -2023,6 +2023,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "quota_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in getattr(res, "quota_guarded", [])
+            ],
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2050,6 +2054,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if getattr(res, "quota_guarded", []):
+        print("Quota-guarded:")
+        for tid, reason in res.quota_guarded:
+            print(f"  - {tid}: {reason}")
     return 0
 
 

@@ -1035,6 +1035,49 @@ def test_dispatch_skips_nonspawnable_into_separate_bucket(kanban_home, monkeypat
     assert not res.spawned
 
 
+def test_dispatch_quota_guard_skips_only_spawnable_ready_tasks(
+    kanban_home, monkeypatch
+):
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(
+        profiles, "profile_exists", lambda name: name == "alice"
+    )
+    monkeypatch.setattr(
+        kb, "_codex_dispatch_quota_ok",
+        lambda: (False, "quota_low: Codex session 10% remaining below 25% threshold"),
+    )
+    with kb.connect() as conn:
+        spawnable = kb.create_task(conn, title="spawnable", assignee="alice")
+        terminal_lane = kb.create_task(conn, title="terminal", assignee="orion-cc")
+        unassigned = kb.create_task(conn, title="unassigned")
+        res = kb.dispatch_once(conn, dry_run=True)
+
+    assert (spawnable, "quota_low") in res.respawn_guarded
+    assert res.quota_guarded == [
+        (spawnable, "quota_low: Codex session 10% remaining below 25% threshold")
+    ]
+    assert terminal_lane in res.skipped_nonspawnable
+    assert unassigned not in res.quota_guarded
+    assert not res.spawned
+
+
+def test_dispatch_quota_guard_ok_allows_spawn(kanban_home, all_assignees_spawnable, monkeypatch):
+    monkeypatch.setattr(kb, "_codex_dispatch_quota_ok", lambda: (True, "Codex session 80% remaining"))
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="spawnable", assignee="alice")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert spawns == [t]
+    assert not res.quota_guarded
+    assert not res.respawn_guarded
+
+
 def test_has_spawnable_ready_false_when_only_terminal_lanes(kanban_home, monkeypatch):
     """``has_spawnable_ready`` returns False when every ready task is
     assigned to a control-plane lane — used by gateway/CLI dispatchers

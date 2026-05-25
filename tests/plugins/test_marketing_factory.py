@@ -1088,6 +1088,22 @@ def test_edit_draft_via_api_endpoint(isolate_home):
     assert bad_response.status_code == 400
 
 
+def test_bootstrap_cli_non_interactive_initializes(tmp_path, capsys):
+    """Phase 21: `marketing-factory bootstrap --non-interactive` seeds samples + prints next steps without prompting."""
+    import argparse
+    from plugins.marketing_factory.cli import marketing_command
+
+    store_path = tmp_path / "mf_bootstrap_test"
+    args = argparse.Namespace(store_path=str(store_path), marketing_command="bootstrap", non_interactive=True)
+    rc = marketing_command(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "bootstrap wizard" in out
+    assert "pupular" in out
+    assert "setvenue" in out
+    assert "/marketing-factory" in out  # next-steps mentions dashboard URL
+
+
 def test_summary_includes_cost_estimate(isolate_home):
     """Phase 20: summary exposes USD cost estimate computed from spent_by_route."""
     from plugins.marketing_factory.store import MarketingFactoryStore, estimate_costs

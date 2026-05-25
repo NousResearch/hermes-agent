@@ -17,6 +17,8 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 
     subs.add_parser("init", help="Initialize store and seed Pupular/SetVenue brand profiles")
     subs.add_parser("status", help="Show factory status")
+    bootstrap = subs.add_parser("bootstrap", help="Guided first-run setup: init + add your brand + enable autonomy")
+    bootstrap.add_argument("--non-interactive", action="store_true", help="Skip prompts and just run init + print next steps")
 
     gen = subs.add_parser("generate", help="Generate a dry-run campaign and approval drafts for one app")
     gen.add_argument("--app", required=True, help="App slug, e.g. pupular or setvenue")
@@ -155,7 +157,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,enable-auto-generate,disable-auto-generate,campaigns,drafts,approvals,approve,reject,regenerate,variants,edit,reschedule,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,analytics,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,bootstrap,status,apps,add-app,update-app,remove-app,enable-auto-generate,disable-auto-generate,campaigns,drafts,approvals,approve,reject,regenerate,variants,edit,reschedule,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,analytics,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -164,6 +166,8 @@ def marketing_command(args: argparse.Namespace) -> int:
             result = pipe.initialize_samples()
             _print_json(result)
             return 0
+        if sub == "bootstrap":
+            return _run_bootstrap(pipe, store, non_interactive=bool(getattr(args, "non_interactive", False)))
         if sub == "status":
             store.initialize()
             _print_json(store.summary())
@@ -373,6 +377,128 @@ def marketing_command(args: argparse.Namespace) -> int:
 
 def _print_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _ask(prompt: str, default: str = "") -> str:
+    """Single interactive prompt with default. Returns empty string on EOF/Ctrl-D."""
+    suffix = f" [{default}]" if default else ""
+    try:
+        raw = input(f"  {prompt}{suffix}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+    return raw or default
+
+
+def _ask_yes_no(prompt: str, default: bool = True) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    try:
+        raw = input(f"  {prompt} {suffix}: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if not raw:
+        return default
+    return raw in {"y", "yes", "1", "true"}
+
+
+def _run_bootstrap(pipe, store, *, non_interactive: bool = False) -> int:
+    """First-run wizard. Initializes samples, optionally adds a new brand,
+    optionally turns on auto-generate, optionally installs the cron poller."""
+    print("\n========================================")
+    print("  Marketing Factory — bootstrap wizard")
+    print("========================================\n")
+
+    # Step 1 — always initialize the sample profiles (idempotent)
+    print("→ Initializing store + seeding sample brand profiles (pupular, setvenue)…")
+    init_result = pipe.initialize_samples()
+    apps_seeded = [a["slug"] for a in init_result.get("apps", [])]
+    print(f"  ok · {len(apps_seeded)} sample brand(s): {', '.join(apps_seeded)}\n")
+
+    if non_interactive:
+        _print_next_steps(store)
+        return 0
+
+    # Step 2 — optional: add user's own brand
+    if _ask_yes_no("Do you want to add your own brand profile right now?", default=False):
+        slug = _ask("Brand slug (lowercase, e.g. wingman or hardline)")
+        if not slug:
+            print("  (skipped — no slug given)\n")
+        else:
+            name = _ask("Display name", default=slug.capitalize())
+            positioning = _ask("Positioning (one sentence about the brand)")
+            icp = _ask("Ideal customer (who uses this?)")
+            tone = _ask("Tone (e.g. 'cute warm playful' or 'trustworthy clear')", default="clear, helpful")
+            cta = _ask("Default call-to-action", default=f"Try {name} today.")
+            channels_raw = _ask("Channels (comma-separated: x,instagram,tiktok,linkedin,blog,email,app_store)", default="x,instagram")
+            channels = [c.strip() for c in channels_raw.split(",") if c.strip()]
+            pillars_raw = _ask("Content pillars (recurring themes, comma-separated)", default="")
+            pillars = [p.strip() for p in pillars_raw.split(",") if p.strip()]
+            forbidden_raw = _ask("Forbidden claims (things you must NEVER promise, comma-separated)", default="")
+            forbidden = [f.strip() for f in forbidden_raw.split(",") if f.strip()]
+            link = _ask("Primary link (URL)", default="")
+            try:
+                store.upsert_app({
+                    "slug": slug,
+                    "name": name,
+                    "positioning": positioning,
+                    "icp": icp,
+                    "tone": tone,
+                    "cta": cta,
+                    "channels": channels,
+                    "content_pillars": pillars,
+                    "forbidden_claims": forbidden,
+                    "links": [link] if link else [],
+                    "claims": [],
+                    "competitors": [],
+                    "assets": [],
+                })
+                print(f"  ok · added {slug}\n")
+
+                # Step 3 — optional: turn on auto-generate for the new brand
+                if _ask_yes_no(f"Enable auto-generate for {slug}? (When queue dips below threshold, the cron poller will auto-fire a new 7-day campaign, max once every 24h)", default=False):
+                    store.set_auto_generate(slug, True, threshold=3, reviewer="bootstrap")
+                    print(f"  ok · auto-generate ON for {slug} (threshold 3)\n")
+            except Exception as exc:
+                print(f"  ! failed to add brand: {exc}\n")
+
+    # Step 4 — optional: install the cron poller
+    if _ask_yes_no("Install the Hermes cron poller? (Runs `marketing-factory poll` every 5 minutes — fires publish on due drafts and triggers auto-generate on opt-in brands)", default=False):
+        try:
+            from hermes_constants import get_hermes_home
+            from cron.jobs import create_job, list_jobs, remove_job
+            scripts_dir = get_hermes_home() / "scripts"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            script_path = scripts_dir / "marketing-factory-poll.sh"
+            script_path.write_text("#!/usr/bin/env bash\nexec hermes marketing-factory poll \"$@\"\n", encoding="utf-8")
+            script_path.chmod(0o755)
+            for existing_job in list_jobs(include_disabled=True):
+                if existing_job.get("name") == "marketing-factory-poll":
+                    remove_job(existing_job["id"])
+            job = create_job(prompt=None, schedule="every 5m", name="marketing-factory-poll", script="marketing-factory-poll.sh", no_agent=True)
+            print(f"  ok · poller installed (job id {job['id']}, every 5 minutes)\n")
+        except Exception as exc:
+            print(f"  ! could not install poller: {exc}\n")
+
+    _print_next_steps(store)
+    return 0
+
+
+def _print_next_steps(store) -> None:
+    print("\n----------------------------------------")
+    print("  You're set up. What to do next:\n")
+    apps = [a["slug"] for a in store.list_apps()]
+    print(f"  • Dashboard:   http://127.0.0.1:9119/marketing-factory")
+    print(f"  • Apps ready:  {', '.join(apps) if apps else '(none yet)'}")
+    print(f"\n  Generate your first real campaign:")
+    primary = apps[0] if apps else "pupular"
+    print(f"      hermes marketing-factory generate --app {primary} --days 7\n")
+    print(f"  Or click the big 'Make new content' button in the dashboard.")
+    print(f"\n  Open Settings (⚙) in the dashboard to:")
+    print(f"      • toggle auto-generate per brand")
+    print(f"      • see cost / token spend today")
+    print(f"      • copy a weekly digest")
+    print("----------------------------------------\n")
 
 
 def _split_csv(value: Optional[str]) -> Optional[list]:

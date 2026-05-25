@@ -815,20 +815,36 @@ async def search_sessions(q: str = "", limit: int = 20):
                 else:
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
+            # search_messages() limits raw message hits, but this endpoint
+            # promises up to N unique sessions. Overfetch message hits until
+            # we either collect enough unique session IDs or exhaust results.
             seen: dict = {}
-            for m in matches:
-                sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
+            offset = 0
+            fetch_size = max(limit, min(limit * 3, 100))
+            while len(seen) < limit:
+                matches = db.search_messages(
+                    query=prefix_query,
+                    limit=fetch_size,
+                    offset=offset,
+                )
+                if not matches:
+                    break
+                for m in matches:
+                    sid = m["session_id"]
+                    if sid not in seen:
+                        seen[sid] = {
+                            "session_id": sid,
+                            "snippet": m.get("snippet", ""),
+                            "role": m.get("role"),
+                            "source": m.get("source"),
+                            "model": m.get("model"),
+                            "session_started": m.get("session_started"),
+                        }
+                        if len(seen) >= limit:
+                            break
+                if len(matches) < fetch_size:
+                    break
+                offset += len(matches)
             return {"results": list(seen.values())}
         finally:
             db.close()

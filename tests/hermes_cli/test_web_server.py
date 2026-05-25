@@ -191,6 +191,53 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_session_search_overfetches_until_limit_unique_sessions(self, monkeypatch):
+        import hermes_state
+
+        batches = []
+        for idx in range(6):
+            batches.append(
+                {
+                    "session_id": "session-a",
+                    "snippet": f"needle dup {idx}",
+                    "role": "user" if idx % 2 == 0 else "assistant",
+                    "source": "cli",
+                    "model": "m",
+                    "session_started": 1,
+                }
+            )
+        batches.append(
+            {
+                "session_id": "session-b",
+                "snippet": "needle unique",
+                "role": "user",
+                "source": "telegram",
+                "model": "m2",
+                "session_started": 2,
+            }
+        )
+        calls = []
+
+        class _FakeSessionDB:
+            def search_messages(self, query, limit, offset=0):
+                calls.append({"query": query, "limit": limit, "offset": offset})
+                return batches[offset:offset + limit]
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(hermes_state, "SessionDB", _FakeSessionDB)
+
+        resp = self.client.get("/api/sessions/search", params={"q": "needle", "limit": 2})
+
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        assert [row["session_id"] for row in results] == ["session-a", "session-b"]
+        assert len(calls) == 2
+        assert calls[0]["limit"] == 6
+        assert calls[0]["offset"] == 0
+        assert calls[1]["offset"] == 6
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

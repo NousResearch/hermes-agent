@@ -92,6 +92,57 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+async def test_thread_context_images_are_forwarded_to_message_event(adapter):
+    client = AsyncMock()
+    client.conversations_replies = AsyncMock(return_value={
+        "messages": [
+            {
+                "ts": "1000.0",
+                "user": "U1",
+                "text": "Here is the shelf photo",
+                "files": [
+                    {
+                        "id": "F1",
+                        "name": "shelf.jpg",
+                        "mimetype": "image/jpeg",
+                        "url_private_download": "https://files.slack.com/files-pri/T1-F1/shelf.jpg",
+                    }
+                ],
+            },
+            {
+                "ts": "1000.1",
+                "user": "U2",
+                "text": "<@U_BOT> can you check the photo above?",
+            },
+        ]
+    })
+    adapter._app.client = client
+    adapter._team_clients = {"T1": client}
+    adapter._team_bot_user_ids = {"T1": "U_BOT"}
+    adapter._channel_team = {"C1": "T1"}
+    adapter._user_name_cache = {"U1": "Alice", "U2": "Bob"}
+    adapter._download_slack_file = AsyncMock(return_value="/tmp/hermes-shelf.jpg")
+
+    await adapter._handle_slack_message({
+        "type": "app_mention",
+        "channel": "C1",
+        "channel_type": "channel",
+        "team": "T1",
+        "thread_ts": "1000.0",
+        "ts": "1000.1",
+        "user": "U2",
+        "text": "<@U_BOT> can you check the photo above?",
+    })
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.media_urls == ["/tmp/hermes-shelf.jpg"]
+    assert event.media_types == ["image/jpeg"]
+    assert event.message_type == MessageType.PHOTO
+    assert "Alice: Here is the shelf photo [attached image]" in event.text
+
+
 # ---------------------------------------------------------------------------
 # TestSlashCommandSessionIsolation
 # ---------------------------------------------------------------------------

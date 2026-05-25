@@ -485,8 +485,7 @@ async def test_dm_admin_blocked_in_group_with_separate_admin_list():
 
 @pytest.mark.asyncio
 async def test_gating_isolated_per_platform():
-    """When Discord is gated and Telegram isn't, the same user_id on
-    Telegram must be unrestricted."""
+    """Discord ACL config must not leak into Telegram's persona-mode policy."""
     from gateway.run import GatewayRunner
     from gateway.config import GatewayConfig, Platform, PlatformConfig
 
@@ -502,7 +501,7 @@ async def test_gating_isolated_per_platform():
                 },
             ),
             Platform.TELEGRAM: PlatformConfig(
-                enabled=True, token="***", extra={}
+                enabled=True, token="***", extra={"slash_commands": {"mode": "all"}}
             ),
         }
     )
@@ -552,7 +551,62 @@ async def test_gating_isolated_per_platform():
     runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
     runner._emit_gateway_run_progress = AsyncMock()
 
-    # Same user_id on Telegram → must be unrestricted (Telegram has no admin list).
+    # Same user_id on Telegram follows Telegram config, not Discord's ACL.
     tg_src = _make_source(platform=Platform.TELEGRAM, user_id="999", chat_id="t1")
     result = await runner._handle_message(_make_event("/whoami", tg_src))
-    assert "Tier: unrestricted" in result
+    assert "Tier: **admin**" in result
+
+
+@pytest.mark.asyncio
+async def test_telegram_default_none_denies_whoami_and_help():
+    runner = _make_runner(platform=Platform.TELEGRAM, platform_extra={})
+    whoami = await runner._handle_message(
+        _make_event("/whoami", _make_source(platform=Platform.TELEGRAM, user_id="999"))
+    )
+    help_result = await runner._handle_message(
+        _make_event("/help", _make_source(platform=Platform.TELEGRAM, user_id="999"))
+    )
+    assert "⛔" in whoami
+    assert "⛔" in help_result
+
+
+@pytest.mark.asyncio
+async def test_telegram_minimal_allows_help_and_denies_status():
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={"slash_commands": {"mode": "minimal"}},
+    )
+    src = _make_source(platform=Platform.TELEGRAM, user_id="999")
+    help_result = await runner._handle_message(_make_event("/help", src))
+    status_result = await runner._handle_message(_make_event("/status", src))
+    assert "⛔" not in help_result
+    assert "⛔" in status_result
+
+
+@pytest.mark.asyncio
+async def test_telegram_persona_allows_status_new_and_denies_restart():
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={"slash_commands": {"mode": "persona"}},
+    )
+    src = _make_source(platform=Platform.TELEGRAM, user_id="999")
+    runner._handle_status_command = AsyncMock(return_value="status-handled")
+    runner._maybe_confirm_destructive_slash = AsyncMock(return_value="new-handled")
+    status_result = await runner._handle_message(_make_event("/status", src))
+    new_result = await runner._handle_message(_make_event("/new", src))
+    restart_result = await runner._handle_message(_make_event("/restart", src))
+    assert status_result == "status-handled"
+    assert new_result == "new-handled"
+    assert "⛔" in restart_result
+
+
+@pytest.mark.asyncio
+async def test_telegram_user_override_all_allows_restart():
+    runner = _make_runner(
+        platform=Platform.TELEGRAM,
+        platform_extra={"slash_commands": {"mode": "none", "users": {"999": "all"}}},
+    )
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    src = _make_source(platform=Platform.TELEGRAM, user_id="999")
+    result = await runner._handle_message(_make_event("/restart", src))
+    assert result == "restart-handled"

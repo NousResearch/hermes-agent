@@ -167,11 +167,17 @@ def test_session_key_set_via_contextvars(monkeypatch):
         platform="telegram",
         chat_id="-1001",
         session_key="tg:-1001:17585",
+        identity_key="telegram:user:123456",
+        data_isolation_level="trusted",
     )
     assert get_session_env("HERMES_SESSION_KEY") == "tg:-1001:17585"
+    assert get_session_env("HERMES_IDENTITY_KEY") == "telegram:user:123456"
+    assert get_session_env("HERMES_DATA_ISOLATION_LEVEL") == "trusted"
 
     clear_session_vars(tokens)
     assert get_session_env("HERMES_SESSION_KEY") == ""
+    assert get_session_env("HERMES_IDENTITY_KEY") == ""
+    assert get_session_env("HERMES_DATA_ISOLATION_LEVEL") == ""
 
 
 def test_session_key_falls_back_to_os_environ(monkeypatch):

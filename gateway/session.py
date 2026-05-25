@@ -64,6 +64,8 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
+from .relationship_profiles import build_relationship_context_prompt, canonical_identity_key
+from .data_isolation import level_for_identity
 from utils import atomic_replace
 
 
@@ -174,6 +176,8 @@ class SessionContext:
     # Session metadata
     session_key: str = ""
     session_id: str = ""
+    identity_key: str = ""
+    data_isolation_level: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -187,6 +191,8 @@ class SessionContext:
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
             "session_id": self.session_id,
+            "identity_key": self.identity_key,
+            "data_isolation_level": self.data_isolation_level,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -382,6 +388,9 @@ def build_session_context_prompt(
 
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
 
+    lines.append("")
+    lines.append(build_relationship_context_prompt(context))
+
     # Home channels
     if context.home_channels:
         lines.append("")
@@ -491,6 +500,13 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # One-shot prompt-only bridge from an automatically/technically rotated
+    # previous session. Manual /new and /reset never populate these fields.
+    previous_session_id: Optional[str] = None
+    previous_session_ended_at: Optional[datetime] = None
+    previous_session_reason: Optional[str] = None
+    bridge_consumed: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -521,6 +537,14 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "previous_session_id": self.previous_session_id,
+            "previous_session_ended_at": (
+                self.previous_session_ended_at.isoformat()
+                if self.previous_session_ended_at
+                else None
+            ),
+            "previous_session_reason": self.previous_session_reason,
+            "bridge_consumed": self.bridge_consumed,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -546,6 +570,14 @@ class SessionEntry:
                 last_resume_marked_at = datetime.fromisoformat(_lrma)
             except (TypeError, ValueError):
                 last_resume_marked_at = None
+
+        previous_session_ended_at = None
+        _psea = data.get("previous_session_ended_at")
+        if _psea:
+            try:
+                previous_session_ended_at = datetime.fromisoformat(_psea)
+            except (TypeError, ValueError):
+                previous_session_ended_at = None
 
         return cls(
             session_key=data["session_key"],
@@ -573,7 +605,18 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            previous_session_id=data.get("previous_session_id"),
+            previous_session_ended_at=previous_session_ended_at,
+            previous_session_reason=data.get("previous_session_reason"),
+            bridge_consumed=data.get("bridge_consumed", False),
         )
+
+
+@dataclass
+class SessionBridgeCandidate:
+    session_id: str
+    ended_at: Optional[datetime] = None
+    reason: Optional[str] = None
 
 
 def is_shared_multi_user_session(
@@ -870,6 +913,7 @@ class SessionStore:
         # SQLite calls are made outside the lock to avoid holding it during I/O.
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
+        db_end_reason = "session_auto_reset"
         db_create_kwargs = None
 
         with self._lock:
@@ -909,10 +953,16 @@ class SessionStore:
                     # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
                     db_end_session_id = entry.session_id
+                    previous_session_id = entry.session_id
+                    previous_session_ended_at = now
+                    previous_session_reason = reset_reason
             else:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+                previous_session_id = None
+                previous_session_ended_at = None
+                previous_session_reason = None
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -929,6 +979,9 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                previous_session_id=previous_session_id,
+                previous_session_ended_at=previous_session_ended_at,
+                previous_session_reason=previous_session_reason,
             )
 
             self._entries[session_key] = entry
@@ -937,12 +990,14 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "session_key": session_key,
+                "origin_json": source.to_dict(),
             }
 
         # SQLite operations outside the lock
         if self._db and db_end_session_id:
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                self._db.end_session(db_end_session_id, db_end_reason)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -953,6 +1008,82 @@ class SessionStore:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
         return entry
+
+    @staticmethod
+    def _bridge_origin_matches(source: SessionSource, origin_data: Any) -> bool:
+        if isinstance(origin_data, str):
+            try:
+                origin_data = json.loads(origin_data)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return False
+        if not isinstance(origin_data, dict):
+            return False
+        return (
+            str(origin_data.get("chat_id") or "") == str(source.chat_id or "")
+            and str(origin_data.get("chat_type") or "dm") == str(source.chat_type or "dm")
+            and str(origin_data.get("thread_id") or "") == str(source.thread_id or "")
+        )
+
+    def claim_previous_session_for_bridge(
+        self,
+        source: SessionSource,
+        current_session_id: str,
+    ) -> Optional[SessionBridgeCandidate]:
+        """Atomically claim a previous session for one-shot bridge injection."""
+        session_key = self._generate_session_key(source)
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if (
+                entry is not None
+                and entry.session_id == current_session_id
+            ):
+                if entry.bridge_consumed:
+                    return None
+                previous_id = entry.previous_session_id
+                if previous_id:
+                    entry.bridge_consumed = True
+                    self._save()
+                    return SessionBridgeCandidate(
+                        session_id=previous_id,
+                        ended_at=entry.previous_session_ended_at,
+                        reason=entry.previous_session_reason,
+                    )
+                # No captured previous session. Mark consumed before trying the
+                # SQLite fallback so concurrent first messages cannot both claim.
+                entry.bridge_consumed = True
+                self._save()
+
+        if not self._db:
+            return None
+        try:
+            row = self._db.get_previous_session_for_bridge(
+                session_key=session_key,
+                source=source.platform.value,
+                user_id=source.user_id or "",
+                current_session_id=current_session_id,
+            )
+        except Exception as e:
+            logger.debug("Session DB bridge lookup failed: %s", e)
+            return None
+        if not row:
+            return None
+        if row.get("end_reason") != "session_auto_reset":
+            return None
+        if not self._bridge_origin_matches(source, row.get("origin_json")):
+            return None
+
+        ended_at = None
+        if row.get("ended_at") is not None:
+            try:
+                ended_at = datetime.fromtimestamp(float(row["ended_at"]))
+            except (TypeError, ValueError, OSError):
+                ended_at = None
+        return SessionBridgeCandidate(
+            session_id=str(row["id"]),
+            ended_at=ended_at,
+            reason=row.get("end_reason"),
+        )
 
     def update_session(
         self,
@@ -1155,6 +1286,7 @@ class SessionStore:
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
+                bridge_consumed=True,
             )
 
             self._entries[session_key] = new_entry
@@ -1163,6 +1295,8 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "session_key": session_key,
+                "origin_json": old_entry.origin.to_dict() if old_entry.origin else None,
             }
 
         if self._db and db_end_session_id:
@@ -1215,6 +1349,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                bridge_consumed=True,
             )
 
             self._entries[session_key] = new_entry
@@ -1278,6 +1413,7 @@ class SessionStore:
                         message.get("platform_message_id") or message.get("message_id")
                     ),
                     observed=bool(message.get("observed")),
+                    timestamp=message.get("timestamp"),
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1328,6 +1464,7 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
+    identity_key = canonical_identity_key(source)
     context = SessionContext(
         source=source,
         connected_platforms=connected,
@@ -1337,6 +1474,8 @@ def build_session_context(
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
+        identity_key=identity_key,
+        data_isolation_level=level_for_identity(identity_key),
     )
     
     if session_entry:

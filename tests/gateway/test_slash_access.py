@@ -9,8 +9,12 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource
 from gateway.slash_access import (
     SlashAccessPolicy,
+    normalize_telegram_slash_command_mode,
     policy_for_source,
     policy_from_extra,
+    telegram_slash_allowed_commands,
+    telegram_slash_default_mode,
+    telegram_slash_mode_for_user,
 )
 
 
@@ -271,7 +275,7 @@ class TestPolicyForSource:
         assert grp_p.can_run("999", "stop") is False  # gated
 
     def test_per_platform_isolation(self):
-        # Discord has gating, Telegram doesn't → Telegram is unaffected.
+        # Discord config does not leak into Telegram's own default-none policy.
         cfg = GatewayConfig(
             platforms={
                 Platform.DISCORD: PlatformConfig(
@@ -285,5 +289,126 @@ class TestPolicyForSource:
             platform=Platform.TELEGRAM, chat_id="T", chat_type="dm", user_id="999"
         )
         p = policy_for_source(cfg, tg_src)
-        assert p.enabled is False
-        assert p.can_run("999", "stop") is True
+        assert p.enabled is True
+        assert p.can_run("999", "stop") is False
+
+
+class TestTelegramSlashCommandModes:
+    def test_mode_normalization(self):
+        assert normalize_telegram_slash_command_mode("All") == "all"
+        assert normalize_telegram_slash_command_mode(" persona ") == "persona"
+        assert normalize_telegram_slash_command_mode("minimal") == "minimal"
+        assert normalize_telegram_slash_command_mode("none") == "none"
+        assert normalize_telegram_slash_command_mode("bad") == "none"
+        assert normalize_telegram_slash_command_mode(None) == "none"
+
+    def test_mode_command_sets(self):
+        assert telegram_slash_allowed_commands("none") == frozenset()
+        assert telegram_slash_allowed_commands("minimal") == frozenset({"help"})
+        assert telegram_slash_allowed_commands("persona") == frozenset({"help", "status", "new"})
+        assert telegram_slash_allowed_commands("all") == frozenset()
+
+    def test_user_mode_precedence(self):
+        extra = {
+            "slash_commands": {
+                "mode": "minimal",
+                "users": {"123": "all", "*": "persona"},
+            }
+        }
+        assert telegram_slash_mode_for_user(extra, "123") == "all"
+        assert telegram_slash_mode_for_user(extra, "999") == "persona"
+        assert telegram_slash_default_mode(extra) == "persona"
+
+    def test_telegram_default_none_when_no_acl_or_mode_config(self):
+        cfg = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, extra={})}
+        )
+        src = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="T", chat_type="dm", user_id="999"
+        )
+        p = policy_for_source(cfg, src)
+        assert p.enabled is True
+        assert p.can_run("999", "help") is False
+        assert p.can_run("999", "whoami") is False
+        assert p.can_run("999", "restart") is False
+
+    def test_telegram_minimal_and_persona_modes(self):
+        cfg = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    extra={"slash_commands": {"mode": "persona"}},
+                )
+            }
+        )
+        src = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="T", chat_type="dm", user_id="999"
+        )
+        p = policy_for_source(cfg, src)
+        assert p.can_run("999", "help") is True
+        assert p.can_run("999", "status") is True
+        assert p.can_run("999", "new") is True
+        assert p.can_run("999", "restart") is False
+
+        cfg.platforms[Platform.TELEGRAM].extra["slash_commands"]["mode"] = "minimal"
+        p = policy_for_source(cfg, src)
+        assert p.can_run("999", "help") is True
+        assert p.can_run("999", "status") is False
+
+    def test_telegram_user_override_all_allows_every_command(self):
+        cfg = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "slash_commands": {
+                            "mode": "none",
+                            "users": {"999": "all"},
+                        }
+                    },
+                )
+            }
+        )
+        src = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="T", chat_type="dm", user_id="999"
+        )
+        p = policy_for_source(cfg, src)
+        assert p.is_admin("999") is True
+        assert p.can_run("999", "restart") is True
+        assert p.can_run("999", "any-plugin-command") is True
+
+    def test_telegram_slash_config_precedes_legacy_acl(self):
+        cfg = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "allow_admin_from": ["999"],
+                        "user_allowed_commands": ["restart"],
+                        "slash_commands": {"mode": "none"},
+                    },
+                )
+            }
+        )
+        src = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="T", chat_type="dm", user_id="999"
+        )
+        p = policy_for_source(cfg, src)
+        assert p.is_admin("999") is False
+        assert p.can_run("999", "restart") is False
+
+    def test_telegram_legacy_acl_still_works_when_configured_without_slash_modes(self):
+        cfg = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    extra={"allow_admin_from": ["111"], "user_allowed_commands": ["status"]},
+                )
+            }
+        )
+        src = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="T", chat_type="dm", user_id="999"
+        )
+        p = policy_for_source(cfg, src)
+        assert p.can_run("999", "status") is True
+        assert p.can_run("999", "restart") is False

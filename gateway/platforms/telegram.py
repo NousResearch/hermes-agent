@@ -480,6 +480,106 @@ class TelegramAdapter(BasePlatformAdapter):
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
 
+    def _slash_commands_config(self) -> Dict[str, Any]:
+        cfg = self.config.extra.get("slash_commands")
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _telegram_menu_entries_for_mode(self, mode: str) -> tuple[list[tuple[str, str]], int]:
+        from gateway.slash_access import normalize_telegram_slash_command_mode
+        from hermes_cli.commands import telegram_bot_commands, telegram_menu_commands
+
+        normalized = normalize_telegram_slash_command_mode(mode)
+        if normalized == "all":
+            return telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+        if normalized == "none":
+            return [], 0
+
+        wanted = {
+            "minimal": ("help",),
+            "persona": ("help", "status", "new"),
+        }[normalized]
+        by_name = dict(telegram_bot_commands())
+        return [(name, by_name[name]) for name in wanted if name in by_name], 0
+
+    def _bot_commands_for_mode(self, mode: str):
+        from telegram import BotCommand
+
+        entries, hidden_count = self._telegram_menu_entries_for_mode(mode)
+        return [BotCommand(name, desc) for name, desc in entries], hidden_count
+
+    async def _sync_bot_commands(self) -> None:
+        """Register Telegram's visible slash menu from persona-mode config."""
+        from gateway.slash_access import (
+            normalize_telegram_slash_command_mode,
+            telegram_slash_default_mode,
+        )
+        from telegram import (
+            BotCommandScopeAllPrivateChats,
+            BotCommandScopeAllGroupChats,
+            BotCommandScopeDefault,
+            BotCommandScopeChat,
+        )
+
+        extra = self.config.extra if isinstance(self.config.extra, dict) else {}
+        broad_mode = telegram_slash_default_mode(extra)
+        broad_commands, hidden_count = self._bot_commands_for_mode(broad_mode)
+        for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
+            scope_name = getattr(scope_cls, "__name__", scope_cls.__class__.__name__)
+            try:
+                await self._bot.set_my_commands(broad_commands, scope=scope_cls())
+                logger.info(
+                    "[%s] set_my_commands OK for scope %s (%s mode, %d cmds)",
+                    self.name,
+                    scope_name,
+                    broad_mode,
+                    len(broad_commands),
+                )
+            except Exception as scope_err:
+                logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
+
+        users = self._slash_commands_config().get("users")
+        user_modes = users if isinstance(users, dict) else {}
+        for raw_user_id, raw_mode in user_modes.items():
+            user_id = str(raw_user_id).strip()
+            if not user_id or user_id == "*":
+                continue
+            try:
+                chat_id = int(user_id)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[%s] Skipping malformed telegram.slash_commands user override %r",
+                    self.name,
+                    raw_user_id,
+                )
+                continue
+            mode = normalize_telegram_slash_command_mode(raw_mode)
+            commands, _ = self._bot_commands_for_mode(mode)
+            try:
+                await self._bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=chat_id))
+                logger.info(
+                    "[%s] set_my_commands OK for user %s (%s mode, %d cmds)",
+                    self.name,
+                    user_id,
+                    mode,
+                    len(commands),
+                )
+            except Exception as scope_err:
+                logger.warning(
+                    "[%s] set_my_commands FAILED for user %s: %s",
+                    self.name,
+                    user_id,
+                    scope_err,
+                )
+
+        if hidden_count:
+            logger.info(
+                "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
+                self.name,
+                len(broad_commands),
+                hidden_count,
+                MAX_COMMANDS_PER_SCOPE,
+            )
+
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -1561,42 +1661,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     error_callback=_polling_error_callback,
                 )
             
-            # Register bot commands so Telegram shows a hint menu when users type /
-            # List is derived from the central COMMAND_REGISTRY — adding a new
-            # gateway command there automatically adds it to the Telegram menu.
+            # Register bot commands so Telegram shows only the configured
+            # persona-mode hint menu when users type /.
             try:
-                from telegram import (
-                    BotCommand,
-                    BotCommandScopeAllPrivateChats,
-                    BotCommandScopeAllGroupChats,
-                    BotCommandScopeDefault,
-                    BotCommandScopeChat,
-                )
-                from hermes_cli.commands import telegram_menu_commands
-                # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit (~4KB total).  Limit to 30 core commands
-                # to stay well under the threshold while covering all categories.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
-                # Register for all scopes independently — Telegram picks the
-                # narrowest matching scope per chat type (forum topics fall
-                # through to AllGroupChats or Default).
-                for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
-                    scope_name = scope_cls.__name__
-                    try:
-                        await self._bot.set_my_commands(bot_commands, scope=scope_cls())
-                        logger.info("[%s] set_my_commands OK for scope %s (%d cmds)", self.name, scope_name, len(bot_commands))
-                    except Exception as scope_err:
-                        logger.warning("[%s] set_my_commands FAILED for scope %s: %s", self.name, scope_name, scope_err)
+                await self._sync_bot_commands()
                 # Forum topics don't inherit AllGroupChats — Telegram resolves
                 # commands via BotCommandScopeChat(chat_id) for forum groups.
                 # Lazy registration happens in _ensure_forum_commands on first
                 # message from a forum topic (see _handle_text_message).
-                if hidden_count:
-                    logger.info(
-                        "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count, 30,
-                    )
             except Exception as e:
                 logger.warning(
                     "[%s] Could not register Telegram command menu: %s",
@@ -4779,13 +4851,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_id = int(chat.id)
                 if chat_id in self._forum_command_registered:
                     return
-                from telegram import BotCommand, BotCommandScopeChat
-                from hermes_cli.commands import telegram_menu_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
-                bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
+                from gateway.slash_access import telegram_slash_default_mode
+                from telegram import BotCommandScopeChat
+
+                mode = telegram_slash_default_mode(
+                    self.config.extra if isinstance(self.config.extra, dict) else {}
+                )
+                bot_commands, _ = self._bot_commands_for_mode(mode)
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
-                logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
+                logger.info(
+                    "[%s] Lazy-registered %d commands for forum chat %s (%s mode)",
+                    self.name,
+                    len(bot_commands),
+                    chat_id,
+                    mode,
+                )
             except Exception as e:
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
 

@@ -3,7 +3,7 @@ import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig, SessionResetPolicy
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
@@ -609,6 +609,88 @@ class TestSessionStoreSwitchSession:
         assert resumed["ended_at"] is None
         assert resumed["end_reason"] is None
         db.close()
+
+
+class TestSessionStoreBridgeMetadata:
+    def _store(self, tmp_path, monkeypatch, config=None):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        return SessionStore(sessions_dir=tmp_path / "sessions", config=config or GatewayConfig())
+
+    def _source(self):
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+            user_name="tester",
+        )
+
+    def test_auto_reset_records_previous_session_and_claims_once(self, tmp_path, monkeypatch):
+        from datetime import datetime, timedelta
+
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=1)
+        )
+        store = self._store(tmp_path, monkeypatch, config)
+        source = self._source()
+
+        first = store.get_or_create_session(source)
+        first.total_tokens = 10
+        first.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        second = store.get_or_create_session(source)
+
+        assert second.session_id != first.session_id
+        assert second.previous_session_id == first.session_id
+        assert second.previous_session_reason == "idle"
+        old_row = store._db.get_session(first.session_id)
+        new_row = store._db.get_session(second.session_id)
+        assert old_row["end_reason"] == "session_auto_reset"
+        assert new_row["session_key"] == second.session_key
+        assert json.loads(new_row["origin_json"])["chat_id"] == "chat-1"
+
+        claimed = store.claim_previous_session_for_bridge(source, second.session_id)
+        assert claimed is not None
+        assert claimed.session_id == first.session_id
+        assert store.claim_previous_session_for_bridge(source, second.session_id) is None
+
+    def test_manual_reset_does_not_create_bridge_candidate(self, tmp_path, monkeypatch):
+        store = self._store(tmp_path, monkeypatch)
+        source = self._source()
+        first = store.get_or_create_session(source)
+
+        reset = store.reset_session(first.session_key)
+
+        assert reset is not None
+        assert reset.previous_session_id is None
+        assert reset.bridge_consumed is True
+        assert store._db.get_session(first.session_id)["end_reason"] == "session_reset"
+        assert store.claim_previous_session_for_bridge(source, reset.session_id) is None
+
+    def test_sqlite_fallback_requires_auto_reset_reason_and_origin_match(self, tmp_path, monkeypatch):
+        from datetime import datetime, timedelta
+
+        store = self._store(tmp_path, monkeypatch)
+        source = self._source()
+        first = store.get_or_create_session(source)
+        first.total_tokens = 10
+        first.updated_at = datetime.now() - timedelta(days=2)
+        store._save()
+        store._db.end_session(first.session_id, "session_auto_reset")
+
+        second = store.get_or_create_session(source, force_new=True)
+        # Simulate sessions.json losing the captured transient previous-session fields.
+        second.previous_session_id = None
+        second.bridge_consumed = False
+        store._save()
+
+        claimed = store.claim_previous_session_for_bridge(source, second.session_id)
+
+        assert claimed is not None
+        assert claimed.session_id == first.session_id
 
 
 class TestWhatsAppSessionKeyConsistency:

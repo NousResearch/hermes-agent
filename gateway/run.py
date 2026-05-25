@@ -53,6 +53,14 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from agent.session_bridge import build_session_bridge_context
+from gateway.steering import (
+    SteeringConfig,
+    load_steering_config,
+    render_ack as render_steering_ack,
+    render_interruption_context,
+    should_send_ack as should_send_steering_ack,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -862,20 +870,52 @@ if _config_path.exists():
         # config→env bridging without core knowing about each one.
         _auxiliary_cfg = _cfg.get("auxiliary", {})
         if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            # Built-in tasks that previously had explicit env-var bridging.
-            # Kept here as the canonical bridged set; plugin tasks are added
-            # below via the plugin auxiliary registry.
-            _aux_bridged_keys = {"vision", "web_extract", "approval"}
+            _aux_task_env = {
+                "vision": {
+                    "provider": "AUXILIARY_VISION_PROVIDER",
+                    "model": "AUXILIARY_VISION_MODEL",
+                    "base_url": "AUXILIARY_VISION_BASE_URL",
+                    "api_key": "AUXILIARY_VISION_API_KEY",
+                },
+                "web_extract": {
+                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+                },
+                "approval": {
+                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
+                    "model": "AUXILIARY_APPROVAL_MODEL",
+                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
+                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
+                },
+                "conversation_turn_policy": {
+                    "provider": "AUXILIARY_CONVERSATION_TURN_POLICY_PROVIDER",
+                    "model": "AUXILIARY_CONVERSATION_TURN_POLICY_MODEL",
+                    "base_url": "AUXILIARY_CONVERSATION_TURN_POLICY_BASE_URL",
+                    "api_key": "AUXILIARY_CONVERSATION_TURN_POLICY_API_KEY",
+                },
+                "conversation_rebound": {
+                    "provider": "AUXILIARY_CONVERSATION_REBOUND_PROVIDER",
+                    "model": "AUXILIARY_CONVERSATION_REBOUND_MODEL",
+                    "base_url": "AUXILIARY_CONVERSATION_REBOUND_BASE_URL",
+                    "api_key": "AUXILIARY_CONVERSATION_REBOUND_API_KEY",
+                },
+            }
             try:
                 from hermes_cli.plugins import get_plugin_auxiliary_tasks
                 for _entry in get_plugin_auxiliary_tasks():
-                    _aux_bridged_keys.add(_entry["key"])
+                    _key = _entry["key"]
+                    if _key not in _aux_task_env:
+                        _aux_task_env[_key] = {
+                            "provider": f"AUXILIARY_{_key.upper()}_PROVIDER",
+                            "model": f"AUXILIARY_{_key.upper()}_MODEL",
+                            "base_url": f"AUXILIARY_{_key.upper()}_BASE_URL",
+                            "api_key": f"AUXILIARY_{_key.upper()}_API_KEY",
+                        }
             except Exception:
-                # Plugin discovery failure must not break gateway startup;
-                # built-in bridging stays intact.
                 pass
-
-            for _task_key in _aux_bridged_keys:
+            for _task_key, _env_map in _aux_task_env.items():
                 _task_cfg = _auxiliary_cfg.get(_task_key, {})
                 if not isinstance(_task_cfg, dict):
                     continue
@@ -1014,6 +1054,7 @@ if not _configured_cwd or _configured_cwd in {".", "auto", "cwd"}:
 from gateway.config import (
     Platform,
     _BUILTIN_PLATFORM_VALUES,
+    BridgeConfig,
     GatewayConfig,
     HomeChannel,
     PlatformConfig,
@@ -1028,6 +1069,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.relationship_profiles import canonical_identity_key, record_exchange
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1657,6 +1699,7 @@ class GatewayRunner:
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"
+    _steering_config: SteeringConfig = SteeringConfig()
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1682,6 +1725,7 @@ class GatewayRunner:
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
+        self._steering_config = self._load_steering_config()
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -1748,6 +1792,8 @@ class GatewayRunner:
         import threading as _threading
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
+        self._bridged_session_ids: set[str] = set()
+        self._bridge_lock = _threading.Lock()
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
@@ -2622,6 +2668,107 @@ class GatewayRunner:
             depth += 1
         return depth
 
+    def _agent_activity_summary(self, agent: Any, session_key: str = "") -> dict:
+        """Return activity data used by steering acks/prompts."""
+        summary: dict = {}
+        if agent and agent is not _AGENT_PENDING_SENTINEL and hasattr(agent, "get_activity_summary"):
+            try:
+                summary = agent.get_activity_summary() or {}
+            except Exception:
+                summary = {}
+        if not isinstance(summary, dict):
+            summary = {}
+        start_ts = self._running_agents_ts.get(session_key, 0) if session_key else 0
+        if start_ts:
+            summary = dict(summary)
+            summary["run_elapsed_seconds"] = max(0.0, time.time() - start_ts)
+        return summary
+
+    @staticmethod
+    def _event_user_label(event: "MessageEvent") -> str:
+        source = getattr(event, "source", None)
+        for attr in ("user_name", "user_id"):
+            value = getattr(source, attr, None)
+            if value:
+                return str(value)
+        return "l'utilisateur"
+
+    def _render_steering_context(
+        self,
+        event: "MessageEvent",
+        activity: dict,
+    ) -> str:
+        text = (event.text or _build_media_placeholder(event) or "").strip()
+        return render_interruption_context(
+            getattr(self, "_steering_config", SteeringConfig()),
+            message=text,
+            user=self._event_user_label(event),
+            activity=activity,
+        )
+
+    def _inject_steering_context(
+        self,
+        *,
+        event: "MessageEvent",
+        session_key: str,
+        running_agent: Any,
+        activity: Optional[dict] = None,
+    ) -> bool:
+        """Inject a rendered interruption context into the running agent."""
+        if (
+            running_agent is None
+            or running_agent is _AGENT_PENDING_SENTINEL
+            or not hasattr(running_agent, "steer")
+        ):
+            return False
+        text = (event.text or _build_media_placeholder(event) or "").strip()
+        if not text:
+            return False
+        activity = activity if activity is not None else self._agent_activity_summary(running_agent, session_key)
+        context = self._render_steering_context(event, activity)
+        try:
+            return bool(running_agent.steer(context))
+        except Exception as exc:
+            logger.warning("Gateway steering injection failed for session %s: %s", session_key, exc)
+            return False
+
+    async def _send_steering_ack_if_needed(
+        self,
+        *,
+        event: "MessageEvent",
+        session_key: str,
+        adapter: Any,
+        running_agent: Any,
+        activity: Optional[dict] = None,
+    ) -> None:
+        steering = getattr(self, "_steering_config", SteeringConfig())
+        activity = activity if activity is not None else self._agent_activity_summary(running_agent, session_key)
+        if not should_send_steering_ack(steering, activity):
+            return
+        message = render_steering_ack(
+            steering,
+            message=(event.text or ""),
+            user=self._event_user_label(event),
+            activity=activity,
+        )
+        reply_anchor = self._reply_anchor_for_event(event)
+        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        try:
+            await adapter._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=message,
+                reply_to=(
+                    reply_anchor
+                    if event.source.platform == Platform.TELEGRAM
+                    and event.source.chat_type == "dm"
+                    and event.source.thread_id
+                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                ),
+                metadata=thread_meta,
+            )
+        except Exception as exc:
+            logger.debug("Failed to send steering ack: %s", exc)
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
@@ -2922,12 +3069,34 @@ class GatewayRunner:
         )
 
     @staticmethod
+    def _load_steering_config() -> SteeringConfig:
+        """Load gateway steering behavior from raw config.yaml."""
+        return load_steering_config(_load_gateway_config())
+
+    @staticmethod
     def _load_busy_input_mode() -> str:
         """Load gateway drain-time busy-input behavior from config/env."""
         mode = os.getenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "").strip().lower()
         if not mode:
-            cfg = _load_gateway_runtime_config()
-            mode = str(cfg_get(cfg, "display", "busy_input_mode", default="") or "").strip().lower()
+            try:
+                import yaml as _y
+                cfg_path = _hermes_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    mode = str(cfg_get(cfg, "display", "busy_input_mode", default="") or "").strip().lower()
+                    if not mode:
+                        steering = load_steering_config(cfg)
+                        if steering.enabled:
+                            return "steer"
+            except Exception:
+                pass
+        if not mode:
+            try:
+                if load_steering_config(_load_gateway_config()).enabled:
+                    return "steer"
+            except Exception:
+                pass
         if mode == "queue":
             return "queue"
         if mode == "steer":
@@ -3164,22 +3333,24 @@ class GatewayRunner:
             effective_mode = "queue"
         steered = False
         if effective_mode == "steer":
-            steer_text = (event.text or "").strip()
-            can_steer = (
-                steer_text
-                and running_agent is not None
-                and running_agent is not _AGENT_PENDING_SENTINEL
-                and hasattr(running_agent, "steer")
+            activity = self._agent_activity_summary(running_agent, session_key)
+            steered = self._inject_steering_context(
+                event=event,
+                session_key=session_key,
+                running_agent=running_agent,
+                activity=activity,
             )
-            if can_steer:
-                try:
-                    steered = bool(running_agent.steer(steer_text))
-                except Exception as exc:
-                    logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
-                    steered = False
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
+            else:
+                await self._send_steering_ack_if_needed(
+                    event=event,
+                    session_key=session_key,
+                    adapter=adapter,
+                    running_agent=running_agent,
+                    activity=activity,
+                )
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -3204,6 +3375,9 @@ class GatewayRunner:
                 running_agent.interrupt(event.text)
             except Exception:
                 pass  # don't let interrupt failure block the ack
+
+        if steered:
+            return True
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
@@ -3930,6 +4104,13 @@ class GatewayRunner:
             write_runtime_status(gateway_state="starting", exit_reason=None)
         except Exception:
             pass
+        try:
+            from identity_continuity import ensure_identity_cron_job, write_gateway_restart_marker
+
+            write_gateway_restart_marker()
+            ensure_identity_cron_job()
+        except Exception as _e:
+            logger.debug("Identity continuity startup hook failed: %s", _e)
 
         # Log any active supply-chain security advisories. Operators see this
         # in gateway.log and `hermes status` surfaces it; we do NOT block
@@ -5527,8 +5708,6 @@ class GatewayRunner:
                     conn = _kb.connect(board=slug)
                     if _kb.has_spawnable_ready(conn):
                         return True
-                    if _kb.has_spawnable_review(conn):
-                        return True
                 except Exception:
                     continue
                 finally:
@@ -7018,8 +7197,8 @@ class GatewayRunner:
             # Mirrors the cold-path gate further below so non-admin users
             # can't bypass gating just because an agent happens to be busy.
             # /status above is intentionally pre-gate so users always see
-            # session state. /help and /whoami fall under the always-allowed
-            # floor inside _check_slash_access.
+            # session state. Other command floors, if any, are enforced by
+            # _check_slash_access so Telegram persona modes can be strict.
             if _evt_cmd and _cmd_def_inner is not None:
                 _denied = self._check_slash_access(source, _cmd_def_inner.name)
                 if _denied is not None:
@@ -7294,19 +7473,27 @@ class GatewayRunner:
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             if self._busy_input_mode == "steer":
-                # Steer mode: inject text into the running agent mid-run via
-                # agent.steer().  Falls back to queue semantics if the payload
-                # is empty, the agent lacks steer(), or steer() rejects.
-                steer_text = (event.text or "").strip()
-                steered = False
-                if steer_text and hasattr(running_agent, "steer"):
-                    try:
-                        steered = bool(running_agent.steer(steer_text))
-                    except Exception as exc:
-                        logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
-                        steered = False
+                # Steering mode: inject an interruption context into the
+                # running agent. Falls back to queue semantics if injection
+                # is not possible.
+                _activity = self._agent_activity_summary(running_agent, _quick_key)
+                steered = self._inject_steering_context(
+                    event=event,
+                    session_key=_quick_key,
+                    running_agent=running_agent,
+                    activity=_activity,
+                )
                 if steered:
                     logger.debug("PRIORITY steer for session %s", _quick_key)
+                    _adapter = self.adapters.get(source.platform)
+                    if _adapter:
+                        await self._send_steering_ack_if_needed(
+                            event=event,
+                            session_key=_quick_key,
+                            adapter=_adapter,
+                            running_agent=running_agent,
+                            activity=_activity,
+                        )
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
@@ -7499,6 +7686,9 @@ class GatewayRunner:
 
         if canonical == "model":
             return await self._handle_model_command(event)
+
+        if canonical == "identity":
+            return await self._handle_identity_command(event)
 
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
@@ -8203,17 +8393,97 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        bridge_applied = False
+        bridge_config = getattr(self.config, "bridge", BridgeConfig())
+        if getattr(bridge_config, "enabled", True) and source.platform != Platform.LOCAL:
+            bridge_lock = getattr(self, "_bridge_lock", None)
+            if bridge_lock is None:
+                bridge_lock = threading.Lock()
+                self._bridge_lock = bridge_lock
+            bridged_ids = getattr(self, "_bridged_session_ids", None)
+            if bridged_ids is None:
+                bridged_ids = set()
+                self._bridged_session_ids = bridged_ids
+            with bridge_lock:
+                already_bridged = session_entry.session_id in bridged_ids
+                previous_for_bridge = (
+                    None
+                    if already_bridged
+                    else self.session_store.claim_previous_session_for_bridge(
+                        source,
+                        session_entry.session_id,
+                    )
+                )
+                if already_bridged:
+                    bridge_result = None
+                else:
+                    bridge_result = build_session_bridge_context(
+                        session_db=self._session_db,
+                        config=bridge_config,
+                        source=source,
+                        current_session_id=session_entry.session_id,
+                        previous=previous_for_bridge,
+                    )
+                    if bridge_result.applied and bridge_result.text:
+                        bridged_ids.add(session_entry.session_id)
+            if already_bridged:
+                logger.info(
+                    "session bridge skipped: session=%s reason=already_applied",
+                    session_entry.session_id,
+                )
+            elif bridge_result and bridge_result.applied and bridge_result.text:
+                context_prompt = f"{context_prompt}\n\n{bridge_result.text}"
+                bridge_applied = True
+                logger.info(
+                    "session bridge applied: session=%s previous=%s",
+                    session_entry.session_id,
+                    bridge_result.previous_session_id,
+                )
+            elif bridge_result:
+                logger.info(
+                    "session bridge skipped: session=%s reason=%s previous=%s",
+                    session_entry.session_id,
+                    bridge_result.reason,
+                    bridge_result.previous_session_id,
+                )
+        else:
+            logger.info(
+                "session bridge skipped: session=%s reason=%s",
+                session_entry.session_id,
+                "disabled" if not getattr(bridge_config, "enabled", True) else "local",
+            )
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+                context_note = (
+                    "[System note: The user's previous session was stopped and suspended. "
+                    + (
+                        "A recovery context from that session is included below.]"
+                        if bridge_applied else
+                        "This is a fresh conversation with no prior context.]"
+                    )
+                )
             elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+                context_note = (
+                    "[System note: The user's session was automatically reset by the daily schedule. "
+                    + (
+                        "A recovery context from that session is included below.]"
+                        if bridge_applied else
+                        "This is a fresh conversation with no prior context.]"
+                    )
+                )
             else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+                context_note = (
+                    "[System note: The user's previous session expired due to inactivity. "
+                    + (
+                        "A recovery context from that session is included below.]"
+                        if bridge_applied else
+                        "This is a fresh conversation with no prior context.]"
+                    )
+                )
             context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
@@ -8306,6 +8576,82 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+
+        try:
+            from agent.conversation_turn_policy import (
+                build_message_time_context,
+                classify_conversation_turn,
+                should_suppress_conversation_turn,
+                write_turn_policy_log,
+            )
+
+            _time_context = build_message_time_context(
+                current_timestamp=getattr(event, "timestamp", None),
+                history=history,
+            )
+            context_prompt = f"{context_prompt}\n\n{_time_context}"
+
+            _turn_decision = classify_conversation_turn(
+                message_text=event.text or "",
+                history=history,
+                source=source,
+                has_media=bool(getattr(event, "media_urls", None)),
+                is_command=event.is_command(),
+            )
+            _recent_assistant_message = next(
+                (
+                    str(_msg.get("content") or "")
+                    for _msg in reversed(history or [])
+                    if _msg.get("role") == "assistant"
+                ),
+                None,
+            )
+            _suppression = should_suppress_conversation_turn(
+                decision=_turn_decision,
+                message_text=event.text or "",
+                source=source,
+                recent_assistant_message=_recent_assistant_message,
+            )
+            write_turn_policy_log(
+                {
+                    "kind": "turn_policy",
+                    "session_key": session_key,
+                    "platform": _platform_name,
+                    "conversation_state": _turn_decision.conversation_state,
+                    "should_reply": _turn_decision.should_reply,
+                    "confidence": _turn_decision.confidence,
+                    "reason": _turn_decision.reason,
+                    "suppression_reason": _suppression.reason,
+                    "source": _turn_decision.source,
+                    "suppressed": _suppression.suppress,
+                    "text_length": len(event.text or ""),
+                    "has_media": bool(getattr(event, "media_urls", None)),
+                }
+            )
+            if _suppression.suppress:
+                _preview = " ".join((event.text or "").split())[:200]
+                logger.warning(
+                    "[Gateway] Conversation turn suppressed: state=%s confidence=%.3f reason=%s suppression_reason=%s text_preview=%r",
+                    _turn_decision.conversation_state,
+                    _turn_decision.confidence,
+                    _turn_decision.reason,
+                    _suppression.reason,
+                    _preview,
+                )
+                self.session_store.append_to_transcript(
+                    session_entry.session_id,
+                    {
+                        "role": "user",
+                        "content": event.text or "",
+                        "timestamp": getattr(event, "timestamp", None),
+                        **({"message_id": str(event.message_id)} if event.message_id else {}),
+                    },
+                )
+                self.session_store.update_session(session_key)
+                return None
+        except Exception as _turn_policy_exc:
+            logger.debug("conversation turn policy skipped: %s", _turn_policy_exc)
+            _suppression = None
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -8783,12 +9129,111 @@ class GatewayRunner:
                         session_key, _e,
                     )
 
+            try:
+                record_exchange(canonical_identity_key(source), source=source)
+            except Exception as _profile_exc:
+                logger.debug("relationship profile exchange update failed: %s", _profile_exc)
+
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
             response = _normalize_empty_agent_response(
                 agent_result, response, history_len=len(history),
             )
             response = _sanitize_gateway_final_response(source.platform, response)
+
+            try:
+                from agent.conversation_turn_policy import (
+                    maybe_add_conversation_rebound,
+                    write_turn_policy_log,
+                )
+
+                _rebound = maybe_add_conversation_rebound(
+                    response=response,
+                    message_text=message_text,
+                    history=history,
+                    source=source,
+                    session_key=session_key,
+                    suppression=locals().get("_suppression"),
+                )
+                if _rebound.response != response:
+                    response = _rebound.response
+                write_turn_policy_log(
+                    {
+                        "kind": "conversation_rebound",
+                        "session_key": session_key,
+                        "platform": _platform_name,
+                        "rebound_decision": {
+                            "generated": _rebound.added,
+                            "score": _rebound.score,
+                            "dimensions": _rebound.dimensions or {},
+                            "reason": _rebound.reason,
+                        },
+                        "finish_reason": _rebound.finish_reason,
+                        "text_length": len(message_text or ""),
+                    }
+                )
+            except Exception as _rebound_exc:
+                logger.debug("conversation rebound skipped: %s", _rebound_exc)
+
+            try:
+                from agent.initiative_engine import maybe_take_initiative
+
+                _initiative_response = response
+                _initiative_history = list(history or [])
+                _initiative_source = source
+                _initiative_session_key = session_key
+
+                def _initiative_generation():
+                    try:
+                        _adapter = self.adapters.get(_initiative_source.platform)
+                        _active = getattr(_adapter, "_active_sessions", {}).get(_initiative_session_key)
+                        if _active is not None:
+                            return getattr(_active, "_hermes_run_generation", None)
+                    except Exception:
+                        return None
+                    return None
+
+                async def _run_initiative_after_delivery() -> None:
+                    try:
+                        maybe_take_initiative(
+                            response=_initiative_response,
+                            history=_initiative_history,
+                            source=_initiative_source,
+                            session_key=_initiative_session_key,
+                            trigger="post_response",
+                        )
+                    except Exception as _initiative_exc:
+                        logger.debug("initiative engine skipped: %s", _initiative_exc)
+
+                _initiative_adapter = self.adapters.get(source.platform)
+                _initiative_registered = False
+                if (
+                    _initiative_adapter is not None
+                    and session_key
+                    and hasattr(_initiative_adapter, "register_post_delivery_callback")
+                ):
+                    try:
+                        _initiative_adapter.register_post_delivery_callback(
+                            session_key,
+                            _run_initiative_after_delivery,
+                            generation=_initiative_generation(),
+                        )
+                        _initiative_registered = True
+                    except Exception as _initiative_reg_exc:
+                        logger.debug(
+                            "initiative post-delivery registration failed: %s",
+                            _initiative_reg_exc,
+                        )
+                if not _initiative_registered:
+                    maybe_take_initiative(
+                        response=_initiative_response,
+                        history=_initiative_history,
+                        source=_initiative_source,
+                        session_key=_initiative_session_key,
+                        trigger="post_response",
+                    )
+            except Exception as _initiative_exc:
+                logger.debug("initiative engine skipped: %s", _initiative_exc)
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -8952,6 +9397,7 @@ class GatewayRunner:
                 )
 
             ts = datetime.now().isoformat()
+            user_ts = getattr(event, "timestamp", None) or ts
             
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
@@ -8982,7 +9428,7 @@ class GatewayRunner:
                 # message so the next message can load a transcript that
                 # reflects what was said.  Skip the assistant error text since
                 # it's a gateway-generated hint, not model output. (#7100)
-                _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                _user_entry = {"role": "user", "content": message_text, "timestamp": user_ts}
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
                 self.session_store.append_to_transcript(
@@ -8995,7 +9441,7 @@ class GatewayRunner:
 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
-                    _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                    _user_entry = {"role": "user", "content": message_text, "timestamp": user_ts}
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
                     self.session_store.append_to_transcript(
@@ -9023,7 +9469,8 @@ class GatewayRunner:
                         if msg.get("role") == "system":
                             continue
                         # Add timestamp to each message for debugging
-                        entry = {**msg, "timestamp": ts}
+                        entry_ts = user_ts if msg.get("role") == "user" else ts
+                        entry = {**msg, "timestamp": entry_ts}
                         if (
                             not _user_msg_id_attached
                             and msg.get("role") == "user"
@@ -9441,10 +9888,9 @@ class GatewayRunner:
         in ``_handle_message`` so admin/user gating can't be bypassed by
         an in-flight agent.
 
-        Backward-compat semantics live in
-        :func:`gateway.slash_access.policy_for_source` — when the operator
-        hasn't set ``allow_admin_from`` for the scope, the policy returns
-        ``enabled=False`` and this method always returns None.
+        Policy semantics live in :func:`gateway.slash_access.policy_for_source`.
+        Legacy platforms keep the old ``allow_admin_from`` opt-in behavior;
+        Telegram also understands persona slash-command modes.
         """
         from gateway.slash_access import policy_for_source as _policy_for_source
 
@@ -9468,11 +9914,17 @@ class GatewayRunner:
                 + ". Use /whoami for the full list."
             )
         else:
-            suffix = (
-                "No slash commands are enabled for non-admins on this "
-                "platform. Ask an admin to add you to allow_admin_from "
-                "or to set user_allowed_commands."
-            )
+            if getattr(source.platform, "value", source.platform) == "telegram":
+                suffix = (
+                    "No Telegram slash commands are enabled for your current "
+                    "persona mode."
+                )
+            else:
+                suffix = (
+                    "No slash commands are enabled for non-admins on this "
+                    "platform. Ask an admin to add you to allow_admin_from "
+                    "or to set user_allowed_commands."
+                )
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
 
@@ -9510,7 +9962,7 @@ class GatewayRunner:
             )
 
         # Non-admin user. Show what's actually reachable.
-        floor = ["help", "whoami"]  # mirrors slash_access._ALWAYS_ALLOWED_FOR_USERS
+        floor = sorted(policy.always_allowed_commands)
         configured = sorted(policy.user_allowed_commands)
         # Combine + dedupe, preserve order: floor first, then operator additions.
         seen: set[str] = set()
@@ -10283,6 +10735,18 @@ class GatewayRunner:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        try:
+                            from identity_continuity import record_identity_event
+
+                            record_identity_event(
+                                "model_change",
+                                severity="info",
+                                trigger="/model picker",
+                                before={"model": _cur_model, "provider": _cur_provider},
+                                after={"model": result.new_model, "provider": result.target_provider},
+                            )
+                        except Exception as exc:
+                            logger.debug("Identity continuity model event failed: %s", exc)
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -10423,6 +10887,18 @@ class GatewayRunner:
             "base_url": result.base_url,
             "api_mode": result.api_mode,
         }
+        try:
+            from identity_continuity import record_identity_event
+
+            record_identity_event(
+                "model_change",
+                severity="info",
+                trigger="/model",
+                before={"model": current_model, "provider": current_provider},
+                after={"model": result.new_model, "provider": result.target_provider},
+            )
+        except Exception as exc:
+            logger.debug("Identity continuity model event failed: %s", exc)
 
         # Evict cached agent so the next turn creates a fresh agent from the
         # override rather than relying on cache signature mismatch detection.
@@ -10500,6 +10976,45 @@ class GatewayRunner:
             lines.append(t("gateway.model.session_only_hint"))
 
         return "\n".join(lines)
+
+    async def _handle_identity_command(self, event: MessageEvent) -> str:
+        """Handle /identity status/evolve for identity-continuity state."""
+        args = event.get_command_args().strip()
+        subcommand, _, rest = args.partition(" ")
+        subcommand = (subcommand or "status").lower()
+        try:
+            from identity_continuity import evolve_core_identity, format_identity_status
+        except Exception as exc:
+            logger.warning("Identity continuity command unavailable: %s", exc)
+            return f"✗ Identity continuity unavailable: {exc}"
+
+        if subcommand == "status":
+            return format_identity_status()
+        if subcommand == "evolve":
+            if not rest.strip():
+                return "Usage: /identity evolve <YAML fields to merge>"
+            async def _apply_identity_evolution(choice: str):
+                if choice == "cancel":
+                    return "🟡 /identity evolve cancelled. core_identity.yaml unchanged."
+                return evolve_core_identity(rest)
+
+            preview = rest.strip()
+            if len(preview) > 1200:
+                preview = preview[:1200] + "\n[...truncated preview...]"
+            return await self._request_slash_confirm(
+                event=event,
+                command="identity evolve",
+                title="/identity evolve",
+                message=(
+                    "⚠️ **Confirm /identity evolve**\n\n"
+                    "This will merge the following YAML into `core_identity.yaml`.\n"
+                    "No identity evolution is applied without this confirmation.\n\n"
+                    f"```yaml\n{preview}\n```\n\n"
+                    "_Text fallback: reply `/approve` or `/cancel`._"
+                ),
+                handler=_apply_identity_evolution,
+            )
+        return "Usage: /identity [status|evolve <yaml>]"
 
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.
@@ -14465,6 +14980,8 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            identity_key=context.identity_key,
+            data_isolation_level=context.data_isolation_level,
             message_id=str(context.source.message_id) if context.source.message_id else "",
         )
 
@@ -14990,6 +15507,12 @@ class GatewayRunner:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
+        try:
+            from gateway.data_isolation import fingerprint as _data_isolation_fingerprint
+
+            out["data_isolation.fingerprint"] = _data_isolation_fingerprint()
+        except Exception:
+            out["data_isolation.fingerprint"] = None
         return out
 
     @staticmethod
@@ -15259,6 +15782,34 @@ class GatewayRunner:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
         agent._api_call_count = 0
+
+    @staticmethod
+    def _refresh_agent_gateway_context(agent: Any, source: SessionSource, identity_key: str, data_isolation_level: str = "") -> None:
+        """Refresh per-turn gateway identity on cached agents and memory providers."""
+        agent._user_id = source.user_id
+        agent._user_name = source.user_name
+        agent._chat_id = source.chat_id
+        agent._chat_name = source.chat_name
+        agent._chat_type = source.chat_type
+        agent._thread_id = source.thread_id
+        agent._identity_key = identity_key
+        agent._data_isolation_level = data_isolation_level
+        manager = getattr(agent, "_memory_manager", None)
+        providers = getattr(manager, "providers", []) if manager is not None else []
+        for provider in providers:
+            update = getattr(provider, "update_gateway_context", None)
+            if not callable(update):
+                continue
+            update(
+                platform=source.platform.value if source.platform else "",
+                user_id=source.user_id,
+                user_name=source.user_name,
+                chat_id=source.chat_id,
+                chat_name=source.chat_name,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                identity_key=identity_key,
+            )
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
@@ -16418,6 +16969,14 @@ class GatewayRunner:
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
+            identity_key = canonical_identity_key(source)
+            try:
+                from gateway.data_isolation import level_for_identity as _isolation_level_for_identity
+
+                data_isolation_level = _isolation_level_for_identity(identity_key)
+            except Exception:
+                logger.debug("data isolation level resolution failed", exc_info=True)
+                data_isolation_level = ""
             
             # Combine platform context, per-channel context, and the user-configured
             # ephemeral system prompt.
@@ -16572,7 +17131,11 @@ class GatewayRunner:
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys={
+                    **self._extract_cache_busting_config(user_config),
+                    "data_isolation.identity_key": identity_key,
+                    "data_isolation.level": data_isolation_level,
+                },
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -16621,6 +17184,7 @@ class GatewayRunner:
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
+                    identity_key=identity_key,
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
@@ -16630,6 +17194,8 @@ class GatewayRunner:
                         _cache[session_key] = (agent, _sig)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            self._refresh_agent_gateway_context(agent, source, identity_key, data_isolation_level)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
@@ -16958,6 +17524,8 @@ class GatewayRunner:
                     if _reason == "restart_timeout"
                     else "a gateway shutdown"
                     if _reason == "shutdown_timeout"
+                    else "a steering breakpoint"
+                    if _reason == "steering_breakpoint"
                     else "a gateway interruption"
                 )
                 message = (
@@ -17336,6 +17904,40 @@ class GatewayRunner:
                             # path finds it.
                             _peek_event = _adapter._pending_messages.get(session_key)
                             pending_text = _peek_event.text if _peek_event else None
+                            if self._busy_input_mode == "steer" and _peek_event is not None:
+                                _activity = self._agent_activity_summary(agent, session_key)
+                                _steered = self._inject_steering_context(
+                                    event=_peek_event,
+                                    session_key=session_key,
+                                    running_agent=agent,
+                                    activity=_activity,
+                                )
+                                if _steered:
+                                    if hasattr(_adapter, "get_pending_message"):
+                                        _adapter.get_pending_message(session_key)
+                                    if (
+                                        hasattr(_adapter, "_active_sessions")
+                                        and session_key in _adapter._active_sessions
+                                    ):
+                                        _adapter._active_sessions[session_key].clear()
+                                    await self._send_steering_ack_if_needed(
+                                        event=_peek_event,
+                                        session_key=session_key,
+                                        adapter=_adapter,
+                                        running_agent=agent,
+                                        activity=_activity,
+                                    )
+                                    continue
+                                # Could not inject. Keep the pending message for
+                                # the normal post-run queue, but clear the
+                                # interrupt event so steering mode does not hard
+                                # abort in-flight tools.
+                                if (
+                                    hasattr(_adapter, "_active_sessions")
+                                    and session_key in _adapter._active_sessions
+                                ):
+                                    _adapter._active_sessions[session_key].clear()
+                                continue
                             logger.debug("Interrupt detected from adapter, signaling agent...")
                             agent.interrupt(pending_text)
                             _interrupt_detected.set()
@@ -17439,6 +18041,36 @@ class GatewayRunner:
                                 and _backup_adapter.has_pending_interrupt(session_key)):
                             _bp_event = _backup_adapter._pending_messages.get(session_key)
                             _bp_text = _bp_event.text if _bp_event else None
+                            if self._busy_input_mode == "steer" and _bp_event is not None:
+                                _activity = self._agent_activity_summary(_backup_agent, session_key)
+                                _steered = self._inject_steering_context(
+                                    event=_bp_event,
+                                    session_key=session_key,
+                                    running_agent=_backup_agent,
+                                    activity=_activity,
+                                )
+                                if _steered:
+                                    if hasattr(_backup_adapter, "get_pending_message"):
+                                        _backup_adapter.get_pending_message(session_key)
+                                    if (
+                                        hasattr(_backup_adapter, "_active_sessions")
+                                        and session_key in _backup_adapter._active_sessions
+                                    ):
+                                        _backup_adapter._active_sessions[session_key].clear()
+                                    await self._send_steering_ack_if_needed(
+                                        event=_bp_event,
+                                        session_key=session_key,
+                                        adapter=_backup_adapter,
+                                        running_agent=_backup_agent,
+                                        activity=_activity,
+                                    )
+                                    continue
+                                if (
+                                    hasattr(_backup_adapter, "_active_sessions")
+                                    and session_key in _backup_adapter._active_sessions
+                                ):
+                                    _backup_adapter._active_sessions[session_key].clear()
+                                continue
                             logger.info(
                                 "Backup interrupt detected for session %s "
                                 "(monitor task state: %s)",
@@ -17499,6 +18131,36 @@ class GatewayRunner:
                                 and _backup_adapter.has_pending_interrupt(session_key)):
                             _bp_event = _backup_adapter._pending_messages.get(session_key)
                             _bp_text = _bp_event.text if _bp_event else None
+                            if self._busy_input_mode == "steer" and _bp_event is not None:
+                                _activity = self._agent_activity_summary(_backup_agent, session_key)
+                                _steered = self._inject_steering_context(
+                                    event=_bp_event,
+                                    session_key=session_key,
+                                    running_agent=_backup_agent,
+                                    activity=_activity,
+                                )
+                                if _steered:
+                                    if hasattr(_backup_adapter, "get_pending_message"):
+                                        _backup_adapter.get_pending_message(session_key)
+                                    if (
+                                        hasattr(_backup_adapter, "_active_sessions")
+                                        and session_key in _backup_adapter._active_sessions
+                                    ):
+                                        _backup_adapter._active_sessions[session_key].clear()
+                                    await self._send_steering_ack_if_needed(
+                                        event=_bp_event,
+                                        session_key=session_key,
+                                        adapter=_backup_adapter,
+                                        running_agent=_backup_agent,
+                                        activity=_activity,
+                                    )
+                                    continue
+                                if (
+                                    hasattr(_backup_adapter, "_active_sessions")
+                                    and session_key in _backup_adapter._active_sessions
+                                ):
+                                    _backup_adapter._active_sessions[session_key].clear()
+                                continue
                             logger.info(
                                 "Backup interrupt detected for session %s "
                                 "(monitor task state: %s)",
@@ -17591,6 +18253,18 @@ class GatewayRunner:
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
+            if result and result.get("steering_breakpoint") and session_key:
+                try:
+                    self.session_store.mark_resume_pending(
+                        session_key,
+                        reason="steering_breakpoint",
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to mark steering breakpoint for session %s: %s",
+                        session_key,
+                        exc,
+                    )
             adapter = self.adapters.get(source.platform)
             
             # Get pending message from adapter.
@@ -17995,6 +18669,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
+    INITIATIVE_EVERY = 15    # ticks — every 15 minutes at default 60s interval
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -18048,6 +18723,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     )
             except Exception as e:
                 logger.debug("Paste sweep error: %s", e)
+
+        if tick_count % INITIATIVE_EVERY == 0:
+            try:
+                from agent.initiative_engine import maybe_take_initiative
+                maybe_take_initiative(trigger="inactivity")
+            except Exception as e:
+                logger.debug("Initiative tick error: %s", e)
 
         # Curator — piggy-back on the existing cron ticker so long-running
         # gateways get weekly skill maintenance without needing restarts.

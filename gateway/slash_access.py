@@ -35,7 +35,11 @@ included here — only the slash-command access split.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, FrozenSet, Iterable, Optional, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 
 # Slash commands that MUST stay reachable for any allowed user, even when
@@ -52,6 +56,23 @@ _ALWAYS_ALLOWED_FOR_USERS: FrozenSet[str] = frozenset({
     "whoami",
 })
 
+TELEGRAM_SLASH_COMMAND_MODES: FrozenSet[str] = frozenset({
+    "all",
+    "persona",
+    "minimal",
+    "none",
+})
+
+_TELEGRAM_PERSONA_COMMANDS: FrozenSet[str] = frozenset({"help", "status", "new"})
+_TELEGRAM_MINIMAL_COMMANDS: FrozenSet[str] = frozenset({"help"})
+_TELEGRAM_NO_FLOOR: FrozenSet[str] = frozenset()
+_LEGACY_ACL_KEYS: FrozenSet[str] = frozenset({
+    "allow_admin_from",
+    "user_allowed_commands",
+    "group_allow_admin_from",
+    "group_user_allowed_commands",
+})
+
 
 @dataclass(frozen=True)
 class SlashAccessPolicy:
@@ -65,6 +86,7 @@ class SlashAccessPolicy:
     enabled: bool                      # gating active for this scope?
     admin_user_ids: FrozenSet[str]
     user_allowed_commands: FrozenSet[str]
+    always_allowed_commands: FrozenSet[str] = _ALWAYS_ALLOWED_FOR_USERS
 
     def is_admin(self, user_id: Optional[str]) -> bool:
         if not self.enabled:
@@ -73,8 +95,8 @@ class SlashAccessPolicy:
             # uniformly.
             return True
         if not user_id:
-            return False
-        return str(user_id) in self.admin_user_ids
+            return "*" in self.admin_user_ids
+        return "*" in self.admin_user_ids or str(user_id) in self.admin_user_ids
 
     def can_run(self, user_id: Optional[str], canonical_cmd: str) -> bool:
         if not self.enabled:
@@ -83,7 +105,7 @@ class SlashAccessPolicy:
             return True
         if not canonical_cmd:
             return False
-        if canonical_cmd in _ALWAYS_ALLOWED_FOR_USERS:
+        if canonical_cmd in self.always_allowed_commands:
             return True
         return canonical_cmd in self.user_allowed_commands
 
@@ -160,6 +182,111 @@ def _platform_extra(platform_config: Any) -> dict:
     return {}
 
 
+def _platform_value(platform: Any) -> str:
+    """Return a normalized platform value for enums or raw strings."""
+    return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def normalize_telegram_slash_command_mode(raw: Any) -> str:
+    """Normalize a Telegram slash-command mode to a supported value.
+
+    Invalid, empty, and missing values intentionally fall back to ``none``.
+    """
+    if isinstance(raw, str):
+        mode = raw.strip().lower()
+        if mode in TELEGRAM_SLASH_COMMAND_MODES:
+            return mode
+        if mode:
+            logger.warning(
+                "Invalid telegram.slash_commands mode %r; falling back to 'none'",
+                raw,
+            )
+    elif raw is not None:
+        logger.warning(
+            "Invalid telegram.slash_commands mode %r; falling back to 'none'",
+            raw,
+        )
+    return "none"
+
+
+def telegram_slash_allowed_commands(mode: str) -> FrozenSet[str]:
+    """Return the non-admin allowlist represented by a Telegram mode."""
+    normalized = normalize_telegram_slash_command_mode(mode)
+    if normalized == "persona":
+        return _TELEGRAM_PERSONA_COMMANDS
+    if normalized == "minimal":
+        return _TELEGRAM_MINIMAL_COMMANDS
+    return frozenset()
+
+
+def _telegram_slash_config(extra: dict) -> tuple[dict, bool]:
+    """Return ``(config, is_explicit)`` from a PlatformConfig ``extra`` dict."""
+    if "slash_commands" not in extra:
+        return {}, False
+    cfg = extra.get("slash_commands")
+    return (cfg if isinstance(cfg, dict) else {}), True
+
+
+def has_telegram_slash_command_config(extra: dict) -> bool:
+    """Return True when the new Telegram slash-command config key is present."""
+    return _telegram_slash_config(extra)[1]
+
+
+def _has_legacy_acl_config(extra: dict) -> bool:
+    return any(key in extra for key in _LEGACY_ACL_KEYS)
+
+
+def telegram_slash_mode_for_user(extra: dict, user_id: Optional[str]) -> str:
+    """Resolve the effective Telegram slash-command mode for a user.
+
+    Precedence is explicit user override, wildcard override, then global mode.
+    Missing or malformed config defaults to ``none``.
+    """
+    cfg, _explicit = _telegram_slash_config(extra)
+    users = cfg.get("users")
+    user_modes = users if isinstance(users, dict) else {}
+    normalized_user_id = str(user_id).strip() if user_id is not None else ""
+    if normalized_user_id and normalized_user_id in user_modes:
+        return normalize_telegram_slash_command_mode(user_modes[normalized_user_id])
+    if "*" in user_modes:
+        return normalize_telegram_slash_command_mode(user_modes["*"])
+    return normalize_telegram_slash_command_mode(cfg.get("mode"))
+
+
+def telegram_slash_default_mode(extra: dict) -> str:
+    """Resolve the broad Telegram menu mode (wildcard override beats mode)."""
+    cfg, _explicit = _telegram_slash_config(extra)
+    users = cfg.get("users")
+    user_modes = users if isinstance(users, dict) else {}
+    if "*" in user_modes:
+        return normalize_telegram_slash_command_mode(user_modes["*"])
+    return normalize_telegram_slash_command_mode(cfg.get("mode"))
+
+
+def _telegram_policy_from_extra(extra: dict, source: Any) -> SlashAccessPolicy:
+    """Build Telegram's persona-mode-aware policy."""
+    explicit = has_telegram_slash_command_config(extra)
+    if not explicit and _has_legacy_acl_config(extra):
+        return policy_from_extra(extra, _scope_for_chat_type(getattr(source, "chat_type", None)))
+
+    user_id = getattr(source, "user_id", None)
+    mode = telegram_slash_mode_for_user(extra, user_id)
+    if mode == "all":
+        admin_ids = frozenset({str(user_id).strip()} if user_id else {"*"})
+        return SlashAccessPolicy(
+            enabled=True,
+            admin_user_ids=admin_ids,
+            user_allowed_commands=frozenset(),
+            always_allowed_commands=_TELEGRAM_NO_FLOOR,
+        )
+    return SlashAccessPolicy(
+        enabled=True,
+        admin_user_ids=frozenset(),
+        user_allowed_commands=telegram_slash_allowed_commands(mode),
+        always_allowed_commands=_TELEGRAM_NO_FLOOR,
+    )
+
+
 def _keys_for_scope(scope: str) -> Tuple[str, str]:
     """Return (admin_key, user_cmd_key) names for a scope."""
     if scope == "group":
@@ -218,12 +345,20 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
         except Exception:
             platform_config = None
     extra = _platform_extra(platform_config)
+    if _platform_value(getattr(source, "platform", None)) == "telegram":
+        return _telegram_policy_from_extra(extra, source)
     scope = _scope_for_chat_type(getattr(source, "chat_type", None))
     return policy_from_extra(extra, scope)
 
 
 __all__ = [
     "SlashAccessPolicy",
+    "TELEGRAM_SLASH_COMMAND_MODES",
+    "has_telegram_slash_command_config",
+    "normalize_telegram_slash_command_mode",
     "policy_from_extra",
     "policy_for_source",
+    "telegram_slash_allowed_commands",
+    "telegram_slash_default_mode",
+    "telegram_slash_mode_for_user",
 ]

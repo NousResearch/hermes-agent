@@ -58,6 +58,7 @@ def _make_event(text="hello", chat_id="123", platform_val="telegram"):
 def _make_runner():
     """Build a minimal GatewayRunner-like object for testing."""
     from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
+    from gateway.steering import SteeringConfig
 
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
@@ -74,6 +75,7 @@ def _make_runner():
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = True
     runner._is_user_authorized = lambda _source: True
+    runner._steering_config = SteeringConfig()
     return runner, _AGENT_PENDING_SENTINEL
 
 
@@ -228,23 +230,34 @@ class TestBusySessionAck:
 
         agent = MagicMock()
         agent.steer = MagicMock(return_value=True)
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 7,
+            "max_iterations": 90,
+            "current_tool": "kanban_show",
+            "seconds_since_activity": 10.0,
+        }
         runner._running_agents[sk] = agent
 
         with patch("gateway.run.merge_pending_message_event") as mock_merge:
             await runner._handle_active_session_busy_message(event, sk)
 
-        # VERIFY: Agent was steered, NOT interrupted
-        agent.steer.assert_called_once_with("also check the tests")
+        # VERIFY: Agent was steered with an interruption context, NOT interrupted
+        agent.steer.assert_called_once()
+        injected = agent.steer.call_args.args[0]
+        assert "⚠️ Interruption" in injected
+        assert "also check the tests" in injected
+        assert "itération 7/90" in injected
         agent.interrupt.assert_not_called()
 
         # VERIFY: No queueing — successful steer must NOT replay as next turn
         mock_merge.assert_not_called()
 
-        # VERIFY: Ack mentions steer wording
+        # VERIFY: Slow current iteration gets the configured steering ack
         adapter._send_with_retry.assert_called_once()
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Steered" in content or "steer" in content.lower()
+        assert "Message reçu" in content
+        assert "7/90" in content
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
@@ -275,6 +288,32 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Queued for the next turn" in content
         assert "Steered" not in content
+
+    @pytest.mark.asyncio
+    async def test_steer_mode_suppresses_ack_for_fast_iteration(self):
+        """Steering mode should avoid noisy acks when the current step is quick."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="also check docs")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 2,
+            "max_iterations": 90,
+            "current_tool": "kanban_show",
+            "seconds_since_activity": 2.0,
+        }
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_called_once()
+        adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):

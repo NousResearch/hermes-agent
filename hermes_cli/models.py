@@ -317,8 +317,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-reasoner",
     ],
     "cerebras": [
-        "llama-3.3-70b",
         "gpt-oss-120b",
+        "zai-glm-4.7",
     ],
     "xiaomi": [
         "mimo-v2.5-pro",

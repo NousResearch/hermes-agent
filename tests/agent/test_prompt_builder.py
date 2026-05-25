@@ -64,6 +64,7 @@ class TestGuidanceConstants:
         assert "Filter irrelevant hits" in SESSION_SEARCH_GUIDANCE
         assert "Keep unrelated private/intimate fragments out of technical turns" in SESSION_SEARCH_GUIDANCE
         assert "Treat Fabric/session/semantic snippets as leads until verified" in SESSION_SEARCH_GUIDANCE
+        assert "linked artifact/report" in SESSION_SEARCH_GUIDANCE
         assert "provenance/debug/memory questions" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
@@ -112,6 +113,7 @@ class TestRetrievalRouteHelper:
             ("Which skill covers GitHub PR workflows?", "skills"),
             ("Show the Fabric review for that task", "shared_work"),
             ("Find exact proof in the raw archive", "raw_archives"),
+            ("Find the exact old OpenClaw/Kai voice line.", "raw_archives"),
         ],
     )
     def test_routes_distinct_fact_types_to_narrowest_source(self, input_text, expected_source):
@@ -188,6 +190,14 @@ class TestRetrievalRouteHelper:
         decision = classify_retrieval_route("Show my profile preferences")
 
         assert decision.primary_source == "memory"
+
+    def test_secret_value_requests_are_blocked_from_retrieval(self):
+        decision = classify_retrieval_route("What is my Discord bot token?")
+
+        assert decision.primary_source == "blocked_secret"
+        assert decision.requires_tool is False
+        assert "raw credential" in decision.reason
+        assert build_retrieval_route_hint(decision) == ""
 
 
 # =========================================================================

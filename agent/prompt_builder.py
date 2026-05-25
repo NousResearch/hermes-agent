@@ -179,7 +179,8 @@ SESSION_SEARCH_GUIDANCE = (
     "raw archives/mempalace only when explicitly relevant or exact old-history proof is needed; "
     "file/git/process/system tools for live local facts; web/official sources for current external "
     "facts; external memory managers only when configured/available, with exact corroboration for "
-    "factual claims. Use tools before guessing for current/system/file/git/math facts. "
+    "factual claims, and require a linked artifact/report for shared-work claims when available. "
+    "Use tools before guessing for current/system/file/git/math facts. "
     "Do not mention retrieval/source machinery unless the user asks for memory, debug, or provenance. "
     "Never narrate negative-space filtering or irrelevant context. "
     "Do not print raw retrieval blocks or headers. Filter irrelevant hits. "
@@ -225,7 +226,7 @@ _RETRIEVAL_FALLBACK_ORDER = (
 
 def build_retrieval_route_hint(decision: RetrievalRouteDecision) -> str:
     """Format an internal, API-only router hint for a retrieval decision."""
-    if not decision.primary_source or decision.fallback_from:
+    if not decision.primary_source or not decision.requires_tool or decision.fallback_from:
         return ""
     visibility = "allowed" if decision.mention_machinery else "not requested"
     return (
@@ -291,6 +292,24 @@ def classify_retrieval_route(
         "git log",
         "git branch",
     )
+    secret_markers = (
+        "api key",
+        "token",
+        "password",
+        "passphrase",
+        "secret",
+        "credential",
+        "credentials",
+        "private key",
+    )
+
+    if _contains_retrieval_marker(text, secret_markers):
+        return RetrievalRouteDecision(
+            primary_source="blocked_secret",
+            reason="secret requests must not trigger raw credential retrieval",
+            requires_tool=False,
+            mention_machinery=mention_machinery,
+        )
 
     if _contains_retrieval_marker(text, live_system_markers) or re.search(r"\bgit\b", text):
         preferred = "live_system"
@@ -304,7 +323,7 @@ def classify_retrieval_route(
     elif _contains_retrieval_marker(text, ("fabric", "review", "task", "decision", "report", "ticket")):
         preferred = "shared_work"
         reason = "shared work items, reviews, decisions, and reports belong in Fabric/shared work"
-    elif _contains_retrieval_marker(text, ("raw archive", "mempalace", "exact proof", "old archive")):
+    elif _contains_retrieval_marker(text, ("raw archive", "mempalace", "exact proof", "old archive", "exact old", "openclaw", "kai voice")):
         preferred = "raw_archives"
         reason = "raw archives are only for explicit old-history proof requests"
     elif _contains_retrieval_marker(text, ("last time", "previous conversation", "we talked", "we decided", "we did this before", "did this before", "remember when", "past conversation")):

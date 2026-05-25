@@ -116,7 +116,7 @@ def test_reconnect_loop_ignores_anyio_cleanup_artifact():
         # And no error was latched onto the server.
         assert server._error is None
 
-    asyncio.new_event_loop().run_until_complete(_run())
+    asyncio.run(_run())
 
 
 def test_reconnect_loop_still_counts_real_failures():
@@ -161,4 +161,4 @@ def test_reconnect_loop_still_counts_real_failures():
             f"failures; got {call_count}"
         )
 
-    asyncio.new_event_loop().run_until_complete(_run())
+    asyncio.run(_run())

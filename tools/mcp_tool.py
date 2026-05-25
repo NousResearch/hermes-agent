@@ -1923,6 +1923,11 @@ class MCPServerTask:
                         self.name, exc,
                     )
                     backoff = 1.0
+                    # Yield once before the next reconnect attempt so a
+                    # transport that fails synchronously inside its
+                    # ``__aenter__`` (no internal await) cannot starve the
+                    # event loop with a tight reconnect spin.
+                    await asyncio.sleep(0)
                     continue
 
                 retries += 1

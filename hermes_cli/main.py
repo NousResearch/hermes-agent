@@ -6876,6 +6876,8 @@ def _kill_stale_dashboard_processes(
                     ["taskkill", "/PID", str(pid), "/F"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
                 )
                 if result.returncode == 0:

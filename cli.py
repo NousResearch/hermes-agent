@@ -4756,9 +4756,22 @@ class HermesCLI:
         # is non-empty and we skip the DB round-trip.
         if self._resumed and self._session_db and not self.conversation_history:
             session_meta = self._session_db.get_session(self.session_id)
+            # In quiet mode (`hermes chat -Q` / --quiet, surfaced via
+            # tool_progress_mode == "off"), resume status lines go to stderr
+            # so stdout stays machine-readable for automation wrappers that
+            # do `$(hermes chat -Q --resume <id> -q "...")`. Without this,
+            # the resume banner pollutes captured stdout. See #11793.
+            _quiet_mode = getattr(self, "tool_progress_mode", "full") == "off"
             if not session_meta:
-                _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
-                _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
+                if _quiet_mode:
+                    print(f"Session not found: {self.session_id}", file=sys.stderr)
+                    print(
+                        "Use a session ID from a previous CLI run (hermes sessions list).",
+                        file=sys.stderr,
+                    )
+                else:
+                    _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
+                    _cprint(f"{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}")
                 return False
             # If the requested session is the (empty) head of a compression
             # chain, walk to the descendant that actually holds the messages.
@@ -4785,16 +4798,30 @@ class HermesCLI:
                 title_part = ""
                 if session_meta.get("title"):
                     title_part = f" \"{session_meta['title']}\""
-                ChatConsole().print(
-                    f"[bold {_accent_hex()}]↻ Resumed session[/] "
-                    f"[bold]{_escape(self.session_id)}[/]"
-                    f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
-                    f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
-                )
+                if _quiet_mode:
+                    print(
+                        f"↻ Resumed session {self.session_id}{title_part} "
+                        f"({msg_count} user message{'s' if msg_count != 1 else ''}, "
+                        f"{len(restored)} total messages)",
+                        file=sys.stderr,
+                    )
+                else:
+                    ChatConsole().print(
+                        f"[bold {_accent_hex()}]↻ Resumed session[/] "
+                        f"[bold]{_escape(self.session_id)}[/]"
+                        f"[bold {_accent_hex()}]{_escape(title_part)}[/] "
+                        f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
+                    )
             else:
-                ChatConsole().print(
-                    f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
-                )
+                if _quiet_mode:
+                    print(
+                        f"Session {self.session_id} found but has no messages. Starting fresh.",
+                        file=sys.stderr,
+                    )
+                else:
+                    ChatConsole().print(
+                        f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
+                    )
             # Re-open the session (clear ended_at so it's active again)
             try:
                 self._session_db._conn.execute(
@@ -6526,6 +6553,19 @@ class HermesCLI:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         parts = cmd_original.split(None, 1)
         target = parts[1].strip() if len(parts) > 1 else ""
+
+        # Strip common outer brackets/quotes users may type literally from the
+        # usage hint (e.g. ``/resume <abc123>`` or ``/resume [abc123]``).  The
+        # `/resume` help text shows angle brackets as a placeholder and a few
+        # users copy them through verbatim.  Stripping them keeps the lookup
+        # working without changing the help string.
+        if len(target) >= 2 and (
+            (target[0] == "<" and target[-1] == ">")
+            or (target[0] == "[" and target[-1] == "]")
+            or (target[0] == '"' and target[-1] == '"')
+            or (target[0] == "'" and target[-1] == "'")
+        ):
+            target = target[1:-1].strip()
 
         if not target:
             _cprint("  Usage: /resume <number|session_id_or_title>")
@@ -11941,9 +11981,22 @@ class HermesCLI:
                     pass
 
             print("Resume this session with:")
-            print(f"  hermes --resume {self.session_id}")
+            # Session IDs are profile-constrained, so the resume hint must
+            # include `-p <profile>` for non-default profiles. Without this,
+            # copying the hint from a non-default profile fails to find the
+            # session on the next invocation. The "default" and "custom"
+            # profile names use the standard HERMES_HOME, so no -p needed.
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _active_profile = get_active_profile_name()
+            except Exception:
+                _active_profile = "default"
+            profile_flag = (
+                "" if _active_profile in ("default", "custom") else f" -p {_active_profile}"
+            )
+            print(f"  hermes --resume {self.session_id}{profile_flag}")
             if session_title:
-                print(f"  hermes -c \"{session_title}\"")
+                print(f"  hermes -c \"{session_title}\"{profile_flag}")
             print()
             print(f"Session:        {self.session_id}")
             if session_title:

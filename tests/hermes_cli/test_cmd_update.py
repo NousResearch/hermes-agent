@@ -170,6 +170,10 @@ class TestCmdUpdateBranchFallback:
                 "repo-root / ui-tui npm install must stream output "
                 "(no capture_output) so postinstall progress is visible"
             )
+            assert call.kwargs.get("env", {}).get("CI") == "1", (
+                "update-mode npm installs must set CI=1 so noisy dependency "
+                "postinstall demos stay out of automation logs"
+            )
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""

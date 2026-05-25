@@ -6482,6 +6482,7 @@ def _run_npm_install_deterministic(
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -6493,6 +6494,10 @@ def _run_npm_install_deterministic(
     lockfile — repeatedly.
     """
     lockfile = cwd / "package-lock.json"
+    env = None
+    if env_overrides:
+        env = os.environ.copy()
+        env.update(env_overrides)
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
@@ -6503,6 +6508,7 @@ def _run_npm_install_deterministic(
             encoding="utf-8",
             errors="replace",
             check=False,
+            env=env,
         )
         if ci_result.returncode == 0:
             return ci_result
@@ -6517,6 +6523,7 @@ def _run_npm_install_deterministic(
         encoding="utf-8",
         errors="replace",
         check=False,
+        env=env,
     )
 
 
@@ -8173,6 +8180,7 @@ def _update_node_dependencies() -> None:
             path,
             extra_args=("--no-fund", "--no-audit", "--progress=false"),
             capture_output=False,
+            env_overrides={"CI": "1"},
         )
         if result.returncode == 0:
             print(f"  ✓ {label}")

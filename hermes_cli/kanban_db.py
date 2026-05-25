@@ -4169,15 +4169,15 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     return ("unknown", None)
 
 
-def reap_worker_zombies() -> int:
+def reap_worker_zombies() -> "list[int]":
     """Reap all zombie children of this process without blocking.
 
-    Returns the number of children reaped. Safe to call when there are
-    no children (returns 0). No-op on Windows.
+    Returns the list of reaped PIDs. Safe to call when there are no
+    children (returns []). No-op on Windows.
     """
     if os.name == "nt":
-        return 0
-    reaped = 0
+        return []
+    reaped: "list[int]" = []
     try:
         while True:
             try:
@@ -4187,7 +4187,7 @@ def reap_worker_zombies() -> int:
             if pid == 0:
                 break
             _record_worker_exit(pid, status)
-            reaped += 1
+            reaped.append(pid)
     except Exception:
         pass
     return reaped

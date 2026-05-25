@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -11,6 +9,13 @@ from agent.memory_human_approval_token_write_execution_plan import (
     explain_human_approval_token_write_execution_plan,
     recommend_human_approval_token_write_execution_plan_action,
     validate_human_approval_token_write_execution_plan,
+)
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_forbidden_true_keys_false_or_absent,
+    validate_policy_flags,
 )
 
 
@@ -338,12 +343,8 @@ def validate_human_approval_token_write_execution_dry_run(
         errors.append(
             "token_write_execution_preflight_checks_must_match_source_write_execution_plan_snapshot"
         )
-    for forbidden_key in _FORBIDDEN_TRUE_KEYS:
-        if dry_run.get(forbidden_key) is True:
-            errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_EXECUTION_DRY_RUN_POLICY.items():
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(validate_forbidden_true_keys_false_or_absent(dry_run, _FORBIDDEN_TRUE_KEYS))
+    errors.extend(validate_policy_flags(policy, MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_EXECUTION_DRY_RUN_POLICY))
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -447,20 +448,13 @@ def recommend_human_approval_token_write_execution_dry_run_action(
 def summarize_human_approval_token_write_execution_dry_runs(
     dry_runs: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
-    by_lock_reason: dict[str, int] = {}
+    candidate_summary = summarize_candidates(dry_runs, "dry_run_status")
+    lock_reason_summary = summarize_candidates(dry_runs, "lock_reason")
     final_preflight_required_count = 0
     locked_count = 0
     valid_count = 0
     invalid_count = 0
     for dry_run in dry_runs:
-        block_type = str(dry_run.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(dry_run.get("dry_run_status"))
-        by_status[status] = by_status.get(status, 0) + 1
-        lock_reason = str(dry_run.get("lock_reason"))
-        by_lock_reason[lock_reason] = by_lock_reason.get(lock_reason, 0) + 1
         if (
             dry_run.get("dry_run_status")
             == MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_EXECUTION_DRY_RUN_FINAL_PREFLIGHT_REQUIRED
@@ -479,9 +473,9 @@ def summarize_human_approval_token_write_execution_dry_runs(
         "invalid_count": invalid_count,
         "final_preflight_required_count": final_preflight_required_count,
         "locked_count": locked_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
-        "by_lock_reason": dict(sorted(by_lock_reason.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
+        "by_lock_reason": lock_reason_summary["by_status"],
         "policy": dict(MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_EXECUTION_DRY_RUN_POLICY),
     }
 
@@ -688,8 +682,10 @@ def _dry_run_id(dry_run: Mapping[str, Any]) -> str:
         "write_execution_plan_validation": dry_run.get("write_execution_plan_validation", {}),
         "policy": dry_run.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"memory-human-approval-token-write-execution-dry-run:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest(
+        "memory-human-approval-token-write-execution-dry-run:v0.1",
+        identity,
+    )
 
 
 def _preview_id(kind: str, plan: Mapping[str, Any], operator: str | None) -> str:
@@ -707,12 +703,11 @@ def _preview_id(kind: str, plan: Mapping[str, Any], operator: str | None) -> str
         "project_scope": plan.get("project_scope"),
         "operator": operator if operator is not None else _DEFAULT_OPERATOR,
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"preview:{kind}:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest(f"preview:{kind}:v0.1", identity)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

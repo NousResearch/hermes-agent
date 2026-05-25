@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agent.task_card import CompiledIntent, ExecutionPlan, TaskCard
-from tools.delegate_tool import delegate_task
+from tools.delegate_tool import ExternalCliChild, delegate_task
 from tools import delegate_tool
 
 
@@ -23,6 +23,7 @@ agents:
     aliases: [主程, claude]
     role_summary: 复杂代码修改、命令执行、git 操作。
     model_ref: claude_opus
+    runtime: claude_code_cli
     tools: [file, terminal, git]
     permission: ask
     can_delegate: false
@@ -39,6 +40,18 @@ agents:
     can_delegate: false
     capabilities: [test_generation, small_fix]
     risk_allowed: [R0, R1, R2]
+  - agent_id: codex
+    name: Codex 代码审查官
+    role: principal_engineer
+    aliases: [代码审查官, codex]
+    role_summary: 外部 Codex CLI 审查器。
+    model_ref: codex_cli
+    runtime: codex_cli
+    tools: [file, mcp-codegraph]
+    permission: read_only
+    can_delegate: false
+    capabilities: [code_review, architecture_review]
+    risk_allowed: [R0, R1, R2, R3, R4]
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -113,7 +126,10 @@ def _make_parent():
 
 def test_managed_gateway_preflight_runs_before_legacy_child_execution(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
     _write_managed_agents_yaml(tmp_path)
+    _write_models_yaml(tmp_path)
     parent = _make_parent()
 
     with patch("tools.delegate_tool._run_single_child") as mock_run:
@@ -128,11 +144,17 @@ def test_managed_gateway_preflight_runs_before_legacy_child_execution(tmp_path, 
 
     assert result["results"][0]["status"] == "completed"
     assert mock_run.called
+    child = mock_run.call_args.args[2]
+    assert isinstance(child, ExternalCliChild)
+    assert child.command == ["claude"]
 
 
 def test_managed_gateway_accepts_agent_alias_before_legacy_child_execution(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
     _write_managed_agents_yaml(tmp_path)
+    _write_models_yaml(tmp_path)
     parent = _make_parent()
 
     with patch("tools.delegate_tool._run_single_child") as mock_run:
@@ -150,7 +172,7 @@ def test_managed_gateway_accepts_agent_alias_before_legacy_child_execution(tmp_p
     assert child._subagent_agent_id == "deepseek-tui"
 
 
-def test_managed_agent_model_ref_overrides_provider_model_per_agent(tmp_path, monkeypatch):
+def test_managed_agent_model_ref_overrides_provider_model_for_internal_agent(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
@@ -180,21 +202,99 @@ def test_managed_agent_model_ref_overrides_provider_model_per_agent(tmp_path, mo
         }
 
         delegate_task(
-            tasks=[
-                {"goal": "implement", "agent_id": "claude"},
-                {"goal": "test", "agent_id": "低成本快工"},
-            ],
+            tasks=[{"goal": "test", "agent_id": "低成本快工"}],
             parent_agent=parent,
         )
 
-    first = mock_build.call_args_list[0].kwargs
-    second = mock_build.call_args_list[1].kwargs
-    assert first["model"] == "claude-opus-4-7"
-    assert first["override_provider"] == "anthropic"
-    assert first["override_api_mode"] == "anthropic_messages"
-    assert second["model"] == "deepseek-v4-pro"
-    assert second["override_provider"] == "deepseek"
-    assert second["override_api_mode"] == "chat_completions"
+    call = mock_build.call_args.kwargs
+    assert call["model"] == "deepseek-v4-pro"
+    assert call["override_provider"] == "deepseek"
+    assert call["override_base_url"] == "https://deepseek.test"
+    assert call["override_api_key"] == "sk-deepseek"
+    assert call["override_api_mode"] == "chat_completions"
+
+
+def test_claude_agent_uses_external_claude_code_cli_runtime(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_managed_agents_yaml(tmp_path)
+    parent = _make_parent()
+
+    with (
+        patch("tools.delegate_tool._build_child_agent") as mock_build,
+        patch("tools.delegate_tool._run_single_child") as mock_run,
+    ):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+
+        delegate_task(goal="complex refactor", agent_id="claude", parent_agent=parent)
+
+    assert mock_build.call_count == 0
+    child = mock_run.call_args.args[2]
+    assert isinstance(child, ExternalCliChild)
+    assert child._subagent_agent_id == "claude"
+    assert child.command == ["claude"]
+    assert "complex refactor" == child._goal
+
+
+def test_claude_code_cli_runtime_preserves_context_in_prompt(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_managed_agents_yaml(tmp_path)
+    parent = _make_parent()
+
+    with patch("tools.delegate_tool._run_single_child") as mock_run:
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+
+        delegate_task(
+            goal="complex refactor",
+            context="preserve this context",
+            agent_id="claude",
+            parent_agent=parent,
+        )
+
+    child = mock_run.call_args.args[2]
+    assert isinstance(child, ExternalCliChild)
+    assert child._goal == "complex refactor\n\nContext:\npreserve this context"
+
+
+def test_codex_agent_uses_external_codex_cli_runtime(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_managed_agents_yaml(tmp_path)
+    parent = _make_parent()
+
+    with (
+        patch("tools.delegate_tool._build_child_agent") as mock_build,
+        patch("tools.delegate_tool._run_single_child") as mock_run,
+    ):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+
+        delegate_task(goal="review this design", agent_id="codex", parent_agent=parent)
+
+    assert mock_build.call_count == 0
+    child = mock_run.call_args.args[2]
+    assert isinstance(child, ExternalCliChild)
+    assert child._subagent_agent_id == "codex"
+    assert child.command == ["codex", "exec", "--sandbox", "read-only"]
+    assert child.output_last_message is True
 
 
 def test_managed_gateway_rejection_short_circuits_legacy_execution(tmp_path, monkeypatch):
@@ -260,19 +360,6 @@ def test_managed_preflight_event_log_failure_blocks_legacy_execution(tmp_path, m
 def test_managed_read_only_profile_blocks_write_tools(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _write_managed_agents_yaml(tmp_path)
-    config_path = tmp_path / "configs" / "managed_agents" / "agents.yaml"
-    raw = config_path.read_text(encoding="utf-8")
-    raw += """
-  - agent_id: codex
-    name: Codex
-    role: principal_engineer
-    tools: [file]
-    permission: read_only
-    can_delegate: false
-    capabilities: [code_review]
-    risk_allowed: [R0, R1, R2]
-"""
-    config_path.write_text(raw, encoding="utf-8")
 
     _, profile = delegate_tool._load_managed_subagent_profile("codex")
 

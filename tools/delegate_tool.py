@@ -22,8 +22,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import shlex
+import subprocess
+import tempfile
 import threading
 import time
+import uuid
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
@@ -209,6 +213,145 @@ DEFAULT_AGENT_ID_ENUM = [
     "验收官",
     "风险审核",
 ]
+
+
+class ExternalCliChild:
+    """A delegate child that runs an external non-interactive CLI."""
+
+    def __init__(
+        self,
+        *,
+        goal: str,
+        command: Optional[List[str]] = None,
+        prompt_args: Optional[List[str]] = None,
+        cwd: Optional[str] = None,
+        runtime_name: str = "external-cli",
+        output_last_message: bool = False,
+    ) -> None:
+        self.command = command or ["claude"]
+        self.prompt_args = prompt_args or []
+        self.cwd = cwd
+        self.model = runtime_name
+        self.provider = runtime_name
+        self.api_mode = "external_cli"
+        self.base_url = ""
+        self.max_iterations = 1
+        self.quiet_mode = True
+        self.skip_memory = True
+        self.skip_context_files = True
+        self.enabled_toolsets = []
+        self.valid_tool_names = set()
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_reasoning_tokens = 0
+        self.session_estimated_cost_usd = 0.0
+        self._api_call_count = 0
+        self._current_tool = runtime_name
+        self._last_activity_desc = f"waiting to start {runtime_name}"
+        self._process: subprocess.Popen[str] | None = None
+        self._interrupted = False
+        self._goal = goal
+        self._runtime_name = runtime_name
+        self.output_last_message = output_last_message
+
+    def get_activity_summary(self) -> Dict[str, Any]:
+        return {
+            "current_tool": self._current_tool,
+            "api_call_count": self._api_call_count,
+            "max_iterations": self.max_iterations,
+            "last_activity_desc": self._last_activity_desc,
+        }
+
+    def interrupt(self, reason: str = "interrupted") -> None:
+        self._interrupted = True
+        self._last_activity_desc = reason
+        proc = self._process
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        self.interrupt(f"closing {self._runtime_name}")
+
+    def run_conversation(
+        self,
+        user_message: str,
+        task_id: str | None = None,
+    ) -> Dict[str, Any]:
+        self._last_activity_desc = f"running {self._runtime_name}"
+        prompt = self._goal or user_message
+        output_path = None
+        if self.output_last_message:
+            output_file = tempfile.NamedTemporaryFile(
+                prefix="hermes-external-cli-", suffix=".txt", delete=False
+            )
+            output_path = output_file.name
+            output_file.close()
+            cmd = [
+                *self.command,
+                "--output-last-message",
+                output_path,
+                *self.prompt_args,
+                prompt,
+            ]
+        else:
+            cmd = [*self.command, *self.prompt_args, prompt]
+        started = time.monotonic()
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                cwd=self.cwd or None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            stdout, stderr = self._process.communicate()
+        except FileNotFoundError:
+            return {
+                "completed": False,
+                "final_response": "",
+                "messages": [],
+                "api_calls": 0,
+                "error": f"External CLI command not found: {self.command[0]}",
+            }
+        finally:
+            self._current_tool = None
+
+        code = self._process.returncode if self._process is not None else 1
+        response = (stdout or "").strip()
+        if output_path:
+            try:
+                with open(output_path, "r", encoding="utf-8") as handle:
+                    response = handle.read().strip() or response
+            except Exception as exc:
+                logger.debug("Failed to read external CLI output file %s: %s", output_path, exc)
+            finally:
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+        error = (stderr or "").strip()
+        completed = code == 0 and bool(response)
+        self._last_activity_desc = (
+            f"{self._runtime_name} completed"
+            if completed
+            else f"{self._runtime_name} failed"
+        )
+        return {
+            "completed": completed,
+            "final_response": response,
+            "messages": [],
+            "api_calls": 0,
+            "exit_reason": "completed" if completed else "error",
+            "error": "" if completed else (error or f"claude exited with code {code}"),
+            "duration_seconds": round(time.monotonic() - started, 2),
+            "interrupted": self._interrupted,
+        }
+
+
+ClaudeCodeCliChild = ExternalCliChild
 
 
 # ---------------------------------------------------------------------------
@@ -3488,6 +3631,7 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
                     "aliases": list(agent.aliases),
                     "role_summary": agent.role_summary,
                     "model_ref": agent.model_ref,
+                    "runtime": agent.runtime,
                     "type": agent.role,
                     "capabilities": list(agent.capabilities),
                 }
@@ -3499,6 +3643,7 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
                 profile = {
                     "model": "default",
                     "model_ref": agent.model_ref,
+                    "runtime": agent.runtime,
                     "toolsets": list(agent.tools),
                     "blocked_tools": blocked_tools,
                     "permission_mode": agent.permission.value,
@@ -3514,6 +3659,82 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
         return _load_subagent_profile(agent_id)
     except Exception:
         return None, None
+
+
+def _parse_external_command(value: Any, default: list[str]) -> list[str]:
+    if isinstance(value, list):
+        parts = [str(part).strip() for part in value if str(part).strip()]
+        return parts or list(default)
+    if isinstance(value, str) and value.strip():
+        parsed = shlex.split(value)
+        return parsed or list(default)
+    return list(default)
+
+
+def _build_external_cli_child(
+    *,
+    runtime: str,
+    task_index: int,
+    goal: str,
+    context: Optional[str],
+    parent_agent,
+    agent_id: Optional[str],
+    agent_config: dict,
+    profile: dict,
+) -> ExternalCliChild:
+    workspace_hint = _resolve_workspace_hint(parent_agent)
+    prompt = goal
+    if context:
+        prompt = f"{goal}\n\nContext:\n{context}"
+    if runtime == "codex_cli":
+        command = _parse_external_command(
+            profile.get("command")
+            or agent_config.get("command")
+            or os.getenv("HERMES_CODEX_CLI_COMMAND"),
+            ["codex", "exec", "--sandbox", "read-only"],
+        )
+        prompt_args: list[str] = []
+        runtime_name = "codex-cli"
+        toolset_name = "codex-cli"
+        warning = (
+            "runtime=codex_cli delegates execution to external Codex CLI; "
+            "model/backend is controlled by Codex CLI configuration."
+        )
+    else:
+        command = _parse_external_command(
+            profile.get("command")
+            or agent_config.get("command")
+            or os.getenv("HERMES_CLAUDE_CODE_COMMAND"),
+            ["claude"],
+        )
+        prompt_args = ["-p"]
+        runtime_name = "claude-code-cli"
+        toolset_name = "claude-code-cli"
+        warning = (
+            "runtime=claude_code_cli delegates execution to external Claude Code; "
+            "backend is controlled by Claude Code / CC Switch."
+        )
+    child = ExternalCliChild(
+        goal=prompt,
+        command=command,
+        prompt_args=prompt_args,
+        cwd=workspace_hint,
+        runtime_name=runtime_name,
+        output_last_message=(runtime == "codex_cli"),
+    )
+    child._delegate_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
+    child._delegate_role = "leaf"
+    child._subagent_id = f"sa-{task_index}-{uuid.uuid4().hex[:8]}"
+    child._parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
+    child._subagent_goal = prompt
+    child._subagent_agent_id = agent_id
+    child._subagent_effective_toolsets = [toolset_name]
+    child._subagent_effective_blocked = set(DELEGATE_BLOCKED_TOOLS)
+    child._subagent_warnings = [warning]
+    child._subagent_isolation = profile.get("isolation") or "shared"
+    child._subagent_isolation_error = None
+    child._delegate_saved_tool_names = []
+    return child
 
 
 def delegate_task(
@@ -3737,8 +3958,8 @@ def delegate_task(
                         )
                     else:
                         effective_agent_id = _resolve_agent_id_alias(effective_agent_id)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    return tool_error(str(exc))
             task_agent_config = None
             task_profile = None
             task_creds = dict(creds)
@@ -3747,6 +3968,25 @@ def delegate_task(
                     task_agent_config, task_profile = _load_managed_subagent_profile(effective_agent_id)
                     if task_agent_config is None or task_profile is None:
                         task_agent_config, task_profile = _load_subagent_profile(effective_agent_id)
+                    runtime = (
+                        (task_profile or {}).get("runtime")
+                        or (task_agent_config or {}).get("runtime")
+                        or ""
+                    )
+                    if runtime in {"claude_code_cli", "codex_cli"}:
+                        child = _build_external_cli_child(
+                            runtime=runtime,
+                            task_index=i,
+                            goal=t["goal"],
+                            context=t.get("context"),
+                            parent_agent=parent_agent,
+                            agent_id=effective_agent_id,
+                            agent_config=task_agent_config or {},
+                            profile=task_profile or {},
+                        )
+                        child._delegate_saved_tool_names = _parent_tool_names
+                        children.append((i, t, child))
+                        continue
                     model_ref = ((task_profile or {}).get("model_ref") or (task_agent_config or {}).get("model_ref") or "")
                     if model_ref:
                         model_creds = _resolve_profile_model_ref(model_ref)
@@ -3759,8 +3999,8 @@ def delegate_task(
                             "command": None,
                             "args": [],
                         })
-                except ValueError:
-                    pass  # fall through: per-task profile load failure → skip agent_id path
+                except ValueError as exc:
+                    return tool_error(str(exc))
             # Per-task blocked_tools — can only add to profile blocked
             task_blocked = t.get("blocked_tools") if "blocked_tools" in t else None
             effective_blocked = (

@@ -97,6 +97,7 @@ class AgentSpec:
     aliases: tuple[str, ...] = ()
     role_summary: str = ""
     model_ref: str = ""
+    runtime: str = ""
     tools: tuple[str, ...] = ()
     permission: PermissionMode = PermissionMode.ASK
     can_delegate: bool = False
@@ -233,6 +234,7 @@ def _parse_yaml_agent(raw: Mapping[str, Any], *, source_path: Path | None) -> Ag
     aliases = _normalize_str_list(raw.get("aliases"))
     role_summary = str(raw.get("role_summary") or "").strip()
     model_ref = str(raw.get("model_ref") or "").strip()
+    runtime = str(raw.get("runtime") or "").strip()
     risk_allowed = _normalize_risk_levels(raw.get("risk_allowed"))
     status = AgentStatus.from_raw(raw.get("status"))
     return AgentSpec(
@@ -242,6 +244,7 @@ def _parse_yaml_agent(raw: Mapping[str, Any], *, source_path: Path | None) -> Ag
         aliases=aliases,
         role_summary=role_summary,
         model_ref=model_ref,
+        runtime=runtime,
         tools=tools,
         permission=permission,
         can_delegate=can_delegate,
@@ -269,6 +272,7 @@ def _parse_legacy_agent(agent_id: str, raw: Mapping[str, Any], *, source_path: P
     aliases = _normalize_str_list(raw.get("aliases"))
     role_summary = str(raw.get("role_summary") or "").strip()
     model_ref = str(profile.get("model_ref") or raw.get("model_ref") or "").strip()
+    runtime = str(profile.get("runtime") or raw.get("runtime") or "").strip()
     risk_allowed = _normalize_risk_levels(raw.get("risk_allowed"))
     status = AgentStatus.from_raw(raw.get("status"))
 
@@ -279,6 +283,7 @@ def _parse_legacy_agent(agent_id: str, raw: Mapping[str, Any], *, source_path: P
         aliases=aliases,
         role_summary=role_summary,
         model_ref=model_ref,
+        runtime=runtime,
         tools=tools,
         permission=permission,
         can_delegate=can_delegate,

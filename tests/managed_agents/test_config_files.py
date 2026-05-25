@@ -35,6 +35,8 @@ def test_managed_agents_config_loads_all_declared_runtime_agents():
     assert registry.resolve_agent_id("技术翻译官") == "hermes-internal"
     assert registry.resolve_agent_id("低成本快工") == "deepseek-tui"
     assert registry.resolve_agent_id("kanban") is None
+    assert registry.get("claude").runtime == "claude_code_cli"
+    assert registry.get("codex").runtime == "codex_cli"
 
 
 def test_managed_agents_aliases_and_user_facing_fields_are_consistent():

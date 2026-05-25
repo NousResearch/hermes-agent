@@ -17,8 +17,9 @@ agents:
     name: Claude 主程执行官
     role: lead_implementer
     aliases: [Claude 主程执行官, 主程, 主执行人, 代码执行官, claude]
-    role_summary: 复杂代码修改、命令执行、git 操作。
+    role_summary: 外部 Claude Code CLI 执行器；后端由 CC Switch 控制。
     model_ref: claude_opus
+    runtime: claude_code_cli
     tools: [file, terminal, git, mcp-codegraph]
     permission: ask
     can_delegate: false
@@ -41,8 +42,9 @@ agents:
     name: Codex 代码审查官
     role: principal_engineer
     aliases: [Codex 代码审查官, 代码审查官, 审查官, 架构审查, codex]
-    role_summary: 只读审查、架构/实现方案评估。
+    role_summary: 外部 Codex CLI 审查器；用于只读审查、架构/实现方案评估。
     model_ref: codex_cli
+    runtime: codex_cli
     tools: [file, terminal, mcp-codegraph]
     permission: read_only
     can_delegate: false

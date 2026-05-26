@@ -221,68 +221,128 @@ class _AsyncBridge:
 # ---------------------------------------------------------------------------
 
 class _CuaDriverSession:
-    """Holds the mcp ClientSession. Spawned lazily; re-entered on drop."""
+    """Long-lived cua-driver MCP session owned by one asyncio task.
+
+    The MCP stdio transport uses AnyIO cancel scopes that must be exited by the
+    same task that entered them. Keep session creation, tool calls, and shutdown
+    inside one worker task instead of entering in one task and closing in
+    another. This also preserves cua-driver's per-session AX element cache
+    between capture and element-index actions.
+    """
 
     def __init__(self, bridge: _AsyncBridge) -> None:
         self._bridge = bridge
         self._session = None
-        self._exit_stack = None
         self._lock = threading.Lock()
         self._started = False
+        self._queue: Optional[asyncio.Queue] = None
+        self._worker_task: Optional[asyncio.Task] = None
+        self._ready_event: Optional[asyncio.Event] = None
+        self._startup_error: Optional[BaseException] = None
 
     def _require_started(self) -> None:
-        if not self._started:
+        if not self._started or self._queue is None:
             raise RuntimeError("cua-driver session not started")
 
-    async def _aenter(self) -> None:
+    async def _worker(self) -> None:
         from contextlib import AsyncExitStack
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        if not cua_driver_binary_available():
-            raise RuntimeError(cua_driver_install_hint())
+        try:
+            if not cua_driver_binary_available():
+                raise RuntimeError(cua_driver_install_hint())
 
-        params = StdioServerParameters(
-            command=_CUA_DRIVER_CMD,
-            args=_CUA_DRIVER_ARGS,
-            env={**os.environ},
-        )
-        stack = AsyncExitStack()
-        read, write = await stack.enter_async_context(stdio_client(params))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        self._exit_stack = stack
-        self._session = session
+            params = StdioServerParameters(
+                command=_CUA_DRIVER_CMD,
+                args=_CUA_DRIVER_ARGS,
+                env={**os.environ},
+            )
+            async with AsyncExitStack() as stack:
+                read, write = await stack.enter_async_context(stdio_client(params))
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                self._session = session
+                self._started = True
+                if self._ready_event is not None:
+                    self._ready_event.set()
 
-    async def _aexit(self) -> None:
-        if self._exit_stack is not None:
+                assert self._queue is not None
+                while True:
+                    item = await self._queue.get()
+                    if item is None:
+                        break
+                    name, args, fut = item
+                    if fut.cancelled():
+                        continue
+                    try:
+                        result = await session.call_tool(name, args)
+                        fut.set_result(_extract_tool_result(result))
+                    except Exception as e:
+                        fut.set_exception(e)
+        except BaseException as e:
+            self._startup_error = e
+            if self._ready_event is not None:
+                self._ready_event.set()
+            raise
+        finally:
+            self._session = None
+            self._started = False
+
+    async def _start_worker(self) -> None:
+        self._queue = asyncio.Queue()
+        self._ready_event = asyncio.Event()
+        self._startup_error = None
+        self._worker_task = asyncio.create_task(self._worker())
+        await self._ready_event.wait()
+        if self._startup_error is not None:
+            task = self._worker_task
+            self._worker_task = None
+            self._queue = None
+            self._ready_event = None
+            if task is not None and task.done():
+                try:
+                    task.result()
+                except BaseException:
+                    pass
+            raise self._startup_error
+
+    async def _stop_worker(self) -> None:
+        queue = self._queue
+        task = self._worker_task
+        self._queue = None
+        self._worker_task = None
+        self._ready_event = None
+        if queue is not None:
+            await queue.put(None)
+        if task is not None:
             try:
-                await self._exit_stack.aclose()
+                await asyncio.wait_for(task, timeout=5.0)
             except Exception as e:
                 logger.warning("cua-driver shutdown error: %s", e)
-        self._exit_stack = None
-        self._session = None
+                task.cancel()
+        self._started = False
 
     def start(self) -> None:
         with self._lock:
             if self._started:
                 return
             self._bridge.start()
-            self._bridge.run(self._aenter(), timeout=15.0)
-            self._started = True
+            self._bridge.run(self._start_worker(), timeout=15.0)
 
     def stop(self) -> None:
         with self._lock:
-            if not self._started:
+            if not self._started and self._worker_task is None:
                 return
-            try:
-                self._bridge.run(self._aexit(), timeout=5.0)
-            finally:
-                self._started = False
+            self._bridge.run(self._stop_worker(), timeout=6.0)
 
     async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        result = await self._session.call_tool(name, args)
-        return _extract_tool_result(result)
+        self._require_started()
+        assert self._queue is not None
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        await self._queue.put((name, args, fut))
+        return await fut
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()
@@ -444,6 +504,7 @@ class CuaDriverBackend(ComputerUseBackend):
             gws_out = self._session.call_tool(
                 "get_window_state",
                 {"pid": self._active_pid, "window_id": self._active_window_id},
+                timeout=120.0,
             )
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)

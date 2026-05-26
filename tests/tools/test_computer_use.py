@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
+import types
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
@@ -121,6 +123,38 @@ class TestRegistration:
 # ---------------------------------------------------------------------------
 
 class TestDispatch:
+    def test_backend_start_failure_does_not_poison_cached_backend(self):
+        from tools.computer_use import tool as cu_tool
+
+        class FlakyBackend:
+            starts = 0
+            stops = 0
+
+            def start(self):
+                type(self).starts += 1
+                if type(self).starts == 1:
+                    raise RuntimeError("startup failed")
+
+            def stop(self):
+                type(self).stops += 1
+
+            def is_available(self): return True
+            def list_apps(self): return []
+
+        cu_tool.reset_backend_for_tests()
+        with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "cua"}, clear=False), \
+             patch("tools.computer_use.cua_backend.CuaDriverBackend", FlakyBackend):
+            with pytest.raises(RuntimeError, match="startup failed"):
+                cu_tool._get_backend()
+
+            assert cu_tool._backend is None
+            backend = cu_tool._get_backend()
+
+        assert isinstance(backend, FlakyBackend)
+        assert FlakyBackend.starts == 2
+        assert FlakyBackend.stops == 1
+        cu_tool.reset_backend_for_tests()
+
     def test_missing_action_returns_error(self):
         from tools.computer_use.tool import handle_computer_use
         out = handle_computer_use({})
@@ -592,6 +626,76 @@ class TestCaptureResponse:
             "the truncation note describes a payload field that isn't present"
         )
         assert "truncated to" not in out["text_summary"]
+
+
+# ---------------------------------------------------------------------------
+# Cua-driver session lifecycle
+# ---------------------------------------------------------------------------
+
+class TestCuaDriverSessionLifecycle:
+    def test_mcp_context_and_tool_calls_stay_on_one_asyncio_task(self, monkeypatch):
+        from tools.computer_use import cua_backend
+
+        task_ids = {}
+
+        class FakeStdioContext:
+            async def __aenter__(self):
+                task_ids["stdio_enter"] = id(asyncio.current_task())
+                return object(), object()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                task_ids["stdio_exit"] = id(asyncio.current_task())
+
+        class FakeClientSession:
+            def __init__(self, read, write):
+                pass
+
+            async def __aenter__(self):
+                task_ids["session_enter"] = id(asyncio.current_task())
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                task_ids["session_exit"] = id(asyncio.current_task())
+
+            async def initialize(self):
+                task_ids["initialize"] = id(asyncio.current_task())
+
+            async def call_tool(self, name, args):
+                task_ids.setdefault("calls", []).append(id(asyncio.current_task()))
+                return types.SimpleNamespace(
+                    isError=False,
+                    structuredContent=None,
+                    content=[types.SimpleNamespace(type="text", text=json.dumps({"tool": name}))],
+                )
+
+        fake_mcp = types.ModuleType("mcp")
+        setattr(fake_mcp, "ClientSession", FakeClientSession)
+        setattr(fake_mcp, "StdioServerParameters", lambda **kwargs: kwargs)
+        fake_mcp_client = types.ModuleType("mcp.client")
+        fake_stdio = types.ModuleType("mcp.client.stdio")
+        setattr(fake_stdio, "stdio_client", lambda params: FakeStdioContext())
+
+        monkeypatch.setitem(sys.modules, "mcp", fake_mcp)
+        monkeypatch.setitem(sys.modules, "mcp.client", fake_mcp_client)
+        monkeypatch.setitem(sys.modules, "mcp.client.stdio", fake_stdio)
+        monkeypatch.setattr(cua_backend, "cua_driver_binary_available", lambda: True)
+
+        bridge = cua_backend._AsyncBridge()
+        session = cua_backend._CuaDriverSession(bridge)
+        try:
+            session.start()
+            assert session.call_tool("list_apps", {})["data"] == {"tool": "list_apps"}
+            assert session.call_tool("click", {"element_index": 1})["data"] == {"tool": "click"}
+            session.stop()
+        finally:
+            bridge.stop()
+
+        worker_task_id = task_ids["session_enter"]
+        assert task_ids["stdio_enter"] == worker_task_id
+        assert task_ids["initialize"] == worker_task_id
+        assert task_ids["calls"] == [worker_task_id, worker_task_id]
+        assert task_ids["session_exit"] == worker_task_id
+        assert task_ids["stdio_exit"] == worker_task_id
 
 
 # ---------------------------------------------------------------------------

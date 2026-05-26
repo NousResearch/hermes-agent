@@ -268,6 +268,44 @@ def cron_edit(args):
     return 0
 
 
+def _print_optional(label: str, value) -> None:
+    if value not in (None, "", [], {}):
+        print(f"  {label}: {value}")
+
+
+def cron_show(args) -> int:
+    result = _cron_api(action="show", job_id=args.job_id)
+    if not result.get("success"):
+        print(color(f"Failed to show job: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+
+    job = result.get("job", {})
+    print(color(f"Job: {job.get('name', args.job_id)}", Colors.CYAN))
+    print(f"  ID: {job.get('job_id', args.job_id)}")
+    print(f"  State: {job.get('state', '?')}")
+    print(f"  Schedule: {job.get('schedule', '?')}")
+    print(f"  Repeat: {job.get('repeat', '?')}")
+    print(f"  Next run: {job.get('next_run_at') or '?'}")
+    print(f"  Deliver: {job.get('deliver', 'local')}")
+    if job.get("skills"):
+        print(f"  Skills: {', '.join(job['skills'])}")
+    _print_optional("Model", job.get("model"))
+    _print_optional("Provider", job.get("provider"))
+    _print_optional("Profile", job.get("profile"))
+    _print_optional("Script", job.get("script"))
+    if job.get("no_agent"):
+        print("  Mode: no-agent (script stdout delivered directly)")
+    _print_optional("Workdir", job.get("workdir"))
+    _print_optional("Last run", job.get("last_run_at"))
+    _print_optional("Last status", job.get("last_status"))
+    _print_optional("Last delivery error", job.get("last_delivery_error"))
+    print("  Prompt:")
+    prompt = job.get("prompt") or ""
+    for line in prompt.splitlines() or [""]:
+        print(f"    {line}")
+    return 0
+
+
 def _job_action(action: str, job_id: str, success_verb: str) -> int:
     result = _cron_api(action=action, job_id=job_id)
     if not result.get("success"):
@@ -304,6 +342,9 @@ def cron_command(args):
 
     if subcmd == "edit":
         return cron_edit(args)
+
+    if subcmd == "show":
+        return cron_show(args)
 
     if subcmd == "pause":
         return _job_action("pause", args.job_id, "Paused")

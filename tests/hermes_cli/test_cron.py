@@ -111,3 +111,24 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_show_prints_job_details(self, tmp_cron_dir, capsys):
+        job = create_job(
+            prompt="Send Joe a focused morning summary of recurring ops.",
+            schedule="every 1h",
+            name="Morning ops",
+            deliver="local",
+            skills=["blogwatcher"],
+        )
+
+        result = cron_command(Namespace(cron_command="show", job_id=job["id"]))
+
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Job:" in out
+        assert job["id"] in out
+        assert "Morning ops" in out
+        assert "every 60m" in out
+        assert "local" in out
+        assert "blogwatcher" in out
+        assert "Send Joe a focused morning summary of recurring ops." in out

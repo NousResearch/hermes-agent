@@ -392,6 +392,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho',
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands',
                   ],
                 },
                 {
@@ -589,6 +590,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-software-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/software-development/software-development-code-wiki',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                   ],
                 },

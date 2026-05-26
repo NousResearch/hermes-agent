@@ -15130,6 +15130,42 @@ class AIAgent:
                             or getattr(assistant_message, "reasoning_details", None)
                             or _has_inline_thinking
                         )
+                        # Early-exit when the model's reasoning signals that
+                        # the empty visible response is intentional (e.g. the
+                        # agent persona chose to stay silent).  Skipping the
+                        # prefill and empty-response retry loop saves 4–5
+                        # unnecessary API calls per silent turn.
+                        if _has_structured and self._thinking_prefill_retries == 0:
+                            _raw_reasoning = (
+                                getattr(assistant_message, "reasoning", None)
+                                or getattr(assistant_message, "reasoning_content", None)
+                                or ""
+                            )
+                            if isinstance(_raw_reasoning, list):
+                                _raw_reasoning = " ".join(
+                                    (b.get("thinking") or b.get("text") or "")
+                                    if isinstance(b, dict) else str(b)
+                                    for b in _raw_reasoning
+                                )
+                            _SILENCE_SIGNALS = (
+                                "stay silent", "should stay silent",
+                                "not respond", "not answer", "should not respond",
+                                "stay quiet", "give them the floor",
+                                "let them respond", "give her the floor",
+                                "give him the floor", "let her respond",
+                                "let him respond", "addressed to someone else",
+                                "not addressed to me", "directed at someone else",
+                            )
+                            if any(sig in _raw_reasoning.lower() for sig in _SILENCE_SIGNALS):
+                                logger.info(
+                                    "Thinking-only response signals intentional silence "
+                                    "— skipping prefill retries (reasoning: %s)",
+                                    _raw_reasoning[:200],
+                                )
+                                _turn_exit_reason = "intentional_silence"
+                                self._drop_trailing_empty_response_scaffolding(messages)
+                                final_response = ""
+                                break
                         if _has_structured and self._thinking_prefill_retries < 2:
                             self._thinking_prefill_retries += 1
                             logger.info(

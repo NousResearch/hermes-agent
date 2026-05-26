@@ -416,6 +416,20 @@ def _make_discord_adapter_wired(runner=None):
     return adapter, runner
 
 
+@pytest.fixture(autouse=True)
+def clean_discord_channel_env(monkeypatch):
+    """Keep host Discord channel allowlists from leaking into e2e adapter tests."""
+    for name in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_HISTORY_BACKFILL",
+        "DISCORD_HISTORY_BACKFILL_LIMIT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture()
 def discord_setup():
     return _make_discord_adapter_wired()

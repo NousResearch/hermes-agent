@@ -3754,6 +3754,10 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             pass  # Malformed cache entry — fall back to cold-start scan
 
+        history = getattr(channel, "history", None)
+        if history is None:
+            return ""
+
         try:
             collected = []
             # IMPORTANT: pass oldest_first=False explicitly.  discord.py 2.x
@@ -4494,6 +4498,17 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        else:
+            # Discord role mentions are not included in ``message.mentions``.
+            # Some deployments expose the agent via an @role (e.g. @Hermes-Agent)
+            # rather than mentioning the bot user directly.  Treat a leading
+            # role mention as an explicit bot invocation for auto-threading, and
+            # strip it from the user-visible prompt just like a bot mention.
+            stripped_role_content = re.sub(r"^(?:<@&\d+>\s*)+", "", normalized_content).strip()
+            if stripped_role_content != normalized_content:
+                mention_prefix = True
+                normalized_content = stripped_role_content
+                message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -4552,7 +4567,12 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            # Free-response channels normally avoid auto-threading so casual
+            # unmentioned chat does not spawn a new thread for every message.
+            # If the user explicitly @mentions the bot, however, treat it as a
+            # deliberate bot conversation and allow auto-threading unless the
+            # channel is explicitly listed in no_thread_channels.
+            skip_thread = bool(channel_ids & no_thread_channels) or (is_free_channel and not mention_prefix)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

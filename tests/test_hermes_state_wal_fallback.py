@@ -131,15 +131,17 @@ class TestApplyWalWithFallback:
         conn.close()
 
     def test_does_not_downgrade_when_disk_says_wal(self, tmp_path):
-        """Belt-and-suspenders: even if a marker matches, refuse to
-        downgrade when the on-disk DB header is already WAL.
+        """Refuse to downgrade an already-WAL DB even if the set-pragma path
+        would have raised a downgrade-eligible marker.
 
-        Prevents a future addition to ``_WAL_INCOMPAT_MARKERS`` from
-        accidentally reintroducing the mixed-journal-mode corruption
-        pattern. We construct a DB already in WAL on disk, then open a
-        new connection whose ``PRAGMA journal_mode=WAL`` raises one of
-        the legit markers — the function must still re-raise (refusing
-        the downgrade) because the on-disk file is WAL.
+        With the WAL-skip patch, the read-only probe short-circuits before
+        ``PRAGMA journal_mode=WAL`` ever runs on an already-WAL connection,
+        so the set-pragma path is unreachable here and ``attempts`` stays 0.
+        Either outcome (skip-via-probe OR re-raise-on-disk-check) preserves
+        the property this test guards: we never silently DELETE-downgrade
+        a WAL-mode file. The on-disk guard remains in place as
+        belt-and-suspenders for any future code path that bypasses the
+        probe.
         """
         # Prime the file in WAL mode using a normal connection
         primer = sqlite3.connect(
@@ -155,16 +157,21 @@ class TestApplyWalWithFallback:
         finally:
             primer.close()
 
-        # New connection whose WAL pragma raises "locking protocol" — a
-        # marker that WOULD normally trigger downgrade. With the on-disk
-        # guard, we must instead re-raise.
-        conn, _ = _open_blocking(
+        # New connection whose set-WAL pragma would raise "locking protocol"
+        # if it were ever called. With the WAL-skip patch the probe sees
+        # journal_mode=wal and returns early, so set-WAL is never attempted.
+        conn, attempts = _open_blocking(
             tmp_path / "already-wal.db",
             reason="locking protocol",
             isolation_level=None,
         )
-        with pytest.raises(sqlite3.OperationalError, match="locking protocol"):
-            apply_wal_with_fallback(conn)
+        result = apply_wal_with_fallback(conn)
+        assert result == "wal", (
+            "must report wal mode (either skipped via probe or refused downgrade)"
+        )
+        assert attempts[0] == 0, (
+            "set-WAL pragma must not run when the on-disk header already says wal"
+        )
         conn.close()
 
         # And the file is STILL WAL on disk — nothing got rewritten

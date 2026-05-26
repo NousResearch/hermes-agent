@@ -117,8 +117,10 @@ hermes config path          Print config.yaml path
 hermes config env-path      Print .env path
 hermes config check         Check for missing/outdated config
 hermes config migrate       Update config with new options
-hermes login [--provider P] OAuth login (nous, openai-codex)
-hermes logout               Clear stored auth
+hermes auth                 交互式凭据管理器
+hermes auth add PROVIDER    添加 OAuth 或 API key 凭据（例如 nous、openai-codex、qwen-oauth）
+hermes auth list            列出已存储的凭据
+hermes auth remove PROVIDER 移除已存储的凭据
 hermes doctor [--fix]       Check dependencies and config
 hermes status [--all]       Show component status
 ```
@@ -402,7 +404,7 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 | AI Gateway (Vercel) | API key | `AI_GATEWAY_API_KEY` |
 | OpenCode Zen | API key | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | API key | `OPENCODE_GO_API_KEY` |
-| Qwen OAuth | OAuth | `hermes login --provider qwen-oauth` |
+| Qwen OAuth | OAuth | `hermes auth add qwen-oauth` |
 | 自定义端点 | 配置 | `config.yaml` 中的 `model.base_url` + `model.api_key` |
 | GitHub Copilot ACP | 外部 | `COPILOT_CLI_PATH` 或 Copilot CLI |
 
@@ -737,7 +739,7 @@ export PYTHONPATH="$(pwd)"
 
 ### 模型/提供商问题
 1. `hermes doctor` — 检查配置和依赖
-2. `hermes login` — 重新认证 OAuth 提供商
+2. `hermes auth` — 重新认证 OAuth 提供商（或 `hermes auth add <provider>`）
 3. 检查 `.env` 中是否有正确的 API key
 4. **Copilot 403**：`gh auth login` 的 token **不适用于** Copilot API。必须通过 `hermes model` → GitHub Copilot 使用 Copilot 专用 OAuth 设备码流程。
 

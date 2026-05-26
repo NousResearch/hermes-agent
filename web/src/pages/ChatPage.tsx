@@ -104,6 +104,16 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
+function tuiWheelInputForDelta(deltaY: number): string | null {
+  if (!deltaY) return null;
+
+  // SGR mouse wheel report: button 64 = wheel-up, 65 = wheel-down.
+  // Coordinates are irrelevant to the TUI transcript-scroll handler; use the
+  // top-left cell to avoid coupling browser pixels to terminal cells.
+  const button = deltaY < 0 ? 64 : 65;
+  return `\x1b[<${button};1;1M`;
+}
+
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -356,6 +366,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
+      // Keep keyboard shortcuts terminal-like and avoid hijacking ordinary
+      // browser Ctrl+C/Ctrl+V on Windows/Linux. Context menu and browser-menu
+      // copy/paste are handled by host-level ClipboardEvents below.
       // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
       // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
       // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
@@ -399,25 +412,68 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return true;
     });
 
+    const onHostCopy = (ev: ClipboardEvent) => {
+      const sel = term.getSelection();
+      if (!sel) return;
+      ev.clipboardData?.setData("text/plain", sel);
+      ev.preventDefault();
+      term.clearSelection();
+    };
+
+    const onHostPaste = (ev: ClipboardEvent) => {
+      const text = ev.clipboardData?.getData("text/plain") ?? "";
+      if (!text) return;
+      term.paste(text);
+      ev.preventDefault();
+      term.focus();
+    };
+
+    host.addEventListener("copy", onHostCopy);
+    host.addEventListener("paste", onHostPaste);
+
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
-    term.attachCustomWheelEventHandler((ev) => {
+    // Dashboard chat should scroll the browser-side transcript for fresh
+    // sessions, not send mouse-wheel protocol bytes through the PTY. Resumed
+    // sessions are different: historical transcript rows are virtualized inside
+    // the TUI and are not present in xterm's browser scrollback, so route wheel
+    // input back to the TUI transcript scroller for those PTYs only.
+    //
+    // Keep the host capture listener as a belt-and-suspenders guard: in some
+    // browser/layout combinations xterm's own wheel listener does not see the
+    // event before parent scroll containers do.
+    const scrollTerminalForWheel = (ev: WheelEvent): boolean => {
       const delta = ev.deltaY;
       if (!delta) {
         return false;
       }
 
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
+      if (resumeParam) {
+        const wheelInput = tuiWheelInputForDelta(delta);
+        const wsCurrent = wsRef.current;
+
+        if (wheelInput && wsCurrent?.readyState === WebSocket.OPEN) {
+          wsCurrent.send(wheelInput);
+        }
+      } else {
+        const step = Math.max(1, Math.round(Math.abs(delta) / 50));
+        term.scrollLines(delta > 0 ? step : -step);
+      }
 
       ev.preventDefault();
       ev.stopPropagation();
-      return false;
-    });
+      ev.stopImmediatePropagation();
+      return true;
+    };
+
+    const onHostWheel = (ev: WheelEvent) => {
+      scrollTerminalForWheel(ev);
+    };
+    host.addEventListener("wheel", onHostWheel, { capture: true, passive: false });
+
+    term.attachCustomWheelEventHandler((ev) => !scrollTerminalForWheel(ev));
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -630,6 +686,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
+      host.removeEventListener("copy", onHostCopy);
+      host.removeEventListener("paste", onHostPaste);
+      host.removeEventListener("wheel", onHostWheel, { capture: true });
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(

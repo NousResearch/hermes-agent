@@ -399,6 +399,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "minimax-m2.7",
         "minimax-m2.5",
+        "qwen3.7-max",
         "qwen3.6-plus",
         "qwen3.5-plus",
     ],
@@ -3014,6 +3015,8 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
 
     if provider == "opencode-go":
         if normalized.startswith("minimax-"):
+            return "anthropic_messages"
+        if normalized.startswith("qwen3.7-max"):
             return "anthropic_messages"
         return "chat_completions"
 

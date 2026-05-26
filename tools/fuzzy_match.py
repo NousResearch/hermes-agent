@@ -349,7 +349,7 @@ def _strategy_exact(content: str, pattern: str) -> List[Tuple[int, int]]:
         if pos == -1:
             break
         matches.append((pos, pos + len(pattern)))
-        start = pos + 1
+        start = pos + len(pattern)
     return matches
 
 
@@ -718,17 +718,20 @@ def _map_normalized_positions(original: str, normalized: str,
     norm_idx = 0
     
     while orig_idx < len(original) and norm_idx < len(normalized):
-        if original[orig_idx] == normalized[norm_idx]:
-            orig_to_norm.append(norm_idx)
-            orig_idx += 1
-            norm_idx += 1
-        elif original[orig_idx] in ' \t' and normalized[norm_idx] == ' ':
-            # Original has space/tab, normalized collapsed to space
+        if original[orig_idx] in ' \t' and normalized[norm_idx] == ' ':
+            # Original has space/tab, normalized collapsed to single space.
+            # Check this BEFORE the equality test — when both characters are
+            # spaces the == branch would advance norm_idx prematurely,
+            # causing subsequent whitespace to mis-map (Fill-remaining bug).
             orig_to_norm.append(norm_idx)
             orig_idx += 1
             # Don't advance norm_idx yet - wait until all whitespace consumed
             if orig_idx < len(original) and original[orig_idx] not in ' \t':
                 norm_idx += 1
+        elif original[orig_idx] == normalized[norm_idx]:
+            orig_to_norm.append(norm_idx)
+            orig_idx += 1
+            norm_idx += 1
         elif original[orig_idx] in ' \t':
             # Extra whitespace in original
             orig_to_norm.append(norm_idx)
@@ -767,11 +770,17 @@ def _map_normalized_positions(original: str, normalized: str,
             orig_end = norm_to_orig_end[norm_end - 1] + 1
         else:
             orig_end = orig_start + (norm_end - norm_start)
-        
-        # Expand to include trailing whitespace that was normalized
-        while orig_end < len(original) and original[orig_end] in ' \t':
-            orig_end += 1
-        
+
+        # NOTE: the original code had a while-loop here that greedily
+        # expanded orig_end past trailing spaces/tabs.  That was a
+        # workaround for a mapping bug above (see the char-mapping
+        # loop): the == test fired before the space-collapsing test,
+        # so consecutive spaces were mis-mapped and trailing ones
+        # landed in the Fill-remaining zone.  Now that the condition
+        # order is fixed, the norm_to_orig_end reverse mapping already
+        # captures the full original span — no post-hoc expansion
+        # needed.
+
         original_matches.append((orig_start, min(orig_end, len(original))))
     
     return original_matches

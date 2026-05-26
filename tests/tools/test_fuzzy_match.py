@@ -166,6 +166,60 @@ class TestReplaceAll:
         assert count == 2
         assert new == "ccc bbb ccc"
 
+    def test_overlapping_matches_replace_all(self):
+        """Overlapping occurrences must not produce double-counted matches.
+
+        In "aaaa" the substring "aa" occurs at offsets 0 and 2 (non-overlapping).
+        Before the fix, the scan advanced by 1 instead of len(pattern), yielding
+        3 overlapping matches and a corrupt result.
+        """
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert new == "bb"
+
+    def test_overlapping_matches_without_flag_errors(self):
+        """Overlapping occurrences should still report the non-overlapping count."""
+        new, count, _, err = fuzzy_find_and_replace("aaaa", "aa", "b", replace_all=False)
+        assert count == 0
+        assert "2 matches" in err
+
+    def test_overlapping_single_char_pattern(self):
+        """Single-char pattern: 'aaa' replacing 'a' with 'b' must give 'bbb'."""
+        new, count, _, err = fuzzy_find_and_replace("aaa", "a", "b", replace_all=True)
+        assert err is None
+        assert count == 3
+        assert new == "bbb"
+
+    def test_overlapping_with_surrounding_content(self):
+        """Overlapping region embedded in larger content — non-overlapping parts
+        must be preserved exactly."""
+        content = "prefix aaaa suffix"
+        new, count, _, err = fuzzy_find_and_replace(content, "aa", "b", replace_all=True)
+        assert err is None
+        assert count == 2
+        assert new == "prefix bb suffix"
+
+    def test_overlapping_multiline(self):
+        """Overlapping short string across multi-line code content."""
+        content = "x = 0\nx = 0\nx = 0\n"
+        new, count, _, err = fuzzy_find_and_replace(
+            content, "x = 0\n", "y = 1\n", replace_all=True
+        )
+        assert err is None
+        assert count == 3
+        assert new == "y = 1\ny = 1\ny = 1\n"
+
+    def test_no_false_overlaps_when_pattern_is_longer(self):
+        """When the pattern is longer than any possible self-overlap, there is
+        nothing to regress — this documents the benign case."""
+        new, count, _, err = fuzzy_find_and_replace(
+            "foo bar foo bar", "foo bar", "baz", replace_all=True
+        )
+        assert err is None
+        assert count == 2
+        assert new == "baz baz"
+
 
 class TestUnicodeNormalized:
     """Tests for the unicode_normalized strategy (Bug 5)."""
@@ -543,4 +597,110 @@ class TestEscapeNormalizedNewString:
         assert err is None
         assert count == 1
         assert "return 2" in new
+
+class TestMapNormalizedNoOverlap:
+    """Regression tests for trailing-whitespace expansion causing overlapping
+    matches in _map_normalized_positions.  The expansion was removed because
+    it greedily consumed spaces/tabs beyond the matched region, making
+    adjacent matches overlap and corrupting files under replace_all=True.
+    """
+
+    def test_whitespace_normalized_no_trailing_spillover(self):
+        """Adjacent whitespace-normalized matches must not overlap in original space."""
+        content = "a  a  a  a"
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "a a", "BB", replace_all=True
+        )
+        assert err is None, err
+        assert count == 2
+        assert new == "BB  BB"
+
+    def test_single_match_preserves_trailing_spaces(self):
+        """Trailing spaces after a matched region must NOT be swallowed."""
+        content = "foo   bar baz"
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "foo bar", "X Y"
+        )
+        assert err is None, err
+        assert count == 1
+        assert new == "X Y baz"
+
+    def test_full_string_match_via_whitespace_normalized(self):
+        """When old_string spans the entire content, result is just new_string."""
+        content = "hello   world"
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "hello world", "hi there"
+        )
+        assert err is None, err
+        assert count == 1
+        assert new == "hi there"
+
+    def test_trailing_spaces_in_normalized_match(self):
+        """Trailing spaces in original must be fully captured by the mapping.
+
+        Regression: the char-mapping loop checked == before space-collapsing,
+        so when original ends with multiple spaces and normalized ends with one,
+        the first space consumed the norm position and the rest fell into
+        Fill-remaining, mapping past the normalized end.  The result was that
+        trailing spaces were only partially replaced.
+        """
+        content = "hello    world    "  # 4 spaces mid, 4 trailing
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "hello world ", "hi"
+        )
+        assert err is None, err
+        assert count == 1
+        assert new == "hi"
+
+    def test_trailing_tabs_in_normalized_match(self):
+        """Trailing tabs must also be fully captured."""
+        content = "hello    world\t\t\t"  # 4 spaces mid, 3 tabs trailing
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "hello world\t", "hi"
+        )
+        assert err is None, err
+        assert count == 1
+        assert new == "hi"
+
+    def test_match_prefix_only_preserves_rest(self):
+        """Partial match (prefix) must leave unmatched trailing content intact."""
+        content = "a    b    c"
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "a b", "X"
+        )
+        assert err is None, err
+        assert count == 1
+        assert new == "X    c"
+
+    def test_match_suffix_only_preserves_leading(self):
+        """Partial match (suffix) must leave leading content intact."""
+        content = "a    b    c"
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "b c", "Y"
+        )
+        assert err is None, err
+        assert count == 1
+        assert new == "a    Y"
+
+    def test_replace_all_with_trailing_spaces_no_overlap(self):
+        """replace_all must not overlap when matches have trailing spaces."""
+        content = "foo   bar   foo   bar   "
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "foo bar ", "X", replace_all=True
+        )
+        assert err is None, err
+        assert count == 2
+        assert new == "XX"
+
+    def test_multiline_trailing_spaces(self):
+        """Multiline match with trailing spaces on last line."""
+        content = "def  foo():\n    return  42  "
+        new, count, strat, err = fuzzy_find_and_replace(
+            content, "def foo():\n    return 42  ", "X"
+        )
+        assert err is None, err
+        assert count == 1
+        assert new == "X"
+
+
 

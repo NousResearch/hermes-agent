@@ -9,6 +9,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import platform
+import socket
 import shutil
 import statistics
 import subprocess
@@ -18,9 +20,29 @@ import time
 import urllib.request
 import json
 
+try:
+    from hermes_cli.browser_connect import get_chrome_debug_candidates
+except Exception:
+    get_chrome_debug_candidates = None  # type: ignore[assignment]
+
+
+class BenchmarkUnavailable(RuntimeError):
+    """Raised when this host cannot expose or reach the live CDP endpoint."""
+
 
 def _find_chrome() -> str:
-    for c in ("google-chrome", "chromium", "chromium-browser"):
+    if get_chrome_debug_candidates is not None:
+        try:
+            candidates = get_chrome_debug_candidates(platform.system())
+        except Exception:
+            candidates = []
+    else:
+        candidates = []
+
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    for c in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
         p = shutil.which(c)
         if p:
             return p
@@ -28,7 +50,33 @@ def _find_chrome() -> str:
     sys.exit(1)
 
 
+def _free_port() -> int:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+    except OSError:
+        return 9333
+
+
+def _loopback_bind_probe() -> tuple[bool, str]:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+        return True, ""
+    except OSError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def _start_chrome(port: int):
+    ok, reason = _loopback_bind_probe()
+    if not ok:
+        raise BenchmarkUnavailable(
+            "Loopback TCP bind is unavailable, so Chrome cannot expose the "
+            f"CDP endpoint required by this live benchmark ({reason})."
+        )
+    if port == 0:
+        port = _free_port()
     profile = tempfile.mkdtemp(prefix="hermes-bench-eval-")
     proc = subprocess.Popen(
         [
@@ -52,21 +100,48 @@ def _start_chrome(port: int):
         except Exception:
             time.sleep(0.25)
     proc.terminate()
-    raise RuntimeError("Chrome didn't expose CDP")
+    try:
+        proc.wait(timeout=3)
+    except Exception:
+        proc.kill()
+    shutil.rmtree(profile, ignore_errors=True)
+    raise BenchmarkUnavailable("Chrome didn't expose CDP")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--port", type=int, default=9333)
+    parser.add_argument(
+        "--cdp-url",
+        help="Attach to an existing browser WebSocket debugger URL instead of starting Chrome.",
+    )
+    parser.add_argument(
+        "--allow-unavailable",
+        action="store_true",
+        help="Exit 0 with an unavailable notice when Chrome/CDP cannot run on this host.",
+    )
     args = parser.parse_args()
 
-    proc, profile, cdp_url = _start_chrome(args.port)
+    proc = None
+    profile = None
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        if args.cdp_url:
+            cdp_url = args.cdp_url
+        else:
+            proc, profile, cdp_url = _start_chrome(args.port)
+    except BenchmarkUnavailable as exc:
+        print(f"browser_eval benchmark unavailable: {exc}", file=sys.stderr)
+        if args.allow_unavailable:
+            return
+        sys.exit(3)
+
+    supervisor_registry = None
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY as supervisor_registry
 
         # Warm up: start the supervisor, navigate to a page.
-        supervisor = SUPERVISOR_REGISTRY.get_or_start(
+        supervisor = supervisor_registry.get_or_start(
             task_id="bench-eval", cdp_url=cdp_url
         )
         # Give it a moment to attach.
@@ -115,7 +190,8 @@ def main():
             )
 
         print()
-        print(f"browser_eval benchmark — {args.iterations} iterations of `1 + 1`")
+        port = cdp_url.split("/devtools/", 1)[0].rsplit(":", 1)[-1]
+        print(f"browser_eval benchmark — {args.iterations} iterations of `1 + 1` on CDP port {port}")
         print("-" * 90)
         print(fmt("supervisor WS (Runtime.evaluate)", ws_times))
         print(fmt("agent-browser subprocess (eval)", sub_times))
@@ -125,13 +201,16 @@ def main():
             print(f"Speedup: {speedup:.1f}x (mean)")
 
     finally:
-        SUPERVISOR_REGISTRY.stop_all()
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except Exception:
-            proc.kill()
-        shutil.rmtree(profile, ignore_errors=True)
+        if supervisor_registry is not None:
+            supervisor_registry.stop_all()
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
+        if profile is not None:
+            shutil.rmtree(profile, ignore_errors=True)
 
 
 if __name__ == "__main__":

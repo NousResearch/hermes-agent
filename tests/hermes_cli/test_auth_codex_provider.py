@@ -75,6 +75,36 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_read_codex_tokens_ignores_credential_pool_entries(tmp_path, monkeypatch):
+    """Codex runtime auth is strict: no fallback to credential_pool entries."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "codex-pool-1",
+                "label": "openai-codex-oauth-1",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "pool-access",
+                "refresh_token": "pool-refresh",
+            }]
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
+    assert exc.value.code == "codex_auth_missing"
+
+    status = get_codex_auth_status()
+    assert status["logged_in"] is False
+    assert status["error_code"] == "codex_auth_missing"
+
+
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")

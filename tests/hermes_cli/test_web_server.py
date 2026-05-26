@@ -2084,6 +2084,8 @@ class TestPtyWebSocket:
 
         # Avoid exec'ing the actual TUI in tests: every test below installs
         # its own fake argv via ``ws._resolve_chat_argv``.
+        if not ws.PtyBridge.is_available():
+            pytest.skip("PTY bridge optional dependency is unavailable")
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
         self.token = ws._SESSION_TOKEN

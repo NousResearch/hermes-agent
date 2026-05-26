@@ -212,6 +212,33 @@ class TestPeerLookupHelpers:
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
         assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
 
+    def test_set_peer_card_uses_same_observer_target_as_get_peer_card(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.set_card.return_value = ["Name: Robert"]
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        assert mgr.set_peer_card(session.key, ["Name: Robert"]) == ["Name: Robert"]
+        mgr._get_or_create_peer.assert_called_once_with(session.assistant_peer_id)
+        assistant_peer.set_card.assert_called_once_with(
+            ["Name: Robert"],
+            target=session.user_peer_id,
+        )
+
+    def test_set_peer_card_unified_mode_updates_user_self_card(self):
+        mgr, session = self._make_cached_manager()
+        mgr._ai_observe_others = False
+        user_peer = MagicMock()
+        user_peer.set_card.return_value = ["Name: Robert"]
+        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+
+        assert mgr.set_peer_card(session.key, ["Name: Robert"]) == ["Name: Robert"]
+        mgr._get_or_create_peer.assert_called_once_with(session.user_peer_id)
+        user_peer.set_card.assert_called_once_with(
+            ["Name: Robert"],
+            target=None,
+        )
+
     def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()

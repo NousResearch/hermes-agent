@@ -167,10 +167,15 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def stop(self) -> None: self._started = False
     def is_available(self) -> bool: return True
 
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        self.calls.append(("capture", {"mode": mode, "app": app}))
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_title: Optional[str] = None,
+    ) -> CaptureResult:
+        self.calls.append(("capture", {"mode": mode, "app": app, "window_title": window_title}))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
-                             elements=[], app=app or "", window_title="")
+                             elements=[], app=app or "", window_title=window_title or "")
 
     def click(self, **kw) -> ActionResult:
         self.calls.append(("click", kw))
@@ -320,7 +325,10 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        cap = backend.capture(mode=mode, app=args.get("app"))
+        capture_kwargs = {"mode": mode, "app": args.get("app")}
+        if args.get("window_title"):
+            capture_kwargs["window_title"] = args.get("window_title")
+        cap = backend.capture(**capture_kwargs)
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
     if action == "wait":
@@ -685,7 +693,11 @@ def _maybe_follow_capture(
         # that capture_after=True re-captures the same app rather than the frontmost
         # window (which may have changed if the action caused a focus shift).
         last_app = getattr(backend, "_last_app", None)
-        cap = backend.capture(mode="som", app=last_app)
+        last_window_title = getattr(backend, "_last_window_title", None)
+        capture_kwargs = {"mode": "som", "app": last_app}
+        if last_window_title:
+            capture_kwargs["window_title"] = last_window_title
+        cap = backend.capture(**capture_kwargs)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)

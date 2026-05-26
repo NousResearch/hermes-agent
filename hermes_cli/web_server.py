@@ -2184,7 +2184,7 @@ def _codex_full_login_worker(session_id: str) -> None:
         from hermes_cli.auth import (
             CODEX_OAUTH_CLIENT_ID,
             CODEX_OAUTH_TOKEN_URL,
-            DEFAULT_CODEX_BASE_URL,
+            _save_codex_tokens,
         )
         issuer = "https://auth.openai.com"
 
@@ -2264,31 +2264,13 @@ def _codex_full_login_worker(session_id: str) -> None:
         if not access_token:
             raise RuntimeError("token exchange did not return access_token")
 
-        # Persist via credential pool — same shape as auth_commands.add_command
-        from agent.credential_pool import (
-            PooledCredential,
-            load_pool,
-            AUTH_TYPE_OAUTH,
-            SOURCE_MANUAL,
-        )
-        import uuid as _uuid
-        pool = load_pool("openai-codex")
-        base_url = (
-            os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
-            or DEFAULT_CODEX_BASE_URL
-        )
-        entry = PooledCredential(
-            provider="openai-codex",
-            id=_uuid.uuid4().hex[:6],
-            label="dashboard device_code",
-            auth_type=AUTH_TYPE_OAUTH,
-            priority=0,
-            source=f"{SOURCE_MANUAL}:dashboard_device_code",
-            access_token=access_token,
-            refresh_token=refresh_token,
-            base_url=base_url,
-        )
-        pool.add_entry(entry)
+        # Persist to the strict Codex provider auth state used by
+        # resolve_codex_runtime_credentials(). Dashboard login must not create
+        # a credential-pool-only Codex entry that runtime auth would ignore.
+        _save_codex_tokens({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        })
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)

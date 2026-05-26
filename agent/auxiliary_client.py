@@ -1349,20 +1349,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
+    """Read a valid Codex OAuth access token from Hermes provider auth state.
 
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
+    Codex OAuth is intentionally strict: auxiliary Codex clients must use the
+    same configured Hermes auth-store state as the main runtime resolver. Do
+    not satisfy this path from credential-pool entries, Codex CLI scans, proxy
+    helpers, or any silent recovery source.
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
-
     try:
         from hermes_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
@@ -1888,21 +1881,10 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        codex_token = _pool_runtime_api_key(entry)
-        if codex_token:
-            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-        else:
-            codex_token = _read_codex_access_token()
-            if not codex_token:
-                return None, None
-            base_url = _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = _CODEX_AUX_BASE_URL
+    codex_token = _read_codex_access_token()
+    if not codex_token:
+        return None, None
+    base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = OpenAI(
         api_key=codex_token,
@@ -2465,6 +2447,8 @@ def _pool_cache_hint(
         normalized = _normalize_aux_provider(runtime.get("provider") or _read_main_provider())
     if normalized in {"", "auto", "custom"}:
         return ""
+    if normalized == "openai-codex":
+        return ""
     entry = _peek_pool_entry(normalized)
     if entry is None:
         return ""
@@ -2489,11 +2473,11 @@ def _recoverable_pool_provider(
 ) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client."""
     normalized = _normalize_aux_provider(resolved_provider)
+    if normalized == "openai-codex":
+        return None
     if normalized not in {"", "auto", "custom"}:
         return normalized
     base = str(getattr(client, "base_url", "") or "")
-    if base_url_host_matches(base, "chatgpt.com"):
-        return "openai-codex"
     if base_url_host_matches(base, "openrouter.ai"):
         return "openrouter"
     if base_url_host_matches(base, "inference-api.nousresearch.com"):
@@ -4373,8 +4357,9 @@ def _get_cached_client(
     # after key #1 is marked exhausted the retry would still get key #1 from
     # the env var and fail again, causing the retry2_err handler to mark key #2.
     effective_api_key = api_key
-    if not effective_api_key:
-        _pe = _peek_pool_entry(_normalize_aux_provider(provider))
+    normalized_provider = _normalize_aux_provider(provider)
+    if not effective_api_key and normalized_provider != "openai-codex":
+        _pe = _peek_pool_entry(normalized_provider)
         if _pe is not None:
             _pk = _pool_runtime_api_key(_pe)
             if _pk:

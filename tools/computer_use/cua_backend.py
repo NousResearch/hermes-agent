@@ -47,15 +47,51 @@ logger = logging.getLogger(__name__)
 
 PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
 
-_CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
 
 # Regex to parse list_windows text output lines:
 #   "- AppName (pid 12345) "Title" [window_id: 67890]"
 _WINDOW_LINE_RE = re.compile(
-    r'^-\s+(.+?)\s+\(pid\s+(\d+)\)\s+.*\[window_id:\s+(\d+)\]',
+    # Newer cua-driver text includes a quoted title; older builds emitted
+    # additional flags/free text before the window_id without a stable title.
+    r'^-\s+(.+?)\s+\(pid\s+(\d+)\)\s+(?:"([^"]*)"\s+)?(?:.*?\s+)?\[window_id:\s+(\d+)\]',
     re.MULTILINE,
 )
+
+# Fallback locations used by the upstream installer / CuaDriver.app on macOS.
+# `cua-driver` is not always on Hermes' PATH (notably gateway/venv launches),
+# while the app bundle path is the authoritative TCC-attributed binary.
+_FALLBACK_CUA_DRIVER_PATHS = (
+    os.path.expanduser("~/.local/bin/cua-driver"),
+    "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+)
+
+
+def _is_executable_file(path: str) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def resolve_cua_driver_command() -> Optional[str]:
+    """Return the executable cua-driver command/path, or None if unavailable.
+
+    HERMES_CUA_DRIVER_CMD is an explicit override: if set but invalid, do not
+    silently fall back to another binary because that hides broken config.
+    """
+    override = os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
+    if override:
+        if os.path.isabs(override):
+            return override if _is_executable_file(override) else None
+        resolved = shutil.which(override)
+        return resolved or None
+
+    resolved = shutil.which("cua-driver")
+    if resolved:
+        return resolved
+    for candidate in _FALLBACK_CUA_DRIVER_PATHS:
+        if _is_executable_file(candidate):
+            return candidate
+    return None
+
 
 # Regex to parse element lines from get_window_state AX tree markdown.
 #
@@ -86,8 +122,8 @@ def _is_arm_mac() -> bool:
 
 
 def cua_driver_binary_available() -> bool:
-    """True if `cua-driver` is on $PATH or HERMES_CUA_DRIVER_CMD resolves."""
-    return bool(shutil.which(_CUA_DRIVER_CMD))
+    """True if a usable `cua-driver` binary can be resolved."""
+    return resolve_cua_driver_command() is not None
 
 
 def cua_driver_install_hint() -> str:
@@ -108,7 +144,8 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
         windows.append({
             "app_name": m.group(1).strip(),
             "pid": int(m.group(2)),
-            "window_id": int(m.group(3)),
+            "title": m.group(3) or "",
+            "window_id": int(m.group(4)),
             "off_screen": "[off-screen]" in m.group(0),
         })
     return windows
@@ -239,11 +276,12 @@ class _CuaDriverSession:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        if not cua_driver_binary_available():
+        command = resolve_cua_driver_command()
+        if not command:
             raise RuntimeError(cua_driver_install_hint())
 
         params = StdioServerParameters(
-            command=_CUA_DRIVER_CMD,
+            command=command,
             args=_CUA_DRIVER_ARGS,
             env={**os.environ},
         )
@@ -340,6 +378,7 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
         self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
+        self._last_window_title: Optional[str] = None
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -357,8 +396,13 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_binary_available()
 
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
-        """Capture the frontmost on-screen window (optionally filtered by app name).
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        window_title: Optional[str] = None,
+    ) -> CaptureResult:
+        """Capture the frontmost on-screen window, optionally filtered by app/title.
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
@@ -415,21 +459,42 @@ class CuaDriverBackend(ComputerUseBackend):
                 )
             windows = filtered
 
+        # Filter by window title (case-insensitive substring) if requested.
+        # This is critical for browsers/editors where many windows share the
+        # same app name; never fall back to a different window on title miss.
+        if window_title:
+            title_lower = window_title.lower()
+            title_filtered = [
+                w for w in windows
+                if title_lower in str(w.get("title") or "").lower()
+            ]
+            if not title_filtered:
+                scope = f" app={app!r}" if app else ""
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app="",
+                    window_title=f"<no on-screen window matched{scope} window_title={window_title!r}>",
+                    png_bytes_len=0,
+                )
+            windows = title_filtered
+
         # Pick first on-screen window (sorted by z_index / z-order above).
         target = next((w for w in windows if not w["off_screen"]), windows[0])
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         app_name = target["app_name"]
-        # Record the resolved app name so capture_after= follow-ups can re-target
-        # the same app rather than falling back to the frontmost window.
+        # Record the resolved app/title so capture_after= follow-ups can re-target
+        # the same window rather than falling back to the frontmost window.
         if app or not self._last_app:
             self._last_app = app_name
+        if window_title or not self._last_window_title:
+            self._last_window_title = str(target.get("title") or window_title or "") or None
 
         # Step 2: capture.
         png_b64: Optional[str] = None
         elements: List[UIElement] = []
         width = height = 0
-        window_title = ""
+        resolved_window_title = str(target.get("title") or "")
 
         if mode == "vision":
             # screenshot tool: just the PNG, no AX walk.
@@ -460,7 +525,7 @@ class CuaDriverBackend(ComputerUseBackend):
             # Extract window title from the AX tree first AXWindow line.
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
             if wt:
-                window_title = wt.group(1)
+                resolved_window_title = wt.group(1)
 
         png_bytes_len = 0
         if png_b64:
@@ -469,6 +534,9 @@ class CuaDriverBackend(ComputerUseBackend):
             except Exception:
                 png_bytes_len = len(png_b64) * 3 // 4
 
+        if resolved_window_title:
+            self._last_window_title = resolved_window_title
+
         return CaptureResult(
             mode=mode,
             width=width,
@@ -476,7 +544,7 @@ class CuaDriverBackend(ComputerUseBackend):
             png_b64=png_b64,
             elements=elements,
             app=app_name,
-            window_title=window_title,
+            window_title=resolved_window_title,
             png_bytes_len=png_bytes_len,
         )
 
@@ -683,6 +751,7 @@ class CuaDriverBackend(ComputerUseBackend):
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
             self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
+            self._last_window_title = None
             return ActionResult(
                 ok=True, action="focus_app",
                 message=f"Targeted {target['app_name']} (pid {self._active_pid}, "

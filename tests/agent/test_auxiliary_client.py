@@ -110,13 +110,13 @@ class TestReadCodexAccessToken:
         result = _read_codex_access_token()
         assert result == "tok-123"
 
-    def test_pool_without_selected_entry_falls_back_to_auth_store(self, tmp_path, monkeypatch):
+    def test_codex_access_token_uses_auth_store_not_pool(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        valid_jwt = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig"
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)), \
+        valid_jwt = "eyJhbG...OTl9.sig"
+        with patch("agent.auxiliary_client._select_pool_entry", side_effect=AssertionError("pool must not be used")), \
              patch("hermes_cli.auth._read_codex_tokens", return_value={
                  "tokens": {"access_token": valid_jwt, "refresh_token": "refresh"}
              }):
@@ -129,8 +129,7 @@ class TestReadCodexAccessToken:
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
-            result = _read_codex_access_token()
+        result = _read_codex_access_token()
         assert result is None
 
     def test_empty_token_returns_none(self, tmp_path, monkeypatch):
@@ -187,8 +186,7 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
-            result = _read_codex_access_token()
+        result = _read_codex_access_token()
         assert result is None, "Expired JWT should return None"
 
     def test_valid_jwt_returns_token(self, tmp_path, monkeypatch):
@@ -359,9 +357,9 @@ class TestAnthropicOAuthFlag:
 
 
 class TestBuildCodexClient:
-    def test_pool_without_selected_entry_falls_back_to_auth_store(self):
+    def test_uses_auth_store_token_without_pool(self):
         with (
-            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
+            patch("agent.auxiliary_client._select_pool_entry", side_effect=AssertionError("pool must not be used")),
             patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
@@ -383,51 +381,27 @@ class TestBuildCodexClient:
         assert client is None
         assert model is None
 
-    def test_cached_codex_client_rebuilds_when_pool_entry_changes(self):
+    def test_cached_codex_client_ignores_pool_entry_changes(self):
         import agent.auxiliary_client as aux
 
-        class _Entry:
-            def __init__(self, entry_id, token):
-                self.id = entry_id
-                self.runtime_api_key = token
-                self.runtime_base_url = "https://chatgpt.com/backend-api/codex"
-
-        class _Pool:
-            def __init__(self):
-                self.entry = _Entry("cred-a", "tok-a")
-
-            def has_credentials(self):
-                return True
-
-            def current(self):
-                return self.entry
-
-            def peek(self):
-                return self.entry
-
-            def select(self):
-                return self.entry
-
-        pool = _Pool()
         client_a = MagicMock(name="codex-client-a")
-        client_b = MagicMock(name="codex-client-b")
 
         with (
-            patch("agent.auxiliary_client.load_pool", return_value=pool),
-            patch("agent.auxiliary_client.OpenAI", side_effect=[client_a, client_b]) as mock_openai,
+            patch("agent.auxiliary_client._peek_pool_entry", side_effect=AssertionError("pool hint must not be used")),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client.OpenAI", return_value=client_a) as mock_openai,
         ):
             aux.shutdown_cached_clients()
             try:
                 first_client, first_model = aux._get_cached_client("openai-codex", "gpt-5.4")
-                pool.entry = _Entry("cred-b", "tok-b")
                 second_client, second_model = aux._get_cached_client("openai-codex", "gpt-5.4")
             finally:
                 aux.shutdown_cached_clients()
 
-        assert first_client is not second_client
+        assert first_client is second_client
         assert first_model == "gpt-5.4"
         assert second_model == "gpt-5.4"
-        assert mock_openai.call_count == 2
+        assert mock_openai.call_count == 1
 
 
 class TestResolveProviderClientUniversalModelFallback:
@@ -803,22 +777,20 @@ class TestExplicitProviderRouting:
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
-    def test_codex_pool_entry_takes_priority_over_auth_store(self):
-        class _Entry:
-            access_token = "pooled-codex-token"
-            base_url = "https://chatgpt.com/backend-api/codex"
-
+    def test_codex_auth_store_takes_priority_over_pool(self):
         class _Pool:
             def has_credentials(self):
                 return True
 
             def select(self):
-                return _Entry()
+                raise AssertionError("Codex pool must not be used")
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
-            patch("agent.auxiliary_client.OpenAI"),
-            patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("hermes_cli.auth._read_codex_tokens", return_value={
+                "tokens": {"access_token": "auth-store-codex-token", "refresh_token": "refresh"},
+            }),
         ):
             from agent.auxiliary_client import _build_codex_client
 
@@ -828,6 +800,7 @@ class TestGetTextAuxiliaryClient:
 
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["api_key"] == "auth-store-codex-token"
 
     def test_returns_none_when_nothing_available(self, monkeypatch):
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -2110,17 +2083,13 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 class TestAuxiliaryPoolRotationRetry:
-    def test_call_llm_rotates_explicit_codex_pool_on_429(self):
+    def test_call_llm_does_not_rotate_explicit_codex_pool_on_429(self):
         rate_err = Exception("usage limit reached")
         rate_err.status_code = 429
 
         stale_client = MagicMock()
         stale_client.base_url = "https://chatgpt.com/backend-api/codex"
-        stale_client.chat.completions.create.side_effect = [rate_err, rate_err]
-
-        fresh_client = MagicMock()
-        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
-        fresh_client.chat.completions.create.return_value = _DummyResponse("rotated-sync")
+        stale_client.chat.completions.create.side_effect = rate_err
 
         class _Pool:
             def __init__(self):
@@ -2140,37 +2109,31 @@ class TestAuxiliaryPoolRotationRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "gpt-5.4")),
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
             patch("agent.auxiliary_client.load_pool", return_value=pool),
             patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
         ):
-            resp = call_llm(
-                task="compression",
-                provider="openai-codex",
-                model="gpt-5.4",
-                messages=[{"role": "user", "content": "hi"}],
-            )
+            with pytest.raises(Exception, match="usage limit reached"):
+                call_llm(
+                    task="compression",
+                    provider="openai-codex",
+                    model="gpt-5.4",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
 
-        assert resp.choices[0].message.content == "rotated-sync"
-        assert stale_client.chat.completions.create.call_count == 2
-        assert fresh_client.chat.completions.create.call_count == 1
-        assert len(pool.rotate_calls) == 1
-        assert pool.rotate_calls[0]["status_code"] == 429
+        assert stale_client.chat.completions.create.call_count == 1
+        assert pool.rotate_calls == []
         mock_fallback.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_async_call_llm_rotates_explicit_codex_pool_on_429(self):
+    async def test_async_call_llm_does_not_rotate_explicit_codex_pool_on_429(self):
         rate_err = Exception("usage limit reached")
         rate_err.status_code = 429
 
         stale_client = MagicMock()
         stale_client.base_url = "https://chatgpt.com/backend-api/codex"
-        stale_client.chat.completions.create = AsyncMock(side_effect=[rate_err, rate_err])
-
-        fresh_client = MagicMock()
-        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
-        fresh_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("rotated-async"))
+        stale_client.chat.completions.create = AsyncMock(side_effect=rate_err)
 
         class _Pool:
             def __init__(self):
@@ -2190,23 +2153,21 @@ class TestAuxiliaryPoolRotationRetry:
 
         with (
             patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "gpt-5.4")),
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=False),
             patch("agent.auxiliary_client.load_pool", return_value=pool),
             patch("agent.auxiliary_client._try_payment_fallback") as mock_fallback,
         ):
-            resp = await async_call_llm(
-                task="compression",
-                provider="openai-codex",
-                model="gpt-5.4",
-                messages=[{"role": "user", "content": "hi"}],
-            )
+            with pytest.raises(Exception, match="usage limit reached"):
+                await async_call_llm(
+                    task="compression",
+                    provider="openai-codex",
+                    model="gpt-5.4",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
 
-        assert resp.choices[0].message.content == "rotated-async"
-        assert stale_client.chat.completions.create.await_count == 2
-        assert fresh_client.chat.completions.create.await_count == 1
-        assert len(pool.rotate_calls) == 1
-        assert pool.rotate_calls[0]["status_code"] == 429
+        assert stale_client.chat.completions.create.await_count == 1
+        assert pool.rotate_calls == []
         mock_fallback.assert_not_called()
 
 
@@ -2551,7 +2512,11 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        elapsed = time.monotonic() - started
+        # macOS/CI timer-thread scheduling can add ~150ms under load; the
+        # contract is that the adapter raises its own TimeoutError instead of
+        # waiting for the surrounding pytest timeout or hanging indefinitely.
+        assert elapsed < 0.35
 
 
 # ---------------------------------------------------------------------------

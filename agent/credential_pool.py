@@ -246,6 +246,20 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     if delay_match:
         value = float(delay_match.group(1))
         return value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+    structured_delay_match = re.search(
+        r"['\"](?:resets_in_seconds|reset_in_seconds|retry_after)['\"]\s*:\s*['\"]?(\d+(?:\.\d+)?)",
+        message,
+        re.IGNORECASE,
+    )
+    if structured_delay_match:
+        return float(structured_delay_match.group(1))
+    resets_in_match = re.search(
+        r"resets?\s+in\s+(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)?",
+        message,
+        re.IGNORECASE,
+    )
+    if resets_in_match:
+        return float(resets_in_match.group(1))
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
         return float(sec_match.group(1))
@@ -260,6 +274,19 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     if min_only_match:
         return int(min_only_match.group(1)) * 60
     return None
+
+
+def _extract_reset_at_from_message(message: str) -> Optional[float]:
+    if not message:
+        return None
+    reset_match = re.search(
+        r"['\"](?:resets_at|reset_at|retry_until)['\"]\s*:\s*['\"]?(\d+(?:\.\d+)?)",
+        message,
+        re.IGNORECASE,
+    )
+    if not reset_match:
+        return None
+    return _parse_absolute_timestamp(reset_match.group(1))
 
 
 def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -279,9 +306,11 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     )
     parsed_reset_at = _parse_absolute_timestamp(reset_at)
     if parsed_reset_at is None and isinstance(message, str):
-        retry_delay_seconds = _extract_retry_delay_seconds(message)
-        if retry_delay_seconds is not None:
-            parsed_reset_at = time.time() + retry_delay_seconds
+        parsed_reset_at = _extract_reset_at_from_message(message)
+        if parsed_reset_at is None:
+            retry_delay_seconds = _extract_retry_delay_seconds(message)
+            if retry_delay_seconds is not None:
+                parsed_reset_at = time.time() + retry_delay_seconds
     if parsed_reset_at is not None:
         normalized["reset_at"] = parsed_reset_at
     return normalized

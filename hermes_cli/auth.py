@@ -3184,15 +3184,15 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
-    
+
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
     Raises AuthError if no Codex tokens are stored.
     """
     if _lock:
         with _auth_store_lock():
-            auth_store = _load_auth_store()
-    else:
-        auth_store = _load_auth_store()
+            return _read_codex_tokens(_lock=False)
+
+    auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
         raise AuthError(
@@ -5600,36 +5600,12 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
 
 
 def get_codex_auth_status() -> Dict[str, Any]:
-    """Status snapshot for Codex auth.
-    
-    Checks the credential pool first (where `hermes auth` stores credentials),
-    then falls back to the legacy provider state.
-    """
-    # Check credential pool first — this is where `hermes auth` and
-    # `hermes model` store device_code tokens.
-    try:
-        from agent.credential_pool import load_pool
-        pool = load_pool("openai-codex")
-        if pool and pool.has_credentials():
-            entry = pool.select()
-            if entry is not None:
-                api_key = (
-                    getattr(entry, "runtime_api_key", None)
-                    or getattr(entry, "access_token", "")
-                )
-                if api_key and not _codex_access_token_is_expiring(api_key, 0):
-                    return {
-                        "logged_in": True,
-                        "auth_store": str(_auth_file_path()),
-                        "last_refresh": getattr(entry, "last_refresh", None),
-                        "auth_mode": "chatgpt",
-                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
-                        "api_key": api_key,
-                    }
-    except Exception:
-        pass
+    """Status snapshot for the strict Codex runtime auth path.
 
-    # Fall back to legacy provider state
+    Keep this aligned with ``resolve_codex_runtime_credentials()``: pool-only
+    entries must not make Codex look logged in if the runtime resolver would
+    fail.  That avoids masking missing or invalid Hermes auth-store state.
+    """
     try:
         creds = resolve_codex_runtime_credentials()
         return {
@@ -5645,6 +5621,8 @@ def get_codex_auth_status() -> Dict[str, Any]:
             "logged_in": False,
             "auth_store": str(_auth_file_path()),
             "error": str(exc),
+            "error_code": getattr(exc, "code", None),
+            "relogin_required": bool(getattr(exc, "relogin_required", False)),
         }
 
 

@@ -2289,6 +2289,42 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     assert available == []
 
 
+def test_mark_exhausted_preserves_codex_usage_limit_reset_at(tmp_path, monkeypatch):
+    """Codex usage-limit errors include reset metadata inside the error string.
+
+    Persisting it prevents Hermes from treating a multi-hour ChatGPT quota
+    window as a generic one-hour cooldown, and makes the pool recover only
+    after the provider's actual reset.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_auth_store("access-quota", "refresh-quota"))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    reset_at = time.time() + 7200
+    message = (
+        "Error code: 429 - {'error': {'type': 'usage_limit_reached', "
+        "'message': 'The usage limit has been reached', 'plan_type': 'pro', "
+        f"'resets_at': {reset_at}, 'resets_in_seconds': 7200}}"
+    )
+
+    pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reason": "usage_limit_reached", "message": message},
+    )
+
+    stored = pool._entries[0]
+    assert stored is not None
+    assert stored.last_status == "exhausted"
+    assert stored.last_error_code == 429
+    assert stored.last_error_reset_at == pytest.approx(reset_at)
+    assert pool._available_entries(clear_expired=True, refresh=False) == []
+
+
 # ---------------------------------------------------------------------------
 # xAI OAuth terminal error quarantine
 # ---------------------------------------------------------------------------

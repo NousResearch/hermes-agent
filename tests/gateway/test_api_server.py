@@ -21,7 +21,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
+from aiohttp import FormData, web
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -413,6 +413,12 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/api/audio/capabilities", adapter._handle_audio_capabilities)
+    app.router.add_post("/api/audio/transcriptions", adapter._handle_audio_transcription)
+    app.router.add_post("/api/audio/speech", adapter._handle_audio_speech)
+    app.router.add_get("/voice/config", adapter._handle_audio_capabilities)
+    app.router.add_post("/voice/transcribe", adapter._handle_audio_transcription)
+    app.router.add_post("/voice/synthesize", adapter._handle_audio_speech)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -672,6 +678,197 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertises_audio_endpoints(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["features"]["audio_transcription"] is True
+            assert data["features"]["audio_speech"] is True
+            assert data["endpoints"]["audio_capabilities"] == {
+                "method": "GET",
+                "path": "/api/audio/capabilities",
+            }
+            assert data["endpoints"]["audio_transcriptions"]["path"] == "/api/audio/transcriptions"
+            assert data["endpoints"]["audio_speech"]["path"] == "/api/audio/speech"
+
+
+# ---------------------------------------------------------------------------
+# /api/audio endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestAudioEndpoints:
+    @pytest.mark.asyncio
+    async def test_audio_capabilities_returns_safe_shape(self, adapter):
+        app = _create_app(adapter)
+        with (
+            patch("tools.transcription_tools._load_stt_config", return_value={"enabled": True, "provider": "local"}),
+            patch("tools.transcription_tools._get_provider", return_value="local"),
+            patch("tools.tts_tool.check_tts_requirements", return_value=True),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/audio/capabilities")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["object"] == "hermes.api_server.audio_capabilities"
+        assert data["auth"]["required"] is False
+        assert data["transcription"]["available"] is True
+        assert data["transcription"]["endpoint"] == "/api/audio/transcriptions"
+        assert data["transcription"]["max_upload_bytes"] == 25 * 1024 * 1024
+        assert data["speech"]["available"] is True
+        assert data["speech"]["endpoint"] == "/api/audio/speech"
+        assert "api_key" not in json.dumps(data).lower()
+
+    @pytest.mark.asyncio
+    async def test_audio_capabilities_requires_auth_when_key_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/audio/capabilities")
+            assert resp.status == 401
+            authed = await cli.get(
+                "/api/audio/capabilities",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert authed.status == 200
+            data = await authed.json()
+            assert data["auth"]["required"] is True
+
+    @pytest.mark.asyncio
+    async def test_audio_capabilities_marks_unavailable_without_providers(self, adapter):
+        app = _create_app(adapter)
+        with (
+            patch("tools.transcription_tools._load_stt_config", return_value={"enabled": False}),
+            patch("tools.transcription_tools._get_provider", return_value="none"),
+            patch("tools.tts_tool.check_tts_requirements", return_value=False),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/audio/capabilities")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["transcription"]["available"] is False
+        assert data["transcription"]["provider"] is None
+        assert data["speech"]["available"] is False
+        assert data["realtime"]["available"] is False
+
+    @pytest.mark.asyncio
+    async def test_transcription_upload_calls_existing_stt_helper(self, adapter):
+        app = _create_app(adapter)
+        form = FormData()
+        form.add_field("file", b"fake wav bytes", filename="clip.wav", content_type="audio/wav")
+
+        with patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value={"success": True, "transcript": "hello world", "provider": "test-stt"},
+        ) as transcribe:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/transcriptions", data=form)
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "object": "audio.transcription",
+            "text": "hello world",
+            "transcript": "hello world",
+            "provider": "test-stt",
+        }
+        transcribe.assert_called_once()
+        assert transcribe.call_args.args[0].endswith(".wav")
+
+    @pytest.mark.asyncio
+    async def test_transcription_rejects_missing_file(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcriptions", data={"model": "whisper-1"})
+            assert resp.status == 400
+            data = await resp.json()
+            assert "file" in data["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_transcription_requires_auth_when_key_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        form = FormData()
+        form.add_field("file", b"fake wav bytes", filename="clip.wav", content_type="audio/wav")
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcriptions", data=form)
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_speech_returns_audio_mpeg_from_existing_tts_helper(self, adapter, tmp_path):
+        audio_path = tmp_path / "speech.mp3"
+        audio_path.write_bytes(b"mp3-bytes")
+        app = _create_app(adapter)
+
+        with patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"success": True, "file_path": str(audio_path), "provider": "test-tts"}),
+        ) as synthesize:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/speech", json={"text": "Say hello"})
+                assert resp.status == 200
+                assert resp.headers["Content-Type"].startswith("audio/mpeg")
+                assert resp.headers["X-Hermes-TTS-Provider"] == "test-tts"
+                body = await resp.read()
+
+        assert body == b"mp3-bytes"
+        synthesize.assert_called_once()
+        assert synthesize.call_args.kwargs["text"] == "Say hello"
+
+    @pytest.mark.asyncio
+    async def test_speech_rejects_empty_text(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/speech", json={"text": "   "})
+            assert resp.status == 400
+            data = await resp.json()
+            assert "text" in data["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_speech_requires_auth_when_key_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/speech", json={"text": "hello"})
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_speech_reports_tts_failure_without_leaking_config(self, adapter):
+        app = _create_app(adapter)
+        with patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"success": False, "error": "No TTS provider available"}),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/speech", json={"text": "hello"})
+                assert resp.status == 503
+                data = await resp.json()
+        assert data["error"]["message"] == "No TTS provider available"
+        assert "api_key" not in json.dumps(data).lower()
+
+    @pytest.mark.asyncio
+    async def test_voice_aliases_delegate_to_audio_handlers(self, adapter, tmp_path):
+        audio_path = tmp_path / "speech.mp3"
+        audio_path.write_bytes(b"alias-bytes")
+        app = _create_app(adapter)
+        form = FormData()
+        form.add_field("file", b"fake wav bytes", filename="clip.wav", content_type="audio/wav")
+
+        with (
+            patch("tools.transcription_tools.transcribe_audio", return_value={"success": True, "transcript": "alias", "provider": "test-stt"}),
+            patch("tools.tts_tool.text_to_speech_tool", return_value=json.dumps({"success": True, "file_path": str(audio_path), "provider": "test-tts"})),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                config_resp = await cli.get("/voice/config")
+                transcribe_resp = await cli.post("/voice/transcribe", data=form)
+                synth_resp = await cli.post("/voice/synthesize", json={"text": "hello"})
+                assert config_resp.status == 200
+                assert transcribe_resp.status == 200
+                assert synth_resp.status == 200
+                assert await synth_resp.read() == b"alias-bytes"
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,9 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- GET  /api/audio/capabilities      — voice/STT/TTS capability metadata
+- POST /api/audio/transcriptions    — multipart audio upload to configured STT
+- POST /api/audio/speech            — text-to-speech via configured TTS
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -33,6 +36,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -58,7 +62,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB — matches core STT upload limit
+MAX_REQUEST_BYTES = MAX_AUDIO_UPLOAD_BYTES  # accommodates long conversations and audio uploads
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -1084,6 +1089,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "audio_transcription": True,
+                "audio_speech": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -1094,6 +1101,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "audio_capabilities": {"method": "GET", "path": "/api/audio/capabilities"},
+                "audio_transcriptions": {"method": "POST", "path": "/api/audio/transcriptions"},
+                "audio_speech": {"method": "POST", "path": "/api/audio/speech"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -1103,6 +1113,190 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
             },
         })
+
+    def _build_audio_capabilities(self) -> Dict[str, Any]:
+        """Return client-safe audio capability metadata without exposing config."""
+        transcription_available = False
+        transcription_provider = "none"
+        try:
+            from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
+
+            stt_config = _load_stt_config()
+            if is_stt_enabled(stt_config):
+                transcription_provider = _get_provider(stt_config)
+                transcription_available = transcription_provider != "none"
+        except Exception as exc:
+            logger.debug("Failed to inspect STT capabilities: %s", exc, exc_info=True)
+
+        speech_available = False
+        try:
+            from tools.tts_tool import check_tts_requirements
+
+            speech_available = bool(check_tts_requirements())
+        except Exception as exc:
+            logger.debug("Failed to inspect TTS capabilities: %s", exc, exc_info=True)
+
+        return {
+            "object": "hermes.api_server.audio_capabilities",
+            "auth": {
+                "type": "bearer",
+                "required": bool(self._api_key),
+            },
+            "transcription": {
+                "available": bool(transcription_available),
+                "provider": transcription_provider if transcription_available else None,
+                "endpoint": "/api/audio/transcriptions",
+                "method": "POST",
+                "request": "multipart/form-data; field name 'file'",
+                "max_upload_bytes": MAX_AUDIO_UPLOAD_BYTES,
+            },
+            "speech": {
+                "available": bool(speech_available),
+                "endpoint": "/api/audio/speech",
+                "method": "POST",
+                "request": "application/json; {'text': '...'}",
+                "response_content_type": "audio/mpeg",
+            },
+            "aliases": {
+                "capabilities": "/voice/config",
+                "transcriptions": "/voice/transcribe",
+                "speech": "/voice/synthesize",
+            },
+            "realtime": {
+                "available": False,
+                "description": "HTTP STT/TTS only; WebRTC and provider-native realtime sessions are not implemented.",
+            },
+        }
+
+    async def _handle_audio_capabilities(self, request: "web.Request") -> "web.Response":
+        """GET /api/audio/capabilities — advertise safe voice/STT/TTS metadata."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response(self._build_audio_capabilities())
+
+    async def _handle_audio_transcription(self, request: "web.Request") -> "web.Response":
+        """POST /api/audio/transcriptions — multipart upload to configured STT."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            reader = await request.multipart()
+        except Exception:
+            return web.json_response(
+                _openai_error("Expected multipart/form-data with a 'file' audio field", param="file"),
+                status=400,
+            )
+
+        file_field = None
+        model: Optional[str] = None
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name == "model":
+                raw_model = await part.text()
+                model = raw_model.strip() or None
+                continue
+            if part.name in {"file", "audio"}:
+                file_field = part
+                break
+
+        if file_field is None:
+            return web.json_response(
+                _openai_error("Missing multipart audio file field named 'file'", param="file"),
+                status=400,
+            )
+
+        filename = file_field.filename or "audio.wav"
+        suffix = Path(filename).suffix.lower() or ".wav"
+        temp_path: Optional[str] = None
+        bytes_written = 0
+        try:
+            with tempfile.NamedTemporaryFile(prefix="hermes_api_audio_", suffix=suffix, delete=False) as tmp:
+                temp_path = tmp.name
+                while True:
+                    chunk = await file_field.read_chunk(size=1024 * 1024)
+                    if not chunk:
+                        break
+                    bytes_written += len(chunk)
+                    if bytes_written > MAX_AUDIO_UPLOAD_BYTES:
+                        return web.json_response(
+                            _openai_error("Audio upload too large.", param="file", code="audio_too_large"),
+                            status=413,
+                        )
+                    tmp.write(chunk)
+
+            if bytes_written == 0:
+                return web.json_response(_openai_error("Audio file is empty", param="file"), status=400)
+
+            from tools.transcription_tools import transcribe_audio
+
+            result = await asyncio.to_thread(transcribe_audio, temp_path, model)
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
+                except Exception as exc:
+                    logger.debug("Failed to remove temp audio upload %s: %s", temp_path, exc)
+
+        if not result.get("success"):
+            message = str(result.get("error") or "Transcription failed")
+            status = 400 if "unsupported format" in message.lower() else 503
+            return web.json_response(_openai_error(message, code="transcription_failed"), status=status)
+
+        transcript = str(result.get("transcript") or result.get("text") or "")
+        return web.json_response({
+            "object": "audio.transcription",
+            "text": transcript,
+            "transcript": transcript,
+            "provider": result.get("provider"),
+        })
+
+    async def _handle_audio_speech(self, request: "web.Request") -> "web.Response":
+        """POST /api/audio/speech — synthesize text with configured Hermes TTS."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        text = body.get("text") if isinstance(body, dict) else None
+        if text is None and isinstance(body, dict):
+            text = body.get("input")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response(_openai_error("Missing or empty 'text' field", param="text"), status=400)
+
+        from tools.tts_tool import text_to_speech_tool
+
+        result_raw = await asyncio.to_thread(text_to_speech_tool, text=text.strip())
+        try:
+            result = json.loads(result_raw) if isinstance(result_raw, str) else dict(result_raw)
+        except Exception:
+            return web.json_response(_openai_error("TTS returned an invalid response", code="tts_invalid_response"), status=502)
+
+        if not result.get("success"):
+            message = str(result.get("error") or "TTS generation failed")
+            return web.json_response(_openai_error(message, code="tts_failed"), status=503)
+
+        file_path = result.get("file_path")
+        if not file_path:
+            return web.json_response(_openai_error("TTS response did not include an audio file", code="tts_missing_file"), status=502)
+
+        try:
+            audio_bytes = Path(str(file_path)).read_bytes()
+        except Exception as exc:
+            logger.error("Failed to read TTS output %s: %s", file_path, exc, exc_info=True)
+            return web.json_response(_openai_error("Failed to read generated speech audio", code="tts_read_failed"), status=502)
+
+        headers = {"X-Hermes-TTS-Provider": str(result.get("provider") or "")}
+        return web.Response(body=audio_bytes, content_type="audio/mpeg", headers=headers)
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -3492,6 +3686,12 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/api/audio/capabilities", self._handle_audio_capabilities)
+            self._app.router.add_post("/api/audio/transcriptions", self._handle_audio_transcription)
+            self._app.router.add_post("/api/audio/speech", self._handle_audio_speech)
+            self._app.router.add_get("/voice/config", self._handle_audio_capabilities)
+            self._app.router.add_post("/voice/transcribe", self._handle_audio_transcription)
+            self._app.router.add_post("/voice/synthesize", self._handle_audio_speech)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

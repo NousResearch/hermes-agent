@@ -1,7 +1,7 @@
 ---
 name: subagent-model-routing
 description: Model selection guide for delegate_task and cron jobs. Tiers are LLM decision guides (not API constraints).
-version: 3
+version: 4
 tags: [delegation, cost, models, routing, auto-router]
 ---
 
@@ -43,6 +43,52 @@ Router slug: `openrouter/pareto-code` — see Pareto Router section below for us
 `xiaomi/mimo-v2.5-pro` | `qwen/qwen3.6-max-preview` | `z-ai/glm-5.1` | `deepseek/deepseek-v4-flash` | `anthropic/claude-haiku-4.5`
 
 > **Slug verified 100526:** MiMo-V2.5-Pro is Xiaomi, NOT Minimax. Display name in OR UI was misleading. `xiaomi/mimo-v2.5-pro` ✅ — `minimax/mimo-v2.5-pro` ❌. Always verify OR slugs via live API when vendor name isn't obvious from the model card.
+
+## GPT-5.3-Codex-Spark Implementer Lane (verified 2026-05-25)
+
+Verified live through Hermes/OpenAI Codex OAuth:
+
+```bash
+hermes chat -q 'Reply with exactly: SPARK_OK' --provider openai-codex --model gpt-5.3-codex-spark --toolsets '' --quiet
+# → SPARK_OK
+```
+
+Use `gpt-5.3-codex-spark` only as a **bounded code implementation worker** when the main lane has already planned the issue and provided exact context. This is for exploiting Jordan's separate Codex Spark usage bucket without moving planning/judgment off GPT-5.5.
+
+Route Spark to:
+- scoped issue-slice implementation in an isolated worktree;
+- boilerplate, small refactors, UI/layout/style edits;
+- applying one explicit step from a stronger model's plan;
+- TDD loops with focused tests and tight touched-file bounds.
+
+Do **not** route Spark to:
+- architecture, design, spec coherence, or product judgment;
+- root-cause debugging with unknown cause;
+- migrations, security-sensitive changes, or irreversible data model work;
+- final code review or adversarial review;
+- long autonomous runs where it must decide the plan itself.
+
+### Current live enforcement (2026-05-26)
+
+Jordan's gateway is dogfooding the delegate model/provider override feature branch. The live schema now supports top-level `provider`, top-level `model`, and per-task `model`.
+
+For coding implementer subagents, enforce Spark explicitly:
+
+```python
+delegate_task(
+    goal="Implement bounded issue slice ...",
+    context="WORKTREE: /absolute/path\n...",
+    provider="openai-codex",
+    model="gpt-5.3-codex-spark",
+    toolsets=["terminal", "file"],
+)
+```
+
+Per-task `provider` does **not** exist. If all children in a batch are Spark implementers, use the top-level provider/model once. If a batch mixes reviewer models, use `provider="openrouter"` plus provider-prefixed per-task `model` strings, or separate the implementation and review batches.
+
+Always inspect `delegate_task` observability after the first real Spark implementation in a session. Requested/actual model mismatch means runtime drift or routing failure; stop and diagnose before continuing.
+
+If the live schema ever lacks these fields again, do not rewrite doctrine as if the feature is absent. Diagnose runtime drift: launchd may be running `/Users/jj/.hermes/hermes-agent` while the feature branch lives in `/Users/jj/.hermes/hermes-agent-feat`.
 
 ## Pareto Router (`openrouter/pareto-code`)
 
@@ -117,18 +163,23 @@ delegate_task(goal="...", model="openrouter/pareto-code", provider="openrouter")
 
 ## Per-Call Model Pinning (030526 — verified working)
 
-Per-task model pinning works on the feat branch (PR #12794). Pass `model` at the task level:
+Per-task model pinning works only when the live `delegate_task` tool schema exposes model/provider fields. Before relying on pins, inspect the current schema in the tool definition for `model` and `provider` at the same level you intend to use them. If those fields are absent, extra JSON keys are silently ignored and the task runs on the configured default (often `openrouter/pareto-code`).
+
+**Feature-branch vs live-runtime distinction:** If Jordan says this functionality was explicitly built, do not answer as if the feature does not exist. Diagnose the mismatch: compare the *running/live tool schema* against the repo branch/commit that contains the implementation. The correct phrasing is usually “the feature exists on `<branch/commit>`, but this gateway/session is exposing an older schema,” not “delegate_task cannot do this.” This prevents turning a deployment/branch drift problem into false doctrine.
 
 ```python
+# Only valid when the live schema supports per-task `model`:
 delegate_task(tasks=[
     {"goal": "...", "model": "anthropic/claude-haiku-4.5", "toolsets": [...]},
     {"goal": "...", "model": "anthropic/claude-opus-4.7",  "toolsets": [...]},
 ])
 ```
 
-**Verified live (030526):** Three tasks with distinct pins ran on their correct models. The `model_observability` plugin confirmed `match: true` for each pinned task via JSONL evidence.
+**Verified live (030526):** Three tasks with distinct pins ran on their correct models when the feat branch schema exposed the field. The `model_observability` plugin confirmed `match: true` for each pinned task via JSONL evidence.
 
-**Note:** This requires the gateway to run from `hermes-agent-feat/` (feat branch). Upstream main does NOT have `model` in the `delegate_task` signature — pins are silently discarded there. Until PR #12794 merges, `delegation.model` in `config.yaml` is the only routing lever on upstream main.
+**Regression/pitfall observed 220526:** In a session where the live `delegate_task` schema did **not** expose `model` inside batch tasks, requested task pins were ignored and the observability result showed `model: openrouter/pareto-code`. Treat this as a schema mismatch, not a model failure. If the task truly requires a frontier/premium model, either use a supported top-level model override if present in the live schema, or do not claim the task was run on the pinned model.
+
+**Note:** This requires the gateway to run from a version whose `delegate_task` signature includes model/provider override fields. Upstream/main or older tool schemas may not have them — pins are silently discarded there. Until the live schema confirms support, `delegation.model` in `config.yaml` is the only reliable routing lever.
 
 ## Hard Rules
 

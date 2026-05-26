@@ -765,7 +765,12 @@ export default function MissionControlPage() {
         )}
 
         <TodayView status={status} activeJobs={activeJobs} jobs={jobs} approvalSummary={approvalSummary} />
+        </div>
 
+        <CommandDeck status={status} activeJobs={activeJobs} approvalSummary={approvalSummary} />
+      </div>
+
+      <div className="mx-auto mt-5 flex max-w-[1900px] min-w-0 flex-col gap-5 2xl:max-w-[2050px]">
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {DASHBOARD_METRICS.map((metric) => (
             <Card key={metric.label} className={cockpitCard}>
@@ -788,7 +793,10 @@ export default function MissionControlPage() {
                 <Target className="h-5 w-5" />
                 <H2 className="text-xl">Operating lanes</H2>
               </div>
-              <div className="grid gap-3 md:grid-cols-4">
+              <div
+                className="grid gap-3"
+                style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 12rem), 1fr))" }}
+              >
                 {OPERATING_LANES.map((lane, idx) => (
                   <div key={lane.label} className={cockpitPanel}>
                     <div className="mb-2 flex items-start gap-2 text-sm font-semibold leading-5 text-text-primary">
@@ -987,9 +995,6 @@ export default function MissionControlPage() {
             <a className="hover:text-midground" href={discordThreadUrl("1507671041118437416")} target="_blank" rel="noreferrer">Hermes Ops Discord</a>
           </div>
         </section>
-        </div>
-
-        <CommandDeck status={status} activeJobs={activeJobs} approvalSummary={approvalSummary} />
       </div>
     </main>
   );

@@ -263,6 +263,17 @@ def _resolve_cdp_override(cdp_url: str) -> str:
     else:
         version_url = discovery_url.rstrip("/") + "/json/version"
 
+    # Validate BEFORE making any HTTP request — prevents SSRF during CDP
+    # override resolution (e.g. http://169.254.169.254 AWS metadata, internal
+    # network scanning via /json/version discovery).
+    if not _is_safe_url(version_url):
+        logger.warning(
+            "CDP override %s failed SSRF check — rejecting unsafe URL: %s",
+            raw,
+            version_url,
+        )
+        return raw
+
     try:
         response = requests.get(version_url, timeout=10)
         response.raise_for_status()

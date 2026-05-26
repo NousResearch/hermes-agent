@@ -18572,8 +18572,19 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     while not stop_event.is_set():
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+        except Exception:
+            # WARNING (not DEBUG) so operators see tick failures at the
+            # default INFO log level; exc_info captures the traceback for
+            # diagnosis instead of just the str(e).
+            logger.warning("Cron tick error", exc_info=True)
+        except BaseException:
+            # `except Exception` does not catch SystemExit, KeyboardInterrupt,
+            # or BaseExceptionGroup — log a traceback first, then re-raise so
+            # the thread exits as Python intends rather than dying silently.
+            logger.error(
+                "Cron ticker fatal error; thread will exit", exc_info=True
+            )
+            raise
 
         tick_count += 1
 

@@ -84,8 +84,11 @@ def test_approve_task_human_review_to_done(kanban_home):
         tid = kb.create_task(conn, title="x", assignee="worker")
         _claim(conn, tid)
         kb.move_to_human_review(conn, tid, reason="ready")
-        ok = kb.approve_task(conn, tid, reason="LGTM")
+        ok, outcome, pr_url, task = kb.approve_task(conn, tid, reason="LGTM")
         assert ok
+        assert outcome == "done"
+        assert pr_url is None
+        assert task is None
         t = kb.get_task(conn, tid)
         assert t.status == "done"
         assert t.completed_at is not None
@@ -98,10 +101,12 @@ def test_approve_task_rejects_non_human_review(kanban_home):
         tid = kb.create_task(conn, title="x", assignee="worker")
         _claim(conn, tid)
         # Still running — approve_task must refuse.
-        assert kb.approve_task(conn, tid, reason="nope") is False
+        ok, outcome, _, __ = kb.approve_task(conn, tid, reason="nope")
+        assert not ok
         # And on review — also refuse.
         kb.move_to_review(conn, tid, reason="pr")
-        assert kb.approve_task(conn, tid, reason="nope") is False
+        ok2, _, __, ___ = kb.approve_task(conn, tid, reason="nope")
+        assert not ok2
 
 
 def test_reject_task_human_review_to_ready(kanban_home):
@@ -161,6 +166,9 @@ def test_approve_cas_atomic(kanban_home):
         tid = kb.create_task(conn, title="x", assignee="worker")
         _claim(conn, tid)
         kb.move_to_human_review(conn, tid, reason="ready")
-        assert kb.approve_task(conn, tid, reason="ok") is True
-        # Second call — task is already done; CAS row count == 0, returns False.
-        assert kb.approve_task(conn, tid, reason="ok") is False
+        ok, outcome, _, __ = kb.approve_task(conn, tid, reason="ok")
+        assert ok
+        assert outcome == "done"
+        # Second call — task is already done; CAS row count == 0, returns not-ok.
+        ok2, _, __, ___ = kb.approve_task(conn, tid, reason="ok")
+        assert not ok2

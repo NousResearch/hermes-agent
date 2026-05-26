@@ -4911,19 +4911,193 @@ def move_to_human_review(
         return True
 
 
+def _extract_pr_url(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    # @design-guard
+    # INVARIANT: _extract_pr_url() scans (1) task events for review_requested.reason,
+    # then (2) task comments, in that order. It returns the FIRST GitHub PR URL found
+    # via _RESPAWN_GUARD_PR_URL_RE (already defined in this file). Returns None when no
+    # URL is found anywhere.
+    #
+    # INVARIANT: This function is pure/read-only — no DB writes, no network calls.
+    """Scan task events and comments for a GitHub PR URL.
+
+    Checks (in order):
+    1. ``review_requested`` event payloads (most recent first) — the ``reason``
+       field typically carries ``"PR <url>"``.
+    2. Task comments (most recent first).
+
+    Returns the first URL that matches ``_RESPAWN_GUARD_PR_URL_RE``, or ``None``
+    if no PR URL is found anywhere.
+    """
+    # Pass 1: scan events
+    events = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'review_requested' "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id,),
+    ).fetchall()
+    for row in events:
+        if not row["payload"]:
+            continue
+        try:
+            payload = json.loads(row["payload"])
+        except (ValueError, TypeError):
+            continue
+        reason = payload.get("reason") or ""
+        m = _RESPAWN_GUARD_PR_URL_RE.search(str(reason))
+        if m:
+            return m.group(0)
+
+    # Pass 2: scan comments (newest first)
+    comments = conn.execute(
+        "SELECT body FROM task_comments "
+        "WHERE task_id = ? "
+        "ORDER BY created_at DESC, id DESC",
+        (task_id,),
+    ).fetchall()
+    for row in comments:
+        body = row["body"] or ""
+        m = _RESPAWN_GUARD_PR_URL_RE.search(body)
+        if m:
+            return m.group(0)
+
+    return None
+
+
+def claim_merger_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    pr_url: str,
+    ttl_seconds: Optional[int] = None,
+    claimer: Optional[str] = None,
+) -> Optional["Task"]:
+    """Atomically transition ``human_review -> running`` for the merger agent.
+
+    Analogous to ``claim_review_task`` but sourced from ``human_review``.
+    Appends a ``merge_requested`` event carrying the ``pr_url``.
+
+    Returns the claimed ``Task`` on success, ``None`` if the task was already
+    claimed or is not in ``human_review`` status.
+    """
+    now = int(time.time())
+    lock = claimer or _claimer_id()
+    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status        = 'running',
+                   claim_lock    = ?,
+                   claim_expires = ?,
+                   started_at    = COALESCE(started_at, ?)
+             WHERE id = ?
+               AND status = 'human_review'
+               AND claim_lock IS NULL
+            """,
+            (lock, expires, now, task_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        trow = conn.execute(
+            "SELECT assignee, max_runtime_seconds, current_step_key "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        run_cur = conn.execute(
+            """
+            INSERT INTO task_runs (
+                task_id, profile, step_key, status,
+                claim_lock, claim_expires, max_runtime_seconds,
+                started_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                trow["assignee"] if trow else None,
+                trow["current_step_key"] if trow else None,
+                lock,
+                expires,
+                trow["max_runtime_seconds"] if trow else None,
+                now,
+            ),
+        )
+        run_id = run_cur.lastrowid
+        conn.execute(
+            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
+            (run_id, task_id),
+        )
+        _append_event(
+            conn, task_id, "claimed",
+            {"lock": lock, "expires": expires, "run_id": run_id,
+             "source_status": "human_review"},
+            run_id=run_id,
+        )
+        _append_event(
+            conn, task_id, "merge_requested",
+            {"pr_url": pr_url},
+            run_id=run_id,
+        )
+        return get_task(conn, task_id)
+
+
 def approve_task(
     conn: sqlite3.Connection,
     task_id: str,
     *,
     reason: Optional[str] = None,
-) -> bool:
-    """Transition ``human_review -> done`` (human approval).
+    ttl_seconds: Optional[int] = None,
+) -> "tuple[bool, str, Optional[str], Optional[Task]]":
+    # @design-guard
+    # INVARIANT: approve_task() is the ONLY function that transitions
+    # human_review → done (no-PR path) or human_review → running (PR path).
+    # No code path may move a task OUT of human_review except:
+    #   approve_task() (→ done or → running-for-merger) or reject_task() (→ ready).
+    #
+    # INVARIANT: _extract_pr_url() is called inside approve_task() before any
+    # status mutation. If it returns a URL, approve_task() MUST delegate to
+    # claim_merger_task() and return ("merge_triggered", pr_url, task).
+    # It must NOT go directly to done in that case.
+    #
+    # INVARIANT: If _extract_pr_url() returns None, approve_task() transitions
+    # directly to done (backwards-compat path, identical to pre-merger code)
+    # and returns ("done", None, None).
+    """Route ``human_review`` task toward done via the correct path.
 
-    The closing audit event is ``approved`` (distinct from ``completed`` so
-    the dashboard / notifier can render a different glyph). Triggers the same
-    downstream effects as ``complete_task``: clears the failure counter,
-    recomputes ready for dependents, and cleans up the workspace.
+    **No-PR path** (backwards-compat):
+      ``human_review → done`` — identical to the pre-merger behavior.
+      Returns ``(True, "done", None, None)``.
+
+    **PR path** (new):
+      Detects a GitHub PR URL in the task's event/comment history, then
+      delegates to ``claim_merger_task()`` which transitions
+      ``human_review → running`` and appends a ``merge_requested`` event.
+      The caller is responsible for spawning the ``post-approve-merger``
+      worker against the returned ``Task``.
+      Returns ``(True, "merge_triggered", pr_url, task)``.
+
+    Returns ``(False, "not_found", None, None)`` when the task is not in
+    ``human_review`` or does not exist.
     """
+    _FAIL = (False, "not_found", None, None)
+
+    # PR detection must happen before any DB mutation so that a failed
+    # transition (race condition) doesn't leave orphan events.
+    pr_url = _extract_pr_url(conn, task_id)
+
+    if pr_url is not None:
+        # PR path: claim for the merger agent.
+        task = claim_merger_task(
+            conn, task_id, pr_url=pr_url, ttl_seconds=ttl_seconds,
+        )
+        if task is None:
+            return _FAIL
+        return (True, "merge_triggered", pr_url, task)
+
+    # No-PR path: transition directly to done (original behavior).
     now = int(time.time())
     with write_txn(conn):
         cur = conn.execute(
@@ -4940,7 +5114,7 @@ def approve_task(
             (now, task_id),
         )
         if cur.rowcount != 1:
-            return False
+            return _FAIL
         run_id = _synthesize_ended_run(
             conn, task_id,
             outcome="approved",
@@ -4954,7 +5128,7 @@ def approve_task(
     _clear_failure_counter(conn, task_id)
     recompute_ready(conn)
     _cleanup_workspace(conn, task_id)
-    return True
+    return (True, "done", None, None)
 
 
 def reject_task(

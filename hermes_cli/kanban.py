@@ -2135,18 +2135,47 @@ def _cmd_approve(args: argparse.Namespace) -> int:
     reason = (args.reason or "").strip() or None
     author = _profile_author()
     tid = args.task_id
-    with kb.connect() as conn:
+    board = getattr(args, "board", None) or None
+    with kb.connect(board=board) as conn:
         if reason:
             kb.add_comment(conn, tid, author, f"APPROVED: {reason}")
-        ok = kb.approve_task(conn, tid, reason=reason)
+        ok, outcome, pr_url, task = kb.approve_task(conn, tid, reason=reason)
+        if ok and outcome == "merge_triggered" and task is not None:
+            # Spawn the merger worker inline (same as the tool handler path).
+            try:
+                workspace = kb.resolve_workspace(task, board=board)
+                kb.set_workspace_path(conn, task.id, str(workspace))
+                task.skills = ["post-approve-merger"]
+                kb._default_spawn(task, str(workspace), board=board)
+            except Exception as spawn_exc:
+                print(
+                    f"warning: merger spawn failed for {tid}: {spawn_exc}",
+                    file=sys.stderr,
+                )
+                try:
+                    kb.block_task(
+                        conn, str(tid),
+                        reason=f"merger spawn failed: {spawn_exc}",
+                    )
+                except Exception:
+                    pass
+                print(f"Task {tid} blocked: merger spawn failed — {spawn_exc}", file=sys.stderr)
+                return 1
     if not ok:
         print(
             f"cannot approve {tid} (not in human_review?)",
             file=sys.stderr,
         )
         return 1
-    print(f"Approved {tid}" + (f": {reason}" if reason else ""))
+    if outcome == "merge_triggered":
+        print(
+            f"Approved {tid}: merger spawned for PR {pr_url}"
+            + (f" — {reason}" if reason else "")
+        )
+    else:
+        print(f"Approved {tid}" + (f": {reason}" if reason else ""))
     return 0
+
 
 
 def _cmd_reject(args: argparse.Namespace) -> int:

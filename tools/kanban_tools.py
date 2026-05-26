@@ -1129,7 +1129,13 @@ def _handle_human_review(args: dict, **kw) -> str:
 
 
 def _handle_approve(args: dict, **kw) -> str:
-    """Approve a human_review task (-> done)."""
+    """Approve a human_review task.
+
+    No-PR path: task transitions human_review → done immediately.
+    PR path: task transitions human_review → running, the post-approve-merger
+    worker is spawned in the background, and status="merge_triggered" is
+    returned so the caller knows the merge is in progress.
+    """
     tid = args.get("task_id")
     if not tid:
         return tool_error("task_id is required")
@@ -1138,11 +1144,46 @@ def _handle_approve(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            ok = kb.approve_task(conn, str(tid), reason=reason)
+            ok, outcome, pr_url, task = kb.approve_task(conn, str(tid), reason=reason)
             if not ok:
                 return tool_error(
                     f"could not approve {tid} (not in human_review or unknown)"
                 )
+            if outcome == "merge_triggered":
+                assert task is not None  # claim_merger_task returned it
+                assert pr_url is not None
+                # Spawn the merger worker in the background.  Import here to
+                # avoid a module-level cycle (kanban_tools → kanban_db is fine,
+                # but kanban_db._default_spawn imports subprocess + profiles).
+                try:
+                    workspace = kb.resolve_workspace(task, board=board)
+                    kb.set_workspace_path(conn, task.id, str(workspace))
+                    task.skills = ["post-approve-merger"]
+                    kb._default_spawn(task, str(workspace), board=board)
+                except Exception as spawn_exc:
+                    logger.warning(
+                        "kanban_approve: merger spawn failed for %s: %s",
+                        tid, spawn_exc,
+                    )
+                    # Spawn failed — block the task so it doesn't stay locked
+                    # in running forever.
+                    try:
+                        kb.block_task(
+                            conn, str(tid),
+                            reason=f"merger spawn failed: {spawn_exc}",
+                        )
+                    except Exception:
+                        pass
+                    return tool_error(
+                        f"kanban_approve: merger spawn failed — task {tid} "
+                        f"blocked with reason: {spawn_exc}"
+                    )
+                return _ok(
+                    task_id=str(tid),
+                    status="merge_triggered",
+                    pr_url=pr_url,
+                )
+            # No-PR path: done.
             return _ok(task_id=str(tid), status="done")
         finally:
             conn.close()

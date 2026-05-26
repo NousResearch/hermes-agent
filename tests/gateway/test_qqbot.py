@@ -2199,3 +2199,100 @@ class TestCloseCodeClassification:
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
 
+
+# ---------------------------------------------------------------------------
+# _is_authorized_interaction_for_session
+#
+# Regression: prior to this test, the authorization check matched only the
+# "c2c" chat_type literal, but C2C session keys are constructed with
+# chat_type="dm" (see SessionDB.session_key for QQBot DMs).  As a result,
+# every approval / update button click in a QQ private chat was incorrectly
+# rejected with "Rejected unauthorized approval click", and any tool requiring
+# user approval would block forever.
+# ---------------------------------------------------------------------------
+
+class TestIsAuthorizedInteractionForSession:
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="appid", client_secret="sec"))
+
+    def _make_event(self, *, operator="", group="", guild="", scene="c2c"):
+        return SimpleNamespace(
+            operator_openid=operator,
+            group_openid=group,
+            guild_id=guild,
+            scene=scene,
+            button_data="",
+        )
+
+    # --- c2c (legacy chat_type label) -------------------------------------
+    def test_c2c_match_grants(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="USER1")
+        key = "agent:main:qqbot:c2c:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is True
+
+    def test_c2c_mismatch_denies(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="EVE")
+        key = "agent:main:qqbot:c2c:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is False
+
+    # --- dm (actual chat_type used in QQBot DM session keys) --------------
+    # Regression coverage for the original bug.
+    def test_dm_match_grants(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="USER1")
+        key = "agent:main:qqbot:dm:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is True
+
+    def test_dm_mismatch_denies(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="EVE")
+        key = "agent:main:qqbot:dm:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is False
+
+    # --- group / guild ----------------------------------------------------
+    def test_group_match_grants(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="USER1", group="GRP1")
+        key = "agent:main:qqbot:group:GRP1:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is True
+
+    def test_group_chat_mismatch_denies(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="USER1", group="GRP2")
+        key = "agent:main:qqbot:group:GRP1:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is False
+
+    def test_group_user_mismatch_denies(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="EVE", group="GRP1")
+        key = "agent:main:qqbot:group:GRP1:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is False
+
+    # --- malformed / unknown ---------------------------------------------
+    def test_unknown_chat_type_denies(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="USER1")
+        key = "agent:main:qqbot:mystery:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is False
+
+    def test_empty_operator_denies(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="")
+        key = "agent:main:qqbot:dm:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is False
+
+    def test_wrong_platform_denies(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="USER1")
+        key = "agent:main:telegram:dm:USER1"
+        assert adapter._is_authorized_interaction_for_session(event, key) is False
+
+    def test_malformed_key_denies(self):
+        adapter = self._make_adapter()
+        event = self._make_event(operator="USER1")
+        assert adapter._is_authorized_interaction_for_session(event, "not:a:valid:key") is False
+        assert adapter._is_authorized_interaction_for_session(event, "") is False
+

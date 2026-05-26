@@ -1082,7 +1082,7 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in ("c2c", "dm"):
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

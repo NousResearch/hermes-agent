@@ -833,6 +833,8 @@ def build_environment_hints() -> str:
         nous_vps_block = (
           f"You are running as a hosted Hermes Agent in a Nous Research VPS.\n\n"
           f"Environment:\n"
+          f"- Hermes runs inside a container on the VPS; the root filesystem is "
+          f"an overlay that resets on restart.\n"
           f"- Persistent storage: {data_path} (survives restarts).\n"
           f"  Everything outside that path is ephemeral and lost on machine restart.\n"
           f"- You cannot install long-running services beyond yourself.\n"

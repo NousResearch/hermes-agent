@@ -335,6 +335,14 @@ const readableTitle = "min-w-0 break-words text-base font-semibold leading-6 tex
 const readableBody = "mt-1 min-w-0 break-words text-sm leading-6 text-text-secondary";
 const readableSectionHeading = "text-sm font-semibold uppercase tracking-[0.08em] text-emerald-100/90";
 const readableBadge = "max-w-full shrink-0 whitespace-normal text-right leading-5 sm:max-w-[10rem]";
+const SOCIAL_STATUS_OPTIONS = [
+  { value: "ok", label: "OK" },
+  { value: "needs_review", label: "Needs review" },
+  { value: "blocked", label: "Blocked" },
+  { value: "not_connected", label: "Not connected" },
+  { value: "needs_sync", label: "Needs sync" },
+];
+const SOCIAL_STATUS_STALE_DAYS = 7;
 
 function isProblemJob(job: CronJob): boolean {
   const state = getJobState(job).toLowerCase();
@@ -352,12 +360,31 @@ function projectHealthTone(health?: string): string {
 function socialPlatformTone(item: OpsSocialPlatformStatusItem): string {
   const platform = item.platform.toLowerCase();
   const status = item.status.toLowerCase();
-  if (status.includes("blocked")) return "border-slate-400/30 bg-slate-500/10 text-slate-100";
+  if (status.includes("blocked") || status.includes("not_connected")) return "border-slate-400/30 bg-slate-500/10 text-slate-100";
+  if (status.includes("needs_review")) return "border-amber-400/35 bg-amber-500/10 text-amber-100";
   if (platform.includes("youtube")) return "border-red-400/30 bg-red-500/10 text-red-100";
   if (platform.includes("facebook")) return "border-blue-400/30 bg-blue-500/10 text-blue-100";
   if (platform.includes("instagram")) return "border-pink-400/30 bg-pink-500/10 text-pink-100";
   if (platform.includes("tiktok")) return "border-slate-400/30 bg-slate-500/10 text-slate-100";
   return "border-cyan-400/30 bg-cyan-500/10 text-cyan-100";
+}
+
+function normalizeSocialStatusLabel(value?: string | null): string {
+  const status = String(value || "needs_sync").trim().toLowerCase();
+  return SOCIAL_STATUS_OPTIONS.find((option) => option.value === status)?.label || status.replace(/_/g, " ") || "Needs sync";
+}
+
+function getSocialStaleness(item: OpsSocialPlatformStatusItem): { label: string; stale: boolean } {
+  const raw = item.last_checked_at;
+  if (!raw) return { label: "Never manually checked", stale: true };
+  const timestamp = new Date(raw).getTime();
+  if (!Number.isFinite(timestamp)) return { label: "Last checked timestamp invalid", stale: true };
+  const ageMs = Date.now() - timestamp;
+  if (ageMs < 0) return { label: "Checked just now", stale: false };
+  const ageDays = Math.floor(ageMs / 86_400_000);
+  if (ageDays === 0) return { label: "Checked today", stale: false };
+  if (ageDays === 1) return { label: "Checked 1 day ago", stale: false };
+  return { label: `Checked ${ageDays} days ago`, stale: ageDays >= SOCIAL_STATUS_STALE_DAYS };
 }
 
 function getJobTitle(job: CronJob): string {
@@ -900,7 +927,15 @@ function ManualSocialSnapshotForm({ platforms, onSaved }: { platforms: OpsSocial
       <div className="space-y-3">
         {rows.map((row, idx) => (
           <div key={row.platform} className="rounded-xl border border-[#284848] bg-black/25 p-3">
-            <div className="text-base font-semibold text-text-primary">{row.platform}</div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-base font-semibold text-text-primary">{row.platform}</div>
+              <Badge tone="outline" className="border-cyan-400/30 text-cyan-200">
+                {normalizeSocialStatusLabel(row.status)}
+              </Badge>
+            </div>
+            <div className="mt-2 text-xs leading-5 text-text-secondary">
+              Last checked: {getSocialStaleness(row).label}
+            </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <label className="space-y-1 text-sm text-text-secondary">
                 <span>Published</span>
@@ -909,6 +944,16 @@ function ManualSocialSnapshotForm({ platforms, onSaved }: { platforms: OpsSocial
               <label className="space-y-1 text-sm text-text-secondary">
                 <span>Scheduled</span>
                 <input value={row.scheduled} onChange={(event) => updateRow(idx, "scheduled", event.target.value)} className="w-full rounded-lg border border-[#284848] bg-black/45 p-2 text-text-primary outline-none focus:border-emerald-400/60" />
+              </label>
+              <label className="space-y-1 text-sm text-text-secondary sm:col-span-2">
+                <span>Status</span>
+                <select value={row.status || "needs_sync"} onChange={(event) => updateRow(idx, "status", event.target.value)} className="w-full rounded-lg border border-[#284848] bg-black/45 p-2 text-text-primary outline-none focus:border-emerald-400/60">
+                  {SOCIAL_STATUS_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value} className="bg-[#061616] text-text-primary">
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label className="space-y-1 text-sm text-text-secondary sm:col-span-2">
                 <span>Issues / private</span>
@@ -1255,27 +1300,39 @@ export default function MissionControlPage() {
                 className="grid gap-3"
                 style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 14rem), 1fr))" }}
               >
-                {socialPlatforms.map((item) => (
-                  <div key={item.platform} className={cn("rounded-xl border p-4", socialPlatformTone(item))}>
-                    <div className="text-base font-semibold text-text-primary">{item.platform}</div>
-                    <div className="mt-3 grid gap-2 text-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-text-secondary">Published</span>
-                        <span className="font-semibold text-text-primary">{item.published}</span>
+                {socialPlatforms.map((item) => {
+                  const checked = getSocialStaleness(item);
+                  return (
+                    <div key={item.platform} className={cn("rounded-xl border p-4", socialPlatformTone(item))}>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="text-base font-semibold text-text-primary">{item.platform}</div>
+                        <Badge tone="outline" className={cn("border-white/20 text-text-primary", checked.stale && "border-amber-400/40 text-amber-200")}>
+                          {normalizeSocialStatusLabel(item.status)}
+                        </Badge>
                       </div>
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-text-secondary">Scheduled</span>
-                        <span className="font-semibold text-text-primary">{item.scheduled}</span>
+                      <div className="mt-2 flex items-start gap-2 rounded-lg border border-white/10 bg-black/20 p-2 text-xs leading-5 text-text-secondary">
+                        {checked.stale ? <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" /> : <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300" />}
+                        <span className={checked.stale ? "text-amber-100" : "text-text-secondary"}>{checked.label}</span>
                       </div>
-                      <div className="border-t border-white/10 pt-2">
-                        <div className="text-xs uppercase tracking-[0.08em] text-text-secondary">Issues / private</div>
-                        <div className="mt-1 text-sm leading-5 text-text-primary">{item.issues_private}</div>
+                      <div className="mt-3 grid gap-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-text-secondary">Published</span>
+                          <span className="font-semibold text-text-primary">{item.published}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-text-secondary">Scheduled</span>
+                          <span className="font-semibold text-text-primary">{item.scheduled}</span>
+                        </div>
+                        <div className="border-t border-white/10 pt-2">
+                          <div className="text-xs uppercase tracking-[0.08em] text-text-secondary">Issues / private</div>
+                          <div className="mt-1 text-sm leading-5 text-text-primary">{item.issues_private}</div>
+                        </div>
                       </div>
+                      <div className="mt-3 text-xs leading-5 text-text-secondary">{item.readiness}</div>
+                      <div className="mt-2 text-[0.7rem] leading-4 text-text-secondary/80">Source: {item.source}</div>
                     </div>
-                    <div className="mt-3 text-xs leading-5 text-text-secondary">{item.readiness}</div>
-                    <div className="mt-2 text-[0.7rem] leading-4 text-text-secondary/80">Source: {item.source}</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </CardContent>
           </Card>

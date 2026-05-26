@@ -73,6 +73,12 @@ def _display_count(value: Any) -> str:
     return text or "Needs sync"
 
 
+def _normalize_status(value: Any) -> str:
+    text = str(value or "needs_sync").strip().lower().replace(" ", "_").replace("-", "_")
+    allowed = {"ok", "needs_review", "blocked", "not_connected", "needs_sync"}
+    return text if text in allowed else "needs_review"
+
+
 def _normalize_platform(raw: Dict[str, Any], default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     base = dict(default or {})
     base.update(raw or {})
@@ -84,7 +90,7 @@ def _normalize_platform(raw: Dict[str, Any], default: Optional[Dict[str, Any]] =
         "issues_private": str(base.get("issues_private") or base.get("issuesPrivate") or "Needs sync").strip() or "Needs sync",
         "readiness": str(base.get("readiness") or "Read-only status only; no platform action performed.").strip(),
         "source": str(base.get("source") or "Local status snapshot").strip(),
-        "status": str(base.get("status") or "needs_sync").strip(),
+        "status": _normalize_status(base.get("status")),
         "last_checked_at": base.get("last_checked_at"),
     }
 

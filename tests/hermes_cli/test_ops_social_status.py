@@ -95,6 +95,7 @@ def test_write_manual_social_platform_status_writes_local_snapshot(tmp_path):
     platforms = {item["platform"]: item for item in result["platforms"]}
     assert platforms["YouTube"]["published"] == "12"
     assert platforms["YouTube"]["scheduled"] == "3"
+    assert platforms["YouTube"]["status"] == "ok"
     assert platforms["YouTube"]["last_checked_at"] == "2026-05-26T19:00:00+08:00"
     assert platforms["Facebook"]["published"] == "Needs sync"
 
@@ -102,3 +103,14 @@ def test_write_manual_social_platform_status_writes_local_snapshot(tmp_path):
 def test_write_manual_social_platform_status_rejects_invalid_payload(tmp_path):
     with pytest.raises(ValueError, match="platforms"):
         write_manual_social_platform_status({"source": "bad"}, tmp_path / "out.json")
+
+
+def test_write_manual_social_platform_status_normalizes_unknown_status(tmp_path):
+    result = write_manual_social_platform_status(
+        {"platforms": [{"platform": "Instagram", "status": "mystery", "last_checked_at": "2026-05-18T00:00:00+00:00"}]},
+        tmp_path / "social.json",
+    )
+
+    platforms = {item["platform"]: item for item in result["platforms"]}
+    assert platforms["Instagram"]["status"] == "needs_review"
+    assert platforms["Instagram"]["last_checked_at"] == "2026-05-18T00:00:00+00:00"

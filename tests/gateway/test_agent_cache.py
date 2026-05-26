@@ -1347,21 +1347,17 @@ class TestCachedAgentInactivityReset:
 
 
 class TestAgentConfigSignatureUserId:
-    """Regression: shared-thread cache must not reuse an agent across users.
+    """Shared-thread cache must not reuse an agent across users.
 
-    PR #27371 introduces a deterministic per-user-peer resolver in
-    HonchoSessionManager, but Honcho's resolved runtime user identity is
-    frozen into the manager at first-message init. When the gateway
-    session_key intentionally omits the participant ID (the default for
-    threads via thread_sessions_per_user=False), a cached AIAgent created
-    by user A is reused for user B's messages, attributing B's writes to
-    A's resolved Honcho peer. The signature must therefore include
-    user_id and user_id_alt so per-user agents are built in shared
-    threads, restoring #27371's per-user-peer contract.
+    HonchoSessionManager freezes the resolved runtime user identity at
+    first-message init.  When the gateway session_key omits the participant
+    ID (``thread_sessions_per_user=False``), a cached AIAgent created by
+    user A would otherwise be reused for user B, attributing B's writes to
+    A's resolved peer.  Including ``user_id`` / ``user_id_alt`` in the
+    signature forces per-user agent builds in shared threads.
 
-    Cost: in a multi-user shared thread, each user triggers a fresh
-    AIAgent build → cold prompt cache for that user's first turn.  The
-    correctness gain is judged to outweigh the per-user cache warmup.
+    Tradeoff: cold prompt cache for each user's first turn in a shared
+    thread, in exchange for correct memory attribution.
     """
 
     def test_signature_changes_with_user_id(self):
@@ -1402,9 +1398,9 @@ class TestAgentConfigSignatureUserId:
     def test_signature_omits_user_id_when_absent(self):
         """Default-None user_id must not change signatures vs unset call.
 
-        Pre-#27371-fix callers passed no user_id kwarg.  Keeping the
-        default-None signature byte-identical to the previous behavior
-        avoids invalidating in-flight caches the moment this lands.
+        Callers that pass no user_id kwarg must produce a signature
+        byte-identical to ``user_id=None`` so in-flight caches survive
+        the rollout of this fix.
         """
         from gateway.run import GatewayRunner
         runtime = {"provider": "anthropic", "api_key": "k", "base_url": "", "api_mode": "chat_completions"}

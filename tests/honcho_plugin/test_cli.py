@@ -157,12 +157,12 @@ class TestCmdStatus:
 
 
 class TestCloneHonchoForProfile:
-    """Regression tests for clone_honcho_for_profile identity-key carryover.
+    """Identity-key carryover during profile cloning.
 
-    PR #27371 added userPeerAliases, runtimePeerPrefix, and pinPeerName as
-    host-scoped identity-mapping config.  These keys must survive profile
-    cloning, otherwise a new profile silently fragments memory by resolving
-    gateway users to raw runtime IDs instead of operator-declared peers.
+    The host-scoped identity-mapping keys (``userPeerAliases``,
+    ``runtimePeerPrefix``, ``pinPeerName``) must survive a clone; otherwise
+    the new profile silently fragments memory by resolving gateway users to
+    raw runtime IDs instead of operator-declared peers.
     """
 
     def _setup_clone_env(self, monkeypatch, tmp_path, cfg):

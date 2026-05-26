@@ -1,22 +1,17 @@
-"""Tests for the ``pinPeerName`` config flag (#14984).
+"""Tests for the ``pinPeerName`` / ``pinUserPeer`` config flag.
 
-By default, when Hermes runs under a gateway (Telegram, Discord, Slack, ...)
-it passes the platform-native user ID as ``runtime_user_peer_name`` into
-``HonchoSessionManager``.  That ID wins over any configured ``peer_name``
-so multi-user bots scope memory per user.
+Under a gateway (Telegram, Discord, Slack, ...) Hermes passes the
+platform-native user ID as ``runtime_user_peer_name`` into
+``HonchoSessionManager``.  By default that ID wins over any configured
+``peer_name`` so multi-user bots scope memory per user.
 
-For a single-user personal deployment where the user connects over multiple
-platforms, that default forks memory into one Honcho peer per platform
-(Telegram UID, Discord snowflake, Slack user ID, ...).  The user asked for
-an opt-in knob that pins the user peer to ``peer_name`` from ``honcho.json``
-so the same person's memory stays unified regardless of which platform the
-turn arrived on — ``hosts.<host>.pinPeerName: true`` (or root-level
-``pinPeerName: true``).
+For single-user deployments connecting over multiple platforms,
+``pinUserPeer: true`` pins the user peer to ``peer_name`` so memory stays
+unified across platforms.
 
-These tests exercise both the config parsing (``client.py::from_global_config``)
-and the resolution order (``session.py::get_or_create``).  We stub the
-Honcho API calls so we can assert the chosen ``user_peer_id`` without
-touching the network.
+Tests cover config parsing (``client.py::from_global_config``) and resolver
+order (``session.py::get_or_create``), stubbing Honcho API calls so the
+chosen ``user_peer_id`` can be asserted without touching the network.
 """
 
 import hashlib
@@ -406,7 +401,7 @@ class TestPeerResolutionOrder:
         assert session.honcho_session_id == "telegram-86701400"
 
     def test_config_wins_when_pin_is_true(self):
-        """The #14984 fix: single-user deployments opt into config pinning."""
+        """With pin enabled, configured peer_name beats runtime ID."""
         mgr = HonchoSessionManager(
             honcho=MagicMock(),
             config=self._config(
@@ -542,9 +537,8 @@ class TestPeerResolutionOrder:
 
 
 class TestCrossPlatformMemoryUnification:
-    """The user-visible outcome of the #14984 fix: the same physical user
-    talking to Hermes via Telegram AND Discord should land on ONE peer
-    (not two) when pinPeerName is opted in.
+    """The same physical user talking to Hermes via Telegram AND Discord
+    lands on ONE peer when ``pinPeerName`` is opted in.
     """
 
     def _config_pinned(self) -> HonchoClientConfig:
@@ -617,15 +611,9 @@ class TestCrossPlatformMemoryUnification:
 
 
 class TestPinUserPeerAlias:
-    """``pinUserPeer`` is the canonical name; ``pinPeerName`` is the
-    backwards-compatible alias.
-
-    Both keys land on the same internal ``pin_peer_name`` field.  When
-    both appear, the precedence is: host pinUserPeer → host pinPeerName
-    → root pinUserPeer → root pinPeerName → default.  This matches the
-    rule for every other host/root override in the plugin and lets a
-    host block explicitly disable a root-level pin even via the legacy
-    key.
+    """``pinUserPeer`` and ``pinPeerName`` both resolve to the same internal
+    ``pin_peer_name`` field.  Precedence when both appear: host pinUserPeer →
+    host pinPeerName → root pinUserPeer → root pinPeerName → default.
     """
 
     def test_root_pinUserPeer_true_pins(self, tmp_path):
@@ -665,9 +653,8 @@ class TestPinUserPeerAlias:
         }))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.pin_peer_name is False, (
-            "Host-level pinUserPeer=false must override the legacy "
-            "root-level pinPeerName=true, otherwise a host can never "
-            "unpin a globally-pinned profile via the new alias."
+            "Host-level pinUserPeer=false must override root-level "
+            "pinPeerName=true so a host can unpin a globally-pinned profile."
         )
 
     def test_pinPeerName_still_works_unchanged(self, tmp_path):

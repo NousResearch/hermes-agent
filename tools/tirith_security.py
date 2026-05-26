@@ -326,6 +326,35 @@ def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) 
     return True
 
 
+def _select_tirith_archive_member(
+    members: list[tarfile.TarInfo],
+) -> tarfile.TarInfo | None:
+    """Return the installable ``tirith`` member from a release archive.
+
+    Only regular files named ``tirith`` (optionally under one leading
+    directory) are accepted. Link and special members are rejected so a
+    tampered archive cannot smuggle an arbitrary host path into
+    ``$HERMES_HOME/bin/tirith``.
+    """
+    candidates: list[tarfile.TarInfo] = []
+    for member in members:
+        normalized = member.name.replace("\\", "/")
+        parts = [part for part in normalized.split("/") if part not in {"", "."}]
+        if not parts or parts[-1] != "tirith":
+            continue
+        if any(part == ".." for part in parts):
+            raise ValueError(f"unsafe tirith archive member path: {member.name}")
+        if not member.isfile():
+            raise ValueError(
+                f"unsupported tirith archive member type: {member.name}"
+            )
+        candidates.append(member)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda member: len(member.name))
+    return candidates[0]
+
+
 def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     """Download and install tirith to $HERMES_HOME/bin/tirith.
 
@@ -394,17 +423,20 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             return None, "checksum_failed"
 
         with tarfile.open(archive_path, "r:gz") as tar:
-            # Extract only the tirith binary (safety: reject paths with ..)
-            for member in tar.getmembers():
-                if member.name == "tirith" or member.name.endswith("/tirith"):
-                    if ".." in member.name:
-                        continue
-                    member.name = "tirith"
-                    tar.extract(member, tmpdir)
-                    break
-            else:
+            try:
+                member = _select_tirith_archive_member(tar.getmembers())
+            except ValueError as exc:
+                log("tirith archive rejected: %s", exc)
+                return None, "unsafe_archive_member"
+            if member is None:
                 log("tirith binary not found in archive")
                 return None, "binary_not_in_archive"
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                log("tirith archive member could not be read: %s", member.name)
+                return None, "unsafe_archive_member"
+            with extracted, open(os.path.join(tmpdir, "tirith"), "wb") as dst:
+                shutil.copyfileobj(extracted, dst)
 
         src = os.path.join(tmpdir, "tirith")
         dest = os.path.join(_hermes_bin_dir(), "tirith")

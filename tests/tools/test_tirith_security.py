@@ -1,9 +1,12 @@
 """Tests for the tirith security scanning subprocess wrapper."""
 
+import io
 import json
 import os
 import subprocess
+import tarfile
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -714,6 +717,74 @@ class TestCosignVerification:
         assert reason == "binary_not_in_archive"
         assert mock_checksum.called  # reached SHA-256 step
         assert mock_cosign.called  # cosign was invoked
+
+
+def _write_tirith_archive(archive_path: Path, member_name: str, payload: bytes, *, linkname: str | None = None):
+    with tarfile.open(archive_path, "w:gz") as tf:
+        member = tarfile.TarInfo(member_name)
+        if linkname is not None:
+            member.type = tarfile.LNKTYPE
+            member.linkname = linkname
+            member.size = 0
+            tf.addfile(member)
+            return
+        member.mode = 0o755
+        member.size = len(payload)
+        tf.addfile(member, io.BytesIO(payload))
+
+
+def test_install_extracts_nested_regular_file(tmp_path, monkeypatch):
+    payload = b"#!/bin/sh\necho tirith\n"
+    archive_name = "tirith-aarch64-apple-darwin.tar.gz"
+    archive_path = tmp_path / archive_name
+    _write_tirith_archive(archive_path, "release/tirith", payload)
+
+    def _fake_download(url, dest, timeout=10):
+        Path(dest).write_bytes(archive_path.read_bytes())
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+
+    monkeypatch.setattr(_tirith_mod, "_detect_target", lambda: "aarch64-apple-darwin")
+    monkeypatch.setattr(_tirith_mod, "_download_file", _fake_download)
+    monkeypatch.setattr(_tirith_mod, "_verify_checksum", lambda *args, **kwargs: True)
+    monkeypatch.setattr(_tirith_mod, "_hermes_bin_dir", lambda: str(bin_dir))
+    monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+
+    path, reason = _tirith_mod._install_tirith()
+
+    assert reason == ""
+    assert path == str(bin_dir / "tirith")
+    assert (bin_dir / "tirith").read_bytes() == payload
+
+
+def test_install_rejects_link_member_named_tirith(tmp_path, monkeypatch):
+    archive_name = "tirith-aarch64-apple-darwin.tar.gz"
+    archive_path = tmp_path / archive_name
+    _write_tirith_archive(
+        archive_path,
+        "release/tirith",
+        b"",
+        linkname="payload.txt",
+    )
+
+    def _fake_download(url, dest, timeout=10):
+        Path(dest).write_bytes(archive_path.read_bytes())
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+
+    monkeypatch.setattr(_tirith_mod, "_detect_target", lambda: "aarch64-apple-darwin")
+    monkeypatch.setattr(_tirith_mod, "_download_file", _fake_download)
+    monkeypatch.setattr(_tirith_mod, "_verify_checksum", lambda *args, **kwargs: True)
+    monkeypatch.setattr(_tirith_mod, "_hermes_bin_dir", lambda: str(bin_dir))
+    monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+
+    path, reason = _tirith_mod._install_tirith()
+
+    assert path is None
+    assert reason == "unsafe_archive_member"
+    assert not (bin_dir / "tirith").exists()
 
 
 # ---------------------------------------------------------------------------

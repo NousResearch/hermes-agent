@@ -87,6 +87,13 @@ class TestCommandRegistry:
             assert not (cmd.cli_only and cmd.gateway_only), \
                 f"{cmd.name} cannot be both cli_only and gateway_only"
 
+    def test_dashboard_command_registered(self):
+        names = [c.name for c in COMMAND_REGISTRY]
+        assert "dashboard" in names, "dashboard command missing from registry"
+        cmd = next(c for c in COMMAND_REGISTRY if c.name == "dashboard")
+        assert cmd.category == "Info"
+        assert resolve_command("dashboard").name == "dashboard"
+
 
 # ---------------------------------------------------------------------------
 # resolve_command tests

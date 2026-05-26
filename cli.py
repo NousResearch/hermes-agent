@@ -8198,6 +8198,21 @@ class HermesCLI:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_dashboard_command(self):
+        """List configured agent dashboard URLs."""
+        dash_cfg = (self.config.get("dashboard") or {}) if isinstance(self.config, dict) else {}
+        hosts = dash_cfg.get("agent_hosts") or []
+        if not hosts:
+            print("  No agent hosts configured. Add to ~/.hermes/config.yaml under dashboard.agent_hosts.")
+            return
+        print()
+        print("  Agents Dashboard:")
+        for host in hosts:
+            name = host.get("name", "?") if isinstance(host, dict) else "?"
+            url = host.get("url", "") if isinstance(host, dict) else ""
+            print(f"    {name}: {url}")
+        print()
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -8489,6 +8504,8 @@ class HermesCLI:
                 self._handle_skills_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
+        elif canonical == "dashboard":
+            self._handle_dashboard_command()
         elif canonical == "status":
             self._show_session_status()
         elif canonical == "statusbar":

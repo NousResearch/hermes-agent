@@ -1181,6 +1181,8 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # List of {name, url} dicts surfaced by /dashboard slash command.
+        "agent_hosts": [],
     },
 
     # Privacy settings

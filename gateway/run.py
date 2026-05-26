@@ -1644,6 +1644,29 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+def _build_dashboard_keyboard(hosts):
+    """Build an InlineKeyboardMarkup for /dashboard.
+
+    Returns None when ``hosts`` is empty, so callers can fall back to plain
+    text. Each host dict must have ``url``; ``name`` falls back to the url.
+    Imports ``telegram`` lazily so the gateway can run without it installed.
+    """
+    if not hosts:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = [
+        [InlineKeyboardButton(
+            text=str(h.get("name") or h.get("url")),
+            url=str(h.get("url")),
+        )]
+        for h in hosts
+        if isinstance(h, dict) and h.get("url")
+    ]
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(rows)
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -7476,6 +7499,9 @@ class GatewayRunner:
         if canonical == "platform":
             return await self._handle_platform_command(event)
 
+        if canonical == "dashboard":
+            return await self._handle_dashboard_command(event)
+
         if canonical == "restart":
             return await self._handle_restart_command(event)
         
@@ -9527,6 +9553,59 @@ class GatewayRunner:
             f"Slash commands you can run: {runnable_str}"
         )
 
+
+    async def _handle_dashboard_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /dashboard — list agent dashboard URLs.
+
+        On Telegram (DM or group), emits an InlineKeyboardMarkup with one
+        button per host (url buttons). On other platforms, falls back to a
+        plain text list of URLs. Hosts read from CLI config key
+        ``dashboard.agent_hosts``.
+        """
+        from hermes_cli.config import load_config as _load_cli_config
+        try:
+            _cfg = _load_cli_config() or {}
+        except Exception:
+            _cfg = {}
+        dash_cfg = (_cfg.get("dashboard") or {}) if isinstance(_cfg, dict) else {}
+        hosts_raw = dash_cfg.get("agent_hosts") or []
+        hosts: list[dict] = [h for h in hosts_raw if isinstance(h, dict) and h.get("url")]
+
+        if not hosts:
+            return (
+                "No agent hosts configured. Add to ~/.hermes/config.yaml under "
+                "`dashboard.agent_hosts` as a list of {name, url} entries."
+            )
+
+        source = event.source
+        is_telegram = source and source.platform == Platform.TELEGRAM
+        adapter = self.adapters.get(source.platform) if source else None
+
+        if is_telegram and adapter is not None:
+            try:
+                keyboard = _build_dashboard_keyboard(hosts)
+                # Use the underlying bot send_message to attach reply_markup.
+                bot = getattr(adapter, "_bot", None) if keyboard is not None else None
+                if bot is not None:
+                    try:
+                        await bot.send_message(
+                            chat_id=int(source.chat_id),
+                            text="🚀 Agents Dashboard",
+                            reply_markup=keyboard,
+                        )
+                        return None  # already sent
+                    except Exception as _e:
+                        logger.warning("dashboard: telegram inline send failed: %s", _e)
+                        # Fall through to text reply.
+            except ImportError:
+                pass
+
+        # Text fallback (non-Telegram, or Telegram send failed)
+        lines = ["**Agents Dashboard:**"]
+        for h in hosts:
+            name = h.get("name") or h.get("url")
+            lines.append(f"• {name}: {h.get('url')}")
+        return "\n".join(lines)
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI.

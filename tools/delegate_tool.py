@@ -2145,7 +2145,7 @@ def delegate_task(
             # intentionally left untouched — the override is applied here.
             _profile_prompt = task_overrides.get("system_prompt_text")
             if _profile_prompt:
-                child.ephemeral_system_prompt = _profile_prompt
+                setattr(child, "ephemeral_system_prompt", _profile_prompt)
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))

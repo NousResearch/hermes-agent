@@ -66,6 +66,61 @@ _MEMORY_WRITE_TARGET_SUBDIR_MAP = {
     "memory": "patterns",
 }
 
+_SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
+_SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
+_SINGLE_SKILL_INSTRUCTION = (
+    "The user has provided the following instruction alongside the skill invocation: "
+)
+_BUNDLE_MARKER = " skill bundle,"
+_BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
+_BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
+_RUNTIME_NOTE = "\n\n[Runtime note:"
+
+
+def _derive_openviking_user_text(content: Any) -> str:
+    """Strip Hermes slash-skill scaffolding before sending content to OpenViking."""
+    if not isinstance(content, str):
+        return ""
+
+    if not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return content
+
+    if _BUNDLE_MARKER in content:
+        return _extract_bundle_user_instruction(content)
+
+    if _SINGLE_SKILL_MARKER in content:
+        return _extract_single_skill_user_instruction(content)
+
+    return ""
+
+
+def _extract_single_skill_user_instruction(message: str) -> str:
+    # Single-skill format appends the user instruction after the skill body, so
+    # the last occurrence is the user-provided one; the body may quote this text.
+    marker_idx = message.rfind(_SINGLE_SKILL_INSTRUCTION)
+    if marker_idx < 0:
+        return ""
+
+    instruction = message[marker_idx + len(_SINGLE_SKILL_INSTRUCTION) :]
+    runtime_idx = instruction.find(_RUNTIME_NOTE)
+    if runtime_idx >= 0:
+        instruction = instruction[:runtime_idx]
+    return instruction.strip()
+
+
+def _extract_bundle_user_instruction(message: str) -> str:
+    # Bundle format puts the user instruction before the loaded skills, so the
+    # first occurrence is the user-provided one.
+    marker_idx = message.find(_BUNDLE_USER_INSTRUCTION)
+    if marker_idx < 0:
+        return ""
+
+    instruction = message[marker_idx + len(_BUNDLE_USER_INSTRUCTION) :]
+    first_skill_idx = instruction.find(_BUNDLE_FIRST_SKILL_BLOCK)
+    if first_skill_idx >= 0:
+        instruction = instruction[:first_skill_idx]
+    return instruction.strip()
+
 
 # ---------------------------------------------------------------------------
 # Process-level atexit safety net — ensures pending sessions are committed
@@ -531,6 +586,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire a background search to pre-load relevant context."""
+        query = _derive_openviking_user_text(query)
         if not self._client or not query:
             return
 
@@ -568,6 +624,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in OpenViking's session (non-blocking)."""
         if not self._client:
+            return
+
+        user_content = _derive_openviking_user_text(user_content)
+        if not user_content:
             return
 
         self._turn_count += 1

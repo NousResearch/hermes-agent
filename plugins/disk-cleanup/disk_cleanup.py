@@ -481,6 +481,9 @@ def guess_category(path: Path) -> Optional[str]:
         }:
             return None
         if top == "cron" or top == "cronjobs":
+            # Protect the live cron registry; only output/log files are ephemeral.
+            if path.name == "jobs.json" and len(rel.parts) == 2:
+                return None
             return "cron-output"
         if top == "cache":
             return "temp"

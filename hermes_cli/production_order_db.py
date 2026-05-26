@@ -43,11 +43,15 @@ Current bridge coverage:
     → ARCHITECT_RECONCILE → ARCHITECT_ACCEPTED → DEFAULT_FINAL_REVIEW
     → DONE
 
+    First implemented failure-loop slice:
+
+    AUDIT_REVIEW → AUDIT_REJECTED → DEV_REWORK → DEV_COMPLETE → AUDIT_REVIEW
+
 Out of scope (do NOT implement):
     - OrchestratorOS agent spawn
     - ArchitectOS/DevOS/AuditOS dispatch
     - Dashboard UI
-    - Rework loop automation
+    - Full rework loop automation beyond the first audited rejection slice
     - Full event log dashboard
     - Profile SOUL.md / orchestration contract modifications
 """
@@ -91,11 +95,13 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "ARCHITECT_READY_FOR_DEV":      {"DEV_IMPLEMENTING"},
     "DEV_IMPLEMENTING":             {"DEV_COMPLETE"},
     "DEV_COMPLETE":                 {"AUDIT_REVIEW"},
-    "AUDIT_REVIEW":                 {"AUDIT_PASSED"},
+    "AUDIT_REVIEW":                 {"AUDIT_PASSED", "AUDIT_REJECTED"},
+    "AUDIT_REJECTED":               {"DEV_REWORK"},
     "AUDIT_PASSED":                 {"ARCHITECT_RECONCILE"},
     "ARCHITECT_RECONCILE":          {"ARCHITECT_ACCEPTED"},
     "ARCHITECT_ACCEPTED":           {"DEFAULT_FINAL_REVIEW"},
     "DEFAULT_FINAL_REVIEW":         {"DONE"},
+    "DEV_REWORK":                   {"DEV_COMPLETE"},
 }
 
 # STATE_OWNERS maps each state to the profile permitted to advance the
@@ -111,11 +117,13 @@ STATE_OWNERS: dict[str, str] = {
     "DEV_IMPLEMENTING":             "dev_os",
     "DEV_COMPLETE":                 "audit_os",
     "AUDIT_REVIEW":                 "audit_os",
+    "AUDIT_REJECTED":               "orchestrator_os",
     "AUDIT_PASSED":                 "architect_os",
     "ARCHITECT_RECONCILE":          "architect_os",
     "ARCHITECT_ACCEPTED":           "default",
     "DEFAULT_FINAL_REVIEW":         "default",
     "DONE":                         "default",
+    "DEV_REWORK":                   "dev_os",
 }
 
 WORKFLOW_INITIAL_STATE = "PRODUCTION_ORDER_CREATED"
@@ -275,6 +283,10 @@ REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS = {
     "verdict",
     "risks_or_notes",
     "next_handoff_target",
+}
+
+REQUIRED_AUDITOS_REJECTION_PACKET_FIELDS = REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS | {
+    "correction_request",
 }
 
 DEFAULT_FINAL_REVIEW_HANDOFF_TEMPLATE: dict[str, Any] = {
@@ -1121,6 +1133,22 @@ def _require_positive_result(
         )
 
 
+def _require_negative_result(
+    value: Any,
+    *,
+    field_name: str,
+    label: str,
+    negative_tokens: tuple[str, ...],
+) -> None:
+    text = _coerce_packet_text(value)
+    if not text:
+        raise ValueError(f"{label} {field_name} must be non-empty")
+    if not any(token in text for token in negative_tokens):
+        raise ValueError(
+            f"{label} {field_name} must clearly indicate a reject/rework result"
+        )
+
+
 def _normalize_test_status(value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("DevOS build packet test_status must be a non-empty string")
@@ -1131,6 +1159,8 @@ def validate_devos_build_packet(
     packet: dict[str, Any],
     *,
     expected_production_order_id: str,
+    expected_source_state: str = "ARCHITECT_READY_FOR_DEV",
+    expected_next_handoff_target: str = "audit_os",
 ) -> dict[str, Any]:
     """Validate the explicit DevOS build/result packet for Slice 7."""
     if not isinstance(packet, dict):
@@ -1158,13 +1188,13 @@ def validate_devos_build_packet(
         )
     if packet["owner_profile"] != "dev_os":
         raise ValueError("DevOS build packet owner_profile must be 'dev_os'")
-    if packet["source_state"] != "ARCHITECT_READY_FOR_DEV":
+    if packet["source_state"] != expected_source_state:
         raise ValueError(
-            "DevOS build packet source_state must be 'ARCHITECT_READY_FOR_DEV'"
+            f"DevOS build packet source_state must be {expected_source_state!r}"
         )
-    if packet["next_handoff_target"] != "audit_os":
+    if packet["next_handoff_target"] != expected_next_handoff_target:
         raise ValueError(
-            "DevOS build packet next_handoff_target must be 'audit_os'"
+            f"DevOS build packet next_handoff_target must be {expected_next_handoff_target!r}"
         )
 
     test_status = _normalize_test_status(packet["test_status"])
@@ -1190,9 +1220,14 @@ def validate_devos_build_packet(
 def create_auditos_handoff(
     po: ProductionOrder,
     devos_packet: dict[str, Any],
+    *,
+    from_state: str = "DEV_IMPLEMENTING",
+    to_state: str = "DEV_COMPLETE",
 ) -> dict[str, Any]:
     """Create the deterministic AuditOS handoff packet from DevOS output."""
     packet = dict(DEVOS_BUILD_RESULT_TEMPLATE)
+    packet["from_state"] = from_state
+    packet["to_state"] = to_state
     packet["production_order_id"] = po.production_order_id
     packet["devos_summary"] = devos_packet["summary"]
     packet["implementation_artifacts"] = devos_packet.get(
@@ -1214,6 +1249,44 @@ def create_auditos_handoff(
         "Audit requires unavailable environment access.",
     ]
     packet["limitations_or_notes"] = devos_packet["limitations_or_notes"]
+    return packet
+
+
+def create_devos_rework_handoff(
+    po: ProductionOrder,
+    rejection_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the deterministic DevOS rework handoff from an AuditOS rejection."""
+    packet = dict(DEVOS_HANDOFF_TEMPLATE)
+    packet["from_profile"] = "orchestrator_os"
+    packet["to_profile"] = "dev_os"
+    packet["current_state"] = "AUDIT_REJECTED"
+    packet["requested_next_state"] = "DEV_REWORK"
+    packet["production_order_id"] = po.production_order_id
+    packet["context"] = (
+        f"AuditOS rejected the implementation for production order {po.production_order_id}"
+    )
+    packet["objective"] = "Apply the AuditOS correction request and rework the implementation"
+    packet["expected_output"] = "Reworked implementation report and updated evidence"
+    packet["scope"] = str(rejection_packet.get("correction_request", rejection_packet.get("summary", "")))
+    packet["out_of_scope"] = "Any new scope beyond the approved brief and audit correction"
+    packet["inputs"] = (
+        f"Parent card ID: {po.parent_kanban_card_id}; "
+        f"Child card IDs: {', '.join(po.child_kanban_card_ids)}; "
+        "AuditOS rejection packet frozen on the AuditOS card."
+    )
+    packet["acceptance_criteria"] = [
+        "Address the AuditOS rejection reason.",
+        "Preserve approved scope and repo/workspace boundaries.",
+        "Return to DEV_COMPLETE with credible evidence.",
+    ]
+    packet["stop_conditions"] = [
+        "AuditOS correction request is ambiguous or missing.",
+        "The rework would expand scope beyond the approved brief.",
+        "The repo/workspace target is unavailable.",
+    ]
+    packet["approval_boundaries"] = ["No scope expansion or destructive changes."]
+    packet["artifact_references"] = ["AuditOS rejection packet"]
     return packet
 
 
@@ -1264,6 +1337,59 @@ def validate_auditos_review_packet(
         label=label,
         positive_tokens=("pass", "passed", "accept", "accepted", "approve", "approved"),
     )
+
+    return packet
+
+
+def validate_auditos_rejection_packet(
+    packet: dict[str, Any],
+    *,
+    expected_production_order_id: str,
+    expected_source_state: str,
+) -> dict[str, Any]:
+    """Validate the explicit AuditOS rejection packet for the rejection loop."""
+    label = "AuditOS rejection packet"
+    if not isinstance(packet, dict):
+        raise ValueError(f"{label} must be a JSON object")
+
+    missing = _missing_required_fields(packet, REQUIRED_AUDITOS_REJECTION_PACKET_FIELDS)
+    if missing:
+        raise ValueError(
+            f"{label} missing required field(s): " + ", ".join(missing)
+        )
+
+    if packet["production_order_id"] != expected_production_order_id:
+        raise ValueError(
+            f"{label} production_order_id does not match the requested production order"
+        )
+    if packet["owner_profile"] != "audit_os":
+        raise ValueError(f"{label} owner_profile must be 'audit_os'")
+    if packet["source_state"] not in {"DEV_COMPLETE", "AUDIT_REVIEW"}:
+        raise ValueError(
+            f"{label} source_state must be 'DEV_COMPLETE' or 'AUDIT_REVIEW'"
+        )
+    if packet["source_state"] != expected_source_state:
+        raise ValueError(
+            f"{label} source_state must match current production order state "
+            f"{expected_source_state!r}"
+        )
+    if packet["next_handoff_target"] != "orchestrator_os":
+        raise ValueError(f"{label} next_handoff_target must be 'orchestrator_os'")
+
+    _require_negative_result(
+        packet["verdict"],
+        field_name="verdict",
+        label=label,
+        negative_tokens=("fail", "failed", "reject", "rejected", "block", "blocked", "rework"),
+    )
+    _require_negative_result(
+        packet["review_result"],
+        field_name="review_result",
+        label=label,
+        negative_tokens=("fail", "failed", "reject", "rejected", "block", "blocked", "rework"),
+    )
+
+    _require_non_empty_field(packet, "correction_request", label=label)
 
     return packet
 
@@ -1854,6 +1980,182 @@ def run_devos_complete_bridge(
         (auditos_card_id,),
     )
 
+    return po
+
+
+def run_auditos_review_reject_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    rejection_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance DEV_COMPLETE/AUDIT_REVIEW to AUDIT_REJECTED for an existing order."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"DEV_COMPLETE", "AUDIT_REVIEW"},
+        expected_owner="audit_os",
+    )
+    packet = validate_auditos_rejection_packet(
+        rejection_packet,
+        expected_production_order_id=production_order_id,
+        expected_source_state=po.current_state,
+    )
+
+    audit_card_id = po.child_kanban_card_ids[3]
+    freeze_result_on_card(conn, audit_card_id, packet)
+
+    if po.current_state == "DEV_COMPLETE":
+        transition_state(
+            conn,
+            po,
+            "AUDIT_REVIEW",
+            "audit_os",
+            result="audit review started",
+            next_action="complete_audit_review",
+            card_id=po.parent_kanban_card_id,
+            event_type="audit_review_started",
+        )
+
+    transition_state(
+        conn,
+        po,
+        "AUDIT_REJECTED",
+        "audit_os",
+        result="audit review rejected; correction packet attached",
+        next_action="route_orchestrator_rework",
+        card_id=po.parent_kanban_card_id,
+        event_type="state_transitioned",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "stage_rejected",
+        from_state="AUDIT_REVIEW",
+        to_state="AUDIT_REJECTED",
+        owner_profile="audit_os",
+        kanban_card_id=audit_card_id,
+        result="AuditOS rejection packet attached",
+        next_action="route_orchestrator_rework",
+    )
+
+    _sync_child_current_state(conn, po)
+    return po
+
+
+def run_orchestrator_rework_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    rejection_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance AUDIT_REJECTED to DEV_REWORK for an existing order."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"AUDIT_REJECTED"},
+        expected_owner="orchestrator_os",
+    )
+
+    audit_card_id = po.child_kanban_card_ids[3]
+    devos_card_id = po.child_kanban_card_ids[2]
+    correction_handoff = create_devos_rework_handoff(po, rejection_packet)
+    freeze_handoff_on_card(conn, devos_card_id, correction_handoff)
+
+    transition_state(
+        conn,
+        po,
+        "DEV_REWORK",
+        "orchestrator_os",
+        result="orchestrator routed AuditOS correction to DevOS",
+        next_action="dispatch_dev_rework",
+        card_id=po.parent_kanban_card_id,
+        event_type="retry_started",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="AUDIT_REJECTED",
+        to_state="DEV_REWORK",
+        owner_profile="orchestrator_os",
+        kanban_card_id=devos_card_id,
+        result="DevOS rework handoff packet attached",
+        next_action="dispatch_dev_rework",
+    )
+
+    _sync_child_current_state(conn, po)
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (devos_card_id,),
+    )
+    return po
+
+
+def run_devos_rework_complete_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    devos_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance DEV_REWORK to DEV_COMPLETE for an existing order."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"DEV_REWORK"},
+        expected_owner="dev_os",
+    )
+    packet = validate_devos_build_packet(
+        devos_packet,
+        expected_production_order_id=production_order_id,
+        expected_source_state="DEV_REWORK",
+    )
+
+    devos_card_id = po.child_kanban_card_ids[2]
+    auditos_card_id = po.child_kanban_card_ids[3]
+    audit_handoff = create_auditos_handoff(
+        po,
+        packet,
+        from_state="DEV_REWORK",
+        to_state="DEV_COMPLETE",
+    )
+
+    freeze_result_on_card(conn, devos_card_id, packet)
+    freeze_handoff_on_card(conn, auditos_card_id, audit_handoff)
+
+    transition_state(
+        conn,
+        po,
+        "DEV_COMPLETE",
+        "dev_os",
+        result="dev rework completed; AuditOS handoff attached",
+        next_action="dispatch_audit_os",
+        card_id=po.parent_kanban_card_id,
+        event_type="stage_completed",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="DEV_REWORK",
+        to_state="DEV_COMPLETE",
+        owner_profile="dev_os",
+        kanban_card_id=auditos_card_id,
+        result="AuditOS handoff packet attached",
+        next_action="dispatch_audit_os",
+    )
+
+    _sync_child_current_state(conn, po)
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (auditos_card_id,),
+    )
     return po
 
 

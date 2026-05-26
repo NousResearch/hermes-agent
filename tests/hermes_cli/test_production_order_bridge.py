@@ -54,11 +54,15 @@ from hermes_cli.production_order_db import (
     run_architect_spec_bridge,
     run_architect_reconcile_bridge,
     run_auditos_review_complete_bridge,
+    run_auditos_review_reject_bridge,
     run_default_final_review_bridge,
     run_devos_complete_bridge,
+    run_devos_rework_complete_bridge,
     run_full_bridge,
+    run_orchestrator_rework_bridge,
     run_orchestrator_triage_bridge,
     transition_state,
+    validate_auditos_rejection_packet,
     validate_auditos_review_packet,
     validate_architect_spec_packet,
     validate_architect_reconcile_packet,
@@ -183,6 +187,28 @@ def devos_build_packet(production_order_id: str) -> dict:
     }
 
 
+def devos_rework_packet(production_order_id: str) -> dict:
+    """Minimal DevOS rework/result packet for failure-loop tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "dev_os",
+        "source_state": "DEV_REWORK",
+        "result_type": "rework_complete",
+        "summary": "Applied the AuditOS correction request and preserved approved scope.",
+        "files_changed": [
+            "hermes_cli/production_order_db.py",
+            "tests/hermes_cli/test_production_order_bridge.py",
+        ],
+        "tests_run": [
+            "pytest tests/hermes_cli/test_production_order_bridge.py -q",
+        ],
+        "test_status": "green",
+        "limitations_or_notes": ["Rework evidence is ready for AuditOS review."],
+        "next_handoff_target": "audit_os",
+    }
+
+
+
 def create_ready_for_dev_order(conn, sample_brief) -> ProductionOrder:
     """Advance a fresh production order through Slice 6 for Slice 7 tests."""
     po = run_full_bridge(
@@ -213,6 +239,29 @@ def audit_review_packet(production_order_id: str, source_state: str = "DEV_COMPL
         "verdict": "PASS",
         "risks_or_notes": ["No blocking risks found."],
         "next_handoff_target": "architect_os",
+    }
+
+
+def audit_rejection_packet(
+    production_order_id: str,
+    source_state: str = "DEV_COMPLETE",
+) -> dict:
+    """Minimal AuditOS rejection/correction packet for failure-loop tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "audit_os",
+        "source_state": source_state,
+        "review_result": "rejected",
+        "summary": "Audit found issues that require DevOS rework.",
+        "evidence": ["audit review notes", "failing edge-case coverage"],
+        "tests_reviewed": ["pytest tests/hermes_cli/test_production_order_bridge.py -q"],
+        "verdict": "REJECT",
+        "risks_or_notes": ["Implementation needs correction before re-audit."],
+        "next_handoff_target": "orchestrator_os",
+        "correction_request": [
+            "Address the audit findings and preserve the approved scope.",
+            "Return updated evidence to AuditOS after rework.",
+        ],
     }
 
 
@@ -509,6 +558,9 @@ def test_valid_state_transitions():
     assert validate_state_transition("DEV_IMPLEMENTING", "DEV_COMPLETE", "dev_os")
     assert validate_state_transition("DEV_COMPLETE", "AUDIT_REVIEW", "audit_os")
     assert validate_state_transition("AUDIT_REVIEW", "AUDIT_PASSED", "audit_os")
+    assert validate_state_transition("AUDIT_REVIEW", "AUDIT_REJECTED", "audit_os")
+    assert validate_state_transition("AUDIT_REJECTED", "DEV_REWORK", "orchestrator_os")
+    assert validate_state_transition("DEV_REWORK", "DEV_COMPLETE", "dev_os")
     assert validate_state_transition("AUDIT_PASSED", "ARCHITECT_RECONCILE", "architect_os")
     assert validate_state_transition("ARCHITECT_RECONCILE", "ARCHITECT_ACCEPTED", "architect_os")
     assert validate_state_transition("ARCHITECT_ACCEPTED", "DEFAULT_FINAL_REVIEW", "default")
@@ -536,7 +588,30 @@ def test_state_ownership_enforced():
     with pytest.raises(StateTransitionError):
         validate_state_transition("PRODUCTION_ORDER_CREATED", "ORCHESTRATOR_TRIAGE", "dev_os")
 
+    # audit_os cannot advance out of AUDIT_REJECTED
+    with pytest.raises(StateTransitionError):
+        validate_state_transition("AUDIT_REJECTED", "DEV_REWORK", "audit_os")
 
+
+def test_auditos_rejection_packet_validation():
+    packet = audit_rejection_packet("PO-20260525-REJECT")
+
+    validated = validate_auditos_rejection_packet(
+        packet,
+        expected_production_order_id="PO-20260525-REJECT",
+        expected_source_state="DEV_COMPLETE",
+    )
+    assert validated["next_handoff_target"] == "orchestrator_os"
+    assert validated["review_result"] == "rejected"
+
+    wrong_owner = dict(packet)
+    wrong_owner["owner_profile"] = "dev_os"
+    with pytest.raises(ValueError, match="owner_profile"):
+        validate_auditos_rejection_packet(
+            wrong_owner,
+            expected_production_order_id="PO-20260525-REJECT",
+            expected_source_state="DEV_COMPLETE",
+        )
 def test_invalid_state_transition_empty():
     """Empty from_state or to_state raises ValueError."""
     with pytest.raises(ValueError, match="from_state is required"):
@@ -1276,6 +1351,92 @@ def test_devos_complete_bridge_moves_existing_order_to_dev_complete(conn, sample
     assert events[-3]["owner_profile"] == "dev_os"
     assert events[-2]["owner_profile"] == "dev_os"
     assert events[-1]["owner_profile"] == "dev_os"
+
+
+def test_audit_rejection_rework_loop_preserves_history_and_reconstructs(conn, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    original_parent_id = po.parent_kanban_card_id
+    original_child_ids = list(po.child_kanban_card_ids)
+    rejection_packet = audit_rejection_packet(po.production_order_id)
+
+    rejected = run_auditos_review_reject_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        rejection_packet=rejection_packet,
+    )
+    assert rejected.current_state == "AUDIT_REJECTED"
+    assert rejected.current_owner_profile == "orchestrator_os"
+
+    audit_card = kb.get_task(conn, original_child_ids[3])
+    assert audit_card is not None
+    assert audit_card.body is not None
+    assert "--- RESULT PACKET ---" in audit_card.body
+    assert '"review_result": "rejected"' in audit_card.body
+    assert '"correction_request"' in audit_card.body
+
+    routed = run_orchestrator_rework_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        rejection_packet=rejection_packet,
+    )
+    assert routed.current_state == "DEV_REWORK"
+    assert routed.current_owner_profile == "dev_os"
+
+    devos_card = kb.get_task(conn, original_child_ids[2])
+    assert devos_card is not None
+    assert devos_card.body is not None
+    assert devos_card.body.count("--- HANDOFF PACKET ---") >= 2
+    assert '"current_state": "AUDIT_REJECTED"' in devos_card.body
+
+    reworked = run_devos_rework_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_rework_packet(po.production_order_id),
+    )
+    assert reworked.current_state == "DEV_COMPLETE"
+    assert reworked.current_owner_profile == "audit_os"
+
+    audit_after_rework = kb.get_task(conn, original_child_ids[3])
+    assert audit_after_rework is not None
+    assert audit_after_rework.body is not None
+    assert audit_after_rework.body.count("--- RESULT PACKET ---") >= 1
+    assert audit_after_rework.body.count("--- HANDOFF PACKET ---") >= 2
+    devos_after_rework = kb.get_task(conn, original_child_ids[2])
+    assert devos_after_rework is not None
+    assert devos_after_rework.body is not None
+    assert '"source_state": "DEV_REWORK"' in devos_after_rework.body
+
+    passed = run_auditos_review_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        review_packet=audit_review_packet(po.production_order_id, source_state="DEV_COMPLETE"),
+    )
+    assert passed.current_state == "AUDIT_PASSED"
+    assert passed.current_owner_profile == "architect_os"
+    assert passed.parent_kanban_card_id == original_parent_id
+    assert passed.child_kanban_card_ids == original_child_ids
+    assert passed.repo_or_workspace == sample_brief["target repo or workspace"]
+    _assert_six_card_graph_preserved(conn, passed, original_child_ids)
+
+    reconstructed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    assert reconstructed.parent_kanban_card_id == original_parent_id
+    assert reconstructed.child_kanban_card_ids == original_child_ids
+    assert reconstructed.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert any(entry.to_state == "AUDIT_REJECTED" for entry in reconstructed.stage_history)
+    assert any(entry.to_state == "DEV_REWORK" for entry in reconstructed.stage_history)
+    assert any(entry.to_state == "DEV_COMPLETE" and entry.from_state == "DEV_REWORK" for entry in reconstructed.stage_history)
+    assert any(entry.to_state == "AUDIT_REVIEW" and entry.from_state == "DEV_COMPLETE" for entry in reconstructed.stage_history)
+    assert any(entry.to_state == "AUDIT_PASSED" for entry in reconstructed.stage_history)
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert "state_transitioned" in event_types
+    assert "stage_rejected" in event_types
+    assert "retry_started" in event_types
+    assert "handoff_created" in event_types
+    assert "stage_completed" in event_types
 
 
 @pytest.mark.parametrize(

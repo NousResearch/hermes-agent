@@ -3190,21 +3190,26 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no changes")
             continue
 
-        # Compute new exclude list based on unchecked tools
-        new_exclude = [tool_names[i] for i in range(len(tool_names)) if i not in chosen]
+        # Compute new include list (the chosen tools). We standardize on
+        # tools.include across the codebase (catalog installs, hermes mcp
+        # configure, and this UI) so a server\'s on-disk config shape doesn\'t
+        # depend on which UI the user touched last.
+        chosen_names = [tool_names[i] for i in sorted(chosen)]
 
         # Update config
         srv_cfg = mcp_servers.setdefault(server_name, {})
         tools_cfg = srv_cfg.setdefault("tools", {})
 
-        if new_exclude:
-            tools_cfg["exclude"] = new_exclude
-            # Remove include if present — we're switching to exclude mode
-            tools_cfg.pop("include", None)
-        else:
-            # All tools enabled — clear filters
+        if len(chosen) == len(tools):
+            # All tools enabled — clear filters (cleanest config shape; the
+            # server\'s native tool set is the active set, and any tools the
+            # server adds later are auto-enabled).
             tools_cfg.pop("exclude", None)
             tools_cfg.pop("include", None)
+        else:
+            tools_cfg["include"] = chosen_names
+            # Drop any legacy exclude block — we\'re include-mode now.
+            tools_cfg.pop("exclude", None)
 
         enabled_count = len(chosen)
         disabled_count = len(tools) - enabled_count

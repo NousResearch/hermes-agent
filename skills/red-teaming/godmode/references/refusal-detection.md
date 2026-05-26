@@ -129,7 +129,7 @@ These don't auto-reject but reduce the response score:
 ## Using in Python
 
 ```python
-exec(open(os.path.expanduser("~/.hermes/skills/red-teaming/godmode/scripts/godmode_race.py")).read())
+exec(open(os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/godmode_race.py")).read())
 
 # Check if a response is a refusal
 text = "I'm sorry, but I can't assist with that request."

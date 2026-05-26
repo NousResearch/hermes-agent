@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
+    cfg_get,
     load_config,
     save_config,
     get_env_value,
@@ -24,13 +25,19 @@ from hermes_cli.config import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
+from tools.mcp_tool import _ENV_VAR_PATTERN
 
 logger = logging.getLogger(__name__)
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
+_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
+    "codex": {
+        "command": "codex",
+        "args": ["mcp-server"],
+    },
+}
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
@@ -57,7 +64,7 @@ def _confirm(question: str, default: bool = True) -> bool:
         return default
     if not val:
         return default
-    return val in ("y", "yes")
+    return val in {"y", "yes"}
 
 
 def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
@@ -220,7 +227,10 @@ def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
     url = getattr(args, "url", None)
-    command = getattr(args, "command", None)
+    # Read from `mcp_command` (set by --command via explicit dest) — see
+    # mcp_add_p.add_argument("--command", dest="mcp_command", ...) in
+    # hermes_cli/main.py for why the dest is renamed.
+    command = getattr(args, "mcp_command", None)
     cmd_args = getattr(args, "args", None) or []
     auth_type = getattr(args, "auth", None)
     preset_name = getattr(args, "preset", None)
@@ -279,8 +289,8 @@ def cmd_mcp_add(args):
         _info(f"Starting OAuth flow for '{name}'...")
         oauth_ok = False
         try:
-            from tools.mcp_oauth import build_oauth_auth
-            oauth_auth = build_oauth_auth(name, url)
+            from tools.mcp_oauth_manager import get_manager
+            oauth_auth = get_manager().get_or_build_provider(name, url, None)
             if oauth_auth:
                 server_config["auth"] = "oauth"
                 _success("OAuth configured (tokens will be acquired on first connection)")
@@ -366,11 +376,11 @@ def cmd_mcp_add(args):
         _info("Cancelled.")
         return
 
-    if choice in ("n", "no"):
+    if choice in {"n", "no"}:
         _info("Cancelled — server not saved.")
         return
 
-    if choice in ("s", "select"):
+    if choice in {"s", "select"}:
         # Interactive tool selection
         from hermes_cli.curses_ui import curses_checklist
 
@@ -428,10 +438,12 @@ def cmd_mcp_remove(args):
     _remove_mcp_server(name)
     _success(f"Removed '{name}' from config")
 
-    # Clean up OAuth tokens if they exist
+    # Clean up OAuth tokens if they exist — route through MCPOAuthManager so
+    # any provider instance cached in the current process (e.g. from an
+    # earlier `hermes mcp test` in the same session) is evicted too.
     try:
-        from tools.mcp_oauth import remove_oauth_tokens
-        remove_oauth_tokens(name)
+        from tools.mcp_oauth_manager import get_manager
+        get_manager().remove(name)
         _success("Cleaned up OAuth tokens")
     except Exception:
         pass
@@ -498,7 +510,7 @@ def cmd_mcp_list(args=None):
         # Enabled status
         enabled = cfg.get("enabled", True)
         if isinstance(enabled, str):
-            enabled = enabled.lower() in ("true", "1", "yes")
+            enabled = enabled.lower() in {"true", "1", "yes"}
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
 
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
@@ -540,7 +552,7 @@ def cmd_mcp_test(args):
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
                 # Mask the value
-                resolved = _interpolate_value(v)
+                resolved = _ENV_VAR_PATTERN.sub(lambda m: os.getenv(m.group(1), ""), v)
                 if len(resolved) > 8:
                     masked = resolved[:4] + "***" + resolved[-4:]
                 else:
@@ -570,11 +582,61 @@ def cmd_mcp_test(args):
     print()
 
 
-def _interpolate_value(value: str) -> str:
-    """Resolve ``${ENV_VAR}`` references in a string."""
-    def _replace(m):
-        return os.getenv(m.group(1), "")
-    return re.sub(r"\$\{(\w+)\}", _replace, value)
+# ─── hermes mcp login ────────────────────────────────────────────────────────
+
+def cmd_mcp_login(args):
+    """Force re-authentication for an OAuth-based MCP server.
+
+    Deletes cached tokens (both on disk and in the running process's
+    MCPOAuthManager cache) and triggers a fresh OAuth flow via the
+    existing probe path.
+
+    Use this when:
+      - Tokens are stuck in a bad state (server revoked, refresh token
+        consumed by an external process, etc.)
+      - You want to re-authenticate to change scopes or account
+      - A tool call returned ``needs_reauth: true``
+    """
+    name = args.name
+    servers = _get_mcp_servers()
+
+    if name not in servers:
+        _error(f"Server '{name}' not found in config.")
+        if servers:
+            _info(f"Available servers: {', '.join(servers)}")
+        return
+
+    server_config = servers[name]
+    url = server_config.get("url")
+    if not url:
+        _error(f"Server '{name}' has no URL — not an OAuth-capable server")
+        return
+    if server_config.get("auth") != "oauth":
+        _error(f"Server '{name}' is not configured for OAuth (auth={server_config.get('auth')})")
+        _info("Use `hermes mcp remove` + `hermes mcp add` to reconfigure auth.")
+        return
+
+    # Wipe both disk and in-memory cache so the next probe forces a fresh
+    # OAuth flow.
+    try:
+        from tools.mcp_oauth_manager import get_manager
+        mgr = get_manager()
+        mgr.remove(name)
+    except Exception as exc:
+        _warning(f"Could not clear existing OAuth state: {exc}")
+
+    print()
+    _info(f"Starting OAuth flow for '{name}'...")
+
+    # Probe triggers the OAuth flow (browser redirect + callback capture).
+    try:
+        tools = _probe_single_server(name, server_config)
+        if tools:
+            _success(f"Authenticated — {len(tools)} tool(s) available")
+        else:
+            _success("Authenticated (server reported no tools)")
+    except Exception as exc:
+        _error(f"Authentication failed: {exc}")
 
 
 # ─── hermes mcp configure ────────────────────────────────────────────────────
@@ -657,7 +719,7 @@ def cmd_mcp_configure(args):
 
     # Update config
     config = load_config()
-    server_entry = config.get("mcp_servers", {}).get(name, {})
+    server_entry = cfg_get(config, "mcp_servers", name, default={})
 
     if len(chosen) == total:
         # All selected → remove include/exclude (register all)
@@ -696,6 +758,7 @@ def mcp_command(args):
         "test": cmd_mcp_test,
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
+        "login": cmd_mcp_login,
     }
 
     handler = handlers.get(action)
@@ -713,4 +776,5 @@ def mcp_command(args):
         _info("hermes mcp list                               List servers")
         _info("hermes mcp test <name>                        Test connection")
         _info("hermes mcp configure <name>                   Toggle tools")
+        _info("hermes mcp login <name>                       Re-authenticate OAuth")
         print()

@@ -18,7 +18,10 @@ from hermes_cli.plugins import (
     PluginManager,
     PluginManifest,
     get_plugin_manager,
+    get_plugin_command_handler,
+    get_plugin_commands,
     get_pre_tool_call_block_message,
+    resolve_plugin_command_result,
     discover_plugins,
     invoke_hook,
 )
@@ -28,8 +31,19 @@ from hermes_cli.plugins import (
 
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
-                     manifest_extra: dict | None = None) -> Path:
-    """Create a minimal plugin directory with plugin.yaml + __init__.py."""
+                     manifest_extra: dict | None = None,
+                     auto_enable: bool = True) -> Path:
+    """Create a minimal plugin directory with plugin.yaml + __init__.py.
+
+    If *auto_enable* is True (default), also write the plugin's name into
+    ``<hermes_home>/config.yaml`` under ``plugins.enabled``. Plugins are
+    opt-in by default, so tests that expect the plugin to actually load
+    need this. Pass ``auto_enable=False`` for tests that exercise the
+    unenabled path.
+
+    *base* is expected to be ``<hermes_home>/plugins/``; we derive
+    ``<hermes_home>`` from it by walking one level up.
+    """
     plugin_dir = base / name
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -41,6 +55,31 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     (plugin_dir / "__init__.py").write_text(
         f"def register(ctx):\n    {register_body}\n"
     )
+
+    if auto_enable:
+        # Write/merge plugins.enabled in <HERMES_HOME>/config.yaml.
+        # Config is always read from HERMES_HOME (not from the project
+        # dir for project plugins), so that's where we opt in.
+        import os
+        hermes_home_str = os.environ.get("HERMES_HOME")
+        if hermes_home_str:
+            hermes_home = Path(hermes_home_str)
+        else:
+            hermes_home = base.parent
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        cfg_path = hermes_home / "config.yaml"
+        cfg: dict = {}
+        if cfg_path.exists():
+            try:
+                cfg = yaml.safe_load(cfg_path.read_text()) or {}
+            except Exception:
+                cfg = {}
+        plugins_cfg = cfg.setdefault("plugins", {})
+        enabled = plugins_cfg.setdefault("enabled", [])
+        if isinstance(enabled, list) and name not in enabled:
+            enabled.append(name)
+        cfg_path.write_text(yaml.safe_dump(cfg))
+
     return plugin_dir
 
 
@@ -100,7 +139,12 @@ class TestPluginDiscovery:
         mgr.discover_and_load()
         mgr.discover_and_load()  # second call should no-op
 
-        assert len(mgr._plugins) == 1
+        # Filter out bundled plugins — they're always discovered.
+        non_bundled = {
+            n: p for n, p in mgr._plugins.items()
+            if p.manifest.source != "bundled"
+        }
+        assert len(non_bundled) == 1
 
     def test_discover_skips_dir_without_manifest(self, tmp_path, monkeypatch):
         """Directories without plugin.yaml are silently skipped."""
@@ -111,7 +155,12 @@ class TestPluginDiscovery:
         mgr = PluginManager()
         mgr.discover_and_load()
 
-        assert len(mgr._plugins) == 0
+        # Filter out bundled plugins — they're always discovered.
+        non_bundled = {
+            n: p for n, p in mgr._plugins.items()
+            if p.manifest.source != "bundled"
+        }
+        assert len(non_bundled) == 0
 
     def test_entry_points_scanned(self, tmp_path, monkeypatch):
         """Entry-point based plugins are discovered (mocked)."""
@@ -150,7 +199,13 @@ class TestPluginLoading:
         plugin_dir = plugins_dir / "bad_plugin"
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "bad_plugin"}))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        # Explicitly enable so the loader tries to import it and hits the
+        # missing-init error.
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["bad_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -158,6 +213,8 @@ class TestPluginLoading:
         assert "bad_plugin" in mgr._plugins
         assert not mgr._plugins["bad_plugin"].enabled
         assert mgr._plugins["bad_plugin"].error is not None
+        # Should be the missing-init error, not "not enabled".
+        assert "not enabled" not in mgr._plugins["bad_plugin"].error
 
     def test_load_missing_register_fn(self, tmp_path, monkeypatch):
         """Plugin without register() function records an error."""
@@ -166,7 +223,12 @@ class TestPluginLoading:
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "no_reg"}))
         (plugin_dir / "__init__.py").write_text("# no register function\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        # Explicitly enable it so the loader actually tries to import.
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["no_reg"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -189,6 +251,73 @@ class TestPluginLoading:
 
         assert "hermes_plugins.ns_plugin" in sys.modules
 
+    def test_user_memory_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
+        """User-installed memory plugins must NOT be loaded by the general
+        PluginManager — they belong to plugins/memory discovery.
+
+        Regression test for the mempalace crash:
+            'PluginContext' object has no attribute 'register_memory_provider'
+
+        A plugin that calls ``ctx.register_memory_provider`` in its
+        ``__init__.py`` should be auto-detected and treated as
+        ``kind: exclusive`` so the general loader records the manifest but
+        does not import/register() it. The real activation happens through
+        ``plugins/memory/__init__.py`` via ``memory.provider`` config.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "mempalace"
+        plugin_dir.mkdir(parents=True)
+        # No explicit `kind:` — the heuristic should kick in.
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "mempalace"}))
+        (plugin_dir / "__init__.py").write_text(
+            "class MemPalaceProvider:\n"
+            "    pass\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider('mempalace', MemPalaceProvider)\n"
+        )
+        # Even if the user explicitly enables it in config, the loader
+        # should still treat it as exclusive and skip general loading.
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["mempalace"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "mempalace" in mgr._plugins
+        entry = mgr._plugins["mempalace"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        # Not loaded by general manager (no register() call, no AttributeError).
+        assert not entry.enabled
+        assert entry.module is None
+        assert "exclusive" in (entry.error or "").lower()
+
+    def test_explicit_standalone_kind_not_coerced(self, tmp_path, monkeypatch):
+        """If a plugin explicitly declares ``kind: standalone`` in its
+        manifest, the memory-provider heuristic must NOT override it —
+        even if the source happens to mention ``MemoryProvider``.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "not_memory"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "not_memory", "kind": "standalone"})
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "# This plugin inspects MemoryProvider docs but isn't one.\n"
+            "def register(ctx):\n    pass\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr._plugins["not_memory"].manifest.kind == "standalone"
+
 
 # ── TestPluginHooks ────────────────────────────────────────────────────────
 
@@ -199,6 +328,36 @@ class TestPluginHooks:
     def test_valid_hooks_include_request_scoped_api_hooks(self):
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
+        assert "transform_terminal_output" in VALID_HOOKS
+        assert "transform_tool_result" in VALID_HOOKS
+        assert "transform_llm_output" in VALID_HOOKS
+
+    def test_valid_hooks_include_pre_gateway_dispatch(self):
+        assert "pre_gateway_dispatch" in VALID_HOOKS
+
+    def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
+        """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "predispatch_plugin",
+            register_body=(
+                'ctx.register_hook("pre_gateway_dispatch", '
+                'lambda **kw: {"action": "skip", "reason": "test"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_gateway_dispatch",
+            event=object(),
+            gateway=object(),
+            session_store=object(),
+        )
+        assert len(results) == 1
+        assert results[0] == {"action": "skip", "reason": "test"}
 
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
@@ -295,6 +454,30 @@ class TestPluginHooks:
         )
         assert results == [{"seen": 2, "mc": 5, "tc": 3}]
 
+    def test_transform_terminal_output_hook_can_be_registered_and_invoked(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "transform_hook",
+            register_body=(
+                'ctx.register_hook("transform_terminal_output", '
+                'lambda **kw: f"{kw[\'command\']}|{kw[\'returncode\']}|{kw[\'env_type\']}|{kw[\'task_id\']}|{len(kw[\'output\'])}")'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "transform_terminal_output",
+            command="echo hello",
+            output="abcdef",
+            returncode=7,
+            task_id="task-1",
+            env_type="local",
+        )
+        assert results == ["echo hello|7|local|task-1|6"]
+
     def test_invalid_hook_name_warns(self, tmp_path, monkeypatch, caplog):
         """Registering an unknown hook name logs a warning."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -355,6 +538,95 @@ class TestPreToolCallBlocking:
         assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
 
 
+class TestThreadToolWhitelist:
+    """Tests for the thread-local tool whitelist used by background review forks."""
+
+    def test_allowed_tool_passes_through_to_hooks(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory", "skill_manage"})
+        try:
+            assert get_pre_tool_call_block_message("memory", {}) is None
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_disallowed_tool_blocked_with_message(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist(
+            {"memory"}, deny_msg_fmt="denied: {tool_name}"
+        )
+        try:
+            msg = get_pre_tool_call_block_message("terminal", {})
+            assert msg == "denied: terminal"
+        finally:
+            clear_thread_tool_whitelist()
+
+    def test_clear_restores_unrestricted_behavior(self, monkeypatch):
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        set_thread_tool_whitelist({"memory"})
+        clear_thread_tool_whitelist()
+        # After clearing, any tool should pass through to plugin hooks (which
+        # return [] here, so result is None).
+        assert get_pre_tool_call_block_message("terminal", {}) is None
+
+    def test_whitelist_is_thread_local(self, monkeypatch):
+        """Setting a whitelist in one thread must NOT leak into another."""
+        import threading
+
+        from hermes_cli.plugins import (
+            set_thread_tool_whitelist,
+            clear_thread_tool_whitelist,
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        # Main thread: install a restrictive whitelist.
+        set_thread_tool_whitelist({"memory"})
+        try:
+            assert get_pre_tool_call_block_message("terminal", {}) is not None
+
+            # Worker thread: should NOT inherit main thread's whitelist.
+            result = {}
+
+            def worker():
+                result["msg"] = get_pre_tool_call_block_message("terminal", {})
+
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+            assert result["msg"] is None, (
+                "thread-local whitelist leaked across threads"
+            )
+        finally:
+            clear_thread_tool_whitelist()
+
+
 # ── TestPluginContext ──────────────────────────────────────────────────────
 
 
@@ -376,7 +648,11 @@ class TestPluginContext:
             '        handler=lambda args, **kw: "echo",\n'
             '    )\n'
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["tool_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -385,6 +661,129 @@ class TestPluginContext:
 
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
+
+    def test_register_tool_rejects_shadow_without_override(self, tmp_path, monkeypatch, caplog):
+        """Without override=True, registering a tool name claimed by a different toolset is rejected."""
+        from tools.registry import registry
+
+        # Seed an existing entry from a non-plugin toolset.
+        registry.register(
+            name="shadow_target",
+            toolset="terminal",
+            schema={"name": "shadow_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "built-in",
+        )
+        original_handler = registry._tools["shadow_target"].handler
+        try:
+            plugins_dir = tmp_path / "hermes_test" / "plugins"
+            plugin_dir = plugins_dir / "shadow_plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "shadow_plugin"}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_tool(\n'
+                '        name="shadow_target",\n'
+                '        toolset="plugin_shadow_plugin",\n'
+                '        schema={"name": "shadow_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "plugin",\n'
+                '    )\n'
+            )
+            hermes_home = tmp_path / "hermes_test"
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["shadow_plugin"]}})
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            with caplog.at_level(logging.ERROR, logger="tools.registry"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+
+            # Original handler must still be in place — registration was rejected.
+            assert registry._tools["shadow_target"].handler is original_handler
+            assert registry._tools["shadow_target"].toolset == "terminal"
+            # And an ERROR was logged explaining why and how to opt in.
+            assert any("override=True" in r.message for r in caplog.records)
+        finally:
+            registry.deregister("shadow_target")
+
+    def test_register_tool_override_replaces_existing(self, tmp_path, monkeypatch, caplog):
+        """override=True lets a plugin replace an existing built-in tool."""
+        from tools.registry import registry
+
+        registry.register(
+            name="override_target",
+            toolset="terminal",
+            schema={"name": "override_target", "description": "Built-in", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "built-in",
+        )
+        try:
+            plugins_dir = tmp_path / "hermes_test" / "plugins"
+            plugin_dir = plugins_dir / "override_plugin"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "override_plugin"}))
+            (plugin_dir / "__init__.py").write_text(
+                'def register(ctx):\n'
+                '    ctx.register_tool(\n'
+                '        name="override_target",\n'
+                '        toolset="plugin_override_plugin",\n'
+                '        schema={"name": "override_target", "description": "Plugin", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "plugin",\n'
+                '        override=True,\n'
+                '    )\n'
+            )
+            hermes_home = tmp_path / "hermes_test"
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["override_plugin"]}})
+            )
+            monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+            with caplog.at_level(logging.INFO, logger="tools.registry"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+
+            # Plugin handler replaced the built-in one.
+            assert registry._tools["override_target"].toolset == "plugin_override_plugin"
+            assert registry._tools["override_target"].handler({}, ) == "plugin"
+            # Override is audit-logged at INFO.
+            assert any(
+                "overriding existing" in r.message and "override_target" in r.message
+                for r in caplog.records
+            )
+            # Plugin tracks it.
+            assert "override_target" in mgr._plugin_tool_names
+        finally:
+            registry.deregister("override_target")
+
+    def test_register_tool_override_on_new_name_is_noop_path(self, tmp_path, monkeypatch):
+        """override=True on a brand-new name still registers cleanly (no existing entry to replace)."""
+        from tools.registry import registry
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "new_override_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "new_override_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="brand_new_override_tool",\n'
+            '        toolset="plugin_new_override_plugin",\n'
+            '        schema={"name": "brand_new_override_tool", "description": "New", "parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "ok",\n'
+            '        override=True,\n'
+            '    )\n'
+        )
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["new_override_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert "brand_new_override_tool" in registry._tools
+        finally:
+            registry.deregister("brand_new_override_tool")
 
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────
@@ -410,7 +809,11 @@ class TestPluginToolVisibility:
             '        handler=lambda args, **kw: "ok",\n'
             '    )\n'
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["vis_plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mgr = PluginManager()
         mgr.discover_and_load()
@@ -446,7 +849,7 @@ class TestPluginManagerList:
         assert mgr.list_plugins() == []
 
     def test_list_returns_sorted(self, tmp_path, monkeypatch):
-        """list_plugins() returns results sorted by name."""
+        """list_plugins() returns results sorted by key."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(plugins_dir, "zulu")
         _make_plugin_dir(plugins_dir, "alpha")
@@ -456,8 +859,10 @@ class TestPluginManagerList:
         mgr.discover_and_load()
 
         listing = mgr.list_plugins()
-        names = [p["name"] for p in listing]
-        assert names == sorted(names)
+        # list_plugins sorts by key (path-derived, e.g. ``image_gen/openai``),
+        # not by display name, so that category plugins group together.
+        keys = [p["key"] for p in listing]
+        assert keys == sorted(keys)
 
     def test_list_with_plugins(self, tmp_path, monkeypatch):
         """list_plugins() returns info dicts for each discovered plugin."""
@@ -605,7 +1010,511 @@ class TestPreLlmCallTargetRouting:
         assert "plain text C" in _plugin_user_context
 
 
-# NOTE: TestPluginCommands removed – register_command() was never implemented
-# in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
-# commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
-# integration — all of which are unimplemented features.
+# ── TestPluginCommands ────────────────────────────────────────────────────
+
+
+class TestPluginCommands:
+    """Tests for plugin slash command registration via register_command()."""
+
+    def test_register_command_basic(self):
+        """register_command() stores handler, description, and plugin name."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        handler = lambda args: f"echo {args}"
+        ctx.register_command("mycmd", handler, description="My custom command")
+
+        assert "mycmd" in mgr._plugin_commands
+        entry = mgr._plugin_commands["mycmd"]
+        assert entry["handler"] is handler
+        assert entry["description"] == "My custom command"
+        assert entry["plugin"] == "test-plugin"
+        # args_hint defaults to empty string when not passed.
+        assert entry["args_hint"] == ""
+
+    def test_register_command_with_args_hint(self):
+        """args_hint is stored and surfaced for gateway-native UI registration."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "metricas",
+            lambda a: a,
+            description="Metrics dashboard",
+            args_hint="dias:7 formato:json",
+        )
+
+        entry = mgr._plugin_commands["metricas"]
+        assert entry["args_hint"] == "dias:7 formato:json"
+
+    def test_register_command_args_hint_whitespace_trimmed(self):
+        """args_hint leading/trailing whitespace is stripped."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("foo", lambda a: a, args_hint="  <file>  ")
+        assert mgr._plugin_commands["foo"]["args_hint"] == "<file>"
+
+    def test_register_command_normalizes_name(self):
+        """Names are lowercased, stripped, and leading slashes removed."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("/MyCmd ", lambda a: a, description="test")
+        assert "mycmd" in mgr._plugin_commands
+        assert "/MyCmd " not in mgr._plugin_commands
+
+    def test_register_command_empty_name_rejected(self, caplog):
+        """Empty name after normalization is rejected with a warning."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx.register_command("", lambda a: a)
+        assert len(mgr._plugin_commands) == 0
+        assert "empty name" in caplog.text
+
+    def test_register_command_builtin_conflict_rejected(self, caplog):
+        """Commands that conflict with built-in names are rejected."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx.register_command("help", lambda a: a)
+        assert "help" not in mgr._plugin_commands
+        assert "conflicts" in caplog.text.lower()
+
+    def test_register_command_default_description(self):
+        """Missing description defaults to 'Plugin command'."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("status-cmd", lambda a: a)
+        assert mgr._plugin_commands["status-cmd"]["description"] == "Plugin command"
+
+    def test_get_plugin_command_handler_found(self):
+        """get_plugin_command_handler() returns the handler for a registered command."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        handler = lambda args: f"result: {args}"
+        ctx.register_command("mycmd", handler, description="test")
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            result = get_plugin_command_handler("mycmd")
+            assert result is handler
+
+    def test_get_plugin_command_handler_not_found(self):
+        """get_plugin_command_handler() returns None for unregistered commands."""
+        mgr = PluginManager()
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            assert get_plugin_command_handler("nonexistent") is None
+
+    def test_get_plugin_commands_returns_dict(self):
+        """get_plugin_commands() returns the full commands dict."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        ctx.register_command("cmd-a", lambda a: a, description="A")
+        ctx.register_command("cmd-b", lambda a: a, description="B")
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            cmds = get_plugin_commands()
+            assert "cmd-a" in cmds
+            assert "cmd-b" in cmds
+            assert cmds["cmd-a"]["description"] == "A"
+
+    def test_get_plugin_command_handler_discovers_plugins_lazily(self, tmp_path, monkeypatch):
+        """Handler lookup should work before any explicit discover_plugins() call."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "cmd-plugin",
+            register_body='ctx.register_command("lazycmd", lambda a: f"ok:{a}", description="Lazy")',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        import hermes_cli.plugins as plugins_mod
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            handler = get_plugin_command_handler("lazycmd")
+            assert handler is not None
+            assert handler("x") == "ok:x"
+
+    def test_get_plugin_commands_discovers_plugins_lazily(self, tmp_path, monkeypatch):
+        """Command listing should trigger plugin discovery on first access."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "cmd-plugin",
+            register_body='ctx.register_command("lazycmd", lambda a: a, description="Lazy")',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        import hermes_cli.plugins as plugins_mod
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            cmds = get_plugin_commands()
+            assert "lazycmd" in cmds
+            assert cmds["lazycmd"]["description"] == "Lazy"
+
+    def test_get_plugin_context_engine_discovers_plugins_lazily(self, tmp_path, monkeypatch):
+        """Context engine lookup should work before any explicit discover_plugins() call."""
+        hermes_home = tmp_path / "hermes_test"
+        plugins_dir = hermes_home / "plugins"
+        plugin_dir = plugins_dir / "engine-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({
+                "name": "engine-plugin",
+                "version": "0.1.0",
+                "description": "Test engine plugin",
+            })
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.context_engine import ContextEngine\n\n"
+            "class StubEngine(ContextEngine):\n"
+            "    @property\n"
+            "    def name(self):\n"
+            "        return 'stub-engine'\n\n"
+            "    def update_from_response(self, usage):\n"
+            "        return None\n\n"
+            "    def should_compress(self, prompt_tokens):\n"
+            "        return False\n\n"
+            "    def compress(self, messages, current_tokens):\n"
+            "        return messages\n\n"
+            "def register(ctx):\n"
+            "    ctx.register_context_engine(StubEngine())\n"
+        )
+        # Opt-in: plugins are opt-in by default, so enable in config.yaml
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["engine-plugin"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import hermes_cli.plugins as plugins_mod
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            engine = plugins_mod.get_plugin_context_engine()
+            assert engine is not None
+            assert engine.name == "stub-engine"
+
+    def test_commands_tracked_on_loaded_plugin(self, tmp_path, monkeypatch):
+        """Commands registered during discover_and_load() are tracked on LoadedPlugin."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "cmd-plugin",
+            register_body=(
+                'ctx.register_command("mycmd", lambda a: "ok", description="Test")'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["cmd-plugin"]
+        assert loaded.enabled
+        assert "mycmd" in loaded.commands_registered
+
+    def test_commands_in_list_plugins_output(self, tmp_path, monkeypatch):
+        """list_plugins() includes command count."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        # Set HERMES_HOME BEFORE _make_plugin_dir so auto-enable targets
+        # the right config.yaml.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        _make_plugin_dir(
+            plugins_dir, "cmd-plugin",
+            register_body=(
+                'ctx.register_command("mycmd", lambda a: "ok", description="Test")'
+            ),
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        info = mgr.list_plugins()
+        # Filter out bundled plugins — they're always discovered.
+        cmd_info = [p for p in info if p["name"] == "cmd-plugin"]
+        assert len(cmd_info) == 1
+        assert cmd_info[0]["commands"] == 1
+
+    def test_handler_receives_raw_args(self):
+        """The handler is called with the raw argument string."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        received = []
+        ctx.register_command("echo", lambda args: received.append(args) or "ok")
+
+        handler = mgr._plugin_commands["echo"]["handler"]
+        handler("hello world")
+        assert received == ["hello world"]
+
+    def test_multiple_plugins_register_different_commands(self):
+        """Multiple plugins can each register their own commands."""
+        mgr = PluginManager()
+
+        for plugin_name, cmd_name in [("plugin-a", "cmd-a"), ("plugin-b", "cmd-b")]:
+            manifest = PluginManifest(name=plugin_name, source="user")
+            ctx = PluginContext(manifest, mgr)
+            ctx.register_command(cmd_name, lambda a: a, description=f"From {plugin_name}")
+
+        assert "cmd-a" in mgr._plugin_commands
+        assert "cmd-b" in mgr._plugin_commands
+        assert mgr._plugin_commands["cmd-a"]["plugin"] == "plugin-a"
+        assert mgr._plugin_commands["cmd-b"]["plugin"] == "plugin-b"
+
+
+class TestPluginCommandResultResolution:
+    def test_returns_sync_values_unchanged(self):
+        assert resolve_plugin_command_result("ok") == "ok"
+
+    def test_awaits_async_result_without_running_loop(self):
+        async def _handler():
+            return "async-ok"
+
+        assert resolve_plugin_command_result(_handler()) == "async-ok"
+
+    def test_awaits_async_result_with_running_loop(self, monkeypatch):
+        class _Loop:
+            pass
+
+        async def _handler():
+            return "threaded-ok"
+
+        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        assert resolve_plugin_command_result(_handler()) == "threaded-ok"
+
+    def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
+        """Threaded path must abort a hung async handler instead of blocking the caller."""
+        import asyncio as _asyncio
+
+        class _Loop:
+            pass
+
+        async def _slow_handler():
+            await _asyncio.sleep(10)
+            return "should-not-reach"
+
+        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
+
+        import pytest
+        with pytest.raises(TimeoutError):
+            resolve_plugin_command_result(_slow_handler())
+
+
+# ── TestPluginDispatchTool ────────────────────────────────────────────────
+
+
+class TestPluginDispatchTool:
+    """Tests for PluginContext.dispatch_tool() — tool dispatch with agent context."""
+
+    def test_dispatch_tool_calls_registry(self):
+        """dispatch_tool() delegates to registry.dispatch()."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"result": "ok"}'
+
+        with patch("hermes_cli.plugins.PluginContext.dispatch_tool.__module__", "hermes_cli.plugins"):
+            with patch.dict("sys.modules", {}):
+                with patch("tools.registry.registry", mock_registry):
+                    result = ctx.dispatch_tool("web_search", {"query": "test"})
+
+        assert result == '{"result": "ok"}'
+
+    def test_dispatch_tool_injects_parent_agent_from_cli_ref(self):
+        """When _cli_ref has an agent, it's passed as parent_agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_agent = MagicMock()
+        mock_cli = MagicMock()
+        mock_cli.agent = mock_agent
+        mgr._cli_ref = mock_cli
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        mock_registry.dispatch.assert_called_once()
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1].get("parent_agent") is mock_agent
+
+    def test_dispatch_tool_no_parent_agent_when_no_cli_ref(self):
+        """When _cli_ref is None (gateway mode), no parent_agent is injected."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert "parent_agent" not in call_kwargs[1]
+
+    def test_dispatch_tool_no_parent_agent_when_agent_is_none(self):
+        """When cli_ref exists but agent is None (not yet initialized), skip parent_agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        mock_cli = MagicMock()
+        mock_cli.agent = None
+        mgr._cli_ref = mock_cli
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"})
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert "parent_agent" not in call_kwargs[1]
+
+    def test_dispatch_tool_respects_explicit_parent_agent(self):
+        """Explicit parent_agent kwarg is not overwritten by _cli_ref.agent."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        cli_agent = MagicMock(name="cli_agent")
+        mock_cli = MagicMock()
+        mock_cli.agent = cli_agent
+        mgr._cli_ref = mock_cli
+
+        explicit_agent = MagicMock(name="explicit_agent")
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("delegate_task", {"goal": "test"}, parent_agent=explicit_agent)
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1]["parent_agent"] is explicit_agent
+
+    def test_dispatch_tool_forwards_extra_kwargs(self):
+        """Extra kwargs are forwarded to registry.dispatch()."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"ok": true}'
+
+        with patch("tools.registry.registry", mock_registry):
+            ctx.dispatch_tool("some_tool", {"x": 1}, task_id="test-123")
+
+        call_kwargs = mock_registry.dispatch.call_args
+        assert call_kwargs[1]["task_id"] == "test-123"
+
+    def test_dispatch_tool_returns_json_string(self):
+        """dispatch_tool() returns the raw JSON string from the registry."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        mgr._cli_ref = None
+
+        mock_registry = MagicMock()
+        mock_registry.dispatch.return_value = '{"error": "Unknown tool: fake"}'
+
+        with patch("tools.registry.registry", mock_registry):
+            result = ctx.dispatch_tool("fake", {})
+
+        assert '"error"' in result
+
+
+class TestPluginDebugLogging:
+    """HERMES_PLUGINS_DEBUG opt-in stderr handler for plugin developers."""
+
+    def test_debug_handler_not_installed_when_env_var_absent(self, monkeypatch):
+        """Without the env var, no stderr handler is attached."""
+        monkeypatch.delenv("HERMES_PLUGINS_DEBUG", raising=False)
+        from hermes_cli import plugins as plugins_mod
+
+        # Snapshot, then force a re-evaluation.
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            assert plugins_mod._PLUGINS_DEBUG is False
+            assert plugins_mod._DEBUG_HANDLER_INSTALLED is False
+            # No new stderr handler was attached.
+            assert plugins_mod.logger.handlers == original_handlers
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.handlers = original_handlers
+
+    def test_debug_handler_installed_when_env_var_set(self, monkeypatch):
+        """With HERMES_PLUGINS_DEBUG=1, a DEBUG-level stderr handler is attached."""
+        monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
+        from hermes_cli import plugins as plugins_mod
+
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            assert plugins_mod._PLUGINS_DEBUG is True
+            assert plugins_mod._DEBUG_HANDLER_INSTALLED is True
+            assert plugins_mod.logger.level == logging.DEBUG
+            new_handlers = [
+                h for h in plugins_mod.logger.handlers if h not in original_handlers
+            ]
+            assert len(new_handlers) == 1
+            assert isinstance(new_handlers[0], logging.StreamHandler)
+            assert new_handlers[0].level == logging.DEBUG
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
+            plugins_mod.logger.handlers = original_handlers
+
+    def test_debug_handler_idempotent(self, monkeypatch):
+        """Calling install twice (without force) does not double-attach."""
+        monkeypatch.setenv("HERMES_PLUGINS_DEBUG", "1")
+        from hermes_cli import plugins as plugins_mod
+
+        original_installed = plugins_mod._DEBUG_HANDLER_INSTALLED
+        original_debug = plugins_mod._PLUGINS_DEBUG
+        original_level = plugins_mod.logger.level
+        original_handlers = list(plugins_mod.logger.handlers)
+        try:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = False
+            plugins_mod._install_plugin_debug_handler(force=True)
+            count_after_first = len(plugins_mod.logger.handlers)
+            plugins_mod._install_plugin_debug_handler()  # no force
+            count_after_second = len(plugins_mod.logger.handlers)
+            assert count_after_first == count_after_second
+        finally:
+            plugins_mod._DEBUG_HANDLER_INSTALLED = original_installed
+            plugins_mod._PLUGINS_DEBUG = original_debug
+            plugins_mod.logger.setLevel(original_level)
+            plugins_mod.logger.handlers = original_handlers

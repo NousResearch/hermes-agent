@@ -1,17 +1,23 @@
 """Tests for gateway session management."""
-
 import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
     SessionStore,
     build_session_context,
     build_session_context_prompt,
     build_session_key,
+    canonical_whatsapp_identifier,
 )
+
+# Legacy name preserved for these tests; product renamed the function to
+# canonical_whatsapp_identifier.  Keep the tests referencing the old name
+# working without duplicating the suite.
+normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
 class TestSessionSourceRoundtrip:
@@ -83,8 +89,13 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
-    def test_invalid_platform_raises(self):
-        with pytest.raises((ValueError, KeyError)):
+    def test_unknown_platform_rejected_for_bad_names(self):
+        """Arbitrary platform names are rejected (no accidental enum pollution).
+
+        Only bundled platform plugins (discovered under ``plugins/platforms/``)
+        and runtime-registered plugins get dynamic enum members.
+        """
+        with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 
@@ -183,6 +194,25 @@ class TestBuildSessionContextPrompt:
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
 
+    def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.BLUEBUBBLES: PlatformConfig(enabled=True, extra={"server_url": "http://localhost:1234", "password": "secret"}),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="iMessage;-;user@example.com",
+            chat_name="Ben",
+            chat_type="dm",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "responding via iMessage" in prompt
+        assert "short and conversational" in prompt
+        assert "blank line" in prompt
+
     def test_discord_prompt(self):
         config = GatewayConfig(
             platforms={
@@ -224,6 +254,7 @@ class TestBuildSessionContextPrompt:
         assert "Slack" in prompt
         assert "cannot search" in prompt.lower()
         assert "pin" in prompt.lower()
+        assert "current message's slack block/attachment payload" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""
@@ -282,6 +313,19 @@ class TestBuildSessionContextPrompt:
 
         assert "Local" in prompt
         assert "machine running this agent" in prompt
+
+    def test_local_delivery_path_uses_display_hermes_home(self):
+        config = GatewayConfig()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
+        ctx = build_session_context(source, config)
+
+        with patch("hermes_constants.display_hermes_home", return_value="~/.hermes/profiles/coder"):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "~/.hermes/profiles/coder/cron/output/" in prompt
 
     def test_whatsapp_prompt(self):
         config = GatewayConfig(
@@ -343,6 +387,28 @@ class TestBuildSessionContextPrompt:
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
 
+    def test_shared_non_thread_group_prompt_hides_single_user(self):
+        """Shared non-thread group sessions should avoid pinning one user."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+            group_sessions_per_user=False,
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Multi-user session" in prompt
+        assert "[sender name]" in prompt
+        assert "**User:** Alice" not in prompt
+
     def test_dm_thread_shows_user_not_multi(self):
         """DM threads are single-user and should show User, not multi-user note."""
         config = GatewayConfig(
@@ -364,20 +430,90 @@ class TestBuildSessionContextPrompt:
         assert "Multi-user thread" not in prompt
 
 
-class TestSessionStoreRewriteTranscript:
-    """Regression: /retry and /undo must persist truncated history to disk."""
+class TestSenderPrefixWithBackfill:
+    """Regression: sender prefix must not wrap the backfill context block.
+
+    Tests exercise the real GatewayRunner._prepare_inbound_message_text()
+    method to ensure the [sender_name] prefix applies only to the trigger
+    message, not the channel_context backfill block.
+    """
 
     @pytest.fixture()
-    def store(self, tmp_path):
+    def runner(self):
+        from gateway.run import GatewayRunner
+
+        r = GatewayRunner.__new__(GatewayRunner)
+        r.config = GatewayConfig(group_sessions_per_user=False)
+        r.adapters = {}
+        r._model = "test-model"
+        r._base_url = ""
+        r._has_setup_skill = lambda: False
+        return r
+
+    @pytest.fixture()
+    def source(self):
+        return SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="group",
+            user_name="Alice",
+        )
+
+    @pytest.mark.asyncio
+    async def test_plain_message_gets_prefix(self, runner, source):
+        """Normal message without backfill gets [sender] prefix."""
+        event = MessageEvent(text="hello world", source=source)
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result == "[Alice] hello world"
+
+    @pytest.mark.asyncio
+    async def test_backfill_prefix_only_on_trigger(self, runner, source):
+        """Backfill context must NOT get the sender prefix."""
+        event = MessageEvent(
+            text="hello world",
+            source=source,
+            channel_context="[Recent channel messages]\n[Bob] some context",
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith("[Recent channel messages]")
+        assert "[Alice] [Recent channel messages]" not in result
+        assert "[New message]\n[Alice] hello world" in result
+
+    @pytest.mark.asyncio
+    async def test_backfill_preserves_context_block(self, runner, source):
+        """The backfill block should pass through unchanged — no double-prefixing."""
+        context = "[Recent channel messages]\n[Bob] first\n[Charlie [bot]] second"
+        event = MessageEvent(
+            text="hey everyone", source=source, channel_context=context,
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith(context)
+        assert "[Alice] hey everyone" in result
+        assert "[Alice] [Bob]" not in result
+        assert "[Alice] [Charlie" not in result
+        assert "[Alice] [Recent" not in result
+
+
+class TestSessionStoreRewriteTranscript:
+    """Regression: /retry and /undo must persist truncated history to DB."""
+
+    @pytest.fixture()
+    def store(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None  # no SQLite for these tests
-        s._loaded = True
+        s = SessionStore(sessions_dir=tmp_path, config=config)
         return s
 
-    def test_rewrite_replaces_jsonl(self, store, tmp_path):
+    def test_rewrite_replaces_transcript(self, store, tmp_path):
         session_id = "test_session_1"
+        store._db.create_session(session_id=session_id, source="test")
         # Write initial transcript
         for msg in [
             {"role": "user", "content": "hello"},
@@ -400,6 +536,7 @@ class TestSessionStoreRewriteTranscript:
 
     def test_rewrite_with_empty_list(self, store):
         session_id = "test_session_2"
+        store._db.create_session(session_id=session_id, source="test")
         store.append_to_transcript(session_id, {"role": "user", "content": "hi"})
 
         store.rewrite_transcript(session_id, [])
@@ -408,148 +545,31 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
-class TestLoadTranscriptCorruptLines:
-    """Regression: corrupt JSONL lines (e.g. from mid-write crash) must be
-    skipped instead of crashing the entire transcript load.  GH-1193."""
+class TestLoadTranscriptDBOnly:
+    """After spec 002, load_transcript reads only from state.db."""
 
-    @pytest.fixture()
-    def store(self, tmp_path):
+    def test_db_only_returns_empty_for_nonexistent(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None
-        s._loaded = True
-        return s
-
-    def test_corrupt_line_skipped(self, store, tmp_path):
-        session_id = "corrupt_test"
-        transcript_path = store.get_transcript_path(session_id)
-        transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(transcript_path, "w") as f:
-            f.write('{"role": "user", "content": "hello"}\n')
-            f.write('{"role": "assistant", "content": "hi th')  # truncated
-            f.write("\n")
-            f.write('{"role": "user", "content": "goodbye"}\n')
-
-        messages = store.load_transcript(session_id)
-        assert len(messages) == 2
-        assert messages[0]["content"] == "hello"
-        assert messages[1]["content"] == "goodbye"
-
-    def test_all_lines_corrupt_returns_empty(self, store, tmp_path):
-        session_id = "all_corrupt"
-        transcript_path = store.get_transcript_path(session_id)
-        transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(transcript_path, "w") as f:
-            f.write("not json at all\n")
-            f.write("{truncated\n")
-
-        messages = store.load_transcript(session_id)
-        assert messages == []
-
-    def test_valid_transcript_unaffected(self, store, tmp_path):
-        session_id = "valid_test"
-        store.append_to_transcript(session_id, {"role": "user", "content": "a"})
-        store.append_to_transcript(session_id, {"role": "assistant", "content": "b"})
-
-        messages = store.load_transcript(session_id)
-        assert len(messages) == 2
-        assert messages[0]["content"] == "a"
-        assert messages[1]["content"] == "b"
-
-
-class TestLoadTranscriptPreferLongerSource:
-    """Regression: load_transcript must return whichever source (SQLite or JSONL)
-    has more messages to prevent silent truncation.  GH-3212."""
-
-    @pytest.fixture()
-    def store_with_db(self, tmp_path):
-        """SessionStore with both SQLite and JSONL active."""
-        from hermes_state import SessionDB
-
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = SessionDB(db_path=tmp_path / "state.db")
-        s._loaded = True
-        return s
-
-    def test_jsonl_longer_than_sqlite_returns_jsonl(self, store_with_db):
-        """Legacy session: JSONL has full history, SQLite has only recent turn."""
-        sid = "legacy_session"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # JSONL has 10 messages (legacy history — written before SQLite existed)
-        for i in range(10):
-            role = "user" if i % 2 == 0 else "assistant"
-            store_with_db.append_to_transcript(
-                sid, {"role": role, "content": f"msg-{i}"}, skip_db=True,
-            )
-        # SQLite has only 2 messages (recent turn after migration)
-        store_with_db._db.append_message(session_id=sid, role="user", content="new-q")
-        store_with_db._db.append_message(session_id=sid, role="assistant", content="new-a")
-
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 10
-        assert result[0]["content"] == "msg-0"
-
-    def test_sqlite_longer_than_jsonl_returns_sqlite(self, store_with_db):
-        """Fully migrated session: SQLite has more (JSONL stopped growing)."""
-        sid = "migrated_session"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # JSONL has 2 old messages
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "old-q"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "old-a"}, skip_db=True,
-        )
-        # SQLite has 4 messages (superset after migration)
-        for i in range(4):
-            role = "user" if i % 2 == 0 else "assistant"
-            store_with_db._db.append_message(session_id=sid, role=role, content=f"db-{i}")
-
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 4
-        assert result[0]["content"] == "db-0"
-
-    def test_sqlite_empty_falls_back_to_jsonl(self, store_with_db):
-        """No SQLite rows — falls back to JSONL (original behavior preserved)."""
-        sid = "no_db_rows"
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "hello"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "hi"}, skip_db=True,
-        )
-
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 2
-        assert result[0]["content"] == "hello"
-
-    def test_both_empty_returns_empty(self, store_with_db):
-        """Neither source has data — returns empty list."""
-        result = store_with_db.load_transcript("nonexistent")
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        result = store.load_transcript("nonexistent")
         assert result == []
 
-    def test_equal_length_prefers_sqlite(self, store_with_db):
-        """When both have same count, SQLite wins (has richer fields like reasoning)."""
-        sid = "equal_session"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # Write 2 messages to JSONL only
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "jsonl-q"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "jsonl-a"}, skip_db=True,
-        )
-        # Write 2 different messages to SQLite only
-        store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
-        store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
+    def test_db_only_returns_messages(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        sid = "db_only_session"
+        store._db.create_session(session_id=sid, source="gateway", model="m")
+        store._db.append_message(session_id=sid, role="user", content="db-q")
+        store._db.append_message(session_id=sid, role="assistant", content="db-a")
 
-        result = store_with_db.load_transcript(sid)
+        result = store.load_transcript(sid)
         assert len(result) == 2
-        # Should be the SQLite version (equal count → prefers SQLite)
         assert result[0]["content"] == "db-q"
+        assert result[1]["content"] == "db-a"
 
 
 class TestSessionStoreSwitchSession:
@@ -591,9 +611,9 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
-class TestWhatsAppDMSessionKeyConsistency:
-    """Regression: all session-key construction must go through build_session_key
-    so DMs are isolated by chat_id across platforms."""
+class TestWhatsAppSessionKeyConsistency:
+    """Regression: WhatsApp session keys must collapse JID/LID aliases to a
+    single stable identity for both DM chat_ids and group participant_ids."""
 
     @pytest.fixture()
     def store(self, tmp_path):
@@ -604,7 +624,7 @@ class TestWhatsAppDMSessionKeyConsistency:
         s._loaded = True
         return s
 
-    def test_whatsapp_dm_includes_chat_id(self):
+    def test_whatsapp_dm_uses_canonical_identifier(self):
         source = SessionSource(
             platform=Platform.WHATSAPP,
             chat_id="15551234567@s.whatsapp.net",
@@ -612,7 +632,80 @@ class TestWhatsAppDMSessionKeyConsistency:
             user_name="Phone User",
         )
         key = build_session_key(source)
-        assert key == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
+        assert key == "agent:main:whatsapp:dm:15551234567"
+
+    def test_whatsapp_dm_aliases_share_one_session_key(self, tmp_path, monkeypatch):
+        tmp_home = tmp_path / "hermes-home"
+        mapping_dir = tmp_home / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+
+        lid_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="999999999999999@lid",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        phone_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+
+        assert build_session_key(lid_source) == "agent:main:whatsapp:dm:15551234567"
+        assert build_session_key(phone_source) == "agent:main:whatsapp:dm:15551234567"
+
+    def test_whatsapp_group_participant_aliases_share_session_key(self, tmp_path, monkeypatch):
+        """With group_sessions_per_user, the same human flipping between
+        phone-JID and LID inside a group must not produce two isolated
+        per-user sessions."""
+        tmp_home = tmp_path / "hermes-home"
+        mapping_dir = tmp_home / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+
+        lid_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="999999999999999@lid",
+            user_name="Group Member",
+        )
+        phone_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="15551234567@s.whatsapp.net",
+            user_name="Group Member",
+        )
+
+        expected = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
+        assert build_session_key(lid_source, group_sessions_per_user=True) == expected
+        assert build_session_key(phone_source, group_sessions_per_user=True) == expected
+
+    def test_whatsapp_group_shared_sessions_untouched_by_canonicalisation(self):
+        """When group_sessions_per_user is False, participant_id is not in the
+        key at all, so canonicalisation is a no-op for this mode."""
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="999999999999999@lid",
+            user_name="Group Member",
+        )
+        assert (
+            build_session_key(source, group_sessions_per_user=False)
+            == "agent:main:whatsapp:group:120363000000000000@g.us"
+        )
 
     def test_store_delegates_to_build_session_key(self, store):
         """SessionStore._generate_session_key must produce the same result."""
@@ -831,6 +924,57 @@ class TestWhatsAppDMSessionKeyConsistency:
         assert key == "agent:main:telegram:dm:99:topic-1"
 
 
+class TestWhatsAppIdentifierPublicHelpers:
+    """Contract tests for the public WhatsApp identifier helpers.
+
+    These helpers are part of the public API for plugins that need
+    WhatsApp identity awareness. Breaking these contracts is a
+    breaking change for downstream plugins.
+    """
+
+    def test_normalize_strips_jid_suffix(self):
+        assert normalize_whatsapp_identifier("60123456789@s.whatsapp.net") == "60123456789"
+
+    def test_normalize_strips_lid_suffix(self):
+        assert normalize_whatsapp_identifier("999999999999999@lid") == "999999999999999"
+
+    def test_normalize_strips_device_suffix(self):
+        assert normalize_whatsapp_identifier("60123456789:47@s.whatsapp.net") == "60123456789"
+
+    def test_normalize_strips_leading_plus(self):
+        assert normalize_whatsapp_identifier("+60123456789") == "60123456789"
+
+    def test_normalize_handles_bare_numeric(self):
+        assert normalize_whatsapp_identifier("60123456789") == "60123456789"
+
+    def test_normalize_handles_empty_and_none(self):
+        assert normalize_whatsapp_identifier("") == ""
+        assert normalize_whatsapp_identifier(None) == ""  # type: ignore[arg-type]
+
+    def test_canonical_without_mapping_returns_normalized(self, tmp_path, monkeypatch):
+        """With no bridge mapping files, the normalized input is returned."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert canonical_whatsapp_identifier("60123456789@lid") == "60123456789"
+
+    def test_canonical_walks_lid_mapping(self, tmp_path, monkeypatch):
+        """LID is resolved to its paired phone identity via lid-mapping files."""
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        canonical = canonical_whatsapp_identifier("999999999999999@lid")
+        assert canonical == "15551234567"
+        assert canonical_whatsapp_identifier("15551234567@s.whatsapp.net") == "15551234567"
+
+    def test_canonical_empty_input(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert canonical_whatsapp_identifier("") == ""
+
+
 class TestSessionStoreEntriesAttribute:
     """Regression: /reset must access _entries, not _sessions."""
 
@@ -1024,6 +1168,7 @@ class TestRewriteTranscriptPreservesReasoning:
             role="assistant",
             content="The answer is 42.",
             reasoning="I need to think step by step.",
+            reasoning_content="provider scratchpad",
             reasoning_details=[{"type": "summary", "text": "step by step"}],
             codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
         )
@@ -1031,6 +1176,7 @@ class TestRewriteTranscriptPreservesReasoning:
         # Verify all three were stored
         before = db.get_messages_as_conversation(session_id)
         assert before[0].get("reasoning") == "I need to think step by step."
+        assert before[0].get("reasoning_content") == "provider scratchpad"
         assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
@@ -1047,5 +1193,48 @@ class TestRewriteTranscriptPreservesReasoning:
         # Load again — all three reasoning fields must survive
         after = db.get_messages_as_conversation(session_id)
         assert after[0].get("reasoning") == "I need to think step by step."
+        assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+    def test_db_rewrite_is_atomic_on_insert_failure(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "atomic-rewrite-test"
+        db.create_session(session_id=session_id, source="cli")
+        db.append_message(session_id=session_id, role="user", content="before user")
+        db.append_message(session_id=session_id, role="assistant", content="before assistant")
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        # Force the second insert inside replace_messages to fail, simulating
+        # any storage-layer error that might abort a multi-row rewrite.
+        real_encode = SessionDB._encode_content
+        calls = {"n": 0}
+
+        def flaky_encode(cls, content):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated storage failure")
+            return real_encode.__func__(cls, content)
+
+        monkeypatch.setattr(SessionDB, "_encode_content", classmethod(flaky_encode))
+
+        replacement = [
+            {"role": "user", "content": "after user"},
+            {"role": "assistant", "content": "after assistant"},
+        ]
+
+        store.rewrite_transcript(session_id, replacement)
+
+        # The rewrite must roll back atomically — original messages preserved.
+        after = db.get_messages_as_conversation(session_id)
+        assert [msg["content"] for msg in after] == [
+            "before user",
+            "before assistant",
+        ]

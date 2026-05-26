@@ -40,12 +40,15 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
+
+from utils import atomic_replace, is_truthy_value
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
-# Import security scanner — agent-created skills get the same scrutiny as
-# community hub installs.
+# Import security scanner — external hub installs always get scanned;
+# agent-created skills only get scanned when skills.guard_agent_created is on.
 try:
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
     _GUARD_AVAILABLE = True
@@ -53,9 +56,33 @@ except ImportError:
     _GUARD_AVAILABLE = False
 
 
+def _guard_agent_created_enabled() -> bool:
+    """Read skills.guard_agent_created from config (default False).
+
+    Off by default because the agent can already execute the same code
+    paths via terminal() with no gate, so the scan adds friction without
+    meaningful security.  Users who want belt-and-suspenders can turn it
+    on via `hermes config set skills.guard_agent_created true`.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "guard_agent_created"),
+            default=False,
+        )
+    except Exception:
+        return False
+
+
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Scan a skill directory after write. Returns error string if blocked, else None."""
+    """Scan a skill directory after write. Returns error string if blocked, else None.
+
+    No-op when skills.guard_agent_created is disabled (the default).
+    """
     if not _GUARD_AVAILABLE:
+        return None
+    if not _guard_agent_created_enabled():
         return None
     try:
         result = scan_skill(skill_dir, source="agent-created")
@@ -65,7 +92,8 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             return f"Security scan blocked this skill ({reason}):\n{report}"
         if allowed is None:
             # "ask" verdict — for agent-created skills this means dangerous
-            # findings were detected.  Block the skill and include the report.
+            # findings were detected.  Surface as an error so the agent can
+            # retry with the flagged content removed.
             report = format_scan_report(result)
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
             return f"Security scan blocked this skill ({reason}):\n{report}"
@@ -82,6 +110,57 @@ SKILLS_DIR = HERMES_HOME / "skills"
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
+
+
+def _containing_skills_root(skill_path: Path) -> Path:
+    """Return the skills root directory (local or external_dirs entry) that
+    contains ``skill_path``.  Falls back to the local ``SKILLS_DIR`` if no
+    match is found (defensive — callers should have located the skill via
+    ``_find_skill`` first).
+    """
+    from agent.skill_utils import get_all_skills_dirs
+
+    try:
+        resolved = skill_path.resolve()
+    except OSError:
+        resolved = skill_path
+
+    for root in get_all_skills_dirs():
+        try:
+            resolved.relative_to(root.resolve())
+            return root
+        except (ValueError, OSError):
+            continue
+    return SKILLS_DIR
+
+
+def _pinned_guard(name: str) -> Optional[str]:
+    """Return a refusal message if *name* is pinned, else None.
+
+    Pin protects a skill from **deletion** — both the curator's auto-archive
+    passes and the agent's ``skill_manage(action="delete")`` tool call. The
+    agent can still patch/edit pinned skills; pin only guards against
+    irrecoverable loss, not against content evolution.
+
+    Best-effort: if the sidecar is unreadable we let the delete through
+    rather than block on a broken telemetry file.
+    """
+    try:
+        from tools import skill_usage
+        rec = skill_usage.get_record(name)
+        if rec.get("pinned"):
+            return (
+                f"Skill '{name}' is pinned and cannot be deleted by "
+                f"skill_manage. Ask the user to run "
+                f"`hermes curator unpin {name}` if they want to delete it. "
+                f"Patches and edits are allowed on pinned skills; only "
+                f"deletion is blocked."
+            )
+    except Exception:
+        logger.debug("pinned-guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -204,14 +283,119 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
     """
-    from agent.skill_utils import get_all_skills_dirs
+    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
     return None
+
+
+def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
+    """Look for ``name`` under SKILL.md across OTHER Hermes profiles.
+
+    Returns a list of ``(profile_name, skill_dir)`` pairs. Used to make
+    the "Skill X not found" error explain when the user is editing the
+    wrong profile. Empty list when no other profile has the skill (or
+    when profile discovery fails — fail-quiet, the caller falls back to
+    the plain "not found" error).
+    """
+    matches: List[Tuple[str, Path]] = []
+    try:
+        from hermes_constants import get_default_hermes_root
+        from agent.skill_utils import is_excluded_skill_path
+    except Exception:
+        return matches
+
+    try:
+        root = get_default_hermes_root()
+    except Exception:
+        return matches
+
+    # Collect (profile_name, skills_dir) for every profile EXCEPT the
+    # one whose SKILLS_DIR we already searched in _find_skill().
+    active_dir = SKILLS_DIR.resolve() if SKILLS_DIR.exists() else SKILLS_DIR
+    candidates: List[Tuple[str, Path]] = []
+
+    # Default profile (~/.hermes/skills) — only consider when active is non-default.
+    default_skills = root / "skills"
+    try:
+        if default_skills.resolve() != active_dir:
+            candidates.append(("default", default_skills))
+    except (OSError, RuntimeError):
+        pass
+
+    # All named profiles (~/.hermes/profiles/*/skills)
+    profiles_root = root / "profiles"
+    if profiles_root.is_dir():
+        try:
+            for entry in profiles_root.iterdir():
+                if not entry.is_dir():
+                    continue
+                pskills = entry / "skills"
+                try:
+                    if pskills.resolve() == active_dir:
+                        continue
+                except (OSError, RuntimeError):
+                    continue
+                candidates.append((entry.name, pskills))
+        except OSError:
+            pass
+
+    for profile_name, skills_dir in candidates:
+        if not skills_dir.is_dir():
+            continue
+        try:
+            for skill_md in skills_dir.rglob("SKILL.md"):
+                if is_excluded_skill_path(skill_md):
+                    continue
+                if skill_md.parent.name == name:
+                    matches.append((profile_name, skill_md.parent))
+                    break  # one match per profile is enough
+        except OSError:
+            continue
+    return matches
+
+
+def _skill_not_found_error(name: str, suffix: str = "") -> str:
+    """Build a "skill not found" error that names other profiles holding
+    the same skill, so the agent can recognize a profile-scoping mistake.
+
+    ``suffix`` is appended after the cross-profile hint if present
+    (e.g. ``" Create it first with action='create'."``).
+    """
+    from agent.file_safety import _resolve_active_profile_name
+    active = _resolve_active_profile_name()
+    base = f"Skill '{name}' not found in active profile '{active}'."
+
+    others = _find_skill_in_other_profiles(name)
+    if others:
+        if len(others) == 1:
+            other_profile, other_path = others[0]
+            base += (
+                f" A skill by that name exists in profile "
+                f"'{other_profile}' ({other_path}). To edit a skill in "
+                f"another profile, switch profiles (`hermes -p "
+                f"{other_profile}`) or operate via explicit file tools "
+                f"with ``cross_profile=True``."
+            )
+        else:
+            names = ", ".join(f"'{p}'" for p, _ in others)
+            base += (
+                f" Skills by that name exist in other profiles: {names}. "
+                f"Switch profiles (`hermes -p <name>`) to edit there, or "
+                f"operate via explicit file tools with ``cross_profile=True``."
+            )
+    else:
+        base += " Use skills_list() to see available skills."
+
+    if suffix:
+        base += suffix
+    return base
 
 
 def _validate_file_path(file_path: str) -> Optional[str]:
@@ -275,7 +459,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
-        os.replace(temp_path, file_path)
+        atomic_replace(temp_path, file_path)
     except Exception:
         # Clean up temp file on error
         try:
@@ -358,7 +542,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
+        return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
@@ -398,7 +582,7 @@ def _patch_skill(
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found."}
+        return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
 
@@ -431,9 +615,15 @@ def _patch_skill(
     if match_error:
         # Show a short preview of the file so the model can self-correct
         preview = content[:500] + ("..." if len(content) > 500 else "")
+        err_msg = match_error
+        try:
+            from tools.fuzzy_match import format_no_match_hint
+            err_msg += format_no_match_hint(match_error, match_count, old_string, content)
+        except Exception:
+            pass
         return {
             "success": False,
-            "error": match_error,
+            "error": err_msg,
             "file_preview": preview,
         }
 
@@ -467,23 +657,60 @@ def _patch_skill(
     }
 
 
-def _delete_skill(name: str) -> Dict[str, Any]:
-    """Delete a skill."""
+def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
+    """Delete a skill.
+
+    ``absorbed_into`` declares intent:
+      - ``None`` / missing  → caller didn't declare (legacy / non-curator path);
+        accepted for backward compat but logs a warning because the curator
+        classification pipeline can't tell consolidation from pruning without it.
+      - ``""`` (empty)      → explicit "truly pruned, no forwarding target".
+      - ``"<skill-name>"``  → content was absorbed into that umbrella; the
+        target must exist on disk. Validated here so the model can't claim an
+        umbrella that doesn't exist.
+    """
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found."}
+        return {"success": False, "error": _skill_not_found_error(name)}
+
+    pinned_err = _pinned_guard(name)
+    if pinned_err:
+        return {"success": False, "error": pinned_err}
+
+    # Validate absorbed_into target when declared non-empty
+    if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
+        target_name = absorbed_into.strip()
+        if target_name == name:
+            return {
+                "success": False,
+                "error": f"absorbed_into='{target_name}' cannot equal the skill being deleted.",
+            }
+        target = _find_skill(target_name)
+        if not target:
+            return {
+                "success": False,
+                "error": (
+                    f"absorbed_into='{target_name}' does not exist. "
+                    f"Create or patch the umbrella skill first, then retry the delete."
+                ),
+            }
 
     skill_dir = existing["path"]
+    skills_root = _containing_skills_root(skill_dir)
     shutil.rmtree(skill_dir)
 
-    # Clean up empty category directories (don't remove SKILLS_DIR itself)
+    # Clean up empty category directories (don't remove the skills root itself)
     parent = skill_dir.parent
-    if parent != SKILLS_DIR and parent.exists() and not any(parent.iterdir()):
+    if parent != skills_root and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
+
+    message = f"Skill '{name}' deleted."
+    if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
+        message += f" Content absorbed into '{absorbed_into.strip()}'."
 
     return {
         "success": True,
-        "message": f"Skill '{name}' deleted.",
+        "message": message,
     }
 
 
@@ -513,7 +740,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
+        return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
 
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
@@ -547,7 +774,8 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     existing = _find_skill(name)
     if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found."}
+        return {"success": False, "error": _skill_not_found_error(name)}
+
     skill_dir = existing["path"]
 
     target, err = _resolve_skill_target(skill_dir, file_path)
@@ -595,6 +823,7 @@ def skill_manage(
     old_string: str = None,
     new_string: str = None,
     replace_all: bool = False,
+    absorbed_into: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -619,7 +848,7 @@ def skill_manage(
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
-        result = _delete_skill(name)
+        result = _delete_skill(name, absorbed_into=absorbed_into)
 
     elif action == "write_file":
         if not file_path:
@@ -642,6 +871,24 @@ def skill_manage(
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
             pass
+        # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
+        # that mutate an existing skill's guidance), drop the record on delete.
+        # Only mark a skill as agent-created when the background self-improvement
+        # review fork creates it — foreground `skill_manage(create)` calls are
+        # user-directed, and those skills belong to the user (the curator must
+        # not touch them). Best-effort; telemetry failures never break the tool.
+        try:
+            from tools.skill_usage import bump_patch, forget, mark_agent_created
+            from tools.skill_provenance import is_background_review
+            if action == "create":
+                if is_background_review():
+                    mark_agent_created(name)
+            elif action in {"patch", "edit", "write_file", "remove_file"}:
+                bump_patch(name)
+            elif action == "delete":
+                forget(name)
+        except Exception:
+            pass
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -660,6 +907,13 @@ SKILL_MANAGE_SCHEMA = {
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "
         "delete, write_file, remove_file.\n\n"
+        "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
+        "skill's content into another one, or `absorbed_into=\"\"` when you're "
+        "pruning it with no forwarding target. This lets the curator tell "
+        "consolidation from pruning without guessing, so downstream consumers "
+        "(cron jobs that reference the old skill name, etc.) get updated "
+        "correctly. The target you name in `absorbed_into` must already "
+        "exist — create/patch the umbrella first, then delete.\n\n"
         "Create when: complex task succeeded (5+ calls), errors overcome, "
         "user-corrected approach worked, non-trivial workflow discovered, "
         "or user asks you to remember a procedure.\n"
@@ -669,7 +923,11 @@ SKILL_MANAGE_SCHEMA = {
         "After difficult/iterative tasks, offer to save as a skill. "
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples."
+        "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
+        "Pinned skills are protected from deletion only — skill_manage(action='delete') "
+        "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
+        "Patches and edits go through on pinned skills so you can still improve them as "
+        "pitfalls come up; pin only guards against irrecoverable loss."
     ),
     "parameters": {
         "type": "object",
@@ -734,6 +992,20 @@ SKILL_MANAGE_SCHEMA = {
                 "type": "string",
                 "description": "Content for the file. Required for 'write_file'."
             },
+            "absorbed_into": {
+                "type": "string",
+                "description": (
+                    "For 'delete' only — declares intent so the curator can "
+                    "tell consolidation from pruning without guessing. "
+                    "Pass the umbrella skill name when this skill's content "
+                    "was merged into another (the target must already exist). "
+                    "Pass an empty string when the skill is truly stale and "
+                    "being pruned with no forwarding target. Omitting the arg "
+                    "on delete is supported for backward compatibility but "
+                    "downstream tooling (e.g. cron-job skill reference "
+                    "rewriting) will have to guess at intent."
+                )
+            },
         },
         "required": ["action", "name"],
     },
@@ -756,6 +1028,7 @@ registry.register(
         file_content=args.get("file_content"),
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False)),
+        replace_all=args.get("replace_all", False),
+        absorbed_into=args.get("absorbed_into")),
     emoji="📝",
 )

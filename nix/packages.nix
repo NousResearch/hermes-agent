@@ -1,53 +1,25 @@
 # nix/packages.nix — Hermes Agent package built with uv2nix
-{ inputs, ... }: {
-  perSystem = { pkgs, system, ... }:
+{ inputs, ... }:
+{
+  perSystem =
+    { pkgs, inputs', ... }:
     let
-      hermesVenv = pkgs.callPackage ./python.nix {
+      hermesAgent = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
+        # Only embed clean revs — dirtyRev doesn't represent any upstream
+        # commit, so comparing it would always claim "update available".
+        rev = inputs.self.rev or null;
       };
+    in
+    {
+      packages = {
+        default = hermesAgent;
+        tui = hermesAgent.hermesTui;
+        web = hermesAgent.hermesWeb;
 
-      # Import bundled skills, excluding runtime caches
-      bundledSkills = pkgs.lib.cleanSourceWith {
-        src = ../skills;
-        filter = path: _type:
-          !(pkgs.lib.hasInfix "/index-cache/" path);
-      };
-
-      runtimeDeps = with pkgs; [
-        nodejs_20 ripgrep git openssh ffmpeg tirith
-      ];
-
-      runtimePath = pkgs.lib.makeBinPath runtimeDeps;
-    in {
-      packages.default = pkgs.stdenv.mkDerivation {
-        pname = "hermes-agent";
-        version = (builtins.fromTOML (builtins.readFile ../pyproject.toml)).project.version;
-
-        dontUnpack = true;
-        dontBuild = true;
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-
-        installPhase = ''
-          runHook preInstall
-
-          mkdir -p $out/share/hermes-agent $out/bin
-          cp -r ${bundledSkills} $out/share/hermes-agent/skills
-
-          ${pkgs.lib.concatMapStringsSep "\n" (name: ''
-            makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
-              --suffix PATH : "${runtimePath}" \
-              --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills
-          '') [ "hermes" "hermes-agent" "hermes-acp" ]}
-
-          runHook postInstall
-        '';
-
-        meta = with pkgs.lib; {
-          description = "AI agent with advanced tool-calling capabilities";
-          homepage = "https://github.com/NousResearch/hermes-agent";
-          mainProgram = "hermes";
-          license = licenses.mit;
-          platforms = platforms.unix;
+        fix-lockfiles = hermesAgent.hermesNpmLib.mkFixLockfiles {
+          packages = [ hermesAgent.hermesTui hermesAgent.hermesWeb ];
         };
       };
     };

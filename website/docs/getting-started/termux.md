@@ -16,6 +16,7 @@ The tested Termux bundle installs:
 - the Hermes CLI
 - cron support
 - PTY/background terminal support
+- Telegram gateway support (manual / best-effort background runs)
 - MCP support
 - Honcho memory support
 - ACP support
@@ -34,6 +35,7 @@ A few features still need desktop/server-style dependencies that are not publish
 - the `voice` extra is blocked by `faster-whisper -> ctranslate2`, and `ctranslate2` does not publish Android wheels
 - automatic browser / Playwright bootstrap is skipped in the Termux installer
 - Docker-based terminal isolation is not available inside Termux
+- Android may still suspend Termux background jobs, so gateway persistence is best-effort rather than a normal managed service
 
 That does not stop Hermes from working well as a phone-native CLI agent — it just means the recommended mobile install is intentionally narrower than the desktop/server install.
 
@@ -50,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 On Termux, the installer automatically:
 - uses `pkg` for system packages
 - creates the venv with `python -m venv`
-- installs `.[termux]` with `pip`
+- attempts the broad `.[termux-all]` extra first and falls back to the smaller `.[termux]` extra (then a base install) — the curl installer matches this order automatically
 - links `hermes` into `$PREFIX/bin` so it stays on your Termux PATH
 - skips the untested browser / WhatsApp bootstrap
 
@@ -230,7 +232,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 - Docker backend is unavailable
 - local voice transcription via `faster-whisper` is unavailable in the tested path
 - browser automation setup is intentionally skipped by the installer
-- some optional extras may work, but only `.[termux]` is currently documented as the tested Android bundle
+- some optional extras may work, but only `.[termux]` and `.[termux-all]` are currently documented as the tested Android bundles
 
 If you hit a new Android-specific issue, please open a GitHub issue with:
 - your Android version

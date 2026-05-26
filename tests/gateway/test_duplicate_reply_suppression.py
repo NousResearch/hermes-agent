@@ -1,12 +1,15 @@
 """Tests for duplicate reply suppression across the gateway stack.
 
-Covers three fix paths:
+Covers four fix paths:
   1. base.py: stale response suppressed when interrupt_event is set and a
      pending message exists (#8221 / #2483)
-  2. run.py return path: already_sent propagated from stream consumer's
-     already_sent flag without requiring response_previewed (#8375)
-  3. run.py queued-message path: first response correctly detected as
-     already-streamed when already_sent is True without response_previewed
+  2. run.py return path: only confirmed final streamed delivery suppresses
+     the fallback final send; partial streamed output must not
+  3. run.py queued-message path: first response is skipped only when the
+     final response was actually streamed, not merely when partial output existed
+  4. stream_consumer.py cancellation handler: only confirms final delivery
+     when the best-effort send actually succeeds, not merely because partial
+     content was sent earlier
 """
 
 import asyncio
@@ -105,6 +108,15 @@ class TestBaseInterruptSuppression:
 
         await adapter._process_message_background(event_a, session_key)
 
+        # The in-band pending-drain now hands off to a fresh task instead
+        # of recursing (#17758).  Wait for that task to finish before
+        # checking the sent list.
+        for _ in range(200):
+            if any(s["content"] == pending_response for s in adapter.sent):
+                break
+            await asyncio.sleep(0.01)
+        await adapter.cancel_background_tasks()
+
         # The stale response should NOT have been sent.
         stale_sends = [s for s in adapter.sent if s["content"] == stale_response]
         assert len(stale_sends) == 0, (
@@ -153,15 +165,16 @@ class TestBaseInterruptSuppression:
         assert any(s["content"] == "Valid response" for s in adapter.sent)
 
 
-# ===================================================================
-# Test 2: run.py — already_sent without response_previewed (#8375)
+# Test 2: run.py — partial streamed output must not suppress final send
 # ===================================================================
 
-class TestAlreadySentWithoutResponsePreviewed:
-    """The already_sent flag on the response dict should be set when the
-    stream consumer's already_sent is True, even if response_previewed is
-    False.  This prevents duplicate sends when streaming was interrupted
-    by flood control."""
+class TestOnlyFinalStreamDeliverySuppressesFinalSend:
+    """The gateway should suppress the fallback final send only when the
+    stream consumer confirmed the final assistant reply was delivered.
+
+    Partial streamed output is not enough. If only already_sent=True,
+    the fallback final send must still happen so Telegram users don't lose
+    the real answer."""
 
     def _make_mock_stream_consumer(self, already_sent=False, final_response_sent=False):
         sc = SimpleNamespace(
@@ -170,21 +183,20 @@ class TestAlreadySentWithoutResponsePreviewed:
         )
         return sc
 
-    def test_already_sent_set_without_response_previewed(self):
-        """Stream consumer already_sent=True should propagate to response
-        dict even when response_previewed is False."""
+    def test_partial_stream_output_does_not_set_already_sent(self):
+        """already_sent=True alone must NOT suppress final delivery."""
         sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=False)
         response = {"final_response": "text", "response_previewed": False}
 
-        # Reproduce the logic from run.py return path (post-fix)
         if sc and isinstance(response, dict) and not response.get("failed"):
-            if (
-                getattr(sc, "final_response_sent", False)
-                or getattr(sc, "already_sent", False)
-            ):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _streamed = bool(sc and getattr(sc, "final_response_sent", False))
+            _previewed = bool(response.get("response_previewed"))
+            if not _is_empty_sentinel and (_streamed or _previewed):
                 response["already_sent"] = True
 
-        assert response.get("already_sent") is True
+        assert "already_sent" not in response
 
     def test_already_sent_not_set_when_nothing_sent(self):
         """When stream consumer hasn't sent anything, already_sent should
@@ -193,24 +205,26 @@ class TestAlreadySentWithoutResponsePreviewed:
         response = {"final_response": "text", "response_previewed": False}
 
         if sc and isinstance(response, dict) and not response.get("failed"):
-            if (
-                getattr(sc, "final_response_sent", False)
-                or getattr(sc, "already_sent", False)
-            ):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _streamed = bool(sc and getattr(sc, "final_response_sent", False))
+            _previewed = bool(response.get("response_previewed"))
+            if not _is_empty_sentinel and (_streamed or _previewed):
                 response["already_sent"] = True
 
         assert "already_sent" not in response
 
     def test_already_sent_set_on_final_response_sent(self):
-        """final_response_sent=True should still work as before."""
+        """final_response_sent=True should suppress duplicate final sends."""
         sc = self._make_mock_stream_consumer(already_sent=False, final_response_sent=True)
         response = {"final_response": "text"}
 
         if sc and isinstance(response, dict) and not response.get("failed"):
-            if (
-                getattr(sc, "final_response_sent", False)
-                or getattr(sc, "already_sent", False)
-            ):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _streamed = bool(sc and getattr(sc, "final_response_sent", False))
+            _previewed = bool(response.get("response_previewed"))
+            if not _is_empty_sentinel and (_streamed or _previewed):
                 response["already_sent"] = True
 
         assert response.get("already_sent") is True
@@ -222,22 +236,85 @@ class TestAlreadySentWithoutResponsePreviewed:
         response = {"final_response": "Error: something broke", "failed": True}
 
         if sc and isinstance(response, dict) and not response.get("failed"):
-            if (
-                getattr(sc, "final_response_sent", False)
-                or getattr(sc, "already_sent", False)
-            ):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _streamed = bool(sc and getattr(sc, "final_response_sent", False))
+            _previewed = bool(response.get("response_previewed"))
+            if not _is_empty_sentinel and (_streamed or _previewed):
                 response["already_sent"] = True
 
         assert "already_sent" not in response
 
 
 # ===================================================================
-# Test 3: run.py queued-message path — _already_streamed detection
+# Test 2b: run.py — empty response never suppressed (#10xxx)
 # ===================================================================
 
+class TestEmptyResponseNotSuppressed:
+    """When the model returns '(empty)' after tool calls (e.g. mimo-v2-pro
+    going silent after web_search), the gateway must NOT suppress delivery
+    even if the stream consumer sent intermediate text earlier.
+
+    Without this fix, the user sees partial streaming text ('Let me search
+    for that') and then silence — the '(empty)' sentinel is swallowed by
+    already_sent=True."""
+
+    def _make_mock_stream_consumer(self, already_sent=False, final_response_sent=False):
+        return SimpleNamespace(
+            already_sent=already_sent,
+            final_response_sent=final_response_sent,
+        )
+
+    def _apply_suppression_logic(self, response, sc):
+        """Reproduce the fixed logic from gateway/run.py return path."""
+        if sc and isinstance(response, dict) and not response.get("failed"):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            _streamed = bool(sc and getattr(sc, "final_response_sent", False))
+            _previewed = bool(response.get("response_previewed"))
+            if not _is_empty_sentinel and (_streamed or _previewed):
+                response["already_sent"] = True
+
+    def test_empty_sentinel_not_suppressed_with_already_sent(self):
+        """'(empty)' final_response should NOT be suppressed even when
+        streaming sent intermediate content."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": "(empty)"}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
+
+    def test_empty_string_not_suppressed_with_already_sent(self):
+        """Empty string final_response should NOT be suppressed."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": ""}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
+
+    def test_none_response_not_suppressed_with_already_sent(self):
+        """None final_response should NOT be suppressed."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": None}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
+
+    def test_real_response_still_suppressed_only_when_final_delivery_confirmed(self):
+        """Normal non-empty response should be suppressed only when the final
+        response was actually streamed."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": "Here are the search results..."}
+        self._apply_suppression_logic(response, sc)
+        assert response.get("already_sent") is True
+
+    def test_failed_empty_response_never_suppressed(self):
+        """Failed responses are never suppressed regardless of content."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": "(empty)", "failed": True}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
+
 class TestQueuedMessageAlreadyStreamed:
-    """The queued-message path should detect that the first response was
-    already streamed (already_sent=True) even without response_previewed."""
+    """The queued-message path should skip the first response only when the
+    final response was actually streamed."""
 
     def _make_mock_sc(self, already_sent=False, final_response_sent=False):
         return SimpleNamespace(
@@ -245,18 +322,38 @@ class TestQueuedMessageAlreadyStreamed:
             final_response_sent=final_response_sent,
         )
 
-    def test_queued_path_detects_already_streamed(self):
-        """already_sent=True on stream consumer means first response was
-        streamed — skip re-sending before processing queued message."""
-        _sc = self._make_mock_sc(already_sent=True)
+    def test_queued_path_only_skips_send_when_final_response_was_streamed(self):
+        """Partial streamed output alone must not suppress the first response
+        before the queued follow-up is processed."""
+        _sc = self._make_mock_sc(already_sent=True, final_response_sent=False)
 
-        # Reproduce the queued-message logic from run.py (post-fix)
         _already_streamed = bool(
-            _sc
-            and (
-                getattr(_sc, "final_response_sent", False)
-                or getattr(_sc, "already_sent", False)
-            )
+            _sc and getattr(_sc, "final_response_sent", False)
+        )
+
+        assert _already_streamed is False
+
+    def test_queued_path_detects_confirmed_final_stream_delivery(self):
+        """Confirmed final streamed delivery should skip the resend."""
+        _sc = self._make_mock_sc(already_sent=True, final_response_sent=True)
+        response = {"response_previewed": False}
+
+        _already_streamed = bool(
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or bool(response.get("response_previewed"))
+        )
+
+        assert _already_streamed is True
+
+    def test_queued_path_detects_previewed_response_delivery(self):
+        """A response already previewed via the adapter should not be resent
+        before processing the queued follow-up."""
+        _sc = self._make_mock_sc(already_sent=False, final_response_sent=False)
+        response = {"response_previewed": True}
+
+        _already_streamed = bool(
+            (_sc and getattr(_sc, "final_response_sent", False))
+            or bool(response.get("response_previewed"))
         )
 
         assert _already_streamed is True
@@ -264,14 +361,10 @@ class TestQueuedMessageAlreadyStreamed:
     def test_queued_path_sends_when_not_streamed(self):
         """Nothing was streamed — first response should be sent before
         processing the queued message."""
-        _sc = self._make_mock_sc(already_sent=False)
+        _sc = self._make_mock_sc(already_sent=False, final_response_sent=False)
 
         _already_streamed = bool(
-            _sc
-            and (
-                getattr(_sc, "final_response_sent", False)
-                or getattr(_sc, "already_sent", False)
-            )
+            _sc and getattr(_sc, "final_response_sent", False)
         )
 
         assert _already_streamed is False
@@ -281,11 +374,152 @@ class TestQueuedMessageAlreadyStreamed:
         _sc = None
 
         _already_streamed = bool(
-            _sc
-            and (
-                getattr(_sc, "final_response_sent", False)
-                or getattr(_sc, "already_sent", False)
-            )
+            _sc and getattr(_sc, "final_response_sent", False)
         )
 
         assert _already_streamed is False
+
+
+# ===================================================================
+# Test 4: stream_consumer.py — cancellation handler delivery confirmation
+# ===================================================================
+
+class TestCancellationHandlerDeliveryConfirmation:
+    """The stream consumer's cancellation handler should only set
+    final_response_sent when the best-effort send actually succeeds.
+    Partial content (already_sent=True) alone must not promote to
+    final_response_sent — that would suppress the gateway's fallback
+    send even when the user never received the real answer."""
+
+    def test_partial_only_no_accumulated_stays_false(self):
+        """Cancelled after sending intermediate text, nothing accumulated.
+        final_response_sent must stay False so the gateway fallback fires."""
+        already_sent = True
+        final_response_sent = False
+        accumulated = ""
+        message_id = None
+
+        _best_effort_ok = False
+        if accumulated and message_id:
+            _best_effort_ok = True  # wouldn't enter
+        if _best_effort_ok and not final_response_sent:
+            final_response_sent = True
+
+        assert final_response_sent is False
+
+    def test_best_effort_succeeds_sets_true(self):
+        """When accumulated content exists and best-effort send succeeds,
+        final_response_sent should become True."""
+        already_sent = True
+        final_response_sent = False
+        accumulated = "Here are the search results..."
+        message_id = "msg_123"
+
+        _best_effort_ok = False
+        if accumulated and message_id:
+            _best_effort_ok = True  # simulating successful _send_or_edit
+        if _best_effort_ok and not final_response_sent:
+            final_response_sent = True
+
+        assert final_response_sent is True
+
+    def test_best_effort_fails_stays_false(self):
+        """When best-effort send fails (flood control, network), the
+        gateway fallback must deliver the response."""
+        already_sent = True
+        final_response_sent = False
+        accumulated = "Here are the search results..."
+        message_id = "msg_123"
+
+        _best_effort_ok = False
+        if accumulated and message_id:
+            _best_effort_ok = False  # simulating failed _send_or_edit
+        if _best_effort_ok and not final_response_sent:
+            final_response_sent = True
+
+        assert final_response_sent is False
+
+    def test_preserves_existing_true(self):
+        """If final_response_sent was already True before cancellation,
+        it must remain True regardless."""
+        already_sent = True
+        final_response_sent = True
+        accumulated = ""
+        message_id = None
+
+        _best_effort_ok = False
+        if accumulated and message_id:
+            pass
+        if _best_effort_ok and not final_response_sent:
+            final_response_sent = True
+
+        assert final_response_sent is True
+
+    def test_old_behavior_would_have_promoted_partial(self):
+        """Verify the old code would have incorrectly promoted
+        already_sent to final_response_sent even with no accumulated
+        content — proving the bug existed."""
+        already_sent = True
+        final_response_sent = False
+
+        # OLD cancellation handler logic:
+        if already_sent:
+            final_response_sent = True
+
+        assert final_response_sent is True  # the bug: partial promoted to final
+
+
+class TestFinalContentDeliveredSuppression:
+    """When stream consumer delivered the final content but the cosmetic
+    final edit (cursor removal) failed, the gateway must suppress the
+    fallback send to prevent duplicate messages.
+
+    Covers the scenario not handled by final_response_sent alone:
+    content reached the user via _send_or_edit, but the subsequent edit
+    that clears a typing cursor or streaming marker failed, leaving
+    final_response_sent=False even though the user already saw the text.
+    """
+
+    def test_content_delivered_but_final_edit_failed_suppresses(self):
+        """final_content_delivered=True + final_response_sent=False
+        must suppress (content already visible to user)."""
+        sc = SimpleNamespace(
+            already_sent=True,
+            final_response_sent=False,
+            final_content_delivered=True,
+        )
+        response = {"final_response": "Hello!", "response_previewed": False}
+
+        _streamed = bool(getattr(sc, "final_response_sent", False))
+        _previewed = bool(response.get("response_previewed"))
+        _content_delivered = bool(getattr(sc, "final_content_delivered", False))
+        _is_empty_sentinel = (
+            not response.get("final_response")
+            or response.get("final_response") == "(empty)"
+        )
+        if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
+            response["already_sent"] = True
+
+        assert response.get("already_sent") is True
+
+    def test_intermediate_text_only_does_not_suppress(self):
+        """already_sent=True from intermediate text + final_content_delivered=False
+        must NOT suppress (user still needs the real final answer)."""
+        sc = SimpleNamespace(
+            already_sent=True,
+            final_response_sent=False,
+            final_content_delivered=False,
+        )
+        response = {"final_response": "Real answer", "response_previewed": False}
+
+        _streamed = bool(getattr(sc, "final_response_sent", False))
+        _previewed = bool(response.get("response_previewed"))
+        _content_delivered = bool(getattr(sc, "final_content_delivered", False))
+        _is_empty_sentinel = (
+            not response.get("final_response")
+            or response.get("final_response") == "(empty)"
+        )
+        if not _is_empty_sentinel and (_streamed or _previewed or _content_delivered):
+            response["already_sent"] = True
+
+        assert "already_sent" not in response

@@ -17,7 +17,17 @@ import logging
 import socket as _socket
 import time
 from typing import Any, Dict, List, Optional
-from xml.etree import ElementTree as ET
+# Security: parse untrusted, pre-auth request bodies (WeCom callbacks) with
+# defusedxml to block billion-laughs / entity-expansion (and XXE) DoS. The
+# parsing API (fromstring) is a drop-in for the stdlib calls used below;
+# response-building XML lives in wecom_crypto.py and is not parsed here.
+try:
+    import defusedxml.ElementTree as ET
+
+    DEFUSEDXML_AVAILABLE = True
+except ImportError:
+    ET = None  # type: ignore[assignment]
+    DEFUSEDXML_AVAILABLE = False
 
 try:
     from aiohttp import web
@@ -49,7 +59,7 @@ MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
 def check_wecom_callback_requirements() -> bool:
-    return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
+    return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE and DEFUSEDXML_AVAILABLE
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):
@@ -119,7 +129,9 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             pass
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=20.0)
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
             self._app = web.Application()
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get(self._path, self._handle_verify)
@@ -185,7 +197,6 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         app = self._resolve_app_for_chat(chat_id)
         touser = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
         try:
-            token = await self._get_access_token(app)
             payload = {
                 "touser": touser,
                 "msgtype": "text",
@@ -193,18 +204,31 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 "text": {"content": content[:2048]},
                 "safe": 0,
             }
-            resp = await self._http_client.post(
-                f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
-                json=payload,
-            )
-            data = resp.json()
-            if data.get("errcode") != 0:
-                return SendResult(success=False, error=str(data))
-            return SendResult(
-                success=True,
-                message_id=str(data.get("msgid", "")),
-                raw_response=data,
-            )
+            for _attempt in range(2):
+                token = await self._get_access_token(app)
+                resp = await self._http_client.post(
+                    f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
+                    json=payload,
+                )
+                data = resp.json()
+                errcode = data.get("errcode")
+                if errcode in {40001, 42001} and _attempt == 0:
+                    # WeCom rejected the token — evict the cached entry so
+                    # the next _get_access_token call forces a fresh fetch.
+                    logger.warning(
+                        "[WecomCallback] Token rejected for app '%s' (errcode=%s), refreshing",
+                        app.get("name", "default"), errcode,
+                    )
+                    self._access_tokens.pop(app["name"], None)
+                    continue
+                if errcode != 0:
+                    return SendResult(success=False, error=str(data))
+                return SendResult(
+                    success=True,
+                    message_id=str(data.get("msgid", "")),
+                    raw_response=data,
+                )
+            return SendResult(success=False, error="send failed after token refresh")
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
@@ -258,6 +282,20 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                 )
                 event = self._build_event(app, decrypted)
                 if event is not None:
+                    # Deduplicate: WeCom retries callbacks on timeout,
+                    # producing duplicate inbound messages (#10305).
+                    if event.message_id:
+                        now = time.time()
+                        if event.message_id in self._seen_messages:
+                            if now - self._seen_messages[event.message_id] < MESSAGE_DEDUP_TTL_SECONDS:
+                                logger.debug("[WecomCallback] Duplicate MsgId %s, skipping", event.message_id)
+                                return web.Response(text="success", content_type="text/plain")
+                            del self._seen_messages[event.message_id]
+                        self._seen_messages[event.message_id] = now
+                        # Prune expired entries when cache grows large
+                        if len(self._seen_messages) > 2000:
+                            cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
+                            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
                     # Record which app this user belongs to.
                     if event.source and event.source.user_id:
                         map_key = self._user_app_key(

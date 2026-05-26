@@ -28,10 +28,16 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         agent = AIAgent.__new__(AIAgent)
         agent._interrupt_requested = False
         agent._interrupt_message = None
-        agent._execution_thread_id = None  # defaults to current thread in set_interrupt
+        agent._execution_thread_id = None
+        agent._interrupt_thread_signal_pending = False
         agent._active_children = []
         agent._active_children_lock = threading.Lock()
         agent.quiet_mode = True
+        # Provider/model/base_url are read by stale-timeout resolution paths;
+        # the specific values don't matter for interrupt tests.
+        agent.provider = "openrouter"
+        agent.model = "test/model"
+        agent._base_url = "http://localhost:1234"
         return agent
 
     def test_parent_interrupt_sets_child_flag(self):
@@ -46,15 +52,17 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         assert parent._interrupt_requested is True
         assert child._interrupt_requested is True
         assert child._interrupt_message == "new user message"
-        assert is_interrupted() is True
+        assert is_interrupted() is False
+        assert parent._interrupt_thread_signal_pending is True
 
     def test_child_clear_interrupt_at_start_clears_thread(self):
         """child.clear_interrupt() at start of run_conversation clears the
-        per-thread interrupt flag for the current thread.
+        bound execution thread's interrupt flag.
         """
         child = self._make_bare_agent()
         child._interrupt_requested = True
         child._interrupt_message = "msg"
+        child._execution_thread_id = threading.current_thread().ident
 
         # Interrupt for current thread is set
         set_interrupt(True)
@@ -127,6 +135,36 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         assert detected, "Child never detected the interrupt!"
         child_thread.join(timeout=1)
         set_interrupt(False)
+
+    def test_prestart_interrupt_binds_to_execution_thread(self):
+        """An interrupt that arrives before startup should bind to the agent thread."""
+        agent = self._make_bare_agent()
+        barrier = threading.Barrier(2)
+        result = {}
+
+        agent.interrupt("stop before start")
+        assert agent._interrupt_requested is True
+        assert agent._interrupt_thread_signal_pending is True
+        assert is_interrupted() is False
+
+        def run_thread():
+            from tools.interrupt import set_interrupt as _set_interrupt_for_test
+
+            agent._execution_thread_id = threading.current_thread().ident
+            _set_interrupt_for_test(False, agent._execution_thread_id)
+            if agent._interrupt_requested:
+                _set_interrupt_for_test(True, agent._execution_thread_id)
+                agent._interrupt_thread_signal_pending = False
+            barrier.wait(timeout=5)
+            result["thread_interrupted"] = is_interrupted()
+
+        t = threading.Thread(target=run_thread)
+        t.start()
+        barrier.wait(timeout=5)
+        t.join(timeout=2)
+
+        assert result["thread_interrupted"] is True
+        assert agent._interrupt_thread_signal_pending is False
 
 
 class TestPerThreadInterruptIsolation(unittest.TestCase):

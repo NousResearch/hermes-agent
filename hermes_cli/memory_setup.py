@@ -7,12 +7,13 @@ the provider's config schema. Writes config to config.yaml + .env.
 
 from __future__ import annotations
 
-import getpass
 import os
 import sys
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +39,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     """Prompt for a value with optional default and secret masking."""
     suffix = f" [{default}]" if default else ""
     if secret:
-        sys.stdout.write(f"  {label}{suffix}: ")
-        sys.stdout.flush()
-        if sys.stdin.isatty():
-            val = getpass.getpass(prompt="")
-        else:
-            val = sys.stdin.readline().strip()
+        val = masked_secret_prompt(f"  {label}{suffix}: ")
     else:
         sys.stdout.write(f"  {label}{suffix}: ")
         sys.stdout.flush()
@@ -58,16 +54,18 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
-    from pathlib import Path as _Path
+    from plugins.memory import find_provider_dir
 
-    plugin_dir = _Path(__file__).parent.parent / "plugins" / "memory" / provider_name
+    plugin_dir = find_provider_dir(provider_name)
+    if not plugin_dir:
+        return
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
         return
 
     try:
         import yaml
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding="utf-8") as f:
             meta = yaml.safe_load(f) or {}
     except Exception:
         return
@@ -132,7 +130,7 @@ def _install_dependencies(provider_name: str) -> None:
         if check_cmd:
             try:
                 subprocess.run(
-                    check_cmd, shell=True, capture_output=True, timeout=5
+                    shlex.split(check_cmd), check=True, capture_output=True, timeout=5
                 )
             except Exception:
                 if install_cmd:
@@ -359,7 +357,7 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 
     existing_lines = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
 
     updated_keys = set()
     new_lines = []
@@ -375,7 +373,13 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
 
-    env_path.write_text("\n".join(new_lines) + "\n")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Restrict permissions — .env holds API keys and tokens.
+    try:
+        import stat
+        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass  # Windows or read-only FS
 
 
 # ---------------------------------------------------------------------------

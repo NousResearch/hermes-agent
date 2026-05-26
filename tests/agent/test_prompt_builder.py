@@ -354,6 +354,24 @@ class TestBuildSkillsSystemPrompt:
         assert "web-search" in result
         assert "old-tool" not in result
 
+    def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: cached-skill\ndescription: Cached skill\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "cached-skill" in first
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  disabled: [cached-skill]\n"
+        )
+
+        second = build_skills_system_prompt()
+        assert "cached-skill" not in second
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
@@ -413,7 +431,7 @@ class TestBuildSkillsSystemPrompt:
 
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):
-        monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setattr(
             "hermes_cli.nous_subscription.get_nous_subscription_features",
             lambda config=None: NousSubscriptionFeatures(
@@ -437,7 +455,7 @@ class TestBuildNousSubscriptionPrompt:
         assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
 
     def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
-        monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setattr(
             "hermes_cli.nous_subscription.get_nous_subscription_features",
             lambda config=None: NousSubscriptionFeatures(
@@ -460,7 +478,7 @@ class TestBuildNousSubscriptionPrompt:
         assert "Do not mention subscription unless" in prompt
 
     def test_feature_flag_off_returns_empty_prompt(self, monkeypatch):
-        monkeypatch.delenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", raising=False)
+        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: False)
 
         prompt = build_nous_subscription_prompt({"web_search"})
 
@@ -770,6 +788,51 @@ class TestPromptBuilderConstants:
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+        assert "api_server" in PLATFORM_HINTS
+        assert "webui" in PLATFORM_HINTS
+
+    def test_cli_hint_does_not_suggest_media_tags(self):
+        # Regression: MEDIA:/path tags are intercepted only by messaging
+        # gateway platforms. On the CLI they render as literal text and
+        # confuse users. The CLI hint must steer the agent away from them.
+        cli_hint = PLATFORM_HINTS["cli"]
+        assert "MEDIA:" in cli_hint, (
+            "CLI hint should mention MEDIA: in order to tell the agent "
+            "NOT to use it (negative guidance)."
+        )
+        # Must contain explicit "don't" language near the MEDIA reference.
+        assert any(
+            marker in cli_hint.lower()
+            for marker in ("do not emit media", "not intercepted", "do not", "don't")
+        ), "CLI hint should explicitly discourage MEDIA: tags."
+        # Messaging hints should still advertise MEDIA: positively (sanity
+        # check that this test is calibrated correctly).
+        assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+
+    def test_platform_hints_mattermost(self):
+        hint = PLATFORM_HINTS["mattermost"]
+        assert "Mattermost" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_matrix(self):
+        hint = PLATFORM_HINTS["matrix"]
+        assert "Matrix" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_feishu(self):
+        hint = PLATFORM_HINTS["feishu"]
+        assert "Feishu" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_webui(self):
+        hint = PLATFORM_HINTS["webui"]
+        assert "WebUI" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+        assert "absolute" in hint
 
 
 # =========================================================================
@@ -784,15 +847,106 @@ class TestEnvironmentHints:
     def test_build_environment_hints_on_wsl(self, monkeypatch):
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
         assert "/mnt/" in result
         assert "WSL" in result
+        # WSL block still carries the always-on host info ahead of it.
+        assert "User home directory:" in result
 
-    def test_build_environment_hints_not_wsl(self, monkeypatch):
+    def test_build_environment_hints_on_linux_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert result != ""
+        assert "Host: Linux" in result
+        assert "6.8.0-generic" in result
+        assert "User home directory:" in result
+        assert "Current working directory:" in result
+        # Linux must NOT get the Windows-specific callouts.
+        assert "PowerShell" not in result
+        assert "hostname" not in result
+        assert "WSL" not in result
+
+    def test_build_environment_hints_on_windows_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: Windows" in result
+        assert "User home directory:" in result
+        # Two Windows-specific callouts that must ALWAYS appear together:
+        # hostname warning + bash-not-PowerShell warning.
+        assert "hostname" in result
+        assert "NOT the username" in result
+        assert "bash" in result
+        assert "PowerShell" in result
+
+    def test_build_environment_hints_on_macos_local(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: macOS" in result
+        assert "User home directory:" in result
+        # macOS must NOT get the Windows-specific callouts.
+        assert "PowerShell" not in result
+        assert "hostname" not in result
+
+    def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
+        """Docker/remote backends must hide host info — the agent can only touch the backend."""
+        import agent.prompt_builder as _pb
+        import sys
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        # Force the probe to fail so we exercise the static fallback path
+        # deterministically (the live probe would try to spin up docker).
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        # Host suppression: none of the local-backend lines should appear.
+        assert "Host: Windows" not in result
+        assert "User home directory:" not in result
+        assert "PowerShell" not in result
+        # Backend info must appear instead.
+        assert "Terminal backend: docker" in result
+        assert "inside" in result.lower()
+
+    def test_build_environment_hints_uses_live_probe_when_available(self, monkeypatch):
+        """When the probe succeeds, its output must appear in the hint block."""
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        fake_probe_output = "  OS: Linux 6.8.0\n  User: root\n  Home: /root\n  Working directory: /workspace"
+        monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: fake_probe_output)
+        _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
-        assert result == ""
+        assert "Terminal backend: modal" in result
+        assert "Linux 6.8.0" in result
+        assert "/workspace" in result
+
+    def test_remote_backend_list_covers_known_sandboxes(self):
+        """Regression guard: if someone adds a remote backend, they must list it here."""
+        import agent.prompt_builder as _pb
+        for backend in ("docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox"):
+            assert backend in _pb._REMOTE_TERMINAL_BACKENDS, (
+                f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
+                f"info is suppressed in the system prompt"
+            )
 
 
 # =========================================================================
@@ -989,6 +1143,12 @@ class TestToolUseEnforcementGuidance:
 
     def test_enforcement_models_includes_grok(self):
         assert "grok" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_qwen(self):
+        assert "qwen" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_deepseek(self):
+        assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
 
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)

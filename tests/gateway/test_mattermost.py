@@ -12,15 +12,6 @@ from gateway.config import Platform, PlatformConfig
 # Platform & Config
 # ---------------------------------------------------------------------------
 
-class TestMattermostPlatformEnum:
-    def test_mattermost_enum_exists(self):
-        assert Platform.MATTERMOST.value == "mattermost"
-
-    def test_mattermost_in_platform_list(self):
-        platforms = [p.value for p in Platform]
-        assert "mattermost" in platforms
-
-
 class TestMattermostConfigLoading:
     def test_apply_env_overrides_mattermost(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
@@ -45,17 +36,6 @@ class TestMattermostConfigLoading:
         _apply_env_overrides(config)
 
         assert Platform.MATTERMOST not in config.platforms
-
-    def test_connected_platforms_includes_mattermost(self, monkeypatch):
-        monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
-        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        connected = config.get_connected_platforms()
-        assert Platform.MATTERMOST in connected
 
     def test_mattermost_home_channel(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
@@ -91,7 +71,7 @@ class TestMattermostConfigLoading:
 
 def _make_adapter():
     """Create a MattermostAdapter with mocked config."""
-    from gateway.platforms.mattermost import MattermostAdapter
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
     config = PlatformConfig(
         enabled=True,
         token="test-token",
@@ -217,7 +197,19 @@ class TestMattermostSend:
         mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_resp.__aexit__ = AsyncMock(return_value=False)
 
+        # send() now calls _resolve_root_id → _api_get("posts/<id>") first
+        # to make sure root_id points to a thread root, so we need to mock
+        # the GET too.  Return an empty dict (no root_id) so the resolver
+        # falls back to the original reply_to as the root.
+        mock_get_resp = AsyncMock()
+        mock_get_resp.status = 200
+        mock_get_resp.json = AsyncMock(return_value={"id": "root_post", "root_id": ""})
+        mock_get_resp.text = AsyncMock(return_value="")
+        mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
+        mock_get_resp.__aexit__ = AsyncMock(return_value=False)
+
         self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
 
@@ -645,19 +637,19 @@ class TestMattermostRequirements:
     def test_check_requirements_with_token_and_url(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
         monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
-        from gateway.platforms.mattermost import check_mattermost_requirements
+        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
         assert check_mattermost_requirements() is True
 
     def test_check_requirements_without_token(self, monkeypatch):
         monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
-        from gateway.platforms.mattermost import check_mattermost_requirements
+        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
         assert check_mattermost_requirements() is False
 
     def test_check_requirements_without_url(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
-        from gateway.platforms.mattermost import check_mattermost_requirements
+        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
         assert check_mattermost_requirements() is False
 
 

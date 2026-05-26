@@ -6,7 +6,7 @@ description: "A practical guide to setting up and using Hermes voice mode across
 
 # Use Voice Mode with Hermes
 
-This guide is the practical companion to the [Voice Mode feature reference](/docs/user-guide/features/voice-mode).
+This guide is the practical companion to the [Voice Mode feature reference](/user-guide/features/voice-mode).
 
 If the feature page explains what voice mode can do, this guide shows how to actually use it well.
 
@@ -164,6 +164,7 @@ voice:
   record_key: "ctrl+b"
   max_recording_seconds: 120
   auto_tts: false
+  beep_enabled: true
   silence_threshold: 200
   silence_duration: 3.0
 
@@ -448,8 +449,8 @@ That progression keeps the debugging surface small.
 
 ## Where to read next
 
-- [Voice Mode feature reference](/docs/user-guide/features/voice-mode)
-- [Messaging Gateway](/docs/user-guide/messaging)
-- [Discord setup](/docs/user-guide/messaging/discord)
-- [Telegram setup](/docs/user-guide/messaging/telegram)
-- [Configuration](/docs/user-guide/configuration)
+- [Voice Mode feature reference](/user-guide/features/voice-mode)
+- [Messaging Gateway](/user-guide/messaging)
+- [Discord setup](/user-guide/messaging/discord)
+- [Telegram setup](/user-guide/messaging/telegram)
+- [Configuration](/user-guide/configuration)

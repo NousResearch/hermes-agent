@@ -1,6 +1,6 @@
 """Regression tests for /retry replacement semantics."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -11,14 +11,17 @@ from gateway.session import SessionStore
 
 
 @pytest.mark.asyncio
-async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path):
+async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, monkeypatch):
+    # Pin DEFAULT_DB_PATH so SessionDB() doesn't write to the real ~/.hermes/state.db.
+    # (Module-level constant snapshot, see test_load_transcript_db_only.)
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
     config = GatewayConfig()
-    with patch("gateway.session.SessionStore._ensure_loaded"):
-        store = SessionStore(sessions_dir=tmp_path, config=config)
-    store._db = None
-    store._loaded = True
+    store = SessionStore(sessions_dir=tmp_path, config=config)
 
     session_id = "retry_session"
+    store._db.create_session(session_id=session_id, source="test")
     for msg in [
         {"role": "session_meta", "tools": []},
         {"role": "user", "content": "first question"},

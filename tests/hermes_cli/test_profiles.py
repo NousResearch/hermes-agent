@@ -26,6 +26,7 @@ from hermes_cli.profiles import (
     get_active_profile_name,
     resolve_profile_env,
     check_alias_collision,
+    create_wrapper_script,
     rename_profile,
     export_profile,
     import_profile,
@@ -477,6 +478,34 @@ class TestListProfiles:
         profiles = list_profiles()
         assert profiles[0].name == "default"
         assert profiles[0].is_default is True
+
+
+# ===================================================================
+# TestWrapperScripts
+# ===================================================================
+
+class TestWrapperScripts:
+    """Tests for create_wrapper_script()."""
+
+    def test_standard_root_wrapper_uses_plain_profile_exec(self, profile_env):
+        tmp_path = profile_env
+        wrapper = create_wrapper_script("coder")
+        assert wrapper is not None
+        assert wrapper.read_text() == '#!/bin/sh\nexec hermes -p coder "$@"\n'
+        assert wrapper.parent == tmp_path / ".local" / "bin"
+
+    def test_custom_root_wrapper_exports_hermes_home(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        custom_root = tmp_path / "custom-hermes-root"
+        custom_root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(custom_root))
+
+        wrapper = create_wrapper_script("coder")
+        assert wrapper is not None
+        content = wrapper.read_text()
+        assert "export HERMES_HOME=" in content
+        assert str(custom_root) in content
+        assert 'exec hermes -p coder "$@"' in content
 
 
 # ===================================================================

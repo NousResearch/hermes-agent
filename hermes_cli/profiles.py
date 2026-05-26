@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import stat
 import subprocess
 import sys
@@ -371,7 +372,17 @@ def create_wrapper_script(name: str) -> Optional[Path]:
 
     wrapper_path = wrapper_dir / canon
     try:
-        wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {canon} "$@"\n')
+        default_root = _get_default_hermes_home()
+        standard_root = Path.home() / ".hermes"
+        if default_root.resolve(strict=False) != standard_root.resolve(strict=False):
+            script = (
+                "#!/bin/sh\n"
+                f"export HERMES_HOME={shlex.quote(str(default_root))}\n"
+                f'exec hermes -p {canon} "$@"\n'
+            )
+        else:
+            script = f'#!/bin/sh\nexec hermes -p {canon} "$@"\n'
+        wrapper_path.write_text(script)
         wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return wrapper_path
     except OSError as e:

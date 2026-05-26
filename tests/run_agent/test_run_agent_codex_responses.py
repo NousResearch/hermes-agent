@@ -1852,7 +1852,11 @@ def test_chat_messages_to_responses_input_strips_message_id_for_github_responses
     items_copilot = _chat_messages_to_responses_input(
         payload, is_github_responses=True
     )
-    replay_copilot = next(item for item in items_copilot if item.get("type") == "message")
+    message_items_copilot = [item for item in items_copilot if item.get("type") == "message"]
+    assert message_items_copilot, (
+        "Copilot ``/responses`` adapter must still emit a replayed assistant message item"
+    )
+    replay_copilot = message_items_copilot[0]
     assert "id" not in replay_copilot, (
         "Copilot ``/responses`` replay must omit the connection-bound id"
     )
@@ -1862,7 +1866,11 @@ def test_chat_messages_to_responses_input_strips_message_id_for_github_responses
     # Other Responses transports (native Codex, xAI) keep the id so the
     # OpenAI/xAI backend can land prefix-cache hits.
     items_default = _chat_messages_to_responses_input(payload)
-    replay_default = next(item for item in items_default if item.get("type") == "message")
+    message_items_default = [item for item in items_default if item.get("type") == "message"]
+    assert message_items_default, (
+        "Default Responses adapter must still emit a replayed assistant message item"
+    )
+    replay_default = message_items_default[0]
     assert replay_default["id"] == "msg_connection_bound_abc123"
     assert replay_default["phase"] == "final"
 

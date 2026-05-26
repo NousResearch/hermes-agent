@@ -270,9 +270,11 @@ def _chat_messages_to_responses_input(
     load-balancer churn between turns.  Replaying the id after the
     connection rotates yields ``HTTP 401 "input item ID does not belong
     to this connection"`` and permanently poisons the session because
-    every subsequent turn re-sends the same bad ids.  Content and phase
-    are preserved so multi-turn coherence and prefix-cache opportunities
-    survive the strip.
+    every subsequent turn re-sends the same bad ids.  The replayed
+    ``content``, ``phase`` and ``status`` are enough to preserve
+    multi-turn coherence; the id-keyed prefix-cache shortcut that
+    other Responses backends use is intentionally given up on the
+    Copilot path since it is the very mechanism that breaks here.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()

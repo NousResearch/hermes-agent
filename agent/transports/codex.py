@@ -24,10 +24,15 @@ class ResponsesApiTransport(ProviderTransport):
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        # Strict identity checks: only enable backend-specific replay
+        # behaviour when the caller passes the actual ``True`` value.
+        # ``bool(...)`` would treat truthy strings like "false"/"0"
+        # coming from environment plumbing as ``True`` and silently
+        # change Responses replay semantics.
         return _chat_messages_to_responses_input(
             messages,
-            is_xai_responses=bool(kwargs.get("is_xai_responses")),
-            is_github_responses=bool(kwargs.get("is_github_responses")),
+            is_xai_responses=kwargs.get("is_xai_responses") is True,
+            is_github_responses=kwargs.get("is_github_responses") is True,
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:

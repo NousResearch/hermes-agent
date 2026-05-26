@@ -770,7 +770,7 @@ export default function MissionControlPage() {
         <CommandDeck status={status} activeJobs={activeJobs} approvalSummary={approvalSummary} />
       </div>
 
-      <div className="mx-auto mt-5 flex max-w-[1900px] min-w-0 flex-col gap-5 2xl:max-w-[2050px]">
+      <div className="font-readable-ui mx-auto mt-5 flex max-w-[1900px] min-w-0 flex-col gap-5 2xl:max-w-[2050px]">
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {DASHBOARD_METRICS.map((metric) => (
             <Card key={metric.label} className={cockpitCard}>

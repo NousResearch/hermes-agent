@@ -218,10 +218,10 @@ code { font-size: 0.875rem; }
    small status cards. Use a plain system UI stack and normal spacing where the
    user needs to scan operational text quickly. */
 .font-readable-ui,
-.font-readable-ui :where(*) {
+.font-readable-ui * {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  letter-spacing: normal;
+    "Helvetica Neue", Arial, sans-serif !important;
+  letter-spacing: normal !important;
   text-rendering: optimizeLegibility;
 }
 

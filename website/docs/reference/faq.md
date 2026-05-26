@@ -316,7 +316,7 @@ hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 hermes chat
 
 # Use a model with a larger context window
-hermes chat --model openrouter/google/gemini-3-flash-preview
+hermes chat --model openrouter/google/gemini-3.5-flash
 ```
 
 If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
@@ -649,7 +649,7 @@ There is no hard limit. Each profile is just a directory under `~/.hermes/profil
 
 ```yaml
 delegation:
-  model: "google/gemini-3-flash-preview"   # subagents use this model
+  model: "google/gemini-3.5-flash"   # subagents use this model
   provider: "openrouter"                    # provider for subagents
 ```
 
@@ -660,7 +660,7 @@ You can also be explicit in your prompt: *"Delegate a task to write social media
 For one-off model switches without delegation, use `/model` in the CLI:
 
 ```bash
-/model google/gemini-3-flash-preview    # switch for this session
+/model google/gemini-3.5-flash    # switch for this session
 # ... write your content ...
 /model openai/gpt-5.4                   # switch back
 ```

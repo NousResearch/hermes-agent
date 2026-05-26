@@ -650,7 +650,7 @@ async def vision_analyze_tool(
         image_url (str): The URL or local file path of the image to analyze.
                          Accepts http://, https:// URLs or absolute/relative file paths.
         user_prompt (str): The pre-formatted prompt for the vision model
-        model (str): The vision model to use (default: google/gemini-3-flash-preview)
+        model (str): The vision model to use (default: google/gemini-3.5-flash)
     
     Returns:
         str: JSON string containing the analysis results with the following structure:
@@ -1348,7 +1348,7 @@ async def video_analyze_tool(
             analysis = (
                 f"The model does not support video analysis or the request was "
                 f"rejected. Ensure you're using a video-capable model "
-                f"(e.g. google/gemini-2.5-flash). Error: {e}"
+                f"(e.g. google/gemini-3.5-flash). Error: {e}"
             )
         elif any(hint in err_str for hint in (
             "too large", "payload", "413", "content_too_large",

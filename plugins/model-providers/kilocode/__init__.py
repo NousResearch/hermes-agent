@@ -8,7 +8,7 @@ kilocode = ProviderProfile(
     aliases=("kilo-code", "kilo", "kilo-gateway"),
     env_vars=("KILOCODE_API_KEY",),
     base_url="https://api.kilo.ai/api/gateway",
-    default_aux_model="google/gemini-3-flash-preview",
+    default_aux_model="google/gemini-3.5-flash",
 )
 
 register_provider(kilocode)

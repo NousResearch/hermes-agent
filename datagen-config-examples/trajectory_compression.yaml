@@ -42,7 +42,7 @@ protected_turns:
 summarization:
   # Model to use for summarization (should be fast and cheap)
   # Using OpenRouter model path format
-  model: "google/gemini-3-flash-preview"
+  model: "google/gemini-3.5-flash"
   
   # OpenRouter API settings
   base_url: "https://openrouter.ai/api/v1"

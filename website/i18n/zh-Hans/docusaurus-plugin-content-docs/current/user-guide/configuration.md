@@ -604,7 +604,7 @@ compression:
 # 摘要模型/provider 在 auxiliary: 下配置：
 auxiliary:
   compression:
-    model: ""                                       # 空 = 使用主聊天模型。覆盖为例如 "google/gemini-3-flash-preview" 以获得更便宜/更快的压缩。
+    model: ""                                       # 空 = 使用主聊天模型。覆盖为例如 "google/gemini-3.5-flash" 以获得更便宜/更快的压缩。
     provider: "auto"                                # Provider："auto"、"openrouter"、"nous"、"codex"、"main" 等
     base_url: null                                  # 自定义 OpenAI 兼容端点（覆盖 provider）
 ```
@@ -784,7 +784,7 @@ $ hermes model
 
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
-[ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
+[ ] title_generation     currently: openrouter / google/gemini-3.5-flash
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
@@ -1631,7 +1631,7 @@ checkpoints:
 
 ```yaml
 delegation:
-  # model: "google/gemini-3-flash-preview"  # 覆盖模型（空 = 继承父级）
+  # model: "google/gemini-3.5-flash"  # 覆盖模型（空 = 继承父级）
   # provider: "openrouter"                  # 覆盖 provider（空 = 继承父级）
   # base_url: "http://localhost:1234/v1"    # 直接 OpenAI 兼容端点（优先于 provider）
   # api_key: "local-key"                    # base_url 的 API 密钥（回退到 OPENAI_API_KEY）

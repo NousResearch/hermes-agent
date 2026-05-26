@@ -348,7 +348,7 @@ async def process_content_with_llm(
         content (str): The raw content to process
         url (str): The source URL (for context, optional)
         title (str): The page title (for context, optional)
-        model (str): The model to use for processing (default: google/gemini-3-flash-preview)
+        model (str): The model to use for processing (default: google/gemini-3.5-flash)
         min_length (int): Minimum content length to trigger processing (default: 5000)
         
     Returns:
@@ -1473,7 +1473,7 @@ if __name__ == "__main__":
         print("  crawl_data = await web_crawl_tool(")
         print("      'docs.python.org',")
         print("      'Find key concepts',")
-        print("      model='google/gemini-3-flash-preview',")
+        print("      model='google/gemini-3.5-flash',")
         print("      min_length=3000")
         print("  )")
         print("")

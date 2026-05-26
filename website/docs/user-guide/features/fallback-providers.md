@@ -249,7 +249,7 @@ Every task above follows the same **provider / model / base_url** pattern. Conte
 auxiliary:
   compression:
     provider: main                                    # Same provider options as other auxiliary tasks
-    model: google/gemini-3-flash-preview
+    model: google/gemini-3.5-flash
     base_url: null                                    # Custom OpenAI-compatible endpoint
 ```
 
@@ -317,7 +317,7 @@ auxiliary:
     model: glm-4v-flash
     fallback_chain:
       - provider: openrouter
-        model: google/gemini-3-flash-preview
+        model: google/gemini-3.5-flash
       - provider: nous
         model: anthropic/claude-sonnet-4
 
@@ -350,7 +350,7 @@ Context compression uses the `auxiliary.compression` config block to control whi
 auxiliary:
   compression:
     provider: "auto"                              # auto | openrouter | nous | main
-    model: "google/gemini-3-flash-preview"
+    model: "google/gemini-3.5-flash"
 ```
 
 :::info Legacy migration
@@ -368,7 +368,7 @@ Subagents spawned by `delegate_task` do **not** use the primary fallback model. 
 ```yaml
 delegation:
   provider: "openrouter"                      # override provider for all subagents
-  model: "google/gemini-3-flash-preview"      # override model
+  model: "google/gemini-3.5-flash"      # override model
   # base_url: "http://localhost:1234/v1"      # or use a direct endpoint
   # api_key: "local-key"
 ```
@@ -387,7 +387,7 @@ cronjob(
     schedule="every 2h",
     prompt="Check server status",
     provider="openrouter",
-    model="google/gemini-3-flash-preview"
+    model="google/gemini-3.5-flash"
 )
 ```
 

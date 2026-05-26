@@ -61,7 +61,7 @@ Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_ext
 auxiliary:
   web_extract:
     provider: openrouter
-    model: google/gemini-3-flash-preview
+    model: google/gemini-3.5-flash
     timeout: 360       # 秒；如果遇到摘要超时，请调大此值
 ```
 
@@ -426,7 +426,7 @@ web:
 辅助模型未能在配置的超时时间内完成摘要。可以：
 
 - 在 `config.yaml` 中调大 `auxiliary.web_extract.timeout`（新安装默认 360 秒，若键缺失则为 30 秒）
-- 将 `web_extract` 辅助任务切换到更快的模型（例如 `google/gemini-3-flash-preview`）——参见 [`web_extract` 如何处理长页面](#how-web_extract-handles-long-pages)
+- 将 `web_extract` 辅助任务切换到更快的模型（例如 `google/gemini-3.5-flash`）——参见 [`web_extract` 如何处理长页面](#how-web_extract-handles-long-pages)
 - 对于摘要处理不适用的页面，改用 `browser_navigate`
 
 ---

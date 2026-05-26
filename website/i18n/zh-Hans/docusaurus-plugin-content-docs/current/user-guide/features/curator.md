@@ -70,7 +70,7 @@ hermes model                   # → "Auxiliary models — side-task routing"
 auxiliary:
   curator:
     provider: openrouter
-    model: google/gemini-3-flash-preview
+    model: google/gemini-3.5-flash
     timeout: 600               # generous — reviews can take several minutes
 ```
 

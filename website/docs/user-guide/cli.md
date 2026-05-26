@@ -373,7 +373,7 @@ compression:
 # Summarization model configured under auxiliary:
 auxiliary:
   compression:
-    model: ""  # Leave empty to use the main chat model (default). Or pin a cheap fast model, e.g. "google/gemini-3-flash-preview".
+    model: ""  # Leave empty to use the main chat model (default). Or pin a cheap fast model, e.g. "google/gemini-3.5-flash".
 ```
 
 When compression triggers, middle turns are summarized while the first 3 and last 20 turns are always preserved.

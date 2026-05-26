@@ -615,7 +615,7 @@ compression:
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
   compression:
-    model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
+    model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3.5-flash" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
 ```
@@ -638,7 +638,7 @@ compression:
   enabled: true
   threshold: 0.50
 ```
-Uses your main provider and main model. Override per-task (e.g. `auxiliary.compression.provider: openrouter` + `model: google/gemini-2.5-flash`) if you want compression on a cheaper model than your main chat model.
+Uses your main provider and main model. Override per-task (e.g. `auxiliary.compression.provider: openrouter` + `model: google/gemini-3.5-flash`) if you want compression on a cheaper model than your main chat model.
 
 **Force a specific provider** (OAuth or API-key based):
 ```yaml
@@ -795,7 +795,7 @@ $ hermes model
 
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
-[ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
+[ ] title_generation     currently: openrouter / google/gemini-3.5-flash
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
@@ -850,7 +850,7 @@ auxiliary:
   # Image analysis (vision_analyze tool + browser screenshots)
   vision:
     provider: "auto"           # "auto", "openrouter", "nous", "codex", "main", etc.
-    model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
+    model: ""                  # e.g. "openai/gpt-4o", "google/gemini-3.5-flash"
     base_url: ""               # Custom OpenAI-compatible endpoint (overrides provider)
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
     timeout: 120               # seconds — LLM API call timeout; vision payloads need generous timeout
@@ -859,7 +859,7 @@ auxiliary:
   # Web page summarization + browser page text extraction
   web_extract:
     provider: "auto"
-    model: ""                  # e.g. "google/gemini-2.5-flash"
+    model: ""                  # e.g. "google/gemini-3.5-flash"
     base_url: ""
     api_key: ""
     timeout: 360               # seconds (6min) — per-attempt LLM summarization
@@ -1006,7 +1006,7 @@ auxiliary:
 auxiliary:
   vision:
     provider: "openrouter"
-    model: "openai/gpt-4o"      # or "google/gemini-2.5-flash", etc.
+    model: "openai/gpt-4o"      # or "google/gemini-3.5-flash", etc.
 ```
 
 **Using Codex OAuth** (ChatGPT Pro/Plus account — no API key needed):
@@ -1642,7 +1642,7 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
-  # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
+  # model: "google/gemini-3.5-flash"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)

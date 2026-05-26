@@ -373,7 +373,7 @@ compression:
 # 摘要模型在 auxiliary 下配置：
 auxiliary:
   compression:
-    model: ""  # 留空则使用主聊天模型（默认）。或指定一个廉价快速的模型，如 "google/gemini-3-flash-preview"。
+    model: ""  # 留空则使用主聊天模型（默认）。或指定一个廉价快速的模型，如 "google/gemini-3.5-flash"。
 ```
 
 压缩触发时，中间轮次会被摘要，同时始终保留前 3 轮和后 20 轮。

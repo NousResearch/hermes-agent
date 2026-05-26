@@ -252,16 +252,16 @@ To route specific aux tasks to a cheaper / different model, set explicit overrid
 auxiliary:
   title_generation:
     provider: openrouter
-    model: google/gemini-3-flash-preview
+    model: google/gemini-3.5-flash
   context_compression:
     provider: openrouter
-    model: google/gemini-3-flash-preview
+    model: google/gemini-3.5-flash
   vision_detect:
     provider: openrouter
-    model: google/gemini-3-flash-preview
+    model: google/gemini-3.5-flash
   goal_judge:
     provider: openrouter
-    model: google/gemini-3-flash-preview
+    model: google/gemini-3.5-flash
 ```
 
 The self-improvement review fork inherits the main runtime via `_current_main_runtime()` and Hermes downgrades it from `codex_app_server` to `codex_responses` automatically (so the fork can actually call `memory` and `skill_manage` — Hermes' own agent-loop tools). That fork still uses your subscription auth unless you've routed aux tasks elsewhere.

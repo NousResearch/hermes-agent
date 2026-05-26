@@ -61,7 +61,7 @@ To route extraction summaries to a cheap, fast model regardless of your main:
 auxiliary:
   web_extract:
     provider: openrouter
-    model: google/gemini-3-flash-preview
+    model: google/gemini-3.5-flash
     timeout: 360       # seconds; raise if you hit summarization timeouts
 ```
 
@@ -426,7 +426,7 @@ Switch to a self-hosted instance (see [Option A](#option-a--self-host-with-docke
 The auxiliary model didn't finish summarizing within the configured timeout. Either:
 
 - Raise `auxiliary.web_extract.timeout` in `config.yaml` (default 360s on fresh installs, 30s if the key is missing)
-- Switch the `web_extract` auxiliary task to a faster model (e.g. `google/gemini-3-flash-preview`) — see [How `web_extract` handles long pages](#how-web_extract-handles-long-pages)
+- Switch the `web_extract` auxiliary task to a faster model (e.g. `google/gemini-3.5-flash`) — see [How `web_extract` handles long pages](#how-web_extract-handles-long-pages)
 - For pages where summarization is the wrong tool, use `browser_navigate` instead
 
 ---

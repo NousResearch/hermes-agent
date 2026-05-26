@@ -47,7 +47,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("xiaomi/mimo-v2.5-pro",                   ""),
     ("tencent/hy3-preview",                    ""),
     ("google/gemini-3-pro-image-preview",      ""),
-    ("google/gemini-3-flash-preview",          ""),
+    ("google/gemini-3.5-flash",          ""),
     ("google/gemini-3.1-pro-preview",          ""),
     ("google/gemini-3.1-flash-lite-preview",   ""),
     ("qwen/qwen3.6-35b-a3b",                   ""),
@@ -176,7 +176,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "xiaomi/mimo-v2.5-pro",
         "tencent/hy3-preview",
         "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.5-flash",
         "google/gemini-3.1-pro-preview",
         "google/gemini-3.1-flash-lite-preview",
         "qwen/qwen3.6-35b-a3b",
@@ -231,19 +231,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-haiku-4.5",
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-3.5-flash",
         "gemini-2.5-pro",
     ],
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
     "google-gemini-cli": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-3.5-flash",
     ],
     "zai": [
         "glm-5.1",
@@ -407,7 +407,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
         "google/gemini-3-pro-preview",
-        "google/gemini-3-flash-preview",
+        "google/gemini-3.5-flash",
     ],
     # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
     # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
@@ -886,7 +886,7 @@ def get_nous_recommended_aux_model(
 
     Returns ``None`` when every candidate is missing, null, or the fetch
     fails — callers should fall back to their own default (currently
-    ``google/gemini-3-flash-preview``).
+    ``google/gemini-3.5-flash``).
     """
     base = portal_base_url or _resolve_nous_portal_url()
     payload = fetch_nous_recommended_models(base, force_refresh=force_refresh)

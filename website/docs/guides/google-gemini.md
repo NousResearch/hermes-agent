@@ -40,7 +40,7 @@ If you prefer direct config editing, use the native Gemini API base URL:
 
 ```yaml
 model:
-  default: gemini-3-flash-preview
+  default: gemini-3.5-flash
   provider: gemini
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
@@ -51,7 +51,7 @@ After running `hermes model`, your `~/.hermes/config.yaml` will contain:
 
 ```yaml
 model:
-  default: gemini-3-flash-preview
+  default: gemini-3.5-flash
   provider: gemini
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
@@ -119,13 +119,13 @@ The `hermes model` picker shows Gemini models maintained in Hermes' provider reg
 |-------|----|-------|
 | Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | Most capable preview model when available |
 | Gemini 3 Pro Preview | `gemini-3-pro-preview` | Strong reasoning and coding model |
-| Gemini 3 Flash Preview | `gemini-3-flash-preview` | Recommended default balance of speed and capability |
+| Gemini 3 Flash Preview | `gemini-3.5-flash` | Recommended default balance of speed and capability |
 | Gemini 3.1 Flash Lite Preview | `gemini-3.1-flash-lite-preview` | Fastest / lowest-cost option when available |
 
 Model availability changes over time. If a model disappears or is not enabled for your key, run `hermes model` again and pick one from the current list.
 
 :::info Model IDs
-Use Gemini's native model IDs such as `gemini-3-flash-preview`, not OpenRouter-style IDs like `google/gemini-3-flash-preview`, when `provider: gemini`.
+Use Gemini's native model IDs such as `gemini-3.5-flash`, not OpenRouter-style IDs like `google/gemini-3.5-flash`, when `provider: gemini`.
 :::
 
 ### Latest Aliases
@@ -144,7 +144,7 @@ model:
   base_url: https://generativelanguage.googleapis.com/v1beta
 ```
 
-If you need strict reproducibility, prefer explicit model IDs such as `gemini-3.1-pro-preview` or `gemini-3-flash-preview`.
+If you need strict reproducibility, prefer explicit model IDs such as `gemini-3.1-pro-preview` or `gemini-3.5-flash`.
 
 ### Gemma via the Gemini API
 
@@ -173,7 +173,7 @@ model:
 Use the `/model` command during a conversation:
 
 ```text
-/model gemini-3-flash-preview
+/model gemini-3.5-flash
 /model gemini-flash-latest
 /model gemini-3-pro-preview
 /model gemini-pro-latest

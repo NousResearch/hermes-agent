@@ -665,7 +665,7 @@ class GeminiCloudCodeClient:
     def _create_chat_completion(
         self,
         *,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.5-flash",
         messages: Optional[List[Dict[str, Any]]] = None,
         stream: bool = False,
         tools: Any = None,

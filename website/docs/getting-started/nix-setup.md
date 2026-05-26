@@ -257,7 +257,7 @@ Run `nix build .#configKeys && cat result` to see every leaf config key extracte
       compression = {
         enabled = true;
         threshold = 0.85;
-        summary_model = "google/gemini-3-flash-preview";
+        summary_model = "google/gemini-3.5-flash";
       };
       memory = { memory_enabled = true; user_profile_enabled = true; };
       display = { compact = false; personality = "kawaii"; };

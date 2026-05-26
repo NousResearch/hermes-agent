@@ -620,6 +620,9 @@ class ProfileInfo:
     distribution_name: Optional[str] = None
     distribution_version: Optional[str] = None
     distribution_source: Optional[str] = None
+    # Optional human-friendly nickname distinct from the profile's stable
+    # machine identifier / directory name. Persisted in ``profile.yaml``.
+    nickname: str = ""
     # Free-form description (1-2 sentences) of what this profile is good
     # at. Persisted in ``<profile_dir>/profile.yaml``. Empty when the
     # user has not described the profile (legacy profiles, fresh
@@ -796,23 +799,24 @@ def _profile_yaml_path(profile_dir: Path) -> Path:
 def read_profile_meta(profile_dir: Path) -> dict:
     """Read ``<profile_dir>/profile.yaml`` and return a dict.
 
-    Returns ``{"description": "", "description_auto": False}`` when the
+    Returns ``{"nickname": "", "description": "", "description_auto": False}`` when the
     file is missing or unreadable. Never raises — a corrupt
     profile.yaml on an unrelated profile must not break
     ``hermes profile list``.
     """
     path = _profile_yaml_path(profile_dir)
     if not path.is_file():
-        return {"description": "", "description_auto": False}
+        return {"nickname": "", "description": "", "description_auto": False}
     try:
         import yaml
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except Exception:
-        return {"description": "", "description_auto": False}
+        return {"nickname": "", "description": "", "description_auto": False}
     if not isinstance(data, dict):
-        return {"description": "", "description_auto": False}
+        return {"nickname": "", "description": "", "description_auto": False}
     return {
+        "nickname": str(data.get("nickname") or "").strip(),
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
     }
@@ -821,6 +825,7 @@ def read_profile_meta(profile_dir: Path) -> dict:
 def write_profile_meta(
     profile_dir: Path,
     *,
+    nickname: Optional[str] = None,
     description: Optional[str] = None,
     description_auto: Optional[bool] = None,
 ) -> None:
@@ -843,6 +848,8 @@ def write_profile_meta(
                 existing = loaded
         except Exception:
             existing = {}
+    if nickname is not None:
+        existing["nickname"] = nickname.strip()
     if description is not None:
         existing["description"] = description.strip()
     if description_auto is not None:
@@ -878,6 +885,7 @@ def list_profiles() -> List[ProfileInfo]:
             distribution_name=dist_name,
             distribution_version=dist_version,
             distribution_source=dist_source,
+            nickname=meta.get("nickname", ""),
             description=meta.get("description", ""),
             description_auto=meta.get("description_auto", False),
         ))
@@ -920,6 +928,7 @@ def list_profiles() -> List[ProfileInfo]:
                 distribution_name=dist_name,
                 distribution_version=dist_version,
                 distribution_source=dist_source,
+                nickname=meta.get("nickname", ""),
                 description=meta.get("description", ""),
                 description_auto=meta.get("description_auto", False),
             ))

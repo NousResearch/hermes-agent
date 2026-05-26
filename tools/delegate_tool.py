@@ -16,6 +16,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import copy
 import enum
 import json
 import logging
@@ -1984,8 +1985,6 @@ def delegate_task(
     # Apply profile baselines (explicit call params override profile values).
     # toolsets baseline from profile when the caller didn't pass any.
     toolsets = toolsets or _profile_overrides.get("toolsets")
-    # max_iterations baseline from profile when the caller didn't pass one.
-    max_iterations = max_iterations or _profile_overrides.get("max_iterations")
 
     # Load config
     cfg = _load_config()
@@ -2002,6 +2001,13 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     effective_max_iter = default_max_iter
+    # Config max_iterations is authoritative; a top-level profile only supplies a
+    # baseline when the config default is still in effect. This mirrors the
+    # per-task path below (see task_max_iter / _profile_max_iter) so single-task
+    # calls honor a profile's max_iterations instead of silently discarding it.
+    _top_profile_max_iter = _profile_overrides.get("max_iterations")
+    if _top_profile_max_iter and effective_max_iter == default_max_iter:
+        effective_max_iter = _top_profile_max_iter
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -2109,11 +2115,12 @@ def delegate_task(
             task_toolsets = t.get("toolsets") or task_overrides.get("toolsets") or toolsets
             # Config delegation.model wins; otherwise fall back to the task profile model.
             task_model = creds["model"] or task_overrides.get("model")
-            # Config max_iterations is authoritative; the task profile only
-            # supplies a baseline when the config default is in effect.
+            # effective_max_iter already folds in any top-level profile baseline
+            # above (or the config default when no top-level profile applied). A
+            # per-task profile's max_iterations beats that inherited baseline.
             task_max_iter = effective_max_iter
             _profile_max_iter = task_overrides.get("max_iterations")
-            if _profile_max_iter and effective_max_iter == default_max_iter:
+            if _profile_max_iter:
                 task_max_iter = _profile_max_iter
 
             child = _build_child_agent(
@@ -2568,7 +2575,9 @@ def _resolve_profile(name: str, profiles: dict) -> dict:
             f"Unknown agent profile {name!r}. "
             f"Available profiles: {available if available else '(none configured)'}"
         )
-    raw = dict(profiles[name])
+    # Deep copy so nested lists/dicts (e.g. toolsets) can never be mutated back
+    # into the cached profiles block by downstream callers.
+    raw = copy.deepcopy(profiles[name])
     # Resolve system_prompt_file -> system_prompt_text
     spf = raw.pop("system_prompt_file", None)
     if spf:
@@ -2583,6 +2592,16 @@ def _resolve_profile(name: str, profiles: dict) -> dict:
             ) from exc
     elif "system_prompt" in raw:
         raw["system_prompt_text"] = raw.pop("system_prompt")
+    # Coerce max_iterations to int so a YAML string (e.g. "30") or other
+    # non-int value fails fast here instead of corrupting the child budget.
+    if "max_iterations" in raw:
+        try:
+            raw["max_iterations"] = int(raw["max_iterations"])
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Profile {name!r}: max_iterations must be an integer, "
+                f"got {raw['max_iterations']!r}"
+            ) from exc
     return raw
 
 
@@ -2845,7 +2864,9 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "description": (
                                 "Per-task profile override. Beats the top-level 'profile'. "
-                                "See top-level 'profile' for semantics."
+                                "See top-level 'profile' for semantics, including the warning "
+                                "that a profile's system_prompt fully replaces the child's "
+                                "default prompt (dropping orchestrator delegation instructions)."
                             ),
                         },
                     },
@@ -2866,7 +2887,13 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Name of a profile defined in agent_profiles config. "
                     "Sets default model, toolsets, max_iterations, and system prompt "
-                    "for this delegation. Explicit call parameters override profile values."
+                    "for this delegation. Explicit call parameters override profile values. "
+                    "WARNING: a profile's system_prompt REPLACES the child's entire default "
+                    "system prompt (it does NOT append). This drops the orchestrator "
+                    "delegation instructions, so a child run under such a profile cannot "
+                    "spawn its own subagents unless its system_prompt re-includes those "
+                    "instructions. Use a system_prompt profile only for leaf workers, or "
+                    "include the delegation guidance yourself."
                 ),
             },
             "acp_command": {

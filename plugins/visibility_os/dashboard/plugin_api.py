@@ -108,6 +108,8 @@ def _workstream_rollup(opportunity_id: str | None) -> dict[str, Any]:
         "workstream_status": ws.get("status"),
         "workstream_stage": ws.get("stage"),
         "agent_has_worked_on_this": True,
+        "current_step": ws.get("current_step"),
+        "progress_percent": ws.get("progress_percent"),
         "last_agent_activity_at": ws.get("updated_at"),
         "pending_human_action": ws.get("pending_human_action"),
     }
@@ -168,6 +170,45 @@ def _apply_board_state(items: list[dict[str, Any]], include_archived: bool = Fal
     return out
 
 
+def _is_needs_decision(item: dict[str, Any]) -> bool:
+    # Decision cards should be the actual approval/rejectable action, not both the
+    # action and its source opportunity, otherwise the command center feels noisy.
+    if item.get("kind") != "action":
+        return False
+    if item.get("action_type") in {"github_push_branch", "github_pr_comment", "github_issue_comment", "slack_message"}:
+        return item.get("status") in {"queued", "edited_by_human", "needs_review", "drafted"}
+    return item.get("status") in {"queued", "edited_by_human", "needs_review", "drafted"} and bool(item.get("approval_required"))
+
+
+def _is_agent_working(item: dict[str, Any]) -> bool:
+    return item.get("workstream_status") == "active" and (item.get("board_state") == "in_progress" or item.get("workstream_stage") not in {None, "queued", "ready_for_push", "review_ready", "completed", "failed", "cancelled", "pushed"})
+
+
+def _section_item(item: dict[str, Any]) -> dict[str, Any]:
+    # Keep the same card shape so the dashboard can open section cards exactly like Kanban cards.
+    return dict(item)
+
+
+def _build_sections(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    sections = {
+        "needs_decision": [],
+        "agent_working_now": [],
+        "open_opportunities": [],
+        "completed_recently": [],
+    }
+    for item in items:
+        state = item.get("board_state") or "todo"
+        if _is_needs_decision(item):
+            sections["needs_decision"].append(_section_item(item))
+        if _is_agent_working(item):
+            sections["agent_working_now"].append(_section_item(item))
+        if item.get("kind") == "opportunity" and state == "todo" and not item.get("agent_has_worked_on_this"):
+            sections["open_opportunities"].append(_section_item(item))
+        if state == "done" or (item.get("kind") == "action" and item.get("status") in {"executed", "completed", "rejected", "failed"}):
+            sections["completed_recently"].append(_section_item(item))
+    return {key: value[:12] for key, value in sections.items()}
+
+
 def _github_repo_allowed(repo: str | None) -> bool:
     return get_visibility_config().github_repo_allowed(repo)
 
@@ -203,7 +244,18 @@ async def feed(include_archived: bool = False) -> dict[str, Any]:
     for item in items:
         state = item.get("board_state") or "todo"
         counts_by_state[state] = counts_by_state.get(state, 0) + 1
-    return {"items": items, "counts": {"actions": len(actions), "opportunities": len(opportunities), "board": counts_by_state}}
+    sections = _build_sections(items)
+    counts_by_section = {key: len(value) for key, value in sections.items()}
+    return {
+        "items": items,
+        "sections": sections,
+        "counts": {
+            "actions": len(actions),
+            "opportunities": len(opportunities),
+            "board": counts_by_state,
+            "sections": counts_by_section,
+        },
+    }
 
 @router.post("/board-state")
 async def update_board_state(body: BoardStateBody) -> dict[str, Any]:

@@ -1108,7 +1108,12 @@ def test_visibility_os_dashboard_shows_single_fix_ci_button():
     assert "visibility-os-modal-backdrop" in js
     assert "role: 'dialog'" in js
     assert "aria-modal" in js
-    assert "setSelectedTicket(item)" in js
+    assert "openTicket(item)" in js
+    assert "/api/plugins/visibility-os/audit-log?action_id=" in js
+    assert "Activity and chat history" in js
+    assert "Progress history" in js
+    assert "GitHub task" in js
+    assert "Artifacts" in js
     assert "onKeyDown" in js
     assert "Kanban board" in js
     assert "kanbanColumn('todo'" in js
@@ -1190,6 +1195,105 @@ def test_kanban_board_state_endpoint_moves_and_archives_items(tmp_path, monkeypa
     archived_feed = client.get("/api/plugins/visibility-os/feed?include_archived=true").json()
     archived_card = next(item for item in archived_feed["items"] if item["id"] == opportunity["id"])
     assert archived_card["board_state"] == "archived"
+
+
+def test_feed_returns_command_center_sections_for_complete_control_plane(tmp_path, monkeypatch):
+    patch_db(tmp_path, monkeypatch)
+    from plugins.visibility_os.core.actions import create_action, approve_action, mark_executed
+    from plugins.visibility_os.core.opportunities import upsert_opportunity
+    from plugins.visibility_os.core.workstreams import create_workstream, update_stage
+    from plugins.visibility_os.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/visibility-os")
+    client = TestClient(app)
+
+    todo = upsert_opportunity(
+        source_system="github",
+        source_url="https://github.com/acme-inc/web-app/issues/101",
+        title="Todo issue",
+        description="Open work not started yet.",
+        category="bug_fix",
+        impact_score=4,
+        visibility_score=4,
+        effort_score=3,
+        safety_score=5,
+        risk_penalty=0,
+        priority_score=30,
+        suggested_artifacts=["tests"],
+        metadata={"number": 101},
+    )
+    active = upsert_opportunity(
+        source_system="github",
+        source_url="https://github.com/acme-inc/web-app/issues/102",
+        title="Active issue",
+        description="Agent is working on this.",
+        category="bug_fix",
+        impact_score=4,
+        visibility_score=4,
+        effort_score=3,
+        safety_score=5,
+        risk_penalty=0,
+        priority_score=29,
+        suggested_artifacts=["tests"],
+        metadata={"number": 102},
+    )
+    ws = create_workstream(opportunity_id=active["id"], root_action_id=None, lane_kind="github_issue_fix_lane", title="Fix active issue", repo="acme-inc/web-app")
+    update_stage(ws["id"], stage="editing", current_step="Agent is editing files", progress_percent=40, actor="agent")
+    decision = create_action(
+        proposed_by_agent="implementation_agent",
+        action_type="github_push_branch",
+        target_system="github",
+        target_location="acme-inc/web-app",
+        title="Push prepared branch",
+        summary="Prepared locally and needs approval.",
+        proposed_payload={"branch": "fix/active", "pr_title": "Fix active issue", "pr_body": "## Summary", "changed_files": []},
+        evidence_links=[{"type": "issue", "url": active["source_url"]}],
+        risk_level="high",
+        opportunity_id=active["id"],
+    )
+    completed = create_action(
+        proposed_by_agent="review_agent",
+        action_type="github_pr_review_draft",
+        target_system="github",
+        target_location="acme-inc/web-app/pull/2",
+        title="Completed review",
+        summary="Already posted.",
+        proposed_payload={"body": "Looks good https://github.com/acme-inc/web-app/pull/2"},
+        evidence_links=[{"type": "pr", "url": "https://github.com/acme-inc/web-app/pull/2"}],
+        risk_level="medium",
+    )
+    approve_action(completed["id"], actor="reviewer")
+    mark_executed(completed["id"], actor="reviewer", execution_result={"posted": True})
+
+    body = client.get("/api/plugins/visibility-os/feed").json()
+
+    assert set(body["sections"]) == {"needs_decision", "agent_working_now", "open_opportunities", "completed_recently"}
+    assert body["sections"]["needs_decision"][0]["id"] == decision["id"]
+    assert any(item["id"] == active["id"] and item["current_step"] == "Agent is editing files" for item in body["sections"]["agent_working_now"])
+    assert any(item["id"] == todo["id"] for item in body["sections"]["open_opportunities"])
+    assert any(item["id"] == completed["id"] for item in body["sections"]["completed_recently"])
+    assert body["counts"]["sections"]["needs_decision"] == 1
+
+
+def test_dashboard_exposes_command_center_autorefresh_reject_and_archive_controls():
+    js = Path("plugins/visibility_os/dashboard/dist/index.js").read_text()
+    for expected in [
+        "Needs decision",
+        "Agent working now",
+        "Open opportunities",
+        "Completed recently",
+        "Auto-refresh",
+        "setInterval(load, 15000)",
+        "rejectAction",
+        "/reject",
+        "Reject / discard",
+        "Save for later",
+        "Decision required",
+        "Archive from board",
+        "Unarchive",
+    ]:
+        assert expected in js
 
 
 def test_dashboard_plugin_manifest_entries_point_to_existing_assets():

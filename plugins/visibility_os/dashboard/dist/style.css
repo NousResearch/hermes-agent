@@ -1,5 +1,11 @@
 /* Visibility OS adopts the native Hermes Kanban board visual language. */
 .visibility-os-kanban { width: 100%; }
+.visibility-os-command-center { display:grid; grid-template-columns:repeat(4, minmax(220px, 1fr)); gap:0.75rem; }
+.visibility-os-command-card { min-width:0; }
+.visibility-os-command-item { cursor:pointer; border:1px solid color-mix(in srgb, var(--color-border) 60%, transparent); transition:border-color 100ms ease, background 100ms ease; }
+.visibility-os-command-item:hover, .visibility-os-command-item:focus { border-color:color-mix(in srgb, var(--color-ring) 55%, var(--color-border)); outline:none; background:rgba(0,0,0,0.28); }
+@media (max-width: 1200px) { .visibility-os-command-center { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .visibility-os-command-center { grid-template-columns:1fr; } }
 .visibility-os-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.75rem; }
 @media (max-width: 900px) { .visibility-os-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .visibility-os-board-toolbar { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; flex-wrap:wrap; padding:0.75rem; border:1px solid var(--color-border); border-radius:var(--radius); background: color-mix(in srgb, var(--color-card) 85%, transparent); }
@@ -34,11 +40,29 @@
 .visibility-os-card.hermes-kanban-card:active { cursor:grabbing; transform:scale(0.995); }
 .visibility-os-card.hermes-kanban-card:focus { outline:2px solid color-mix(in srgb, var(--color-ring) 75%, transparent); outline-offset:2px; }
 .visibility-os-modal-backdrop { position:fixed; inset:0; z-index:70; display:flex; align-items:center; justify-content:center; padding:1.25rem; background:rgba(2, 6, 12, 0.72); backdrop-filter:blur(8px); }
-.visibility-os-modal { width:min(920px, calc(100vw - 2rem)); max-height:min(86vh, 920px); display:flex; flex-direction:column; overflow:hidden; border:1px solid color-mix(in srgb, var(--color-ring) 40%, var(--color-border)); border-radius:calc(var(--radius, 0.5rem) * 1.4); background:color-mix(in srgb, var(--color-card) 96%, #020617 12%); box-shadow:0 24px 80px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,255,255,0.04) inset; }
+.visibility-os-modal { width:min(1040px, calc(100vw - 2rem)); max-height:min(88vh, 980px); display:flex; flex-direction:column; overflow:hidden; border:1px solid color-mix(in srgb, var(--color-ring) 40%, var(--color-border)); border-radius:calc(var(--radius, 0.5rem) * 1.4); background:color-mix(in srgb, var(--color-card) 96%, #020617 12%); box-shadow:0 24px 80px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,255,255,0.04) inset; }
 .visibility-os-modal-header { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; padding:1rem 1.1rem 0.8rem; border-bottom:1px solid color-mix(in srgb, var(--color-border) 70%, transparent); }
 .visibility-os-modal-kicker { color:var(--color-muted-foreground); font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; }
 .visibility-os-modal-title { margin:0.12rem 0 0; color:var(--color-foreground); font-size:1.05rem; font-weight:750; line-height:1.25; }
 .visibility-os-modal-body { overflow:auto; padding:1rem 1.1rem 1.1rem; }
 .visibility-os-modal-actions { display:flex; flex-wrap:wrap; gap:0.5rem; padding-top:0.25rem; }
 .visibility-os-modal-close { flex:0 0 auto; }
-@media (max-width: 700px) { .visibility-os-modal-backdrop { align-items:flex-end; padding:0.75rem; } .visibility-os-modal { width:100%; max-height:90vh; } }
+.visibility-os-panel-title { color:var(--color-foreground); font-size:0.82rem; font-weight:760; letter-spacing:0.01em; margin-bottom:0.55rem; }
+.visibility-os-progress-panel, .visibility-os-github-task, .visibility-os-timeline, .visibility-os-artifacts, .visibility-os-workstream-card { border:1px solid color-mix(in srgb, var(--color-border) 78%, transparent); border-radius:calc(var(--radius-sm, 0.25rem) * 1.4); background:linear-gradient(180deg, color-mix(in srgb, var(--color-card) 92%, var(--color-foreground) 5%), color-mix(in srgb, var(--color-card) 96%, transparent)); padding:0.85rem; }
+.visibility-os-progress-head { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; margin-bottom:0.75rem; }
+.visibility-os-progress-title { color:var(--color-foreground); font-size:0.95rem; font-weight:740; line-height:1.25; }
+.visibility-os-progress-grid, .visibility-os-task-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:0.55rem; margin-top:0.75rem; }
+.visibility-os-progress-grid div, .visibility-os-task-grid div { min-width:0; border:1px solid color-mix(in srgb, var(--color-border) 60%, transparent); border-radius:var(--radius-sm, 0.25rem); padding:0.5rem; background:rgba(0,0,0,0.12); }
+.visibility-os-progress-grid span, .visibility-os-task-grid span { display:block; color:var(--color-muted-foreground); font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; }
+.visibility-os-progress-grid strong, .visibility-os-task-grid strong, .visibility-os-task-grid a { display:block; color:var(--color-foreground); font-size:0.78rem; font-weight:650; word-break:break-word; }
+.visibility-os-timeline { display:flex; flex-direction:column; gap:0.55rem; }
+.visibility-os-timeline-row { position:relative; display:grid; grid-template-columns:0.9rem minmax(0,1fr); gap:0.5rem; align-items:start; }
+.visibility-os-timeline-dot { width:0.55rem; height:0.55rem; margin-top:0.55rem; border-radius:999px; background:color-mix(in srgb, var(--color-ring) 70%, #22c55e); box-shadow:0 0 0 3px color-mix(in srgb, var(--color-ring) 14%, transparent); }
+.visibility-os-timeline-card { border:1px solid color-mix(in srgb, var(--color-border) 55%, transparent); border-radius:var(--radius-sm, 0.25rem); padding:0.55rem; background:rgba(0,0,0,0.16); }
+.visibility-os-timeline-top { display:flex; justify-content:space-between; gap:0.75rem; color:var(--color-foreground); font-size:0.76rem; text-transform:capitalize; }
+.visibility-os-timeline-top span, .visibility-os-timeline-actor { color:var(--color-muted-foreground); font-size:0.68rem; text-transform:none; }
+.visibility-os-timeline-message { color:var(--color-muted-foreground); font-size:0.76rem; line-height:1.35; margin-top:0.2rem; white-space:pre-wrap; }
+.visibility-os-artifact-card { border:1px solid color-mix(in srgb, var(--color-border) 55%, transparent); border-radius:var(--radius-sm, 0.25rem); padding:0.55rem; background:rgba(0,0,0,0.16); font-size:0.75rem; }
+.visibility-os-artifact-card summary { cursor:pointer; font-weight:700; color:var(--color-foreground); }
+.visibility-os-artifact-card pre { max-height:260px; overflow:auto; white-space:pre-wrap; border-radius:var(--radius-sm, 0.25rem); background:rgba(0,0,0,0.28); padding:0.6rem; margin-top:0.45rem; font-size:0.68rem; }
+@media (max-width: 700px) { .visibility-os-modal-backdrop { align-items:flex-end; padding:0.75rem; } .visibility-os-modal { width:100%; max-height:90vh; } .visibility-os-progress-grid, .visibility-os-task-grid { grid-template-columns:1fr; } }

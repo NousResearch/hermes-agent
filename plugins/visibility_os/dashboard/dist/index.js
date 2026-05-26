@@ -36,6 +36,7 @@
     const [severityFilter, setSeverityFilter] = hooks.useState('all');
     const [sourceFilter, setSourceFilter] = hooks.useState('all');
     const [showArchived, setShowArchived] = hooks.useState(false);
+    const [autoRefresh, setAutoRefresh] = hooks.useState(true);
     const [findingStatus, setFindingStatus] = hooks.useState({});
     const load = hooks.useCallback(function () {
       setBusy(true);
@@ -45,6 +46,11 @@
         .finally(function () { setBusy(false); });
     }, [showArchived]);
     hooks.useEffect(load, [load]);
+    hooks.useEffect(function () {
+      if (!autoRefresh) return undefined;
+      const timer = setInterval(load, 15000);
+      return function () { clearInterval(timer); };
+    }, [load, autoRefresh]);
     hooks.useEffect(function () {
       fetchJSON('/api/plugins/visibility-os/config')
         .then(function (cfg) { if (cfg && cfg.default_slack_channel) setSlackTarget(cfg.default_slack_channel); })
@@ -61,10 +67,30 @@
     }
     function viewOpportunity(id) {
       setBusy(true);
-      fetchJSON('/api/plugins/visibility-os/opportunities/' + id)
-        .then(function (detail) { setSelectedOpportunity(detail); })
+      Promise.all([
+        fetchJSON('/api/plugins/visibility-os/opportunities/' + id),
+        fetchJSON('/api/plugins/visibility-os/opportunities/' + id + '/workstreams').catch(function () { return { workstreams: [] }; })
+      ])
+        .then(function (results) {
+          const detail = results[0];
+          detail.workstreams = (results[1] && results[1].workstreams) || [];
+          setSelectedOpportunity(detail);
+        })
         .catch(function (e) { setError(String(e)); })
         .finally(function () { setBusy(false); });
+    }
+    function openTicket(item) {
+      setSelectedTicket({ item: item, loading: true, audit_events: [], workstream: null, opportunity: null });
+      const requests = [
+        item.kind === 'action' ? fetchJSON('/api/plugins/visibility-os/actions/' + item.id).catch(function () { return item; }) : Promise.resolve(item),
+        item.kind === 'action' ? fetchJSON('/api/plugins/visibility-os/audit-log?action_id=' + encodeURIComponent(item.id)).catch(function () { return { events: [] }; }) : Promise.resolve({ events: [] }),
+        item.workstream_id ? fetchJSON('/api/plugins/visibility-os/workstreams/' + item.workstream_id).catch(function () { return null; }) : Promise.resolve(null),
+        item.opportunity_id ? fetchJSON('/api/plugins/visibility-os/opportunities/' + item.opportunity_id).catch(function () { return null; }) : Promise.resolve(null)
+      ];
+      Promise.all(requests).then(function (results) {
+        const detailItem = Object.assign({}, item, results[0] || {});
+        setSelectedTicket({ item: detailItem, loading: false, audit_events: (results[1] && results[1].events) || [], workstream: results[2], opportunity: results[3] });
+      }).catch(function (e) { setError(String(e)); setSelectedTicket({ item: item, loading: false, audit_events: [], workstream: null, opportunity: null }); });
     }
     function viewWorkstream(id) {
       if (!id) return;
@@ -98,6 +124,14 @@
     }
     function pushBranchNow(item) {
       post('/api/plugins/visibility-os/actions/' + item.id + '/approve', { actor: 'human', execute_immediately: true });
+    }
+    function rejectAction(item) {
+      const reason = window.prompt('Why reject or discard this?', 'Not needed right now');
+      if (reason === null) return;
+      post('/api/plugins/visibility-os/actions/' + item.id + '/reject', { actor: 'human', reason: reason || 'Rejected from Visibility OS' });
+    }
+    function saveActionForLater(item) {
+      post('/api/plugins/visibility-os/actions/' + item.id + '/save', { actor: 'human' });
     }
     function scoreLine(detail) {
       return 'Impact ' + detail.impact_score + ' · Visibility ' + detail.visibility_score + ' · Effort ' + detail.effort_score + ' · Safety ' + detail.safety_score + ' · Risk penalty ' + detail.risk_penalty;
@@ -152,8 +186,8 @@
           h('div', { className: 'rounded bg-black/20 p-2' }, h('div', { className: 'font-semibold text-text-secondary' }, 'Commit message'), h('div', null, p.commit_message || 'not provided')),
           h('div', { className: 'rounded bg-black/20 p-2' }, h('div', { className: 'font-semibold text-text-secondary' }, 'PR title'), h('div', null, p.pr_title || p.commit_message || 'not provided'))
         ),
-        p.changed_files && p.changed_files.length && h('div', { className: 'text-xs' }, h('div', { className: 'font-semibold text-text-secondary' }, 'Changed files'), h('ul', { className: 'list-disc pl-4' }, listItems(p.changed_files))),
-        p.verification && p.verification.length && h('div', { className: 'text-xs' }, h('div', { className: 'font-semibold text-text-secondary' }, 'Verification'), h('ul', { className: 'list-disc pl-4' }, listItems(p.verification))),
+        p.changed_files && p.changed_files.length > 0 && h('div', { className: 'text-xs' }, h('div', { className: 'font-semibold text-text-secondary' }, 'Changed files'), h('ul', { className: 'list-disc pl-4' }, listItems(p.changed_files))),
+        p.verification && p.verification.length > 0 && h('div', { className: 'text-xs' }, h('div', { className: 'font-semibold text-text-secondary' }, 'Verification'), h('ul', { className: 'list-disc pl-4' }, listItems(p.verification))),
         p.self_audit && h('div', { className: 'text-xs rounded bg-black/20 p-2' }, h('div', { className: 'font-semibold text-text-secondary' }, 'Self-audit'), h('div', null, 'Status: ' + (p.self_audit.audit_status || 'unknown')), p.self_audit.issues_found && h('div', null, 'Issues found: ' + p.self_audit.issues_found.length), p.self_audit.fixes_applied && h('div', null, 'Fixes applied: ' + p.self_audit.fixes_applied.length)),
         p.independent_review && h('div', { className: 'text-xs rounded bg-black/20 p-2' }, h('div', { className: 'font-semibold text-text-secondary' }, 'Independent review'), h('div', null, 'Status: ' + (p.independent_review.review_status || 'unknown')), p.independent_review.findings && h('div', null, 'Findings: ' + p.independent_review.findings.length), p.independent_review.fixes_required && h('div', null, 'Fixes required: ' + p.independent_review.fixes_required.length)),
         h('details', { className: 'text-xs' }, h('summary', { className: 'cursor-pointer font-semibold text-text-secondary' }, 'PR body'), h('pre', { className: 'mt-2 whitespace-pre-wrap rounded bg-black/40 p-3' }, p.pr_body || 'not provided'))
@@ -223,12 +257,101 @@
         )
       );
     }
-    function ticketModalView(item) {
-      if (!item) return null;
+    function statusSummary(item, ws) {
+      if (item.pending_human_action) return 'Waiting for you: ' + (item.pending_human_action.title || item.pending_human_action.action_type || 'decision needed');
+      if (ws && ws.current_step) return 'Agent progress: ' + ws.current_step;
+      if (item.workstream_stage) return 'Agent progress: ' + String(item.workstream_stage).replace(/_/g, ' ');
+      if (item.status) return 'Ticket status: ' + item.status;
+      return 'Not started';
+    }
+    function progressSnapshot(item, ws) {
+      const stage = (ws && ws.stage) || item.workstream_stage || item.board_state || 'todo';
+      const pct = ws ? ws.progress_percent : item.workstream_id ? 25 : item.board_state === 'done' ? 100 : item.board_state === 'in_review' ? 70 : item.board_state === 'in_progress' ? 40 : 0;
+      return h('div', { className: 'visibility-os-progress-panel' },
+        h('div', { className: 'visibility-os-progress-head' },
+          h('div', null,
+            h('div', { className: 'visibility-os-modal-kicker' }, 'Progress'),
+            h('div', { className: 'visibility-os-progress-title' }, statusSummary(item, ws))
+          ),
+          h(Badge, null, String(stage).replace(/_/g, ' '))
+        ),
+        progressBar(pct),
+        h('div', { className: 'visibility-os-progress-grid' },
+          h('div', null, h('span', null, 'Board'), h('strong', null, (item.board_state || 'todo').replace(/_/g, ' '))),
+          h('div', null, h('span', null, 'Workstream'), h('strong', null, ws ? ws.status : item.workstream_status || 'not started')),
+          h('div', null, h('span', null, 'Last activity'), h('strong', null, (ws && ws.updated_at) || item.last_agent_activity_at || item.updated_at || 'none yet')),
+          h('div', null, h('span', null, 'Human gate'), h('strong', null, item.pending_human_action ? (item.pending_human_action.action_type || 'decision') : 'none'))
+        )
+      );
+    }
+    function githubTaskView(item, opportunity) {
+      const source = opportunity || item;
+      const metadata = source.metadata || {};
+      const labels = (metadata.labels || []).map(function (l) { return l.name || l; }).filter(Boolean);
+      const assignees = (metadata.assignees || []).map(function (a) { return a.login || a.name || a; }).filter(Boolean);
+      const author = (metadata.author && (metadata.author.login || metadata.author.name)) || metadata.user || metadata.actor || '';
+      const number = metadata.number || source.number || '';
+      const repo = source.source_repo || item.source_repo || item.repo || '';
+      return h('div', { className: 'visibility-os-github-task' },
+        h('div', { className: 'visibility-os-panel-title' }, 'GitHub task'),
+        h('div', { className: 'visibility-os-task-grid' },
+          repo && h('div', null, h('span', null, 'Repo'), h('strong', null, repo)),
+          number && h('div', null, h('span', null, 'Number'), h('strong', null, '#' + number)),
+          author && h('div', null, h('span', null, 'Author'), h('strong', null, author)),
+          assignees.length > 0 && h('div', null, h('span', null, 'Assignees'), h('strong', null, assignees.join(', '))),
+          labels.length > 0 && h('div', null, h('span', null, 'Labels'), h('strong', null, labels.join(', '))),
+          source.source_url && h('div', null, h('span', null, 'Link'), h('a', { href: source.source_url, target: '_blank' }, source.source_url))
+        )
+      );
+    }
+    function eventRow(ev, idx, kind) {
+      const title = (ev.stage || ev.event_type || kind || 'event').replace(/_/g, ' ');
+      const message = ev.message || ev.summary || ev.title || displayValue(ev.payload || ev.after_state || ev.execution_result || '');
+      return h('div', { key: (ev.id || kind || 'event') + ':' + idx, className: 'visibility-os-timeline-row' },
+        h('div', { className: 'visibility-os-timeline-dot' }),
+        h('div', { className: 'visibility-os-timeline-card' },
+          h('div', { className: 'visibility-os-timeline-top' }, h('strong', null, title), h('span', null, ev.created_at || ev.updated_at || '')),
+          message && h('div', { className: 'visibility-os-timeline-message' }, message),
+          ev.actor && h('div', { className: 'visibility-os-timeline-actor' }, 'by ' + ev.actor)
+        )
+      );
+    }
+    function activityHistoryView(ws, auditEvents) {
+      const events = [];
+      (ws && ws.events || []).forEach(function (ev) { events.push(Object.assign({ _kind: 'workstream' }, ev)); });
+      (auditEvents || []).forEach(function (ev) { events.push(Object.assign({ _kind: 'audit' }, ev)); });
+      events.sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+      return h('div', { className: 'visibility-os-timeline' },
+        h('div', { className: 'visibility-os-panel-title' }, 'Activity and chat history'),
+        !events.length && h('div', { className: 'text-xs text-text-secondary' }, 'No agent messages or action history yet. Once a lane runs, this becomes the ticket conversation log.'),
+        events.map(function (ev, idx) { return eventRow(ev, idx, ev._kind); })
+      );
+    }
+    function artifactGalleryView(ws) {
+      const artifacts = (ws && ws.artifacts) || [];
+      return h('div', { className: 'visibility-os-artifacts' },
+        h('div', { className: 'visibility-os-panel-title' }, 'Artifacts'),
+        !artifacts.length && h('div', { className: 'text-xs text-text-secondary' }, 'No artifacts produced yet.'),
+        artifacts.map(function (a) {
+          return h('details', { key: a.id, className: 'visibility-os-artifact-card' },
+            h('summary', null, (a.artifact_type || 'artifact').replace(/_/g, ' ') + ': ' + (a.title || 'Untitled')),
+            a.summary && h('div', { className: 'text-xs text-text-secondary py-1' }, a.summary),
+            h('pre', null, JSON.stringify(a.payload || {}, null, 2))
+          );
+        })
+      );
+    }
+    function ticketModalView(ticket) {
+      if (!ticket) return null;
+      const item = ticket.item || ticket;
+      const ws = ticket.workstream;
+      const opportunity = ticket.opportunity;
+      const auditEvents = ticket.audit_events || [];
       const title = item.title || item.opportunity_title || item.summary || item.id;
       const description = item.kind === 'opportunity' ? item.description : item.summary;
       return modalShell(title, item.kind === 'opportunity' ? 'Opportunity' : 'Action', function () { setSelectedTicket(null); },
         h('div', { className: 'space-y-4' },
+          ticket.loading && h('div', { className: 'rounded border border-current/10 bg-black/20 p-3 text-xs text-text-secondary' }, 'Loading full ticket context…'),
           h('div', { className: 'flex gap-2 flex-wrap' },
             h(Badge, null, item.kind || 'ticket'),
             item.repo && h(Badge, null, item.repo),
@@ -238,16 +361,41 @@
             item.priority_score && h(Badge, null, 'Priority ' + item.priority_score),
             item.board_state && h(Badge, null, item.board_state.replace(/_/g, ' '))
           ),
+          progressSnapshot(item, ws),
           description && h('p', { className: 'text-sm text-text-secondary' }, description),
+          githubTaskView(item, opportunity),
           item.current_step && h('div', { className: 'rounded border border-current/10 bg-black/20 p-3 text-xs' }, item.current_step),
           item.source_url && h('a', { className: 'text-xs underline text-midground', href: item.source_url, target: '_blank' }, item.source_url),
           item.workstream_id && h('div', { className: 'text-xs' }, workstreamBadge(item)),
           item.kind === 'action' && actionPayloadView(item),
+          artifactGalleryView(ws),
+          activityHistoryView(ws, auditEvents),
           item.kind === 'action' && evidenceLinks(item),
           item.action_type === 'github_push_branch' && h('div', { className: 'text-xs text-text-secondary' }, 'Review the prepared PR here, then use Push branch when you are ready.'),
           findingsView(item),
           h('div', { className: 'visibility-os-modal-actions' }, sectionActions(item))
         )
+      );
+    }
+    function opportunityWorkstreamsView(detail) {
+      const streams = detail.workstreams || [];
+      return h('div', { className: 'visibility-os-timeline' },
+        h('div', { className: 'visibility-os-panel-title' }, 'Progress history'),
+        !streams.length && h('div', { className: 'text-xs text-text-secondary' }, 'No workstream has started for this ticket yet.'),
+        streams.map(function (ws) {
+          return h('div', { key: ws.id, className: 'visibility-os-workstream-card' },
+            h('div', { className: 'visibility-os-progress-head' },
+              h('div', null,
+                h('div', { className: 'visibility-os-progress-title' }, ws.title || ws.lane_kind || ws.id),
+                h('div', { className: 'text-xs text-text-secondary' }, ws.current_step || 'No current step recorded')
+              ),
+              h(Badge, null, (ws.stage || ws.status || '').replace(/_/g, ' '))
+            ),
+            progressBar(ws.progress_percent),
+            h('div', { className: 'visibility-os-timeline mt-3' }, (ws.events || []).slice().reverse().map(function (ev, idx) { return eventRow(ev, idx, 'workstream'); })),
+            h('div', { className: 'pt-2' }, h(ActionButton, { onClick: function () { viewWorkstream(ws.id); } }, 'Open workstream'))
+          );
+        })
       );
     }
     function opportunityModalView(detail) {
@@ -259,8 +407,11 @@
             h(Badge, null, detail.category),
             h(Badge, null, 'Priority ' + detail.priority_score)
           ),
+          progressSnapshot(Object.assign({ kind: 'opportunity' }, detail, { board_state: detail.board_state || 'todo' }), (detail.workstreams || [])[0]),
           h('p', { className: 'text-sm text-text-secondary' }, detail.why_it_matters || detail.description),
           h('p', { className: 'text-xs text-text-secondary' }, scoreLine(detail)),
+          githubTaskView(detail, null),
+          opportunityWorkstreamsView(detail),
           detail.source_url && h('a', { className: 'text-xs underline text-midground', href: detail.source_url, target: '_blank' }, detail.source_url),
           detail.score_explanation && h('pre', { className: 'whitespace-pre-wrap rounded bg-black/40 p-3 text-xs' }, detail.score_explanation),
           evidenceLinks(detail),
@@ -368,28 +519,53 @@
       );
     }
     function sectionActions(item) {
+      const isActionDecision = item.kind === 'action' && ['queued','edited_by_human','needs_review','drafted'].includes(item.status || '');
       return h('div', { className: 'flex gap-2 flex-wrap pt-1' },
         item.kind === 'opportunity' && h(ActionButton, { disabled: busy, onClick: function () { viewOpportunity(item.id); } }, 'Open opportunity'),
         item.kind === 'opportunity' && item.can_diagnose_ci && h(ActionButton, { disabled: busy, onClick: function () { fixCI(item); }, className: 'border-emerald-500/50' }, 'Fix CI'),
         item.kind === 'opportunity' && item.can_fix_issue && h(ActionButton, { disabled: busy, onClick: function () { fixIssue(item); }, className: 'border-emerald-500/50' }, 'Fix Issue'),
         item.workstream_id && h(ActionButton, { disabled: busy, onClick: function () { viewWorkstream(item.workstream_id); } }, 'Open workstream'),
         item.action_type === 'github_push_branch' && ['queued','edited_by_human'].includes(item.status) && h(ActionButton, { disabled: busy, onClick: function () { pushBranchNow(item); }, className: 'border-emerald-500/50' }, 'Push branch'),
+        isActionDecision && h(ActionButton, { disabled: busy, onClick: function () { saveActionForLater(item); } }, 'Save for later'),
+        isActionDecision && h(ActionButton, { disabled: busy, onClick: function () { rejectAction(item); }, className: 'border-red-500/50' }, 'Reject / discard'),
         item.board_state !== 'in_progress' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'in_progress'); } }, 'Move to In progress'),
         item.board_state !== 'in_review' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'in_review'); } }, 'Move to Review'),
         item.board_state !== 'done' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'done'); } }, 'Mark done'),
-        item.board_state !== 'archived' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'archived'); } }, 'Archive'),
+        item.board_state !== 'archived' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'archived'); } }, 'Archive from board'),
         item.board_state === 'archived' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'done'); } }, 'Unarchive')
       );
     }
     function sectionCard(title, items, emptyText) {
-      return h(Card, null,
+      return h(Card, { className: 'visibility-os-command-card' },
         h(CardHeader, null, h(CardTitle, null, title + ' (' + items.length + ')')),
         h(CardContent, { className: 'space-y-2' },
           !items.length && h('div', { className: 'text-xs text-text-secondary' }, emptyText),
           items.slice(0, 8).map(function (item) {
-            return h('div', { key: item.kind + ':' + item.id, className: 'rounded bg-black/20 p-2 text-xs space-y-1' },
+            return h('div', {
+              key: item.kind + ':' + item.id,
+              className: 'visibility-os-command-item rounded bg-black/20 p-2 text-xs space-y-1',
+              role: 'button',
+              tabIndex: 0,
+              onClick: function (e) {
+                if (e.target && e.target.closest && e.target.closest('button, a, input, select, textarea, summary, details')) return;
+                if (item.kind === 'opportunity') viewOpportunity(item.id);
+                else openTicket(item);
+              },
+              onKeyDown: function (e) {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                if (item.kind === 'opportunity') viewOpportunity(item.id);
+                else openTicket(item);
+              }
+            },
               h('div', { className: 'font-semibold' }, item.title || item.opportunity_title || item.summary),
-              h('div', { className: 'flex gap-1 flex-wrap' }, item.repo && h(Badge, null, item.repo), item.workstream_stage && h(Badge, null, item.workstream_stage.replace(/_/g, ' ')), item.status && h(Badge, null, item.status)),
+              h('div', { className: 'flex gap-1 flex-wrap' },
+                item.repo && h(Badge, null, item.repo),
+                item.source_repo && h(Badge, null, item.source_repo),
+                item.workstream_stage && h(Badge, null, item.workstream_stage.replace(/_/g, ' ')),
+                item.kind === 'action' && ['queued','edited_by_human','needs_review','drafted'].includes(item.status || '') && h(Badge, null, 'Decision required'),
+                item.status && h(Badge, null, item.status)
+              ),
               item.current_step && h('div', { className: 'text-text-secondary' }, item.current_step),
               sectionActions(item)
             );
@@ -410,13 +586,13 @@
         onClick: function (e) {
           if (e.target && e.target.closest && e.target.closest('button, a, input, select, textarea, summary, details')) return;
           if (item.kind === 'opportunity') viewOpportunity(item.id);
-          else setSelectedTicket(item);
+          else openTicket(item);
         },
         onKeyDown: function (e) {
           if (e.key !== 'Enter' && e.key !== ' ') return;
           e.preventDefault();
           if (item.kind === 'opportunity') viewOpportunity(item.id);
-          else setSelectedTicket(item);
+          else openTicket(item);
         },
         onDragStart: function (e) {
           e.dataTransfer.setData('application/vnd.visibility-os-card', JSON.stringify({ kind: item.kind, id: item.id }));
@@ -433,6 +609,7 @@
           item.source_repo && h(Badge, null, item.source_repo),
           item.category && h(Badge, null, item.category),
           item.status && h(Badge, null, item.status),
+          item.kind === 'action' && ['queued','edited_by_human','needs_review','drafted'].includes(item.status || '') && h(Badge, null, 'Decision required'),
           item.priority_score && h(Badge, null, 'P' + item.priority_score),
           item.board_state_actor && h(Badge, null, 'manual')
         ),
@@ -483,6 +660,7 @@
       );
     }
     const allItems = feed.items || [];
+    const commandSections = feed.sections || { needs_decision: [], agent_working_now: [], open_opportunities: [], completed_recently: [] };
     const boardCounts = (feed.counts && feed.counts.board) || {};
     return h('div', { className: 'hermes-kanban visibility-os-kanban h-full min-h-0 overflow-auto p-6 space-y-4' },
       h('div', { className: 'flex items-center justify-between gap-4' },
@@ -515,7 +693,17 @@
         h('label', { className: 'inline-flex items-center gap-2 text-xs text-text-secondary' },
           h('input', { type: 'checkbox', checked: showArchived, onChange: function (e) { setShowArchived(e.target.checked); } }),
           'Show archived'
+        ),
+        h('label', { className: 'inline-flex items-center gap-2 text-xs text-text-secondary' },
+          h('input', { type: 'checkbox', checked: autoRefresh, onChange: function (e) { setAutoRefresh(e.target.checked); } }),
+          'Auto-refresh'
         )
+      ),
+      h('div', { className: 'visibility-os-command-center' },
+        sectionCard('Needs decision', commandSections.needs_decision || [], 'No push, post, retry, or discard decisions waiting.'),
+        sectionCard('Agent working now', commandSections.agent_working_now || [], 'No active agent workstreams right now.'),
+        sectionCard('Open opportunities', commandSections.open_opportunities || [], 'No unstarted opportunities.'),
+        sectionCard('Completed recently', commandSections.completed_recently || [], 'No recent completed work.')
       ),
       h('div', { className: 'hermes-kanban-columns visibility-os-kanban-columns' },
         kanbanColumn('todo', 'Todo', 'No unstarted opportunities.'),

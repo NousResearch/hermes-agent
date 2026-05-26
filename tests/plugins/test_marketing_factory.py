@@ -1618,6 +1618,72 @@ def test_dashboard_bulk_approve_and_reject_endpoints(isolate_home):
     assert final_counts.get("needs_review", 0) == 0
 
 
+def test_freshness_gate_auto_rejects_near_duplicates_when_llm_active(isolate_home, monkeypatch):
+    """When the LLM produces a body that's near-identical to an existing draft,
+    the gate auto-rejects with status='rejected' and a structured reason so the
+    brand-memory loop captures 'too similar' as a learning. Skipped in template-
+    only mode (current default for pytest)."""
+    from plugins.marketing_factory import pipeline as pipeline_module
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+
+    # Seed: one prior draft on the x channel.
+    seed_body = "find your new best friend at a shelter near you. download Pupular today."
+    store.create_draft("pupular", {
+        "campaign_id": "seed", "channel": "x", "body": seed_body,
+        "status": "approved", "scheduled_for": "2026-05-25T15:00:00+00:00",
+    })
+
+    # Flip on LLM gating + force the LLM dispatcher to return the same body.
+    monkeypatch.setattr(pipeline_module, "_should_use_llm", lambda: True)
+
+    def fake_dispatch(route, prompt, **kwargs):
+        return {
+            "route": route, "model": "qwen2.5:14b", "tokens_used": 30,
+            "text": seed_body, "fallback_used": False, "elapsed_ms": 50,
+        }
+    monkeypatch.setattr(pipeline_module, "dispatch", fake_dispatch)
+    # ImageGen tries dispatch_json for prompt synth; return a benign envelope.
+    monkeypatch.setattr(pipeline_module, "dispatch_json", lambda route, prompt, **kw: {
+        "route": route, "model": "test", "tokens_used": 0, "parsed": None,
+        "fallback_used": True, "elapsed_ms": 0,
+    })
+
+    # Single-day campaign, just the x channel.
+    pupular = store.require_app("pupular")
+    store.upsert_app({**pupular, "channels": ["x"]})
+
+    gen = pipe.generate_campaign("pupular", days=1)
+    new_draft = gen["drafts"][0]
+    assert new_draft["freshness_score"] < 0.10, f"setup should produce near-duplicate, got {new_draft['freshness_score']}"
+    assert new_draft["status"] == "rejected", f"Expected auto-reject; got status={new_draft['status']}"
+
+    # Confirm the rejection landed in brand_memory.learnings (so steering can see it).
+    state = store.load()
+    learnings = state["brand_memories"]["pupular"]["learnings"]
+    auto_rejects = [l for l in learnings if l.get("kind") == "draft_rejected" and "too similar" in (l.get("reason") or "")]
+    assert auto_rejects, "Auto-rejection must be captured as a structured learning"
+
+
+def test_freshness_gate_off_in_template_mode_so_pytest_stays_green(isolate_home):
+    """Default pytest mode has LLM off; the gate must not engage even on
+    deterministic-template duplicates, otherwise existing tests would break."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    # 7-day campaign rotates 4 channels so some channels see 2 identical drafts.
+    gen = pipe.generate_campaign("pupular", days=7)
+    statuses = {d["status"] for d in gen["drafts"]}
+    assert "rejected" not in statuses, f"Gate must not engage in template mode; got {statuses}"
+
+
 def test_brand_memory_force_lifts_rejection_reason_when_llm_drops_it(isolate_home, monkeypatch):
     """LLM summarizer with class-imbalanced data (1 reject / many approvals) often
     returns what_to_avoid=[]. The agent must force-lift rejection reasons so the

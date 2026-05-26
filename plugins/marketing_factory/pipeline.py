@@ -38,6 +38,34 @@ def _should_use_llm() -> bool:
     return True
 
 
+_DEFAULT_FRESHNESS_REJECT_MIN = 0.10
+
+
+def _freshness_reject_min() -> float:
+    """Threshold below which a brand-new draft is auto-rejected as too similar.
+    Override with `MF_FRESHNESS_MIN` (float in [0,1]). Default 0.10 catches
+    near-clones without flagging mere thematic overlap.
+    """
+    raw = os.environ.get("MF_FRESHNESS_MIN")
+    if raw is None:
+        return _DEFAULT_FRESHNESS_REJECT_MIN
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return _DEFAULT_FRESHNESS_REJECT_MIN
+
+
+def _freshness_gate_active() -> bool:
+    """The auto-reject gate is meant to catch LLM template collapse. In
+    template-only mode (LLM off / pytest), identical bodies across a campaign
+    are deterministic and not a regression — so the gate stays off there.
+    Set `MF_FRESHNESS_REJECT=0` to disable even when LLM is on.
+    """
+    if os.environ.get("MF_FRESHNESS_REJECT") == "0":
+        return False
+    return _should_use_llm()
+
+
 PUPULAR_PROFILE: Dict[str, Any] = {
     "slug": "pupular",
     "name": "Pupular",
@@ -668,14 +696,20 @@ def _format_steering_for_prompt(steering: Optional[Dict[str, Any]]) -> str:
         return ""
     lines = ["Prior reviewer feedback to honor:"]
     if works:
-        lines.append("  WHAT WORKS (do more of this):")
+        # Frame as voice examples, not copy-paste templates. Without this,
+        # qwen2.5:14b will regurgitate these strings verbatim across every
+        # draft in a campaign — observed live as freshness collapsing to 0.0
+        # on Pupular's 2026-05-26 batch where all 7 drafts were word-order
+        # variants of the same template.
+        lines.append("  VOICE EXAMPLES (from past approvals — use these to gauge tone/vocabulary, but DO NOT copy the wording verbatim; the new post must use different phrasing):")
         lines.extend(f"    - {w}" for w in works)
     if avoid:
-        lines.append("  WHAT TO AVOID (reviewer rejected these patterns):")
+        lines.append("  HARD AVOIDS (reviewer rejected these — do not use these words or near-paraphrases):")
         lines.extend(f"    - {a}" for a in avoid)
     if tone:
         lines.append("  TONE NOTES:")
         lines.extend(f"    - {t}" for t in tone)
+    lines.append("  DIVERSITY: each draft in this campaign must use distinctly different phrasing — vary verbs, sentence structure, and hooks. Avoid templating off the voice examples above.")
     return "\n".join(lines)
 
 
@@ -745,7 +779,24 @@ class MarketingFactoryPipeline:
             enriched["freshness_compared_against"] = freshness["compared_against"]
             enriched["freshness_most_similar_id"] = freshness["most_similar_id"]
             draft = self.store.create_draft(app["slug"], enriched)
-            if auto_approve and safety["passed"]:
+            # Catch LLM template collapse: when the model regurgitates approved
+            # phrases verbatim, freshness drops to ~0. Auto-rejecting feeds the
+            # rejection back into the steering loop so subsequent generations
+            # see "too similar" as an explicit avoid. Skipped in template-only
+            # mode where identical bodies are expected.
+            if (
+                _freshness_gate_active()
+                and safety["passed"]
+                and freshness["score"] < _freshness_reject_min()
+            ):
+                self.store.set_approval(
+                    draft["id"],
+                    "rejected",
+                    reviewer="auto-freshness",
+                    reason=f"auto: too similar to existing draft (freshness={freshness['score']:.3f}, threshold={_freshness_reject_min():.2f})",
+                )
+                draft = self.store.get_draft(draft["id"])
+            if auto_approve and safety["passed"] and draft["status"] != "rejected":
                 self.store.set_approval(draft["id"], "approved", reviewer="auto-test", reason="auto approval for dry-run verification only")
                 draft = self.store.get_draft(draft["id"])
             drafts.append(draft)

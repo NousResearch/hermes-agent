@@ -76,6 +76,22 @@ def test_ovcli_config_writer_restricts_file_permissions(tmp_path):
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
 
 
+def test_secret_permission_restriction_logs_chmod_failure(tmp_path, monkeypatch, caplog):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENVIKING_API_KEY=secret\n", encoding="utf-8")
+
+    def fail_chmod(self, mode):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(type(env_path), "chmod", fail_chmod)
+
+    with caplog.at_level("DEBUG", logger=openviking_module.__name__):
+        openviking_module._restrict_secret_file_permissions(env_path)
+
+    assert "Could not restrict permissions" in caplog.text
+    assert "read-only filesystem" in caplog.text
+
+
 def test_linked_ovcli_config_is_read_at_runtime(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     ovcli_path = tmp_path / "ovcli.conf"

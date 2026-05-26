@@ -535,8 +535,8 @@ def _env_writes_from_connection_values(values: dict) -> dict:
 def _restrict_secret_file_permissions(path: Path) -> None:
     try:
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug("Could not restrict permissions on %s: %s", path, e)
 
 
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:

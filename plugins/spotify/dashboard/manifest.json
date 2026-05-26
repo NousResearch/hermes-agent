@@ -1,0 +1,10 @@
+{
+  "name": "spotify",
+  "label": "Spotify",
+  "description": "Web Playback widget — this browser tab becomes a Spotify Connect device the agent can target.",
+  "icon": "Music",
+  "version": "0.1.0",
+  "tab": { "path": "/spotify", "position": "end" },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
@@ -720,6 +720,28 @@ def test_explicit_pair_config_overrides_allowlist_default(monkeypatch):
     runner, _adapter = _make_runner(Platform.SIGNAL, config)
 
     # The per-platform explicit config should beat the allowlist-derived default
+    behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
+    assert behavior == "pair"
+
+
+def test_global_pair_config_yaml_overrides_allowlist_default(monkeypatch, tmp_path):
+    """Top-level config.yaml pair override beats the allowlist-derived ignore."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+15550000001")
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "unauthorized_dm_behavior: pair\n"
+        "signal:\n"
+        "  enabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    config = load_gateway_config()
+    runner, _adapter = _make_runner(Platform.SIGNAL, config)
+
     behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
     assert behavior == "pair"
 

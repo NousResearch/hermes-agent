@@ -484,6 +484,11 @@ class GatewayConfig:
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+    _global_unauthorized_dm_behavior_explicit: bool = field(
+        default=False,
+        repr=False,
+        compare=False,
+    )
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
@@ -669,6 +674,13 @@ class GatewayConfig:
                 )
         return self.unauthorized_dm_behavior
 
+    def has_explicit_global_unauthorized_dm_behavior(self) -> bool:
+        """Return whether the global unauthorized-DM policy was explicitly set."""
+        return (
+            self._global_unauthorized_dm_behavior_explicit
+            or self.unauthorized_dm_behavior != "pair"
+        )
+
     def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
         """Return the effective notice-delivery mode for a platform."""
         if platform:
@@ -693,6 +705,7 @@ def load_gateway_config() -> GatewayConfig:
     """
     _home = get_hermes_home()
     gw_data: dict = {}
+    explicit_global_unauthorized_dm_behavior = False
 
     # Legacy fallback: gateway.json provides the base layer.
     # config.yaml keys always win when both specify the same setting.
@@ -758,6 +771,7 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
+                explicit_global_unauthorized_dm_behavior = True
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
@@ -1128,6 +1142,7 @@ def load_gateway_config() -> GatewayConfig:
         )
 
     config = GatewayConfig.from_dict(gw_data)
+    config._global_unauthorized_dm_behavior_explicit = explicit_global_unauthorized_dm_behavior
 
     # Override with environment variables
     _apply_env_overrides(config)

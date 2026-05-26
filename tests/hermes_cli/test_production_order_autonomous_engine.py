@@ -8,6 +8,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli.production_order_db import (
     WORKFLOW_SPEC_SOURCE,
+    list_production_orders,
     run_architect_spec_bridge,
     run_full_bridge,
     run_orchestrator_triage_bridge,
@@ -22,8 +23,10 @@ from hermes_cli.production_order_dispatch import (
     ingest_profile_result_packet,
 )
 from hermes_cli.production_order_autonomous import (
+    apply_profile_result_return,
     collect_profile_result_packet,
     invoke_profile_task,
+    run_production_order_autonomously,
 )
 
 
@@ -113,6 +116,59 @@ def devos_build_packet(production_order_id: str) -> dict:
         "limitations_or_notes": ["AuditOS should verify smoke evidence against the existing board."],
         "next_handoff_target": "audit_os",
     }
+
+
+def audit_review_packet(production_order_id: str, source_state: str = "DEV_COMPLETE") -> dict:
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "audit_os",
+        "source_state": source_state,
+        "review_result": "passed",
+        "summary": "Audit verified the implementation and evidence.",
+        "evidence": ["tests passed", "changed files reviewed"],
+        "tests_reviewed": ["pytest tests/hermes_cli/test_production_order_autonomous_engine.py -q"],
+        "verdict": "PASS",
+        "risks_or_notes": ["No blocking risks found."],
+        "next_handoff_target": "architect_os",
+    }
+
+
+def architect_reconcile_packet(production_order_id: str, source_state: str = "AUDIT_PASSED") -> dict:
+    return {
+        "production_order_id": production_order_id,
+        "packet_type": "architect_reconcile_packet",
+        "owner_profile": "architect_os",
+        "source_state": source_state,
+        "reconcile_result": "accepted",
+        "summary": "Implementation remains aligned with the approved architecture.",
+        "architecture_alignment": "aligned",
+        "drift_assessment": "No architecture drift.",
+        "spec_patch_needed": False,
+        "risks_or_notes": ["No rework needed."],
+        "next_handoff_target": "default",
+    }
+
+
+def final_review_packet(production_order_id: str, source_state: str = "ARCHITECT_ACCEPTED") -> dict:
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "default",
+        "source_state": source_state,
+        "final_review_result": "accepted",
+        "summary": "Final review confirms the approved brief is complete.",
+        "original_brief_alignment": "Matches the approved brief.",
+        "artifacts_reviewed": ["DevOS result", "AuditOS result", "ArchitectOS reconcile result"],
+        "evidence_summary": "All stage evidence is present and accepted.",
+        "final_status": "DONE",
+        "next_action": "report_done_to_jarren",
+    }
+
+
+def _reload_order(conn, production_order_id: str):
+    for order in list_production_orders(conn):
+        if order.production_order_id == production_order_id:
+            return order
+    raise AssertionError(f"production order not found: {production_order_id}")
 
 
 def create_architect_spec_order(conn, sample_brief):
@@ -287,3 +343,218 @@ def test_collect_profile_result_packet_rejects_invalid_packet_contract_fields(
 
     with pytest.raises(ValueError, match=error_match):
         collect_profile_result_packet(invocation, envelope)
+
+
+def test_apply_profile_result_return_ingests_before_applying(conn, sample_brief, monkeypatch):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    packet = devos_build_packet(po.production_order_id)
+    calls: list[str] = []
+
+    import hermes_cli.production_order_autonomous as autonomous
+
+    original_ingest = autonomous.ingest_profile_result_packet
+    original_apply = autonomous.apply_accepted_result_action
+
+    def wrapped_ingest(*args, **kwargs):
+        calls.append("ingest")
+        return original_ingest(*args, **kwargs)
+
+    def wrapped_apply(*args, **kwargs):
+        calls.append("apply")
+        return original_apply(*args, **kwargs)
+
+    monkeypatch.setattr(autonomous, "ingest_profile_result_packet", wrapped_ingest)
+    monkeypatch.setattr(autonomous, "apply_accepted_result_action", wrapped_apply)
+
+    result = apply_profile_result_return(conn, po.production_order_id, envelope, packet)
+
+    assert calls == ["ingest", "apply"]
+    assert result["ingestion"]["accepted"] is True
+    assert result["applied"]["applied"] is True
+    assert result["applied"]["to_state"] == "DEV_COMPLETE"
+
+
+def test_run_production_order_autonomously_reaches_done_on_happy_path(conn, sample_brief):
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    seen_calls: list[tuple[str, str]] = []
+
+    def fake_runner(payload: dict) -> dict:
+        seen_calls.append((payload["target_profile"], payload["source_state"]))
+        packet_map = {
+            ("architect_os", "ARCHITECT_SPEC"): architect_spec_packet(po.production_order_id),
+            ("dev_os", "ARCHITECT_READY_FOR_DEV"): devos_build_packet(po.production_order_id),
+            ("audit_os", "DEV_COMPLETE"): audit_review_packet(po.production_order_id),
+            ("architect_os", "AUDIT_PASSED"): architect_reconcile_packet(po.production_order_id),
+            ("default", "ARCHITECT_ACCEPTED"): final_review_packet(po.production_order_id),
+        }
+        return {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 11,
+            "result_channel": packet_map[(payload["target_profile"], payload["source_state"])],
+        }
+
+    result = run_production_order_autonomously(
+        conn,
+        po.production_order_id,
+        runner=fake_runner,
+        max_steps=10,
+        max_retries=1,
+        timeout_seconds=30,
+    )
+
+    refreshed = _reload_order(conn, po.production_order_id)
+    assert refreshed.current_state == "DONE"
+    assert result.done is True
+    assert result.final_state == "DONE"
+    assert result.final_owner_profile == "default"
+    assert result.terminal_reason == "done"
+    assert result.steps_run == 6
+    assert seen_calls == [
+        ("architect_os", "ARCHITECT_SPEC"),
+        ("dev_os", "ARCHITECT_READY_FOR_DEV"),
+        ("audit_os", "DEV_COMPLETE"),
+        ("architect_os", "AUDIT_PASSED"),
+        ("default", "ARCHITECT_ACCEPTED"),
+    ]
+    assert result.applied_actions[0]["bridge_function"] == "run_orchestrator_triage_bridge"
+    assert result.applied_actions[-1]["to_state"] == "DONE"
+
+
+def test_run_production_order_autonomously_uses_direct_orchestrator_bridge_without_runner_call(conn, sample_brief):
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    runner_calls: list[dict] = []
+
+    def fake_runner(payload: dict) -> dict:
+        runner_calls.append(payload)
+        packet_map = {
+            ("architect_os", "ARCHITECT_SPEC"): architect_spec_packet(po.production_order_id),
+            ("dev_os", "ARCHITECT_READY_FOR_DEV"): devos_build_packet(po.production_order_id),
+            ("audit_os", "DEV_COMPLETE"): audit_review_packet(po.production_order_id),
+            ("architect_os", "AUDIT_PASSED"): architect_reconcile_packet(po.production_order_id),
+            ("default", "ARCHITECT_ACCEPTED"): final_review_packet(po.production_order_id),
+        }
+        return {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 7,
+            "result_channel": packet_map[(payload["target_profile"], payload["source_state"])],
+        }
+
+    result = run_production_order_autonomously(
+        conn,
+        po.production_order_id,
+        runner=fake_runner,
+        max_steps=1,
+        max_retries=1,
+        timeout_seconds=30,
+    )
+
+    refreshed = _reload_order(conn, po.production_order_id)
+    assert refreshed.current_state == "ARCHITECT_SPEC"
+    assert result.steps_run == 1
+    assert result.done is False
+    assert result.terminal_reason == "max_steps_exceeded"
+    assert result.applied_actions == [
+        {
+            "bridge_function": "run_orchestrator_triage_bridge",
+            "from_state": "ORCHESTRATOR_TRIAGE",
+            "to_state": "ARCHITECT_SPEC",
+            "target_profile": "orchestrator_os",
+            "mode": "direct_bridge",
+        }
+    ]
+    assert runner_calls == []
+
+
+def test_run_production_order_autonomously_stops_on_malformed_output_without_state_mutation(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+
+    result = run_production_order_autonomously(
+        conn,
+        po.production_order_id,
+        runner=lambda payload: {
+            "stdout": "done",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 3,
+        },
+        max_steps=5,
+        max_retries=1,
+        timeout_seconds=30,
+    )
+
+    refreshed = _reload_order(conn, po.production_order_id)
+    assert refreshed.current_state == "ARCHITECT_READY_FOR_DEV"
+    assert result.done is False
+    assert result.final_state == "ARCHITECT_READY_FOR_DEV"
+    assert result.terminal_reason == "validation_failed"
+    assert any("free-text-only output" in error for error in result.errors)
+
+
+def test_run_production_order_autonomously_stops_safely_at_max_steps(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+
+    result = run_production_order_autonomously(
+        conn,
+        po.production_order_id,
+        runner=lambda payload: {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 3,
+            "result_channel": devos_build_packet(po.production_order_id),
+        },
+        max_steps=0,
+        max_retries=1,
+        timeout_seconds=30,
+    )
+
+    refreshed = _reload_order(conn, po.production_order_id)
+    assert refreshed.current_state == "ARCHITECT_READY_FOR_DEV"
+    assert result.steps_run == 0
+    assert result.terminal_reason == "max_steps_exceeded"
+    assert result.final_state == "ARCHITECT_READY_FOR_DEV"
+
+
+def test_run_production_order_autonomously_respects_retry_limit_on_failed_invocation(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    attempts = {"count": 0}
+
+    def failing_runner(payload: dict) -> dict:
+        attempts["count"] += 1
+        return {
+            "stdout": "",
+            "stderr": "runner failed",
+            "exit_code": 1,
+            "duration_ms": 2,
+        }
+
+    result = run_production_order_autonomously(
+        conn,
+        po.production_order_id,
+        runner=failing_runner,
+        max_steps=5,
+        max_retries=1,
+        timeout_seconds=30,
+    )
+
+    refreshed = _reload_order(conn, po.production_order_id)
+    assert refreshed.current_state == "ARCHITECT_READY_FOR_DEV"
+    assert attempts["count"] == 2
+    assert result.done is False
+    assert result.terminal_reason == "retry_limit_exceeded"
+    assert any("exit_code=1" in error for error in result.errors)

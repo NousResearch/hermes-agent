@@ -2731,6 +2731,26 @@ class TestAgentProfiles(unittest.TestCase):
         out = _resolve_profile("p", {"p": {"max_iterations": 25}})
         self.assertEqual(out["max_iterations"], 25)
 
+    def test_resolve_profile_max_iterations_coerces_numeric_string(self):
+        """A numeric-string max_iterations (e.g. from YAML) is coerced to int."""
+        out = _resolve_profile("p", {"p": {"max_iterations": "30"}})
+        self.assertEqual(out["max_iterations"], 30)
+        self.assertIsInstance(out["max_iterations"], int)
+
+    def test_resolve_profile_max_iterations_invalid_raises(self):
+        """A non-integer max_iterations raises a clear ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_profile("p", {"p": {"max_iterations": "lots"}})
+        self.assertIn("max_iterations must be an integer", str(ctx.exception))
+        self.assertIn("'p'", str(ctx.exception))
+
+    def test_resolve_profile_does_not_mutate_source(self):
+        """_resolve_profile deep-copies; mutating the result leaves the source intact."""
+        source = {"p": {"toolsets": ["web"]}}
+        out = _resolve_profile("p", source)
+        out["toolsets"].append("terminal")
+        self.assertEqual(source["p"]["toolsets"], ["web"])
+
     def test_profile_in_schema_properties(self):
         """DELEGATE_TASK_SCHEMA contains 'profile' property."""
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
@@ -2830,6 +2850,84 @@ class TestAgentProfiles(unittest.TestCase):
 
             _, kwargs = mock_build.call_args
             self.assertEqual(kwargs["toolsets"], ["terminal"])
+
+    @patch("tools.delegate_tool._load_profiles")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_profile_max_iterations_applied_single_task(
+        self, mock_creds, mock_cfg, mock_profiles
+    ):
+        """A top-level profile's max_iterations reaches the child on a single-task call.
+
+        Regression: the value was read into a local then discarded by
+        effective_max_iter = default_max_iter, so single-task profile budgets
+        were silently dropped (the per-task batch path applied it correctly).
+        """
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_profiles.return_value = {"p": {"max_iterations": 30}}
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_build.return_value = MagicMock()
+            with patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "ok",
+                    "api_calls": 1,
+                    "duration_seconds": 1.0,
+                }
+                delegate_task(goal="g", profile="p", parent_agent=parent)
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["max_iterations"], 30)
+
+    @patch("tools.delegate_tool._load_profiles")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_profile_max_iterations_beats_top_level(
+        self, mock_creds, mock_cfg, mock_profiles
+    ):
+        """A per-task profile's max_iterations still overrides the top-level profile."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_profiles.return_value = {
+            "top": {"max_iterations": 30},
+            "task": {"max_iterations": 12},
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_build.return_value = MagicMock()
+            with patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "ok",
+                    "api_calls": 1,
+                    "duration_seconds": 1.0,
+                }
+                delegate_task(
+                    tasks=[{"goal": "g", "profile": "task"}],
+                    profile="top",
+                    parent_agent=parent,
+                )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["max_iterations"], 12)
 
     def test_unknown_profile_returns_error_json(self):
         """delegate_task with an unknown profile returns a clean error, not a crash."""

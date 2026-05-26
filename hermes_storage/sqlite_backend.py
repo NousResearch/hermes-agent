@@ -135,6 +135,28 @@ class SQLiteBackend:
 
         return await asyncio.to_thread(_find_or_create)
 
+    async def append_raw_event(
+        self,
+        tenant_id: str,
+        conversation_id: str | None,
+        event_kind: str,
+        platform_message_id: str | None,
+        raw_payload: dict,
+    ) -> str | None:
+        """
+        Plan 007-A no-op for local mode.
+
+        Compliance-grade raw_events audit is saas-only. Local sessions don't
+        need cross-restart audit (data lives on disk anyway). Plan 006
+        (Workflow Observability) writes its own events.db locally for the
+        dev observability use case.
+        """
+        logger.debug(
+            "SQLiteBackend.append_raw_event no-op (saas-only): kind=%s msg_id=%s",
+            event_kind, platform_message_id,
+        )
+        return None
+
     async def append_message(
         self,
         conversation_id: str,

@@ -101,7 +101,10 @@ async def run_server(host: str = "0.0.0.0", port: int = 8080) -> None:
         stop_event.set()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _handle_signal)
+        try:
+            loop.add_signal_handler(sig, _handle_signal)  # windows-footgun: ok
+        except NotImplementedError:
+            pass  # Windows asyncio doesn't support signal handlers
 
     await stop_event.wait()
     await runner.cleanup()

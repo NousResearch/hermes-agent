@@ -3855,7 +3855,26 @@ class GatewayRunner:
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
+
+        # Plan 004-A: initialize the storage backend BEFORE adapters connect so
+        # the Neon asyncpg pool exists by the time Slack auth callbacks fire
+        # and call _bootstrap_tenant. Best-effort: failure here only disables
+        # feedback capture (a telemetry path), it must never block startup.
+        if os.environ.get("HERMES_MODE") == "saas":
+            try:
+                import hermes_storage as _hs
+                _backend = await _hs.get_backend()
+                logger.info(
+                    "Storage backend initialized: %s (pool=%s)",
+                    type(_backend).__name__,
+                    "ready" if getattr(_backend, "_pool", None) is not None else "absent",
+                )
+            except Exception as _e:
+                logger.warning(
+                    "Storage backend initialization failed (feedback capture disabled): %s",
+                    _e,
+                )
+
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:

@@ -101,6 +101,44 @@ class StorageBackend(Protocol):
         """
         ...
 
+    async def append_raw_event(
+        self,
+        tenant_id: str,
+        conversation_id: str | None,
+        event_kind: str,
+        platform_message_id: str | None,
+        raw_payload: dict,
+    ) -> str | None:
+        """
+        Append one raw audit row to the compliance event log (Plan 007-A).
+
+        Append-only. Best-effort: implementations MUST swallow internal failures
+        (return None) so the audit path never blocks the user-facing flow.
+
+        Args:
+            tenant_id: UUID string of the tenant (caller resolves).
+            conversation_id: Optional conversation UUID (None for events that
+                arrive before a conversation is established, e.g. dropped Slack
+                events).
+            event_kind: One of "slack_inbound", "slack_outbound",
+                "tool_call_request", "tool_call_response". Backend enforces
+                via check constraint.
+            platform_message_id: Slack ts for inbound/outbound; deterministic
+                hash for tool calls. Used as idempotency key. May be None.
+            raw_payload: The full event dict. Caller is responsible for secret
+                redaction BEFORE handing the payload off.
+
+        Returns:
+            UUID string of the inserted row on success, None on idempotent
+            duplicate or any failure (audit path must never raise).
+
+        Saas vs local:
+            NeonBackend writes to the raw_events table with RLS enforcement.
+            SQLiteBackend no-ops with a debug log — local-mode compliance audit
+            is out of scope (track in events.db via Plan 006 instead).
+        """
+        ...
+
     async def close(self) -> None:
         """Release connection pool / file handles.  Safe to call multiple times."""
         ...

@@ -651,3 +651,94 @@ async def test_live_cross_tenant_rls_isolation():
     )
 
     await backend.close()
+
+
+# ---------------------------------------------------------------------------
+# Plan 007-B: append_raw_event tests (compliance audit log)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_append_raw_event_success_returns_id():
+    """append_raw_event INSERTs into raw_events under RLS and returns the row id."""
+    pool, conn, txn = _make_mock_pool_and_conn()
+    expected_id = str(uuid.uuid4())
+    conn.fetchrow = AsyncMock(return_value=_FakeRecord(id=expected_id))
+
+    backend = NeonBackend(dsn="postgres://fake/db")
+    backend._pool = pool
+
+    tenant_id = str(uuid.uuid4())
+    returned = await backend.append_raw_event(
+        tenant_id=tenant_id,
+        conversation_id=str(uuid.uuid4()),
+        event_kind="slack_inbound",
+        platform_message_id="1234567890.123456",
+        raw_payload={"event": "test", "ts": "1234567890.123456"},
+    )
+
+    assert returned == expected_id
+    # RLS GUC was set inside the transaction
+    conn.execute.assert_any_await(f"SET LOCAL app.tenant_id = '{tenant_id}'")
+    # The INSERT itself was issued
+    assert conn.fetchrow.await_count == 1
+    # Transaction committed cleanly
+    txn.commit.assert_awaited_once()
+    txn.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_append_raw_event_idempotent_duplicate_returns_none():
+    """ON CONFLICT DO NOTHING — fetchrow returns None on duplicate; method returns None."""
+    pool, conn, txn = _make_mock_pool_and_conn()
+    conn.fetchrow = AsyncMock(return_value=None)  # duplicate hit ON CONFLICT
+
+    backend = NeonBackend(dsn="postgres://fake/db")
+    backend._pool = pool
+
+    returned = await backend.append_raw_event(
+        tenant_id=str(uuid.uuid4()),
+        conversation_id=str(uuid.uuid4()),
+        event_kind="slack_outbound",
+        platform_message_id="1234567890.654321",
+        raw_payload={"ts": "1234567890.654321"},
+    )
+
+    assert returned is None  # idempotent — no error, no double-write
+
+
+@pytest.mark.asyncio
+async def test_append_raw_event_pool_unavailable_returns_none():
+    """No pool → return None silently (audit path NEVER raises)."""
+    backend = NeonBackend(dsn="postgres://fake/db")
+    backend._pool = None  # not initialised
+
+    returned = await backend.append_raw_event(
+        tenant_id=str(uuid.uuid4()),
+        conversation_id=None,
+        event_kind="tool_call_request",
+        platform_message_id=None,
+        raw_payload={"tool": "x", "args": {}},
+    )
+
+    assert returned is None
+
+
+@pytest.mark.asyncio
+async def test_append_raw_event_swallows_db_exception():
+    """If the INSERT raises, return None and do not propagate (best-effort)."""
+    pool, conn, txn = _make_mock_pool_and_conn()
+    conn.fetchrow = AsyncMock(side_effect=RuntimeError("simulated DB error"))
+
+    backend = NeonBackend(dsn="postgres://fake/db")
+    backend._pool = pool
+
+    # Must NOT raise; must return None.
+    returned = await backend.append_raw_event(
+        tenant_id=str(uuid.uuid4()),
+        conversation_id=str(uuid.uuid4()),
+        event_kind="tool_call_response",
+        platform_message_id=None,
+        raw_payload={"result": "ok"},
+    )
+
+    assert returned is None

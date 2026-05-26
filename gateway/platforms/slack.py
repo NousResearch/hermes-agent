@@ -316,6 +316,15 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, Any] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
+        # Plan 004-A: tenant UUID cache. Populated once per workspace at Slack
+        # auth time so feedback_capture.register_output finds an existing row
+        # via _resolve_tenant_id without any inbound-message-path round-trip.
+        self._tenant_id_by_team: Dict[str, str] = {}           # team_id → tenant UUID
+        # Plan 007-C: conversation UUID cache. (chat_id, thread_ts or "") → conv UUID.
+        # Populated lazily on first inbound message per Slack thread so
+        # NeonBackend.append_message has a stable conversation handle without
+        # calling get_or_create_conversation on every turn.
+        self._conv_id_by_chat: Dict[Tuple[str, str], str] = {} # (chat_id, thread_ts) → conv UUID
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events.
         self._dedup = MessageDeduplicator()
@@ -592,6 +601,11 @@ class SlackAdapter(BasePlatformAdapter):
                     bot_name, team_name, team_id,
                 )
 
+                # Plan 004-A: bootstrap tenant row once per workspace.
+                # Best-effort: if Neon is unreachable the gateway keeps running;
+                # feedback capture just stays disabled until next reload.
+                await self._bootstrap_tenant(team_id)
+
             # Register message event handler
             @self._app.event("message")
             async def handle_message_event(event, say):
@@ -835,32 +849,73 @@ class SlackAdapter(BasePlatformAdapter):
                     for old_ts in list(self._bot_message_ts)[:excess]:
                         self._bot_message_ts.discard(old_ts)
 
-            # Plan 004-A: register skill output for feedback correlation.
-            # If metadata carries a "skill_name" key, store (slack_ts, channel_id) →
-            # skill_name in skill_output_map so reactions on this message can be
-            # correlated back to the skill that produced it.
-            # Best-effort: failure is logged but never raised.
-            skill_name = (metadata or {}).get("skill_name", "")
-            if sent_ts and skill_name:
-                pool = self._get_neon_pool()
-                if pool is not None:
-                    try:
-                        team_id = (
-                            (list(self._team_bot_user_ids.keys())[:1] or [""])[0]
-                        )
-                        from hermes_agent.self_improvement.feedback_capture import register_output
-                        await register_output(
-                            pool=pool,
-                            platform="slack",
-                            team_id=team_id,
-                            channel_id=chat_id,
-                            slack_ts=sent_ts,
-                            skill_name=skill_name,
-                        )
-                    except Exception as _roe:
-                        logger.debug(
-                            "[Slack] Plan 004-A register_output error: %s", _roe
-                        )
+            # Plan 007-C: persist assistant turn to Neon messages (saas mode).
+            # Uses cached conversation_id from the prior user turn — silent skip
+            # if cache miss (e.g., bot-initiated message with no prior user turn).
+            if sent_ts:
+                try:
+                    await self._neon_persist_message(
+                        chat_id=chat_id,
+                        thread_ts=thread_ts or None,
+                        role="assistant",
+                        content=content or "",
+                        slack_ts=sent_ts,
+                        hermes_identity=None,  # cache lookup only
+                    )
+                except Exception as _e:
+                    logger.debug("[Slack] Plan 007-C assistant-turn persist error: %s", _e)
+
+                # Plan 007-D: full-payload audit row to raw_events.
+                # last_result is a slack_sdk SlackResponse object — extract .data
+                # (the JSON-decoded API response dict) so json.dumps doesn't
+                # choke inside NeonBackend.append_raw_event.
+                try:
+                    raw_response_data = None
+                    if last_result is not None:
+                        raw_response_data = getattr(last_result, "data", None)
+                        if raw_response_data is None and isinstance(last_result, dict):
+                            raw_response_data = last_result
+                    await self._neon_audit_event(
+                        chat_id=chat_id,
+                        thread_ts=thread_ts or None,
+                        event_kind="slack_outbound",
+                        platform_message_id=sent_ts,
+                        raw_payload={
+                            "content": content,
+                            "metadata": metadata or {},
+                            "raw_response": raw_response_data,
+                        },
+                    )
+                except Exception as _e:
+                    logger.warning("[Slack] Plan 007-D outbound audit error: %s", _e)
+
+            # Plan 004-A: register every Hermes output for feedback correlation.
+            # Default skill_name to "_agent_default" when the response did not come
+            # from an explicit skill — reactions on plain agent replies should still
+            # be capturable; downstream scorers can filter by skill_name if needed.
+            # Skipped only when the tenant bootstrap never succeeded (no Neon).
+            if sent_ts:
+                team_id = (
+                    (list(self._team_bot_user_ids.keys())[:1] or [""])[0]
+                )
+                if team_id and self._tenant_id_by_team.get(team_id):
+                    pool = self._get_neon_pool()
+                    if pool is not None:
+                        skill_name = (metadata or {}).get("skill_name") or "_agent_default"
+                        try:
+                            from hermes_agent.self_improvement.feedback_capture import register_output
+                            await register_output(
+                                pool=pool,
+                                platform="slack",
+                                team_id=team_id,
+                                channel_id=chat_id,
+                                slack_ts=sent_ts,
+                                skill_name=skill_name,
+                            )
+                        except Exception as _roe:
+                            logger.debug(
+                                "[Slack] Plan 004-A register_output error: %s", _roe
+                            )
 
             return SendResult(
                 success=True,
@@ -1326,7 +1381,175 @@ class SlackAdapter(BasePlatformAdapter):
 
         return text
 
+    # ----- Plan 007-D: raw_events audit writes (saas mode) -----
+
+    async def _neon_audit_event(
+        self,
+        chat_id: str,
+        thread_ts: Optional[str],
+        event_kind: str,
+        platform_message_id: Optional[str],
+        raw_payload: Dict[str, Any],
+    ) -> None:
+        """
+        Append a row to the raw_events table (Plan 007-D compliance audit).
+
+        Best-effort: skips silently when saas mode is off OR tenant cache
+        is empty. Uses the conversation_id cache populated by Plan 007-C
+        when present (None otherwise — raw_events.conversation_id is
+        nullable by design for events that arrive before a conversation).
+
+        Payload is passed through agent.redact.redact_sensitive_text on
+        string values before write — secrets must NEVER land in raw_events.
+        """
+        pool = self._get_neon_pool()
+        if pool is None:
+            return
+        try:
+            team_id = (list(self._team_bot_user_ids.keys())[:1] or [""])[0]
+            tenant_id = self._tenant_id_by_team.get(team_id)
+            if not tenant_id:
+                return
+            import hermes_storage as _hs
+            backend = _hs._backend
+            if backend is None:
+                return
+            # Redact string fields in the payload before persisting.
+            from agent.redact import redact_sensitive_text
+            def _scrub(v):
+                if isinstance(v, str):
+                    return redact_sensitive_text(v)
+                if isinstance(v, dict):
+                    return {k: _scrub(vv) for k, vv in v.items()}
+                if isinstance(v, list):
+                    return [_scrub(x) for x in v]
+                return v
+            scrubbed = _scrub(raw_payload) if raw_payload else {}
+            conv_id = self._conv_id_by_chat.get((chat_id, thread_ts or ""))
+            await backend.append_raw_event(
+                tenant_id=tenant_id,
+                conversation_id=conv_id,
+                event_kind=event_kind,
+                platform_message_id=platform_message_id,
+                raw_payload=scrubbed,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[Slack] Plan 007-D raw audit failed (kind=%s msg_id=%s): %s",
+                event_kind, platform_message_id, exc,
+            )
+
+    # ----- Plan 007-C: Slack message persistence to Neon (saas mode) -----
+
+    async def _neon_persist_message(
+        self,
+        chat_id: str,
+        thread_ts: Optional[str],
+        role: str,
+        content: str,
+        slack_ts: Optional[str],
+        hermes_identity: Optional["HermesIdentity"] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Persist one Slack turn to Neon `messages` (Plan 007-C).
+
+        Best-effort: failures swallowed (debug-logged) — message flow must
+        never block on the audit path. Skipped silently when:
+          - HERMES_MODE != saas (no Neon pool)
+          - Tenant bootstrap never succeeded (no tenant_id in cache)
+          - hermes_identity missing AND no cached conversation_id for chat
+
+        First call per (chat_id, thread_ts) resolves conversation via
+        backend.get_or_create_conversation and caches the UUID; subsequent
+        calls hit cache. Both user turns (from _handle_slack_message) and
+        assistant turns (from send) route through here.
+        """
+        if not content:
+            return
+        pool = self._get_neon_pool()
+        if pool is None:
+            return
+        cache_key = (chat_id, thread_ts or "")
+        try:
+            import hermes_storage as _hs
+            backend = _hs._backend
+            if backend is None:
+                return
+            conv_id = self._conv_id_by_chat.get(cache_key)
+            if conv_id is None:
+                if hermes_identity is None:
+                    # Assistant turn arrived before any user turn cached a
+                    # conversation — skip silently. Inbound path will fill
+                    # the cache on next user message.
+                    return
+                conv_id = await backend.get_or_create_conversation(
+                    hermes_identity, chat_id, thread_ts
+                )
+                self._conv_id_by_chat[cache_key] = conv_id
+            md = {"slack_ts": slack_ts} if slack_ts else {}
+            if extra_metadata:
+                md.update(extra_metadata)
+            await backend.append_message(
+                conv_id, role, content, tool_calls=None, metadata=md,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[Slack] Plan 007-C persist failed (role=%s chat=%s thread=%s): %s",
+                role, chat_id, thread_ts, exc,
+            )
+
     # ----- Plan 004-A: Skill feedback capture (reaction_added / reaction_removed) -----
+
+    async def _bootstrap_tenant(self, team_id: str) -> None:
+        """
+        Ensure a tenants row exists for (platform=slack, external_id=team_id).
+
+        Called once per workspace at auth time. Idempotent (ON CONFLICT DO NOTHING).
+        Caches the resolved UUID in self._tenant_id_by_team so register_output and
+        reaction handlers can rely on the row existing without re-querying.
+
+        Best-effort: failure is logged but never raised — feedback capture is
+        telemetry, not a critical path.
+        """
+        if not team_id:
+            return
+        if team_id in self._tenant_id_by_team:
+            return  # already bootstrapped this session
+        pool = self._get_neon_pool()
+        if pool is None:
+            return  # not in saas mode or pool not up yet
+        try:
+            import uuid as _uuid
+            slug = f"slack_{team_id}"
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT id FROM tenants WHERE platform = $1 AND external_id = $2",
+                    "slack", team_id,
+                )
+                if row is None:
+                    new_id = str(_uuid.uuid4())
+                    await conn.execute(
+                        "INSERT INTO tenants (id, platform, external_id, slug, tier) "
+                        "VALUES ($1, $2, $3, $4, 'free') "
+                        "ON CONFLICT (platform, external_id) DO NOTHING",
+                        new_id, "slack", team_id, slug,
+                    )
+                    row = await conn.fetchrow(
+                        "SELECT id FROM tenants WHERE platform = $1 AND external_id = $2",
+                        "slack", team_id,
+                    )
+                tenant_id = str(row["id"])
+                self._tenant_id_by_team[team_id] = tenant_id
+                logger.info(
+                    "[Slack] Plan 004-A tenant bootstrap: team=%s → %s",
+                    team_id, tenant_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[Slack] Plan 004-A tenant bootstrap failed for team=%s: %s",
+                team_id, exc,
+            )
 
     def _get_neon_pool(self):
         """
@@ -2351,6 +2574,33 @@ class SlackAdapter(BasePlatformAdapter):
             thread_id=thread_ts,
         )
         source.hermes_identity = hermes_identity
+
+        # Plan 007-C: persist user turn to Neon messages (saas mode only).
+        # Best-effort; never blocks the agent dispatch even if Neon is down.
+        try:
+            await self._neon_persist_message(
+                chat_id=channel_id,
+                thread_ts=thread_ts or None,
+                role="user",
+                content=text or "",
+                slack_ts=event.get("ts"),
+                hermes_identity=hermes_identity,
+                extra_metadata={"slack_user_id": str(user_id)} if user_id else None,
+            )
+        except Exception as _e:
+            logger.debug("[Slack] Plan 007-C user-turn persist error: %s", _e)
+
+        # Plan 007-D: full-payload audit row to raw_events.
+        try:
+            await self._neon_audit_event(
+                chat_id=channel_id,
+                thread_ts=thread_ts or None,
+                event_kind="slack_inbound",
+                platform_message_id=event.get("ts"),
+                raw_payload=event,  # the full Slack event dict — redacted inside the helper
+            )
+        except Exception as _e:
+            logger.debug("[Slack] Plan 007-D inbound audit error: %s", _e)
 
         # Per-channel ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills

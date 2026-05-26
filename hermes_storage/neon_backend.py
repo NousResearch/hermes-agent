@@ -455,35 +455,105 @@ class NeonBackend:
                 )
                 return msg_id
 
+    async def append_raw_event(
+        self,
+        tenant_id: str,
+        conversation_id: str | None,
+        event_kind: str,
+        platform_message_id: str | None,
+        raw_payload: dict,
+    ) -> str | None:
+        """
+        Plan 007-A: append one row to raw_events (compliance audit log).
+
+        Best-effort. Failures are swallowed (logged at debug) — the audit path
+        MUST NEVER raise, since it sits beside user-facing message flows.
+
+        Idempotency: the table's partial unique index on
+        (tenant_id, conversation_id, event_kind, platform_message_id) WHERE
+        platform_message_id IS NOT NULL means Slack redeliveries land as
+        ON CONFLICT DO NOTHING — first-write wins, no error to caller.
+        """
+        try:
+            pool = self._require_pool()
+        except Exception as exc:
+            logger.debug("NeonBackend.append_raw_event: pool unavailable: %s", exc)
+            return None
+
+        try:
+            payload_json = json.dumps(raw_payload) if raw_payload is not None else "{}"
+            async with pool.acquire() as conn:
+                async with _RLSTransaction(conn, tenant_id):
+                    # Dedup key (per migration 007): (tenant_id, event_kind,
+                    # platform_message_id) WHERE platform_message_id IS NOT NULL.
+                    # conversation_id was dropped from the key because NULL
+                    # values broke uniqueness for events arriving before a
+                    # conversation is established.
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO raw_events
+                            (tenant_id, conversation_id, event_kind,
+                             platform_message_id, raw_payload)
+                        VALUES ($1, $2, $3, $4, $5::jsonb)
+                        ON CONFLICT (tenant_id, event_kind, platform_message_id)
+                            WHERE platform_message_id IS NOT NULL
+                            DO NOTHING
+                        RETURNING id
+                        """,
+                        tenant_id, conversation_id, event_kind,
+                        platform_message_id, payload_json,
+                    )
+                    if row is None:
+                        # idempotent duplicate — already audited
+                        return None
+                    return str(row["id"])
+        except Exception as exc:
+            logger.debug(
+                "NeonBackend.append_raw_event failed (kind=%s msg_id=%s): %s",
+                event_kind, platform_message_id, exc,
+            )
+            return None
+
     async def get_conversation_history(
         self,
         conversation_id: str,
         limit: int = 50,
+        tenant_id: str | None = None,
     ) -> list[dict]:
         """
         Return the last *limit* messages for the conversation, oldest first.
 
-        Requires app.tenant_id to be set; resolved from conversations table.
+        Requires app.tenant_id to be set; resolved from cache, an explicit
+        argument, or — as a last resort — from a cold-start lookup that
+        requires the conversations RLS GUC be set first.
         Each dict: {"role", "content", optionally "tool_calls", "metadata"}.
+
+        Plan 007-E fix: `tenant_id` can now be passed explicitly by callers
+        who already have it (e.g., the Slack adapter's _tenant_id_by_team
+        cache). This avoids the cold-start RLS-bypass problem where the
+        prior cold-start lookup tried to JOIN conversations without setting
+        app.tenant_id first, which raised `InvalidTextRepresentationError:
+        invalid input syntax for type uuid: ""` because the RLS policy
+        evaluated `current_setting('app.tenant_id')::uuid` against an
+        empty string.
         """
         pool = self._require_pool()
         async with pool.acquire() as conn:
-            # Resolve tenant_id via cache (same cold-start pattern as append_message).
-            tenant_id = self._conv_tenant_cache.get(conversation_id)
+            # Resolution order: explicit arg → cache → cold-start (best-effort).
             if tenant_id is None:
-                row = await conn.fetchrow(
-                    """
-                    SELECT c.tenant_id
-                    FROM conversations c
-                    JOIN tenants t ON t.id = c.tenant_id
-                    WHERE c.id = $1
-                    """,
+                tenant_id = self._conv_tenant_cache.get(conversation_id)
+            if tenant_id is None:
+                # Cold-start: cannot resolve without RLS bypass and we don't
+                # have one. Return empty list; caller should populate the
+                # cache (e.g. via get_or_create_conversation) or pass
+                # tenant_id explicitly on subsequent calls.
+                logger.warning(
+                    "get_conversation_history: no tenant_id (cache cold + arg "
+                    "missing) for conv=%s; returning []",
                     conversation_id,
                 )
-                if row is None:
-                    return []
-                tenant_id = str(row["tenant_id"])
-                self._conv_tenant_cache[conversation_id] = tenant_id
+                return []
+            self._conv_tenant_cache[conversation_id] = tenant_id
 
             async with _RLSTransaction(conn, tenant_id):
                 rows = await conn.fetch(

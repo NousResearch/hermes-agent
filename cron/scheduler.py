@@ -149,8 +149,8 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
-# Sentinel: when a cron agent has nothing new to report, it can start its
-# response with this marker to suppress delivery.  Output is still saved
+# Sentinel: when a cron agent has nothing new to report, it can respond
+# exactly with this marker to suppress delivery. Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
@@ -1938,14 +1938,15 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     logger.info("Output saved to: %s", output_file)
 
                 # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
+                # If the agent responded with exactly [SILENT], skip delivery
+                # (but output is already saved above).  Failed jobs always
+                # deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                if should_deliver and success and deliver_content.strip() == SILENT_MARKER:
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 

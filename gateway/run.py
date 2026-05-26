@@ -5692,6 +5692,19 @@ class GatewayRunner:
         )
         while self._running:
             try:
+                # Reap zombie children before per-board work so a board DB
+                # failure cannot block cleanup of unrelated workers.
+                pids = await asyncio.to_thread(_kb.reap_worker_zombies)
+                if pids:
+                    logger.info(
+                        "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
+                        len(pids),
+                        pids,
+                    )
+            except Exception:
+                logger.exception("kanban dispatcher: zombie reaper failed")
+
+            try:
                 if auto_decompose_enabled:
                     await asyncio.to_thread(_auto_decompose_tick)
                 results = await asyncio.to_thread(_tick_once)

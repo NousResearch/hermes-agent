@@ -3652,3 +3652,156 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
         _check_file_length_invariant(raw_conn)
     raw_conn.close()
 
+
+# ---------------------------------------------------------------------------
+# reap_worker_zombies() tests
+# ---------------------------------------------------------------------------
+
+
+def test_reap_worker_zombies_returns_count():
+    """reap_worker_zombies() returns the list of reaped PIDs."""
+    from unittest.mock import patch
+
+    fake_pids = [12345, 67890, 11111]
+    call_count = [0]
+
+    def fake_waitpid(pid, flags):
+        if call_count[0] < len(fake_pids):
+            p = fake_pids[call_count[0]]
+            call_count[0] += 1
+            return p, 0
+        return 0, 0
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
+        with patch("hermes_cli.kanban_db._record_worker_exit"):
+            pids = kb.reap_worker_zombies()
+    assert pids == [12345, 67890, 11111]
+
+
+def test_reap_worker_zombies_noop_on_windows(monkeypatch):
+    """reap_worker_zombies() returns 0 and never calls os.waitpid on Windows."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr("hermes_cli.kanban_db.os.name", "nt")
+    with patch("hermes_cli.kanban_db.os.waitpid") as mock_waitpid:
+        result = kb.reap_worker_zombies()
+    mock_waitpid.assert_not_called()
+    assert result == []
+
+
+def test_reap_worker_zombies_noop_no_children():
+    """reap_worker_zombies() returns 0 without error when there are no children."""
+    from unittest.mock import patch
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=ChildProcessError):
+        result = kb.reap_worker_zombies()
+    assert result == []
+
+
+def test_reap_worker_zombies_records_exit_status():
+    """reap_worker_zombies() calls _record_worker_exit for each reaped pid."""
+    from unittest.mock import patch
+
+    calls = []
+    call_count = [0]
+
+    def fake_waitpid(pid, flags):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return 12345, 0
+        return 0, 0
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
+        with patch(
+            "hermes_cli.kanban_db._record_worker_exit",
+            side_effect=lambda p, s: calls.append((p, s)),
+        ):
+            kb.reap_worker_zombies()
+
+    assert calls == [(12345, 0)]
+
+
+def test_reap_worker_zombies_handles_waitpid_os_error():
+    """reap_worker_zombies() does not propagate generic OSError from os.waitpid."""
+    from unittest.mock import patch
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=OSError("test error")):
+        result = kb.reap_worker_zombies()
+    assert result == []
+
+
+def test_zombie_reaper_runs_despite_board_connect_failure():
+    """reap_worker_zombies runs even when a board tick raises an error."""
+    from unittest.mock import patch
+
+    call_count = [0]
+
+    def fake_waitpid(pid, flags):
+        call_count[0] += 1
+        if call_count[0] <= 2:
+            return [12345, 67890][call_count[0] - 1], 0
+        return 0, 0
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
+        with patch("hermes_cli.kanban_db._record_worker_exit"):
+            # Simulate a board tick failure before reaping
+            try:
+                raise sqlite3.OperationalError("disk I/O error")
+            except sqlite3.OperationalError:
+                pass
+
+            # Reaper still runs independently
+            pids = kb.reap_worker_zombies()
+
+    assert pids == [12345, 67890]
+
+
+def test_zombie_reaper_survives_all_boards_failing():
+    """reap_worker_zombies runs each tick regardless of board tick failures."""
+    from unittest.mock import patch
+
+    total_reaped = 0
+
+    def make_fake_waitpid(zombie_pids):
+        call_count = [0]
+
+        def fake_waitpid(pid, flags):
+            if call_count[0] < len(zombie_pids):
+                p = zombie_pids[call_count[0]]
+                call_count[0] += 1
+                return p, 0
+            return 0, 0
+
+        return fake_waitpid
+
+    # 5 ticks, 2 zombies per tick = 10 total
+    for tick in range(5):
+        pids = [tick * 100 + 1, tick * 100 + 2]
+        with patch(
+            "hermes_cli.kanban_db.os.waitpid", side_effect=make_fake_waitpid(pids)
+        ):
+            with patch("hermes_cli.kanban_db._record_worker_exit"):
+                pids = kb.reap_worker_zombies()
+        total_reaped += len(pids)
+
+    assert total_reaped == 10
+
+
+def test_dispatch_once_still_reaps_via_extracted_fn(kanban_home):
+    """The reaper inside dispatch_once still works after refactor to reap_worker_zombies()."""
+    from unittest.mock import patch
+
+    call_count = [0]
+
+    def fake_waitpid(pid, flags):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return 99999, 0
+        return 0, 0
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
+        with patch("hermes_cli.kanban_db._record_worker_exit"):
+            with patch("hermes_cli.kanban_db.os.name", "posix"):
+                pids = kb.reap_worker_zombies()
+
+    assert pids == [99999]

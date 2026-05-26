@@ -1031,6 +1031,12 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".yaml": "application/yaml",
     ".yml": "application/yaml",
     ".toml": "application/toml",
+    ".gpx": "application/gpx+xml",
+    ".kml": "application/vnd.google-earth.kml+xml",
+    ".geojson": "application/geo+json",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".js": "application/javascript",
     ".ini": "text/plain",
     ".cfg": "text/plain",
     ".zip": "application/zip",
@@ -2413,7 +2419,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|gpx|kml|geojson|html|htm|js|py|sh|json|xml|yaml|yml|toml|md)(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()

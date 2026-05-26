@@ -2270,7 +2270,7 @@ def check_terminal_requirements() -> bool:
 
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
-            return os.getenv("DAYTONA_API_KEY") is not None
+            return bool((os.getenv("DAYTONA_API_KEY") or "").strip())
 
         else:
             logger.error(

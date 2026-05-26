@@ -1,5 +1,7 @@
 import importlib
 import logging
+import sys
+import types
 
 import pytest
 
@@ -22,6 +24,7 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_SSH_USER",
         "TERMINAL_TIMEOUT",
         "TERMINAL_VERCEL_RUNTIME",
+        "DAYTONA_API_KEY",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "VERCEL_OIDC_TOKEN",
@@ -314,3 +317,27 @@ def test_vercel_backend_rejects_malformed_disk_without_raising(monkeypatch, capl
         "Invalid value for TERMINAL_CONTAINER_DISK" in record.getMessage()
         for record in caplog.records
     )
+
+
+@pytest.mark.parametrize(
+    ("api_key", "expected"),
+    [
+        (None, False),
+        ("", False),
+        ("   ", False),
+        ("token", True),
+    ],
+)
+def test_daytona_backend_requires_non_empty_api_key(monkeypatch, api_key, expected):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "daytona")
+    fake_daytona = types.ModuleType("daytona")
+    fake_daytona.Daytona = object
+    monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
+
+    if api_key is None:
+        monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("DAYTONA_API_KEY", api_key)
+
+    assert terminal_tool_module.check_terminal_requirements() is expected

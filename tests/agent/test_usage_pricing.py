@@ -5,6 +5,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -224,3 +225,58 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+# --- Direct Gemini cost tracking (#32400) ---
+
+def test_resolve_billing_route_maps_gemini_provider_to_google():
+    """`provider=gemini` must resolve to google + official_docs_snapshot.
+
+    Before #32400 every native-Gemini session fell through to billing_mode
+    "unknown", which short-circuited _lookup_official_docs_pricing and
+    caused estimated_cost_usd to stay $0 for every Gemini model.
+    """
+    route = resolve_billing_route("gemini-2.5-flash", provider="gemini")
+    assert route.provider == "google"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_resolve_billing_route_maps_google_gemini_cli_to_google():
+    """OAuth provider `google-gemini-cli` shares the same per-token pricing."""
+    route = resolve_billing_route("gemini-2.5-flash", provider="google-gemini-cli")
+    assert route.provider == "google"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_gemini_3_5_flash_pricing_entry_exists():
+    """Regression: gemini-3.5-flash must have a pricing entry (#32400)."""
+    entry = get_pricing_entry("gemini-3.5-flash", provider="gemini")
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.50
+    assert float(entry.output_cost_per_million) == 9.00
+    assert float(entry.cache_read_cost_per_million) == 0.15
+
+
+def test_gemini_2_5_flash_cost_no_longer_zero():
+    """Existing gemini-2.5-flash table entry must now be reachable from `provider=gemini`."""
+    result = estimate_usage_cost(
+        "gemini-2.5-flash",
+        CanonicalUsage(input_tokens=1000000, output_tokens=500000),
+        provider="gemini",
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M × $0.15/M + 500K × $0.60/M = $0.15 + $0.30 = $0.45
+    assert float(result.amount_usd) == 0.45
+
+
+def test_gemini_3_5_flash_estimate_usage_cost():
+    """End-to-end: a typical Gemini 3.5-flash turn must produce a real $ amount."""
+    result = estimate_usage_cost(
+        "gemini-3.5-flash",
+        CanonicalUsage(input_tokens=22106, output_tokens=239, cache_read_tokens=16266),
+        provider="gemini",
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert float(result.amount_usd) > 0

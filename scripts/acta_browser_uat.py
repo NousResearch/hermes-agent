@@ -191,25 +191,40 @@ def _is_usable_open_url(value: str | None) -> bool:
     return True
 
 
+_ARTIFACT_OPEN_ANCHOR_CLASSES = {
+    "artifact-open",
+    "artifact-open-overlay",
+    "open-action",
+    "output-open",
+    "output-open-overlay",
+}
+_ARTIFACT_OPEN_EXCLUDED_ANCHOR_CLASSES = {"ask", "ask-label", "followup", "follow-up", "followup-meta", "telegram"}
+
+
 class _ClickableOpenAffordanceParser(HTMLParser):
-    """Detect usable row-level or anchor-level open affordances in row HTML."""
+    """Detect usable row-level or artifact-open anchor affordances in row HTML."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.has_affordance = False
+        self._seen_root = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self.has_affordance:
             return
         tag = tag.lower()
-        for key, value in attrs:
-            key = key.lower()
-            if key == "data-open-url" and _is_usable_open_url(value):
+        attr_map = {key.lower(): value for key, value in attrs}
+        if not self._seen_root:
+            self._seen_root = True
+            if _is_usable_open_url(attr_map.get("data-open-url")):
                 self.has_affordance = True
                 return
-            if tag == "a" and key == "href" and _is_usable_open_url(value):
-                self.has_affordance = True
-                return
+        if tag != "a" or not _is_usable_open_url(attr_map.get("href")):
+            return
+        classes = set((attr_map.get("class") or "").lower().split())
+        if classes & _ARTIFACT_OPEN_ANCHOR_CLASSES and not classes & _ARTIFACT_OPEN_EXCLUDED_ANCHOR_CLASSES:
+            self.has_affordance = True
+            return
 
 
 def _has_clickable_open_affordance(row_html: str) -> bool:
@@ -644,7 +659,7 @@ def _validate_outputs_contract(
         )
         if actionable:
             if not _has_clickable_open_affordance(row_html):
-                failures.append(f"Output row {index} is missing clickable open affordance (href/data-open-url)")
+                failures.append(f"Output row {index} is missing clickable artifact-open affordance (artifact-open href/data-open-url)")
             row_without_toggle_copy = re.sub(r"\bMark\s+(?:read|unread)\b", " ", row_text, flags=re.I)
             if not re.search(r"\b(?:READ|UNREAD)\b", row_without_toggle_copy, re.I):
                 failures.append(f"Output row {index} is missing read/unread state")
@@ -756,7 +771,7 @@ def run(args: argparse.Namespace) -> int:
         "errors_output": result.errors_output,
         "layout_metrics": result.layout_metrics or {},
         "horizontal_overflow": result.horizontal_overflow,
-        "action_state_probe": result.action_state_probe or {},
+        "action_state_probe": (result.action_state_probe or {}) if scenario == "feed" else {},
         "failures": failures,
     }
     if scenario == "archive":

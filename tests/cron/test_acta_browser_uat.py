@@ -75,7 +75,7 @@ def _valid_outputs_dom() -> str:
           <span>CONF HIGH</span>
           <span>SOURCE morning_digest JOB daily ID 2026-05-25_09-00-00</span>
           <span>SCHEDULE daily brief OUTPUT 2h ago</span>
-          <a href="/acta/outputs/morning-operator-brief">OPEN</a>
+          <a class="output-open-overlay" href="/acta/outputs/morning-operator-brief">OPEN</a>
           <span>UNREAD</span>
           <button>Mark read</button>
         </article>
@@ -398,6 +398,70 @@ def test_validate_outputs_contract_accepts_production_style_data_open_url():
     assert acta_browser_uat._validate_outputs_contract(dom) == []
 
 
+def test_validate_outputs_contract_accepts_output_open_overlay_href():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row">
+        <h2>Morning operator brief</h2>
+        <span>CONF HIGH</span>
+        <span>SOURCE morning_digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 2h ago</span>
+        <a class="output-open-overlay" href="/acta/outputs/morning-operator-brief">OPEN</a>
+        <span>UNREAD</span>
+        <button>Mark read</button>
+      </article>
+    </body></html>
+    """
+
+    assert acta_browser_uat._validate_outputs_contract(dom) == []
+
+
+def test_validate_outputs_contract_rejects_unrelated_ask_followup_href_as_open_affordance():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row">
+        <h2>Latest artifact</h2>
+        <span>CONF HIGH</span>
+        <span>SOURCE digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 10m ago</span>
+        <span>SIGNED/OPEN</span>
+        <a class="followup-meta" href="https://t.me/example">FOLLOW-UP</a>
+        <a class="ask" href="https://t.me/example">ASK</a>
+        <span>UNREAD</span>
+        <button>Mark read</button>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_outputs_contract(dom)
+
+    assert "Output row 1 is missing clickable artifact-open affordance (artifact-open href/data-open-url)" in failures
+
+
+def test_validate_outputs_contract_rejects_generic_open_class_as_open_affordance():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row">
+        <h2>Latest artifact</h2>
+        <span>CONF HIGH</span>
+        <span>SOURCE digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 10m ago</span>
+        <span>SIGNED/OPEN</span>
+        <a class="open" href="https://t.me/example">OPEN THREAD</a>
+        <span>UNREAD</span>
+        <button>Mark read</button>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_outputs_contract(dom)
+
+    assert "Output row 1 is missing clickable artifact-open affordance (artifact-open href/data-open-url)" in failures
+
+
 @pytest.mark.parametrize(
     "affordance_html",
     [
@@ -435,7 +499,7 @@ def test_validate_outputs_contract_rejects_empty_or_invalid_clickable_affordance
 
     failures = acta_browser_uat._validate_outputs_contract(dom)
 
-    assert "Output row 1 is missing clickable open affordance (href/data-open-url)" in failures
+    assert "Output row 1 is missing clickable artifact-open affordance (artifact-open href/data-open-url)" in failures
 
 
 def test_validate_outputs_contract_extracts_rows_with_void_tags_inside():
@@ -488,7 +552,7 @@ def test_validate_outputs_contract_fails_when_action_copy_has_no_clickable_open_
 
     failures = acta_browser_uat._validate_outputs_contract(dom)
 
-    assert "Output row 1 is missing clickable open affordance (href/data-open-url)" in failures
+    assert "Output row 1 is missing clickable artifact-open affordance (artifact-open href/data-open-url)" in failures
 
 
 def test_validate_outputs_contract_fails_when_signed_open_row_lacks_read_state_and_toggle():
@@ -806,6 +870,7 @@ def test_run_writes_outputs_report_metadata_for_outputs_scenario(tmp_path: Path,
     assert report["persona"] == "mobile Acta operator inspecting Outputs shelf artifacts"
     assert "Outputs shelf" in report["scenario"]
     assert report["output_rows"] == 2
+    assert report["action_state_probe"] == {}
     assert "job_rows" not in report
     assert "daily_rows" not in report
     assert "dev_rows" not in report

@@ -1345,7 +1345,14 @@ def write_txn(conn: sqlite3.Connection):
     try:
         yield conn
     except Exception:
-        conn.execute("ROLLBACK")
+        # SQLite auto-aborts the transaction on some errors (e.g. SQLITE_IOERR),
+        # so an explicit ROLLBACK can raise "cannot rollback - no transaction is
+        # active". Swallow that secondary failure so it can't mask the original
+        # exception, which is the one the caller needs to see.
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
         raise
     else:
         conn.execute("COMMIT")

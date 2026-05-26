@@ -2981,3 +2981,56 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
         assert "stale" in kinds, (
             f"Expected 'stale' event in task_events; got {kinds!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# write_txn rollback robustness (regression for #kanban-db-corruption)
+# ---------------------------------------------------------------------------
+
+class _RollbackFailsConn:
+    """Minimal conn stub whose ROLLBACK fails like an already-aborted txn.
+
+    SQLite auto-aborts the transaction on errors such as SQLITE_IOERR, so a
+    later explicit ROLLBACK raises "cannot rollback - no transaction is
+    active". This stub reproduces that so we can assert write_txn does not
+    let the rollback failure mask the original exception.
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, sql, *args):
+        self.calls.append(sql)
+        if sql == "ROLLBACK":
+            raise sqlite3.OperationalError(
+                "cannot rollback - no transaction is active"
+            )
+        return None
+
+
+class _SentinelError(Exception):
+    pass
+
+
+def test_write_txn_rollback_failure_does_not_mask_original_error():
+    conn = _RollbackFailsConn()
+    with pytest.raises(_SentinelError):
+        with kb.write_txn(conn):
+            raise _SentinelError("the real failure, e.g. disk I/O error")
+    # The rollback was attempted (and its failure swallowed), and the original
+    # exception — not the rollback OperationalError — propagated.
+    assert "BEGIN IMMEDIATE" in conn.calls
+    assert "ROLLBACK" in conn.calls
+    assert "COMMIT" not in conn.calls
+
+
+def test_write_txn_commits_on_success(kanban_home):
+    with kb.connect() as conn:
+        # CREATE runs in autocommit (isolation_level=None) before the txn.
+        conn.execute("CREATE TABLE IF NOT EXISTS _wt_probe (v TEXT)")
+        with kb.write_txn(conn):
+            conn.execute("INSERT INTO _wt_probe (v) VALUES ('x')")
+    # A fresh connection sees the committed row.
+    with kb.connect() as conn:
+        row = conn.execute("SELECT v FROM _wt_probe").fetchone()
+    assert row is not None and row["v"] == "x"

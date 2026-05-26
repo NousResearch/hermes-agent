@@ -347,3 +347,73 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+# ---------------------------------------------------------------------------
+# Connection lifecycle (regression for #kanban-db-corruption)
+#
+# `with kb.connect() as conn:` only manages the transaction, not the
+# connection — sqlite3's context manager never closes it. decompose_task
+# now wraps connect() in contextlib.closing, so every connection it opens
+# must be closed (releasing the WAL -wal/-shm file descriptors).
+# ---------------------------------------------------------------------------
+
+class _TrackingConn:
+    """Delegating proxy that records whether close() was called."""
+
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "closed", False)
+
+    def close(self):
+        object.__setattr__(self, "closed", True)
+        self._real.close()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._real, name, value)
+
+
+def test_decompose_closes_every_connection_it_opens(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="single thing", triage=True)
+
+    real_connect = kb.connect
+    opened: list[_TrackingConn] = []
+
+    def _tracking_connect(*args, **kwargs):
+        wrapper = _TrackingConn(real_connect(*args, **kwargs))
+        opened.append(wrapper)
+        return wrapper
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Tightened",
+        "body": "Do the thing.",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ), patch("hermes_cli.kanban_decompose.kb.connect", _tracking_connect):
+            outcome = decomp.decompose_task(tid, author="me")
+
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    # decompose_task opened at least the get_task + specify_triage_task
+    # connections, and every one of them was closed.
+    assert len(opened) >= 2
+    assert all(w.closed for w in opened), (
+        "decompose_task leaked a connection: "
+        f"{[i for i, w in enumerate(opened) if not w.closed]}"
+    )

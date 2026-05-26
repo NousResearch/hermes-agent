@@ -893,16 +893,20 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
       - "model's max context length is 65536"
     """
     error_lower = error_msg.lower()
-    # Pattern: look for numbers near context-related keywords
-    patterns = [
-        r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
-        r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
-        r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
-        r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
-        r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, error_lower)
+    # Pre-compiled so the pattern list is compiled once at import rather than
+    # on every error path.
+    if not hasattr(parse_context_limit_from_error, '_patterns'):
+        parse_context_limit_from_error._patterns = [
+            re.compile(p) for p in [
+                r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
+                r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
+                r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
+                r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
+                r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
+            ]
+        ]
+    for pattern in parse_context_limit_from_error._patterns:
+        match = pattern.search(error_lower)
         if match:
             limit = int(match.group(1))
             # Sanity check: must be a reasonable context length
@@ -939,14 +943,19 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
 
     # Extract the available_tokens figure.
     # Anthropic format: "… = available_tokens: 10000"
-    patterns = [
-        r'available_tokens[:\s]+(\d+)',
-        r'available\s+tokens[:\s]+(\d+)',
-        # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
-        r'=\s*(\d+)\s*$',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, error_lower)
+    # Pre-compiled so the pattern list is compiled once at import rather than
+    # on every error path.
+    if not hasattr(parse_available_output_tokens_from_error, '_patterns'):
+        parse_available_output_tokens_from_error._patterns = [
+            re.compile(p) for p in [
+                r'available_tokens[:\s]+(\d+)',
+                r'available\s+tokens[:\s]+(\d+)',
+                # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
+                r'=\s*(\d+)\s*$',
+            ]
+        ]
+    for pattern in parse_available_output_tokens_from_error._patterns:
+        match = pattern.search(error_lower)
         if match:
             tokens = int(match.group(1))
             if tokens >= 1:

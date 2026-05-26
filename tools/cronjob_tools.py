@@ -66,44 +66,49 @@ from cron.jobs import (
 # header exemption.
 
 # Strict patterns — applied to the user prompt only.
-_CRON_THREAT_PATTERNS = [
-    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'/etc/sudoers|visudo', "sudoers_mod"),
-    (r'rm\s+-rf\s+/', "destructive_root_rm"),
-]
+_CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
 
-# Looser pattern set — applied to the assembled prompt when skills are
-# attached. Only patterns whose phrasing is unambiguous in any context;
+# Pre-compiled regexes — built once at import time.
+# Strict patterns (applied to the user prompt only).
+_CRONT = [
+    (re.compile(p, re.IGNORECASE), name) for p, name in [
+        (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
+        (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+        (r'system\s+prompt\s+override', "sys_prompt_override"),
+        (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+        (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+        (r'authorized_keys', "ssh_backdoor"),
+        (r'/etc/sudoers|visudo', "sudoers_mod"),
+        (r'rm\s+-rf\s+/', "destructive_root_rm"),
+    ]
+]
+_CRON_THREAT_PATTERNS = _CRONT
+
+# Looser pattern set (applied to the assembled prompt when skills are
+# attached). Only catches unambiguous prompt-injection directives;
 # command-shape patterns are dropped because they false-positive on prose
 # in security docs / postmortems. Skill bodies are scanned at install time
-# by `skills_guard.py`, so the runtime cron scan is purely a tripwire for
-# obvious injection directives surviving a malicious skill that slipped
-# through install.
+# by `skills_guard.py`, so the runtime cron scan is purely a tripwire.
 _CRON_SKILL_ASSEMBLED_PATTERNS = [
-    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+    (re.compile(p, re.IGNORECASE), name) for p, name in [
+        (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
+        (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+        (r'system\s+prompt\s+override', "sys_prompt_override"),
+        (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+    ]
 ]
 
-_CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
-_CRON_EXFIL_COMMAND_PATTERNS = [
-    # Tighten exfil detection to obvious leak paths: embedding a secret
-    # directly in the destination URL, sending it in POST/FORM payloads,
-    # or shipping it via Authorization headers to arbitrary hosts. The
-    # only intended allowlist exception today is the bundled GitHub skill
-    # pattern that talks to api.github.com.
-    (rf'curl\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_curl_url"),
-    (rf'wget\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_wget_url"),
-    (rf'curl\s+[^\n]*(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\s+[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_curl_data"),
-    (rf'wget\s+[^\n]*--post-(?:data|file)=[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_wget_post"),
-    (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
+# Exfil patterns — tightened to obvious leak paths.
+_CRON_EXFIL_PATTERNS = [
+    (re.compile(p, re.IGNORECASE), name) for p, name in [
+        (rf'curl\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_curl_url"),
+        (rf'wget\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_wget_url"),
+        (rf'curl\s+[^\n]*(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\s+[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_curl_data"),
+        (rf'wget\s+[^\n]*--post-(?:data|file)=[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_wget_post"),
+        (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
+    ]
 ]
+_CRON_EXFIL_COMMAND_PATTERNS = _CRON_EXFIL_PATTERNS
 
 _CRON_INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
@@ -197,10 +202,10 @@ def _scan_cron_prompt(prompt: str) -> str:
     if invisible_err:
         return invisible_err
     for pattern, pid in _CRON_THREAT_PATTERNS:
-        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+        if pattern.search(prompt_to_scan):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
-        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+        if pattern.search(prompt_to_scan):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     return ""
 
@@ -223,7 +228,7 @@ def _scan_cron_skill_assembled(assembled: str) -> str:
     if invisible_err:
         return invisible_err
     for pattern, pid in _CRON_SKILL_ASSEMBLED_PATTERNS:
-        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+        if pattern.search(prompt_to_scan):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     return ""
 

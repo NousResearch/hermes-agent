@@ -34,6 +34,13 @@ from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname
 
 
+_STRIP_V1_SUFFIX = re.compile(r'/v1/?$')
+
+def _strip_v1_suffix(base_url: str) -> str:
+    """Strip a trailing /v1 or /v1/ suffix from a base URL."""
+    return _STRIP_V1_SUFFIX.sub('', base_url)
+
+
 def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
@@ -367,7 +374,7 @@ def _resolve_runtime_from_pool_entry(
                 api_mode = inferred
         # For Anthropic-style endpoints, strip /v1 suffix
         if api_mode == "anthropic_messages":
-            base_url = re.sub(r"/v1/?$", "", base_url)
+            base_url = _strip_v1_suffix(base_url)
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -404,7 +411,7 @@ def _resolve_runtime_from_pool_entry(
     # trailing /v1 so the SDK constructs the correct path (e.g.
     # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
     if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
-        base_url = re.sub(r"/v1/?$", "", base_url)
+        base_url = _strip_v1_suffix(base_url)
 
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".
@@ -951,7 +958,7 @@ def _resolve_azure_foundry_runtime(
     # Anthropic SDK appends /v1/messages itself, so strip any trailing /v1
     # we inherited from the configured base_url to avoid double-/v1 paths.
     if cfg_api_mode == "anthropic_messages":
-        base_url = re.sub(r"/v1/?$", "", base_url)
+        base_url = _strip_v1_suffix(base_url)
 
     # ── Entra ID (Microsoft Foundry recommended path) ──────────────────
     #
@@ -1643,7 +1650,7 @@ def resolve_runtime_provider(
                     api_mode = detected
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
-            base_url = re.sub(r"/v1/?$", "", base_url)
+            base_url = _strip_v1_suffix(base_url)
         return {
             "provider": provider,
             "api_mode": api_mode,

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import threading
 from typing import Any, Callable, Optional
@@ -301,6 +302,18 @@ _continuous_on_status: Optional[Callable[[str], None]] = None
 _continuous_on_silent_limit: Optional[Callable[[], None]] = None
 _continuous_no_speech_count = 0
 _CONTINUOUS_NO_SPEECH_LIMIT = 3
+
+# Pre-compiled regexes for speak_text markdown stripping — built once at import time.
+_TTS_FENCED_CODE = re.compile(r'```[\s\S]*?```')
+_TTS_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
+_TTS_URL = re.compile(r'https?://\S+')
+_TTS_BOLD = re.compile(r'\*\*(.+?)\*\*')
+_TTS_ITALIC = re.compile(r'\*(.+?)\*')
+_TTS_INLINE_CODE = re.compile(r'`(.+?)`')
+_TTS_HEADER = re.compile(r'^#+\s*', flags=re.MULTILINE)
+_TTS_LIST_BULLET = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
+_TTS_HR = re.compile(r'---+')
+_TTS_EXCESS_NEWLINES = re.compile(r'\n{3,}')
 
 
 # ── Push-to-talk API ─────────────────────────────────────────────────
@@ -782,16 +795,16 @@ def speak_text(text: str) -> None:
         from tools.tts_tool import text_to_speech_tool
 
         tts_text = text[:4000] if len(text) > 4000 else text
-        tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
-        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
-        tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
-        tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
-        tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
-        tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
-        tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-        tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
-        tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
-        tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
+        tts_text = _TTS_FENCED_CODE.sub(' ', tts_text)                  # fenced code blocks
+        tts_text = _TTS_LINK.sub(r'\1', tts_text)                       # [text](url) → text
+        tts_text = _TTS_URL.sub('', tts_text)                           # bare URLs
+        tts_text = _TTS_BOLD.sub(r'\1', tts_text)                       # bold
+        tts_text = _TTS_ITALIC.sub(r'\1', tts_text)                     # italic
+        tts_text = _TTS_INLINE_CODE.sub(r'\1', tts_text)                # inline code
+        tts_text = _TTS_HEADER.sub('', tts_text)                        # headers
+        tts_text = _TTS_LIST_BULLET.sub('', tts_text)                   # list bullets
+        tts_text = _TTS_HR.sub('', tts_text)                            # horizontal rules
+        tts_text = _TTS_EXCESS_NEWLINES.sub('\n\n', tts_text)          # excess newlines
         tts_text = tts_text.strip()
         if not tts_text:
             return

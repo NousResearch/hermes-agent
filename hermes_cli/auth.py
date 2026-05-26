@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -49,6 +49,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
+from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -196,9 +197,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
     ),
+    "openai-api": ProviderConfig(
+        id="openai-api",
+        name="OpenAI API",
+        auth_type="api_key",
+        inference_base_url="https://api.openai.com/v1",
+        api_key_env_vars=("OPENAI_API_KEY",),
+        base_url_env_var="OPENAI_BASE_URL",
+    ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
-        name="xAI Grok OAuth (SuperGrok Subscription)",
+        name="xAI Grok OAuth (SuperGrok / Premium+)",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL,
     ),
@@ -553,6 +562,7 @@ _PLACEHOLDER_SECRET_VALUES = {
     "***",
     "changeme",
     "your_api_key",
+    "your_api_key_here",
     "your-api-key",
     "placeholder",
     "example",
@@ -1167,14 +1177,23 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
-    """Persist one provider's credential pool under auth.json."""
+    """Persist one provider's credential pool under auth.json.
+
+    This is the final disk-boundary guard for borrowed/reference-only
+    credentials. Callers may pass raw dictionaries, so sanitize here even when
+    ``PooledCredential.to_dict()`` already did the same work upstream.
+    """
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
             auth_store["credential_pool"] = pool
-        pool[provider_id] = list(entries)
+        pool[provider_id] = [
+            sanitize_borrowed_credential_payload(entry, provider_id)
+            if isinstance(entry, dict) else entry
+            for entry in entries
+        ]
         return _save_auth_store(auth_store)
 
 
@@ -1557,6 +1576,67 @@ def _optional_base_url(value: Any) -> Optional[str]:
         return None
     cleaned = value.strip().rstrip("/")
     return cleaned if cleaned else None
+
+
+# Allowlist of hosts the Nous Portal proxy is willing to forward minted
+# bearer tokens to. The bearer is a long-lived agent_key minted by
+# portal.nousresearch.com — sending it anywhere else would leak it.
+#
+# This is consulted only for URLs coming from the NETWORK side (Portal
+# refresh / agent-key-mint responses). User-controlled env-var overrides
+# (NOUS_INFERENCE_BASE_URL) bypass validation — that's the documented
+# dev/staging escape hatch and the env source is already trusted (the
+# user set it themselves).
+_ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
+    "inference-api.nousresearch.com",
+})
+
+
+def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
+    """Validate a Portal-returned inference URL against the host allowlist.
+
+    Returns ``url`` (normalised by stripping trailing slashes) if it's a
+    well-formed ``https://<allowlisted-host>/...`` URL. Returns ``None``
+    if the URL is missing, malformed, non-https, or points at an
+    unexpected host — letting the caller fall back to the configured
+    default rather than persist or forward a poisoned value.
+
+    Defense-in-depth: a compromised refresh / mint response from the
+    Portal API (MITM, malicious response injection) could otherwise
+    redirect every subsequent proxy request — bearing the user's
+    legitimately-minted agent_key — to an attacker-controlled endpoint.
+    Validating scheme + host at the source closes that loop before the
+    poisoned URL ever lands in ``auth.json``.
+
+    The env-var override path (``NOUS_INFERENCE_BASE_URL``) bypasses
+    this — env values come from the trusted OS user, not from the
+    network, and the override is documented for staging/dev use.
+
+    Co-authored-by: memosr <mehmet.sr35@gmail.com>
+    """
+    if not isinstance(url, str):
+        return None
+    cleaned = url.strip()
+    if not cleaned:
+        return None
+    try:
+        parsed = urlparse(cleaned)
+    except Exception:
+        return None
+    if parsed.scheme != "https":
+        logger.warning(
+            "nous: refusing non-https inference URL scheme %r from Portal response",
+            parsed.scheme,
+        )
+        return None
+    if parsed.hostname not in _ALLOWED_NOUS_INFERENCE_HOSTS:
+        logger.warning(
+            "nous: refusing inference URL host %r from Portal response "
+            "(not in allowlist); falling back to default",
+            parsed.hostname,
+        )
+        return None
+    return cleaned.rstrip("/")
 
 
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
@@ -2004,7 +2084,10 @@ def resolve_qwen_runtime_credentials(
 def get_qwen_auth_status() -> Dict[str, Any]:
     auth_path = _qwen_cli_auth_path()
     try:
-        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        # Validate the runtime credentials, including refresh when the cached
+        # CLI token is expired. Otherwise stale tokens show up as "logged in"
+        # and `hermes model` walks users into a broken Qwen setup flow.
+        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
         return {
             "logged_in": True,
             "auth_file": str(auth_path),
@@ -2405,6 +2488,32 @@ def _make_xai_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequest
                 "error_description": params.get("error_description", [None])[0],
             }
 
+            # Diagnostic logging — emits at INFO so reporters of loopback bugs
+            # (#27385 — "callback received but Hermes times out") can produce
+            # actionable evidence without a code change.  Logged values are
+            # fingerprints / booleans only; no actual code/state strings leak
+            # into the log file.  Run with ``HERMES_LOG_LEVEL=INFO`` (or check
+            # ``~/.hermes/logs/agent.log`` which captures INFO+ unconditionally).
+            try:
+                logger.info(
+                    "xAI loopback callback received: path=%s has_code=%s has_state=%s has_error=%s "
+                    "ua=%s",
+                    parsed.path,
+                    incoming["code"] is not None,
+                    incoming["state"] is not None,
+                    incoming["error"] is not None,
+                    (self.headers.get("User-Agent") or "")[:80],
+                )
+                if incoming["error"]:
+                    logger.info(
+                        "xAI loopback callback carries error=%s error_description=%s",
+                        incoming["error"],
+                        (incoming["error_description"] or "")[:200],
+                    )
+            except Exception:
+                # Logging must never break the OAuth flow.
+                pass
+
             # Treat a hit on the callback path with neither `code` nor `error`
             # as a missing OAuth callback (e.g. xAI's auth backend failed to
             # redirect and the user navigated to the bare loopback URL by hand).
@@ -2509,6 +2618,17 @@ def _xai_wait_for_callback(
         server.shutdown()
         server.server_close()
         thread.join(timeout=1.0)
+    # Diagnostic: distinguish "no callback ever arrived" from "callback
+    # arrived but result wasn't populated" (#27385).  The per-hit handler
+    # also logs at INFO; if neither line appears, xAI's IDP never reached
+    # the loopback at all (firewall, port-binding, IPv6/IPv4 mismatch).
+    logger.info(
+        "xAI loopback wait timed out after %.0fs with no usable callback "
+        "(result.code=%s result.error=%s)",
+        max(5.0, timeout_seconds),
+        result["code"] is not None,
+        result["error"] is not None,
+    )
     raise AuthError(
         "xAI authorization timed out waiting for the local callback.",
         provider="xai-oauth",
@@ -3342,7 +3462,7 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     state = _load_provider_state(auth_store, "xai-oauth")
     if not state:
         raise AuthError(
-            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok Subscription) in `hermes model`.",
+            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
             provider="xai-oauth",
             code="xai_auth_missing",
             relogin_required=True,
@@ -4776,7 +4896,7 @@ def refresh_nous_oauth_pure(
             state["refresh_token"] = refreshed.get("refresh_token") or state["refresh_token"]
             state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
             state["scope"] = refreshed.get("scope") or state.get("scope")
-            refreshed_url = _optional_base_url(refreshed.get("inference_base_url"))
+            refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
             if refreshed_url:
                 state["inference_base_url"] = refreshed_url
             state["obtained_at"] = now.isoformat()
@@ -4812,7 +4932,7 @@ def refresh_nous_oauth_pure(
             state["agent_key_expires_in"] = mint_payload.get("expires_in")
             state["agent_key_reused"] = bool(mint_payload.get("reused", False))
             state["agent_key_obtained_at"] = now.isoformat()
-            minted_url = _optional_base_url(mint_payload.get("inference_base_url"))
+            minted_url = _validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))
             if minted_url:
                 state["inference_base_url"] = minted_url
 
@@ -5090,7 +5210,7 @@ def resolve_nous_runtime_credentials(
                         state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
                         state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                         state["scope"] = refreshed.get("scope") or state.get("scope")
-                        refreshed_url = _optional_base_url(refreshed.get("inference_base_url"))
+                        refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
                         if refreshed_url:
                             inference_base_url = refreshed_url
                         state["obtained_at"] = now.isoformat()
@@ -5198,7 +5318,7 @@ def resolve_nous_runtime_credentials(
                                 state["refresh_token"] = refreshed.get("refresh_token") or latest_refresh_token
                                 state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                                 state["scope"] = refreshed.get("scope") or state.get("scope")
-                                refreshed_url = _optional_base_url(refreshed.get("inference_base_url"))
+                                refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
                                 if refreshed_url:
                                     inference_base_url = refreshed_url
                                 state["obtained_at"] = now.isoformat()
@@ -5253,7 +5373,7 @@ def resolve_nous_runtime_credentials(
                 state["agent_key_expires_in"] = mint_payload.get("expires_in")
                 state["agent_key_reused"] = bool(mint_payload.get("reused", False))
                 state["agent_key_obtained_at"] = now.isoformat()
-                minted_url = _optional_base_url(mint_payload.get("inference_base_url"))
+                minted_url = _validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))
                 if minted_url:
                     inference_base_url = minted_url
                 _oauth_trace(
@@ -6273,7 +6393,7 @@ def _login_xai_oauth(
             pass
 
     print()
-    print("Signing in to xAI Grok OAuth (SuperGrok Subscription)...")
+    print("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     print("(Hermes creates its own local OAuth session)")
     print()
 
@@ -7045,10 +7165,95 @@ def _refresh_minimax_oauth_state(
     return new_state
 
 
+def _minimax_oauth_quarantine_on_terminal_refresh(state: Dict[str, Any], exc: AuthError) -> None:
+    """Wipe dead tokens from auth.json after a terminal refresh failure.
+
+    Shared by both the eager-resolve path and the lazy per-request token
+    provider. Mirrors the Nous / xAI-OAuth / Codex-OAuth quarantine pattern
+    so subsequent calls fail fast without a network retry.
+    """
+    if not (exc.relogin_required and state.get("refresh_token")):
+        return
+    for _k in ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at"):
+        state.pop(_k, None)
+    state["last_auth_error"] = {
+        "provider": "minimax-oauth",
+        "code": exc.code or "refresh_failed",
+        "message": str(exc),
+        "reason": "runtime_refresh_failure",
+        "relogin_required": True,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        _minimax_save_auth_state(state)
+    except Exception as _save_exc:
+        logger.debug("MiniMax OAuth: failed to persist quarantined state: %s", _save_exc)
+
+
+def build_minimax_oauth_token_provider() -> Callable[[], str]:
+    """Return a zero-arg callable that yields a fresh MiniMax access token.
+
+    The Anthropic SDK caches ``api_key`` as a static string at construction
+    time, so a session that resolves credentials once at startup will keep
+    sending the same bearer until MiniMax's server returns 401 — typically
+    ~15 minutes in, because MiniMax issues short-lived access tokens.
+
+    Returning a *callable* instead of a string lets us hook into the
+    existing Entra-ID bearer infrastructure in
+    :mod:`agent.anthropic_adapter`: ``build_anthropic_client`` detects a
+    callable and routes through ``_build_anthropic_client_with_bearer_hook``,
+    which mints a fresh ``Authorization`` header on every outbound request.
+    Each invocation re-reads the persisted state from ``auth.json`` and
+    calls :func:`_refresh_minimax_oauth_state` — that helper is a no-op
+    when the token still has more than ``MINIMAX_OAUTH_REFRESH_SKEW_SECONDS``
+    of life left, so the steady-state cost is one file read + one
+    timestamp compare per request.
+
+    Reading state fresh each time also means a refresh persisted by one
+    process (CLI, gateway, cron) is immediately visible to every other
+    process sharing the same ``auth.json``.
+    """
+    def _provide() -> str:
+        state = get_provider_auth_state("minimax-oauth")
+        if not state or not state.get("access_token"):
+            raise AuthError(
+                "Not logged into MiniMax OAuth. Run `hermes model` and select "
+                "MiniMax (OAuth).",
+                provider="minimax-oauth", code="not_logged_in", relogin_required=True,
+            )
+        try:
+            state = _refresh_minimax_oauth_state(state)
+        except AuthError as exc:
+            _minimax_oauth_quarantine_on_terminal_refresh(state, exc)
+            raise
+        token = state.get("access_token")
+        if not token:
+            raise AuthError(
+                "MiniMax OAuth state has no access_token after refresh.",
+                provider="minimax-oauth", code="no_access_token", relogin_required=True,
+            )
+        return token
+
+    return _provide
+
+
 def resolve_minimax_oauth_runtime_credentials(
     *, min_token_ttl_seconds: int = MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
+    as_token_provider: bool = False,
 ) -> Dict[str, Any]:
-    """Return {provider, api_key, base_url, source} for minimax-oauth."""
+    """Return {provider, api_key, base_url, source} for minimax-oauth.
+
+    When ``as_token_provider`` is True, ``api_key`` is a zero-arg callable
+    that mints a fresh access token per call (proactively refreshing if
+    the cached token is within ``MINIMAX_OAUTH_REFRESH_SKEW_SECONDS`` of
+    expiry). This is what the runtime provider path uses so that long
+    sessions survive MiniMax's short access-token lifetime — see
+    :func:`build_minimax_oauth_token_provider` for the rationale.
+
+    The default (string ``api_key``) preserves the historical contract for
+    diagnostic call sites like ``hermes status`` that just want to know
+    whether a valid token exists right now.
+    """
     state = get_provider_auth_state("minimax-oauth")
     if not state or not state.get("access_token"):
         raise AuthError(
@@ -7059,28 +7264,15 @@ def resolve_minimax_oauth_runtime_credentials(
     try:
         state = _refresh_minimax_oauth_state(state)
     except AuthError as exc:
-        if exc.relogin_required and state.get("refresh_token"):
-            # Terminal refresh failure — clear dead tokens from auth.json so
-            # subsequent calls fail fast without a network retry, mirroring
-            # the Nous / xAI-OAuth / Codex-OAuth quarantine pattern.
-            for _k in ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at"):
-                state.pop(_k, None)
-            state["last_auth_error"] = {
-                "provider": "minimax-oauth",
-                "code": exc.code or "refresh_failed",
-                "message": str(exc),
-                "reason": "runtime_refresh_failure",
-                "relogin_required": True,
-                "at": datetime.now(timezone.utc).isoformat(),
-            }
-            try:
-                _minimax_save_auth_state(state)
-            except Exception as _save_exc:
-                logger.debug("MiniMax OAuth: failed to persist quarantined state: %s", _save_exc)
+        _minimax_oauth_quarantine_on_terminal_refresh(state, exc)
         raise
+    if as_token_provider:
+        api_key: Any = build_minimax_oauth_token_provider()
+    else:
+        api_key = state["access_token"]
     return {
         "provider": "minimax-oauth",
-        "api_key": state["access_token"],
+        "api_key": api_key,
         "base_url": state["inference_base_url"].rstrip("/"),
         "source": "oauth",
     }

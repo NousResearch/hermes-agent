@@ -212,7 +212,6 @@ export const sessionCommands: SlashCommand[] = [
           void ctx.session.closeSession(prevSid)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
-          ctx.transcript.setHistoryItems([])
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)
         })
       )
@@ -233,6 +232,7 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
+          ctx.voice.setVoiceTts(!!r.tts)
 
           // Render the configured record key (config.yaml ``voice.record_key``)
           // instead of hardcoded "Ctrl+B" — the gateway response carries the

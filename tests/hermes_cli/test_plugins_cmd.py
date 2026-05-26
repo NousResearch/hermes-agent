@@ -65,6 +65,36 @@ class TestSanitizePluginName:
         with pytest.raises(ValueError, match="must not be empty"):
             _sanitize_plugin_name("", tmp_path)
 
+    # ── allow_subdir=True ──
+
+    def test_allow_subdir_accepts_single_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "observability/langfuse", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "observability" / "langfuse").resolve()
+
+    def test_allow_subdir_strips_leading_trailing_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "/image_gen/openai/", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "image_gen" / "openai").resolve()
+
+    def test_allow_subdir_still_rejects_dot_dot(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo/../bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_still_rejects_backslash(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo\\bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_rejects_empty_after_strip(self, tmp_path):
+        with pytest.raises(ValueError, match="must not be empty"):
+            _sanitize_plugin_name("///", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_resolves_inside_plugins_dir(self, tmp_path):
+        target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
+        assert target.is_relative_to(tmp_path.resolve())
+
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 
@@ -633,7 +663,7 @@ class TestPromptPluginEnvVars:
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "langfuse.com" in printed
 
-    def test_secret_uses_getpass(self):
+    def test_secret_uses_masked_prompt(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch
 
@@ -644,11 +674,11 @@ class TestPromptPluginEnvVars:
         }
 
         with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("getpass.getpass", return_value="s3cret") as mock_gp, \
+             patch("hermes_cli.plugins_cmd.masked_secret_prompt", return_value="s3cret") as mock_prompt, \
              patch("hermes_cli.config.save_env_value"):
             _prompt_plugin_env_vars(manifest, console)
 
-        mock_gp.assert_called_once()
+        mock_prompt.assert_called_once()
 
     def test_empty_input_skips(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars

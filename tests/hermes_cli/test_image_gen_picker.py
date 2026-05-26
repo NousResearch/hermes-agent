@@ -69,18 +69,19 @@ class TestPluginPickerInjection:
         assert "Myimg" in names
         assert "myimg" in plugin_names
 
-    def test_fal_skipped_to_avoid_duplicate(self, monkeypatch):
+    def test_fal_surfaced_alongside_other_plugins(self, monkeypatch):
         from hermes_cli import tools_config
 
-        # Simulate a FAL plugin being registered — the picker already has
-        # hardcoded FAL rows in TOOL_CATEGORIES, so plugin-FAL must be
-        # skipped to avoid showing FAL twice.
+        # After #26241, FAL is itself a plugin (`plugins/image_gen/fal/`)
+        # and the hardcoded `TOOL_CATEGORIES["image_gen"]` FAL row is
+        # gone. The plugin-row builder therefore surfaces it like any
+        # other backend — no deduplication step needed.
         image_gen_registry.register_provider(_FakeProvider("fal"))
         image_gen_registry.register_provider(_FakeProvider("openai"))
 
         rows = tools_config._plugin_image_gen_providers()
         names = [r.get("image_gen_plugin_name") for r in rows]
-        assert "fal" not in names
+        assert "fal" in names
         assert "openai" in names
 
     def test_visible_providers_includes_plugins_for_image_gen(self, monkeypatch):

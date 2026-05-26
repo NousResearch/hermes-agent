@@ -210,7 +210,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class TestDiscordMultiImage:
@@ -344,7 +344,7 @@ class TestSlackMultiImage:
 # ---------------------------------------------------------------------------
 
 
-from gateway.platforms.mattermost import MattermostAdapter  # noqa: E402
+from plugins.platforms.mattermost.adapter import MattermostAdapter  # noqa: E402
 
 
 class TestMattermostMultiImage:

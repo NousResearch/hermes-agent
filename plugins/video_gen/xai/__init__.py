@@ -11,7 +11,7 @@ Originally salvaged from PR #10600 by @Jaaneek; reshaped into the
 generate-only surface.
 
 Authentication: xAI Grok OAuth tokens (preferred — billed against the
-user's SuperGrok subscription) or ``XAI_API_KEY``. Both routes are
+user's SuperGrok or X Premium+ subscription) or ``XAI_API_KEY``. Both routes are
 resolved through ``tools.xai_http.resolve_xai_http_credentials`` so a
 single login covers chat + TTS + image gen + video gen + transcription.
 Output is an HTTPS URL from xAI's CDN; the gateway downloads and
@@ -216,7 +216,7 @@ class XAIVideoGenProvider(VideoGenProvider):
         # Auth resolution lives entirely in the shared ``xai_grok`` post_setup
         # hook (``hermes_cli/tools_config.py``) so the picker doesn't blindly
         # prompt for an API key when the user is already signed in via xAI
-        # Grok OAuth (SuperGrok Subscription) — TTS / image gen / video gen
+        # Grok OAuth (SuperGrok / Premium+) — TTS / image gen / video gen
         # all share the same credential resolver. The hook offers an
         # OAuth-vs-API-key choice when neither is configured.
         return {
@@ -295,7 +295,7 @@ class XAIVideoGenProvider(VideoGenProvider):
             return error_response(
                 error=(
                     "No xAI credentials found. Sign in via `hermes auth add xai-oauth` "
-                    "(SuperGrok subscription) or set XAI_API_KEY from "
+                    "(SuperGrok / Premium+) or set XAI_API_KEY from "
                     "https://console.x.ai/."
                 ),
                 error_type="auth_required",

@@ -23,6 +23,7 @@ from rich.table import Table
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
 
@@ -178,9 +179,12 @@ def _existing_categories() -> List[str]:
             # top level (no category); otherwise treat as a category bucket.
             if (entry / "SKILL.md").exists():
                 continue
-            # Has at least one nested SKILL.md?
+            # Has at least one nested SKILL.md (excluding dependency/cache dirs)?
             try:
-                if any(entry.rglob("SKILL.md")):
+                if any(
+                    not is_excluded_skill_path(p)
+                    for p in entry.rglob("SKILL.md")
+                ):
                     out.append(entry.name)
             except OSError:
                 continue
@@ -546,7 +550,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    if bundle.source == "official":
+        scan_source = "official"
+    else:
+        scan_source = (
+            getattr(bundle, "identifier", "")
+            or getattr(meta, "identifier", "")
+            or identifier
+        )
     result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 
@@ -902,8 +913,14 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
 
-def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Re-run security scan on installed hub skills."""
+def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
+             deep: bool = False) -> None:
+    """Re-run security scan on installed hub skills.
+
+    When ``deep=True``, also runs an opt-in AST-level diagnostic on Python
+    files (review aid only — not a security gate; skills_guard.py verdicts
+    are unchanged).
+    """
     from tools.skills_hub import HubLockFile, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
 
@@ -924,6 +941,9 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
 
+    if deep:
+        from tools.skills_ast_audit import ast_scan_path, format_ast_report
+
     for entry in targets:
         skill_path = SKILLS_DIR / entry["install_path"]
         if not skill_path.exists():
@@ -932,6 +952,10 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
         c.print(format_scan_report(result))
+
+        if deep:
+            c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
+
         c.print()
 
 
@@ -1339,7 +1363,8 @@ def skills_command(args) -> None:
     elif action == "update":
         do_update(name=getattr(args, "name", None))
     elif action == "audit":
-        do_audit(name=getattr(args, "name", None))
+        do_audit(name=getattr(args, "name", None),
+                 deep=getattr(args, "deep", False))
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1391,6 +1416,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills update
         /skills audit
         /skills audit my-skill
+        /skills audit --deep
+        /skills audit my-skill --deep
         /skills uninstall my-skill
         /skills tap list
         /skills tap add owner/repo
@@ -1505,8 +1532,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_update(name=name, console=c)
 
     elif action == "audit":
-        name = args[0] if args else None
-        do_audit(name=name, console=c)
+        name = args[0] if args and not args[0].startswith("--") else None
+        deep = "--deep" in args
+        do_audit(name=name, console=c, deep=deep)
 
     elif action == "uninstall":
         if not args:

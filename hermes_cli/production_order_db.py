@@ -1,8 +1,8 @@
-"""Production Workflow v1 — runtime bridge module (Slice 4).
+"""Production Workflow v1 — runtime bridge module.
 
 Provides the deterministic runtime layer that transforms an approved brief
 into a governed, stateful production order with Kanban graph, event log,
-and first handoff packet.
+and handoff packets.
 
 Ownership boundary (from spec section 18):
 
@@ -35,21 +35,13 @@ Usage (CLI)::
 
     hermes production-order create --brief <path> [--board <slug>]
 
-Slice 4 implements only:
+Current bridge coverage:
 
-    - production_order_id generation (PO-YYYYMMDD-XXXX)
-    - ProductionOrder dataclass
-    - create_production_order()
-    - create_production_kanban_graph()  (parent + 6 child cards)
-    - validate_state_transition()
-    - transition_state()
-    - log_workflow_event()
-    - detect_approval_phrase()
-    - validate_brief()
-    - create_orchestrator_handoff()
-    - Slice 4 valid transitions: BRIEF_DRAFTED → ACTION_APPROVED
-                                  → PRODUCTION_ORDER_CREATED
-                                  → ORCHESTRATOR_TRIAGE
+    approved brief → production order → six-card Kanban graph
+    → ORCHESTRATOR_TRIAGE → ARCHITECT_SPEC → ARCHITECT_READY_FOR_DEV
+    → DEV_IMPLEMENTING → DEV_COMPLETE → AUDIT_REVIEW → AUDIT_PASSED
+    → ARCHITECT_RECONCILE → ARCHITECT_ACCEPTED → DEFAULT_FINAL_REVIEW
+    → DONE
 
 Out of scope (do NOT implement):
     - OrchestratorOS agent spawn
@@ -106,6 +98,9 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "DEFAULT_FINAL_REVIEW":         {"DONE"},
 }
 
+# STATE_OWNERS maps each state to the profile permitted to advance the
+# order out of that state. It is transition-validation ownership for the
+# current state, not a record of which profile originally produced it.
 STATE_OWNERS: dict[str, str] = {
     "BRIEF_DRAFTED":                "hermes",
     "ACTION_APPROVED":              "hermes",
@@ -544,7 +539,8 @@ def validate_state_transition(
     Checks:
     1. ``from_state`` exists in ``VALID_TRANSITIONS``
     2. ``to_state`` is in the allowed set for ``from_state``
-    3. ``calling_profile`` matches the owner of ``from_state``
+    3. ``calling_profile`` matches the profile permitted to advance from
+       ``from_state``
 
     Returns ``True`` or raises :class:`StateTransitionError`.
     """

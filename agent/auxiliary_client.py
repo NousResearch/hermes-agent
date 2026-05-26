@@ -70,6 +70,33 @@ if TYPE_CHECKING:
 _OPENAI_CLS_CACHE: Optional[type] = None
 
 
+def _is_vision_capability_error(exc: Exception) -> bool:
+    """Return True for provider errors that mean the model cannot accept images."""
+    status = getattr(exc, "status_code", None)
+    if status not in (None, 400, 415, 422):
+        return False
+    err_lower = str(exc).lower()
+    return any(
+        phrase in err_lower
+        for phrase in (
+            "does not support image",
+            "doesn't support image",
+            "images are not supported",
+            "image input is not supported",
+            "image input",
+            "image_in capability",
+            "unknown variant `image_url`",
+            "expected `text`",
+            "vision is not supported",
+            "vision not supported",
+            "multimodal input is not supported",
+            "multimodal is not supported",
+            "model is not multimodal",
+            "text-only model",
+        )
+    )
+
+
 def _load_openai_cls() -> type:
     """Import and cache ``openai.OpenAI``."""
     global _OPENAI_CLS_CACHE
@@ -515,6 +542,41 @@ _OR_HEADERS_BASE = {
 
 # Truthy values for boolean env-var parsing.
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _try_vision_fallback(
+    failed_provider: str,
+    *,
+    async_mode: bool = False,
+    reason: str = "vision capability error",
+) -> Tuple[Optional[Any], Optional[str], str]:
+    """Try the next strict vision backend after a main-provider vision failure."""
+    skip = _normalize_vision_provider(failed_provider)
+    tried = []
+    for label in _VISION_AUTO_PROVIDER_ORDER:
+        if label == skip:
+            continue
+        client, model = _resolve_strict_vision_backend(label)
+        if client is not None:
+            if async_mode:
+                client, model = _to_async_client(client, model or "", is_vision=True)
+            logger.info(
+                "Auxiliary vision: %s on %s — falling back to %s (%s)",
+                reason,
+                failed_provider,
+                label,
+                model or "default",
+            )
+            return client, model, label
+        tried.append(label)
+
+    logger.warning(
+        "Auxiliary vision: %s on %s and no fallback available (tried: %s)",
+        reason,
+        failed_provider,
+        ", ".join(tried),
+    )
+    return None, None, ""
 
 
 def _apply_user_default_headers(headers: dict | None) -> dict | None:
@@ -5181,6 +5243,81 @@ _VISION_AUTO_PROVIDER_ORDER = (
 )
 
 
+def _is_likely_vision_model(model: Optional[str]) -> bool:
+    """Heuristic fallback for model slugs that are visibly multimodal."""
+    slug = str(model or "").lower()
+    if not slug:
+        return False
+    vision_markers = (
+        "vision",
+        "multimodal",
+        "omni",
+        "llava",
+        "qwen-vl",
+        "qwen2-vl",
+        "qwen2.5-vl",
+        "glm-4v",
+        "glm-5v",
+        "pixtral",
+        "internvl",
+        "cogvlm",
+        "idefics",
+        "deepseek-vl",
+    )
+    exact_or_prefix_markers = (
+        "gpt-4o",
+        "claude-sonnet-4",
+        "gemini-3",
+        "mimo-v2",
+    )
+    return any(marker in slug for marker in vision_markers) or any(
+        marker in slug for marker in exact_or_prefix_markers
+    )
+
+
+def _get_named_custom_provider_entry(provider: str) -> Optional[dict]:
+    """Return config for a named custom provider, when present."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return None
+    candidates = []
+    if isinstance(cfg, dict):
+        for key in ("custom_providers", "providers"):
+            value = cfg.get(key)
+            if isinstance(value, dict):
+                candidates.extend(value.values())
+            elif isinstance(value, list):
+                candidates.extend(value)
+        auxiliary = cfg.get("auxiliary")
+        if isinstance(auxiliary, dict):
+            value = auxiliary.get("providers")
+            if isinstance(value, dict):
+                candidates.extend(value.values())
+            elif isinstance(value, list):
+                candidates.extend(value)
+    wanted = str(provider or "").strip().lower()
+    for entry in candidates:
+        if isinstance(entry, dict) and str(entry.get("name") or "").strip().lower() == wanted:
+            return entry
+    return None
+
+
+def _custom_vision_model_override(entry: Optional[dict], model: Optional[str]) -> Optional[str]:
+    if not isinstance(entry, dict):
+        return None
+    models = entry.get("models")
+    if isinstance(models, dict):
+        model_cfg = models.get(model) or models.get(str(model or ""))
+        if isinstance(model_cfg, dict):
+            override = model_cfg.get("vision_model") or model_cfg.get("vision")
+            if override:
+                return str(override)
+    override = entry.get("vision_model")
+    return str(override) if override else None
+
+
 def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     """Return True when ``provider``/``model`` is known to accept image input.
 
@@ -5195,6 +5332,11 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     behaviour of attempting the call, so providers we haven't catalogued yet
     don't silently regress to text-only.
     """
+    if provider == "copilot":
+        # GitHub Copilot exposes vision through the same configured model plus
+        # a request header. Its slugs may be opaque in config/tests, so the
+        # generic text-only slug heuristic must not skip it.
+        return True
     try:
         from agent.image_routing import _lookup_supports_vision
         from hermes_cli.config import load_config
@@ -5205,10 +5347,16 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     except Exception:  # pragma: no cover - defensive
         return True
     if supports is None:
-        # No capability data — keep current behaviour and let the call attempt
-        # happen rather than silently skipping. This avoids false-positive
-        # skips for new/custom providers.
-        return True
+        if _get_named_custom_provider_entry(provider) is not None:
+            # Named custom providers may expose private/experimental VLMs whose
+            # slugs are not in our static capability tables. Trust explicit
+            # provider configuration rather than silently rerouting.
+            return True
+        # Unknown capability for built-in providers: use a conservative slug
+        # heuristic so plainly text-only models (llama3, qwen3, deepseek-coder)
+        # fall through to strict vision aggregators instead of receiving image
+        # blocks they cannot parse.
+        return _is_likely_vision_model(model)
     return bool(supports)
 
 
@@ -5329,6 +5477,8 @@ def resolve_vision_provider_client(
         main_model = _read_main_model()
         if main_provider and main_provider not in {"auto", ""}:
             vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
+            custom_entry = _get_named_custom_provider_entry(main_provider)
+            vision_model = _custom_vision_model_override(custom_entry, vision_model) or vision_model
             if main_provider == "nous":
                 sync_client, default_model = _resolve_strict_vision_backend(
                     main_provider, vision_model
@@ -6640,6 +6790,26 @@ def call_llm(
                 kwargs = retry_kwargs
 
         err_str = str(first_err)
+        if task == "vision" and _is_vision_capability_error(first_err):
+            fb_client, fb_model, fb_label = _try_vision_fallback(
+                resolved_provider or "auto",
+                reason="vision capability error",
+            )
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_label,
+                    fb_model,
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    timeout=effective_timeout,
+                    extra_body=effective_extra_body,
+                    base_url=str(getattr(fb_client, "base_url", "") or ""),
+                )
+                return _validate_llm_response(
+                    fb_client.chat.completions.create(**fb_kwargs), task)
+
         # ZAI vision models (glm-4v-flash etc.) return error code 1210
         # ("API 调用参数有误") when max_tokens is passed on multimodal
         # calls.  The error message does NOT contain "max_tokens" so the
@@ -7191,6 +7361,27 @@ async def async_call_llm(
                 kwargs = retry_kwargs
 
         err_str = str(first_err)
+        if task == "vision" and _is_vision_capability_error(first_err):
+            fb_client, fb_model, fb_label = _try_vision_fallback(
+                resolved_provider or "auto",
+                async_mode=True,
+                reason="vision capability error",
+            )
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_label,
+                    fb_model,
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    timeout=effective_timeout,
+                    extra_body=effective_extra_body,
+                    base_url=str(getattr(fb_client, "base_url", "") or ""),
+                )
+                return _validate_llm_response(
+                    await fb_client.chat.completions.create(**fb_kwargs), task)
+
         # ZAI vision models (glm-4v-flash etc.) return error code 1210
         # ("API 调用参数有误") when max_tokens is passed on multimodal
         # calls.  The error message does NOT contain "max_tokens" so the

@@ -1518,6 +1518,25 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _active_platform_uses_no_mcp(config: dict) -> bool:
+    """Return True if the current platform's toolsets include the no_mcp sentinel.
+
+    The active platform is resolved from the ``HERMES_PLATFORM`` env var (with the
+    ``HERMES_SESSION_PLATFORM`` fallback used elsewhere in the codebase), defaulting
+    to ``"cli"``. When that platform's ``platform_toolsets`` list contains the
+    ``no_mcp`` sentinel, eager MCP discovery can be skipped at startup and deferred
+    until the first child delegation that actually needs MCP toolsets.
+    """
+    platform = (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or "cli"
+    )
+    platform_toolsets = (config or {}).get("platform_toolsets", {}) or {}
+    toolsets = platform_toolsets.get(platform, []) or []
+    return "no_mcp" in toolsets
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -19832,7 +19851,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from tools.mcp_tool import discover_mcp_tools
         _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
+        _gateway_cfg = _load_gateway_config()
+        if _active_platform_uses_no_mcp(_gateway_cfg):
+            from tools.mcp_tool import mark_eager_discovery_skipped
+            mark_eager_discovery_skipped()
+            logger.info(
+                "MCP eager discovery skipped (platform uses no_mcp); "
+                "tools will load lazily on first delegation"
+            )
+        else:
+            await _loop.run_in_executor(None, discover_mcp_tools)
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 

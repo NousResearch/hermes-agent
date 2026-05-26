@@ -12586,6 +12586,32 @@ def _should_background_mcp_startup(args) -> bool:
     return args.command in {None, "chat", "rl"}
 
 
+def _active_platform_uses_no_mcp_at_startup() -> bool:
+    """Return True if the active platform's toolsets include the no_mcp sentinel.
+
+    Resolves the platform from ``HERMES_PLATFORM`` (with the
+    ``HERMES_SESSION_PLATFORM`` fallback used elsewhere), defaulting to ``"cli"``,
+    and reads ``platform_toolsets`` directly from the raw config dict. Used to
+    decide whether eager MCP discovery can be skipped at CLI startup (Phase 2
+    lazy discovery). Best-effort: any failure returns False so discovery runs
+    as before.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        config = read_raw_config() or {}
+    except Exception:
+        return False
+    platform = (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or "cli"
+    )
+    platform_toolsets = config.get("platform_toolsets", {}) or {}
+    toolsets = platform_toolsets.get(platform, []) or []
+    return "no_mcp" in toolsets
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
@@ -12633,9 +12659,23 @@ def _prepare_agent_startup(args) -> None:
         try:
             # MCP tool discovery remains synchronous for entrypoints that do
             # not own a later bounded/executor startup path.
+            #
+            # When the active platform's toolsets include the ``no_mcp`` sentinel
+            # (e.g. api_server), skip eager discovery here too and let the first
+            # MCP-needing delegation trigger it lazily (Phase 2). Only the
+            # no_mcp platforms are affected; cli/cron/telegram run as before.
             from tools.mcp_tool import discover_mcp_tools
 
-            discover_mcp_tools()
+            if _active_platform_uses_no_mcp_at_startup():
+                from tools.mcp_tool import mark_eager_discovery_skipped
+
+                mark_eager_discovery_skipped()
+                logger.debug(
+                    "MCP eager discovery skipped at CLI startup "
+                    "(platform uses no_mcp); tools will load lazily on first delegation"
+                )
+            else:
+                discover_mcp_tools()
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup",

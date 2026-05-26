@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import json
 import logging
 import sys
 
@@ -328,6 +329,62 @@ class TestBuildSkillsSystemPrompt:
         assert "shared-news-rules" in result
         assert "Normalize news output" in result
         assert "freshrss-triage" not in result
+
+    def test_scoped_related_skills_ignore_legacy_snapshot(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        primary = tmp_path / "skills" / "cron" / "crawler-news"
+        primary.mkdir(parents=True)
+        (primary / "SKILL.md").write_text(
+            "---\n"
+            "name: crawler-news\n"
+            "description: Crawl configured source URLs\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    related_skills: [shared-news-rules]\n"
+            "---\n"
+        )
+        related = tmp_path / "skills" / "cron" / "shared-news-rules"
+        related.mkdir(parents=True)
+        (related / "SKILL.md").write_text(
+            "---\nname: shared-news-rules\ndescription: Normalize news output\n---\n"
+        )
+
+        from agent.prompt_builder import _build_skills_manifest
+
+        (tmp_path / ".skills_prompt_snapshot.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "manifest": _build_skills_manifest(tmp_path / "skills"),
+                    "skills": [
+                        {
+                            "skill_name": "crawler-news",
+                            "category": "cron",
+                            "frontmatter_name": "crawler-news",
+                            "description": "Crawl configured source URLs",
+                            "platforms": [],
+                            "conditions": {},
+                        },
+                        {
+                            "skill_name": "shared-news-rules",
+                            "category": "cron",
+                            "frontmatter_name": "shared-news-rules",
+                            "description": "Normalize news output",
+                            "platforms": [],
+                            "conditions": {},
+                        },
+                    ],
+                    "category_descriptions": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = build_skills_system_prompt(scoped_skill_names=["crawler-news"])
+
+        assert "crawler-news" in result
+        assert "shared-news-rules" in result
+        assert "Normalize news output" in result
 
     def test_unscoped_skill_index_uses_distinct_cache_entry(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

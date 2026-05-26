@@ -848,6 +848,24 @@ def test_create_rejects_no_assignee(worker_env):
     assert json.loads(kt._handle_create({"title": "t"})).get("error")
 
 
+def test_create_rejects_missing_profile_when_profiles_exist(worker_env):
+    from pathlib import Path
+    from tools import kanban_tools as kt
+
+    home = Path.home() / ".hermes"
+    profiles = home / "profiles"
+    profiles.mkdir()
+    (profiles / "coder").mkdir()
+    (profiles / "coder" / "config.yaml").write_text("model: test\n")
+
+    out = kt._handle_create({"title": "stranded", "assignee": "pm"})
+    d = json.loads(out)
+
+    assert d.get("error")
+    assert "unknown assignee profile: pm" in d["error"]
+    assert "coder" in d["error"]
+
+
 def test_create_rejects_non_list_parents(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({"title": "t", "assignee": "a", "parents": 42})

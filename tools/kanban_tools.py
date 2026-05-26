@@ -185,9 +185,24 @@ def _normalize_profile(value: Any) -> Optional[str]:
     if value is None:
         return None
     text = str(value).strip()
-    if not text or text.lower() in {"none", "-", "null"}:
+    if text.lower() in {"", "none", "-", "null"}:
         return None
     return text
+
+
+def _validate_assignee_profile(profile: Optional[str]) -> Optional[str]:
+    """Return an error when a requested assignee is not dispatchable."""
+    if not profile:
+        return None
+    from hermes_cli import kanban_db as kb
+    profiles = kb.list_profiles_on_disk()
+    named_profiles = [name for name in profiles if name != "default"]
+    if profile == "default" and "default" in profiles:
+        return None
+    if not named_profiles or profile in profiles:
+        return None
+    allowed = ", ".join(profiles)
+    return f"unknown assignee profile: {profile}. Available profiles: {allowed}"
 
 
 def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
@@ -651,6 +666,10 @@ def _handle_create(args: dict, **kw) -> str:
             "assignee is required — name the profile that should execute this "
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
+    assignee = _normalize_profile(assignee)
+    assignee_error = _validate_assignee_profile(assignee)
+    if assignee_error:
+        return tool_error(f"kanban_create: {assignee_error}")
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -689,7 +708,7 @@ def _handle_create(args: dict, **kw) -> str:
                 conn,
                 title=str(title).strip(),
                 body=body,
-                assignee=str(assignee),
+                assignee=assignee,
                 parents=tuple(parents),
                 tenant=tenant,
                 priority=int(priority) if priority is not None else 0,

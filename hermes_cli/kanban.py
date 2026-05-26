@@ -81,6 +81,24 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     }
 
 
+def _validate_assignee_profile(profile: Optional[str]) -> Optional[str]:
+    """Return an error message when profile is not dispatchable.
+
+    Empty installs and tests often have no profiles yet, so only enforce the
+    guardrail once at least one configured profile exists on disk.
+    """
+    if not profile:
+        return None
+    profiles = kb.list_profiles_on_disk()
+    named_profiles = [name for name in profiles if name != "default"]
+    if profile == "default" and "default" in profiles:
+        return None
+    if not named_profiles or profile in profiles:
+        return None
+    allowed = ", ".join(profiles)
+    return f"unknown assignee profile: {profile}. Available profiles: {allowed}"
+
+
 def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     st = getattr(args, "state_type", None)
     sn = getattr(args, "state_name", None)
@@ -1320,6 +1338,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    assignee_error = _validate_assignee_profile(args.assignee)
+    if assignee_error:
+        print(f"kanban: {assignee_error}", file=sys.stderr)
+        return 2
     with kb.connect() as conn:
         task_id = kb.create_task(
             conn,
@@ -1610,6 +1632,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
+    assignee_error = _validate_assignee_profile(profile)
+    if assignee_error:
+        print(f"kanban: {assignee_error}", file=sys.stderr)
+        return 2
     with kb.connect() as conn:
         ok = kb.assign_task(conn, args.task_id, profile)
     if not ok:
@@ -1637,6 +1663,10 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
+    assignee_error = _validate_assignee_profile(profile)
+    if assignee_error:
+        print(f"kanban: {assignee_error}", file=sys.stderr)
+        return 2
     with kb.connect() as conn:
         ok = kb.reassign_task(
             conn, args.task_id, profile,

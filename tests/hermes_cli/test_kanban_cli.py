@@ -250,6 +250,42 @@ def test_run_slash_assign_reassigns(kanban_home):
     assert "bob" in show
 
 
+def test_run_slash_create_rejects_missing_profile_when_profiles_exist(kanban_home):
+    profiles = kanban_home / "profiles"
+    profiles.mkdir()
+    (profiles / "coder").mkdir()
+    (profiles / "coder" / "config.yaml").write_text("model: test\n")
+
+    out = kc.run_slash("create 'stranded task' --assignee pm")
+
+    assert "unknown assignee profile: pm" in out
+    assert "coder" in out
+    with kb.connect() as conn:
+        assert kb.list_tasks(conn) == []
+
+
+def test_run_slash_assign_rejects_missing_profile_when_profiles_exist(kanban_home):
+    profiles = kanban_home / "profiles"
+    profiles.mkdir()
+    (profiles / "coder").mkdir()
+    (profiles / "coder" / "config.yaml").write_text("model: test\n")
+    (profiles / "reviewer").mkdir()
+    (profiles / "reviewer" / "config.yaml").write_text("model: test\n")
+
+    out = kc.run_slash("create 'x' --assignee coder")
+    import re
+    m = re.search(r"(t_[a-f0-9]+)", out)
+    assert m, out
+    tid = m.group(1)
+
+    rejected = kc.run_slash(f"assign {tid} pm")
+
+    assert "unknown assignee profile: pm" in rejected
+    assert "coder" in rejected and "reviewer" in rejected
+    show = kc.run_slash(f"show {tid}")
+    assert "assignee:  coder" in show
+
+
 def test_run_slash_link_unlink(kanban_home):
     a = kc.run_slash("create 'a'")
     b = kc.run_slash("create 'b'")

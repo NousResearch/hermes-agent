@@ -248,6 +248,7 @@ def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
     is_xai_responses: bool = False,
+    is_github_responses: bool = False,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -261,6 +262,17 @@ def _chat_messages_to_responses_input(
     integration).  We now replay encrypted reasoning on every Responses
     transport (xAI, native Codex, custom relays) and let xAI tell us
     explicitly if a specific surface ever rejects a payload.
+
+    ``is_github_responses`` strips server-assigned ``id`` fields from
+    replayed assistant message items.  GitHub Copilot's ``/responses``
+    endpoint binds those ids to a backend "connection" that does not
+    survive credential-pool rotation, gateway restart, or even routine
+    load-balancer churn between turns.  Replaying the id after the
+    connection rotates yields ``HTTP 401 "input item ID does not belong
+    to this connection"`` and permanently poisons the session because
+    every subsequent turn re-sends the same bad ids.  Content and phase
+    are preserved so multi-turn coherence and prefix-cache opportunities
+    survive the strip.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -348,7 +360,11 @@ def _chat_messages_to_responses_input(
                             "content": normalized_content_parts,
                         }
                         item_id = raw_item.get("id")
-                        if isinstance(item_id, str) and item_id.strip():
+                        if (
+                            isinstance(item_id, str)
+                            and item_id.strip()
+                            and not is_github_responses
+                        ):
                             replay_item["id"] = item_id.strip()
                         phase = raw_item.get("phase")
                         if isinstance(phase, str) and phase.strip():

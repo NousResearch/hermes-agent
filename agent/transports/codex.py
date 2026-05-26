@@ -27,6 +27,7 @@ class ResponsesApiTransport(ProviderTransport):
         return _chat_messages_to_responses_input(
             messages,
             is_xai_responses=bool(kwargs.get("is_xai_responses")),
+            is_github_responses=bool(kwargs.get("is_github_responses")),
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
@@ -100,6 +101,7 @@ class ResponsesApiTransport(ProviderTransport):
             "input": _chat_messages_to_responses_input(
                 payload_messages,
                 is_xai_responses=is_xai_responses,
+                is_github_responses=is_github_responses,
             ),
             "tools": response_tools,
             "store": False,

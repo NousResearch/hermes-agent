@@ -1821,6 +1821,52 @@ def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch
     assert normalized[0]["status"] == "in_progress"
 
 
+def test_chat_messages_to_responses_input_strips_message_id_for_github_responses():
+    """Copilot ``/responses`` binds assistant message ids to a backend "connection"
+    that does not survive credential-pool rotation, gateway restart, or routine
+    load-balancer churn between turns.  Replaying a connection-bound id yields
+    ``HTTP 401 "input item ID does not belong to this connection"`` and
+    permanently poisons the session.  When ``is_github_responses=True`` we must
+    drop the ``id`` field while preserving the content + phase replay (issue
+    #32716).
+    """
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    payload = [
+        {
+            "role": "assistant",
+            "content": "answer",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "id": "msg_connection_bound_abc123",
+                    "phase": "final",
+                    "content": [{"type": "output_text", "text": "answer"}],
+                }
+            ],
+        }
+    ]
+
+    items_copilot = _chat_messages_to_responses_input(
+        payload, is_github_responses=True
+    )
+    replay_copilot = next(item for item in items_copilot if item.get("type") == "message")
+    assert "id" not in replay_copilot, (
+        "Copilot ``/responses`` replay must omit the connection-bound id"
+    )
+    assert replay_copilot["phase"] == "final"
+    assert replay_copilot["content"] == [{"type": "output_text", "text": "answer"}]
+
+    # Other Responses transports (native Codex, xAI) keep the id so the
+    # OpenAI/xAI backend can land prefix-cache hits.
+    items_default = _chat_messages_to_responses_input(payload)
+    replay_default = next(item for item in items_default if item.get("type") == "message")
+    assert replay_default["id"] == "msg_connection_bound_abc123"
+    assert replay_default["phase"] == "final"
+
+
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):
     """Two consecutive reasoning-only responses with different encrypted content
     must NOT be treated as duplicates."""

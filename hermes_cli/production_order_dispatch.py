@@ -8,10 +8,12 @@ to Kanban.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
 import sqlite3
 from typing import Any, Iterable
 
 from .production_order_db import (
+    ARCHITECT_HANDOFF_TEMPLATE,
     CHILD_CARD_DEFS,
     ProductionOrder,
     REQUIRED_ARCHITECT_RECONCILE_PACKET_FIELDS,
@@ -82,13 +84,51 @@ class ProfileTaskEnvelope:
         return data
 
 
+@dataclass(frozen=True)
+class ManualFallbackHandoff:
+    production_order_id: str
+    source_state: str
+    expected_next_state: str
+    target_profile: str
+    target_child_card_id: str
+    source_truth: tuple[str, ...]
+    required_input_packet: dict[str, Any]
+    expected_result_packet: dict[str, Any]
+    stop_conditions: tuple[str, ...]
+    approval_boundaries: tuple[str, ...]
+    bridge_function: str
+    result_return_action: str
+    copy_paste_prompt: str
+    repo_or_workspace: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a serializable copy of the manual fallback handoff."""
+        data = asdict(self)
+        data["source_truth"] = list(self.source_truth)
+        data["stop_conditions"] = list(self.stop_conditions)
+        data["approval_boundaries"] = list(self.approval_boundaries)
+        return data
+
+
 _ENVELOPE_RESULT_FIELD_MAP: dict[str, tuple[str, ...]] = {
-    "architect_handoff_packet": (),
+    "architect_handoff_packet": tuple(
+        sorted({"production_order_id", *ARCHITECT_HANDOFF_TEMPLATE.keys()})
+    ),
     "architect_spec_packet": tuple(sorted(REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS)),
     "devos_build_packet": tuple(sorted(REQUIRED_DEVOS_BUILD_PACKET_FIELDS)),
     "auditos_review_packet": tuple(sorted(REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS)),
     "architect_reconcile_packet": tuple(sorted(REQUIRED_ARCHITECT_RECONCILE_PACKET_FIELDS)),
     "default_final_review_packet": tuple(sorted(REQUIRED_DEFAULT_FINAL_REVIEW_PACKET_FIELDS)),
+}
+
+
+_MANUAL_FALLBACK_RESULT_ACTIONS: dict[str, tuple[str, str]] = {
+    "run_architect_spec_bridge": ("architect_packet", "architect_spec_packet"),
+    "run_devos_complete_bridge": ("devos_packet", "devos_build_packet"),
+    "run_architect_reconcile_bridge": (
+        "reconcile_packet",
+        "architect_reconcile_packet",
+    ),
 }
 
 
@@ -122,6 +162,44 @@ def build_profile_task_envelope(
     _validate_child_graph(conn, po)
     manifest = dispatch_manifest_for_order(po)
     return profile_task_envelope_for_order(po, manifest)
+
+
+def build_manual_fallback_handoff(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+) -> ManualFallbackHandoff:
+    """Load a production order from SQLite and build its manual fallback handoff."""
+    envelope = build_profile_task_envelope(conn, production_order_id)
+    return manual_fallback_handoff_for_envelope(envelope)
+
+
+def manual_fallback_handoff_for_envelope(
+    envelope: ProfileTaskEnvelope,
+) -> ManualFallbackHandoff:
+    """Build a deterministic manual fallback handoff from a task envelope."""
+    _validate_profile_task_envelope(envelope)
+    _validate_manual_fallback_envelope(envelope)
+
+    bridge_function = str(envelope.expected_output_packet["bridge_function"]).strip()
+    result_return_action = _manual_fallback_result_return_action(envelope, bridge_function)
+    handoff = ManualFallbackHandoff(
+        production_order_id=envelope.production_order_id,
+        source_state=envelope.source_state,
+        expected_next_state=envelope.expected_next_state,
+        target_profile=envelope.target_profile,
+        target_child_card_id=envelope.child_kanban_card_id,
+        source_truth=envelope.source_truth,
+        required_input_packet=dict(envelope.input_packet),
+        expected_result_packet=dict(envelope.expected_output_packet),
+        stop_conditions=envelope.stop_conditions,
+        approval_boundaries=envelope.approval_boundaries,
+        bridge_function=bridge_function,
+        result_return_action=result_return_action,
+        copy_paste_prompt=_manual_fallback_prompt(envelope, result_return_action),
+        repo_or_workspace=envelope.repo_or_workspace,
+    )
+    _validate_manual_fallback_handoff(handoff)
+    return handoff
 
 
 def profile_task_envelope_for_order(
@@ -661,6 +739,154 @@ def _validate_profile_task_envelope(envelope: ProfileTaskEnvelope) -> None:
     if not envelope.approval_boundaries:
         raise DispatchManifestError(
             "Profile task envelope field 'approval_boundaries' is required"
+        )
+
+
+def _validate_manual_fallback_envelope(envelope: ProfileTaskEnvelope) -> None:
+    packet_type = str(envelope.expected_output_packet.get("packet_type", "")).strip()
+    if not packet_type:
+        raise DispatchManifestError(
+            "Manual fallback requires expected_output_packet.packet_type"
+        )
+    required_fields = envelope.expected_output_packet.get("required_fields")
+    if not isinstance(required_fields, list) or not required_fields:
+        raise DispatchManifestError(
+            "Manual fallback requires expected_output_packet.required_fields"
+        )
+    bridge_function = str(envelope.expected_output_packet.get("bridge_function", "")).strip()
+    if not bridge_function:
+        raise DispatchManifestError(
+            "Manual fallback requires expected_output_packet.bridge_function"
+        )
+    if bridge_function not in _MANUAL_FALLBACK_RESULT_ACTIONS:
+        raise DispatchManifestError(
+            f"Manual fallback does not yet support result-return action for bridge {bridge_function!r}"
+        )
+    expected_packet_type = _MANUAL_FALLBACK_RESULT_ACTIONS[bridge_function][1]
+    if packet_type != expected_packet_type:
+        raise DispatchManifestError(
+            "Manual fallback expected_output_packet packet_type does not match the bridge action"
+        )
+
+
+def _manual_fallback_result_return_action(
+    envelope: ProfileTaskEnvelope,
+    bridge_function: str,
+) -> str:
+    packet_arg_name, _ = _MANUAL_FALLBACK_RESULT_ACTIONS[bridge_function]
+    return (
+        f"Call {bridge_function}(conn, production_order_id={envelope.production_order_id!r}, "
+        f"{packet_arg_name}=<returned_result_packet>)"
+    )
+
+
+def _manual_fallback_prompt(
+    envelope: ProfileTaskEnvelope,
+    result_return_action: str,
+) -> str:
+    brief_context = envelope.input_packet.get("brief_context", {})
+    scope = envelope.allowed_files_or_scope or brief_context.get("scope") or "From the frozen brief."
+    out_of_scope = brief_context.get("out_of_scope") or "Not specified in the frozen brief."
+    constraints = brief_context.get("constraints") or "None specified beyond the frozen brief."
+    expected_output = brief_context.get("expected_output") or "Return the required result packet only."
+    expected_result_packet = _manual_fallback_expected_result_packet_example(envelope)
+    sections = [
+        f"Target profile: {envelope.target_profile}",
+        f"Objective: {envelope.objective}",
+        f"Production order ID: {envelope.production_order_id}",
+        f"Source state: {envelope.source_state}",
+        f"Expected next state: {envelope.expected_next_state}",
+        f"Target child card ID: {envelope.child_kanban_card_id}",
+    ]
+    if envelope.repo_or_workspace:
+        sections.append(f"Repo or workspace: {envelope.repo_or_workspace}")
+    sections.extend(
+        [
+            "Frozen brief context:",
+            f"- Scope: {scope}",
+            f"- Out of scope: {out_of_scope}",
+            f"- Constraints: {constraints}",
+            f"- Expected output: {expected_output}",
+            "Source truth:",
+            *[f"- {item}" for item in envelope.source_truth],
+            "Required input packet:",
+            json.dumps(envelope.input_packet, indent=2, sort_keys=True),
+            "Expected result packet requirements:",
+            json.dumps(envelope.expected_output_packet, indent=2, sort_keys=True),
+            "Return exactly one structured result packet JSON object matching this shape:",
+            json.dumps(expected_result_packet, indent=2, sort_keys=True),
+            "Acceptance criteria:",
+            *[f"- {item}" for item in envelope.acceptance_criteria],
+            "Stop conditions:",
+            *[f"- {item}" for item in envelope.stop_conditions],
+            "Approval boundaries:",
+            *[f"- {item}" for item in envelope.approval_boundaries],
+            "Guardrails:",
+            "- Do not execute external, destructive, publishing, spending, permission-widening, or secret-requesting actions without explicit approval.",
+            "- Do not change Hermes production-workflow state directly.",
+            "- Do not invoke another profile.",
+            "- If required source truth is missing or contracts conflict, stop and return a blocked result packet instead of guessing.",
+            "After result return:",
+            f"- {result_return_action}",
+        ]
+    )
+    return "\n".join(str(section) for section in sections)
+
+
+def _manual_fallback_expected_result_packet_example(
+    envelope: ProfileTaskEnvelope,
+) -> dict[str, Any]:
+    required_fields = [
+        str(field).strip()
+        for field in envelope.expected_output_packet.get("required_fields", [])
+        if str(field).strip()
+    ]
+    packet: dict[str, Any] = {"packet_type": envelope.expected_output_packet["packet_type"]}
+    for field_name in required_fields:
+        if field_name == "production_order_id":
+            packet[field_name] = envelope.production_order_id
+        elif field_name == "owner_profile":
+            packet[field_name] = envelope.target_profile
+        elif field_name == "source_state":
+            packet[field_name] = envelope.source_state
+        elif field_name == "next_state":
+            packet[field_name] = envelope.expected_next_state
+        elif field_name == "stage" and envelope.expected_output_packet["packet_type"] == "architect_spec_packet":
+            packet[field_name] = "architect_spec"
+        else:
+            packet[field_name] = f"<{field_name}>"
+    return packet
+
+
+def _validate_manual_fallback_handoff(handoff: ManualFallbackHandoff) -> None:
+    required_text_fields = {
+        "production_order_id": handoff.production_order_id,
+        "source_state": handoff.source_state,
+        "expected_next_state": handoff.expected_next_state,
+        "target_profile": handoff.target_profile,
+        "target_child_card_id": handoff.target_child_card_id,
+        "bridge_function": handoff.bridge_function,
+        "result_return_action": handoff.result_return_action,
+        "copy_paste_prompt": handoff.copy_paste_prompt,
+    }
+    for field_name, value in required_text_fields.items():
+        if not str(value).strip():
+            raise DispatchManifestError(f"Manual fallback handoff field {field_name!r} is required")
+    if not handoff.source_truth:
+        raise DispatchManifestError("Manual fallback handoff field 'source_truth' is required")
+    if not handoff.stop_conditions:
+        raise DispatchManifestError("Manual fallback handoff field 'stop_conditions' is required")
+    if not handoff.approval_boundaries:
+        raise DispatchManifestError(
+            "Manual fallback handoff field 'approval_boundaries' is required"
+        )
+    if handoff.required_input_packet.get("packet_type") is None:
+        raise DispatchManifestError(
+            "Manual fallback handoff required_input_packet must include packet_type"
+        )
+    if handoff.expected_result_packet.get("packet_type") is None:
+        raise DispatchManifestError(
+            "Manual fallback handoff expected_result_packet must include packet_type"
         )
 
 

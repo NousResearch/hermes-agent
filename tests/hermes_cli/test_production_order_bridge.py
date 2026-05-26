@@ -80,8 +80,10 @@ from hermes_cli.production_order_db import (
 from hermes_cli.production_order_dispatch import (
     DispatchManifestError,
     build_dispatch_manifest,
+    build_manual_fallback_handoff,
     build_profile_task_envelope,
     dispatch_manifest_for_order,
+    manual_fallback_handoff_for_envelope,
     profile_task_envelope_for_order,
 )
 from hermes_cli.kanban import _cmd_production_order
@@ -219,6 +221,19 @@ def devos_rework_packet(production_order_id: str) -> dict:
         "limitations_or_notes": ["Rework evidence is ready for AuditOS review."],
         "next_handoff_target": "audit_os",
     }
+
+
+
+def create_architect_spec_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order to the ArchitectOS spec stage."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    return run_orchestrator_triage_bridge(conn, production_order_id=po.production_order_id)
 
 
 
@@ -1765,6 +1780,167 @@ def test_build_profile_task_envelope_is_read_only(conn, sample_brief):
     assert after_tasks == before_tasks
     assert after_events == before_events
     assert envelope.production_order_id == po.production_order_id
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected_profile", "expected_bridge", "expected_packet", "expected_next_state"),
+    [
+        (
+            create_architect_spec_order,
+            "architect_os",
+            "run_architect_spec_bridge",
+            "architect_spec_packet",
+            "ARCHITECT_READY_FOR_DEV",
+        ),
+        (
+            create_ready_for_dev_order,
+            "dev_os",
+            "run_devos_complete_bridge",
+            "devos_build_packet",
+            "DEV_COMPLETE",
+        ),
+        (
+            create_audit_passed_order,
+            "architect_os",
+            "run_architect_reconcile_bridge",
+            "architect_reconcile_packet",
+            "ARCHITECT_ACCEPTED",
+        ),
+    ],
+)
+def test_build_manual_fallback_handoff_fields_prompt_and_json(
+    conn,
+    sample_brief,
+    factory,
+    expected_profile,
+    expected_bridge,
+    expected_packet,
+    expected_next_state,
+):
+    po = factory(conn, sample_brief)
+
+    handoff = build_manual_fallback_handoff(conn, po.production_order_id)
+    serialized = handoff.to_dict()
+    prompt = serialized["copy_paste_prompt"]
+
+    assert serialized["production_order_id"] == po.production_order_id
+    assert serialized["source_state"] == po.current_state
+    assert serialized["expected_next_state"] == expected_next_state
+    assert serialized["target_profile"] == expected_profile
+    assert serialized["target_child_card_id"] in po.child_kanban_card_ids
+    assert WORKFLOW_SPEC_SOURCE in serialized["source_truth"]
+    assert serialized["required_input_packet"]["packet_type"]
+    assert serialized["expected_result_packet"]["packet_type"] == expected_packet
+    assert serialized["expected_result_packet"]["required_fields"]
+    assert serialized["bridge_function"] == expected_bridge
+    assert serialized["result_return_action"].startswith(f"Call {expected_bridge}(")
+    assert serialized["repo_or_workspace"] == sample_brief["target repo or workspace"]
+    assert f"Target profile: {expected_profile}" in prompt
+    assert f"Objective: {sample_brief['objective']}" in prompt
+    assert f"Production order ID: {po.production_order_id}" in prompt
+    assert f"Source state: {po.current_state}" in prompt
+    assert f"Expected next state: {expected_next_state}" in prompt
+    assert f"Target child card ID: {serialized['target_child_card_id']}" in prompt
+    assert f"Repo or workspace: {sample_brief['target repo or workspace']}" in prompt
+    assert f"- Scope: {sample_brief['scope']}" in prompt
+    assert f"- Out of scope: {sample_brief['out of scope']}" in prompt
+    assert "Required input packet:" in prompt
+    assert '"packet_type":' in prompt
+    assert "Expected result packet requirements:" in prompt
+    assert f'"packet_type": "{expected_packet}"' in prompt
+    assert "Return exactly one structured result packet JSON object matching this shape:" in prompt
+    assert '"production_order_id":' in prompt
+    assert '"owner_profile":' in prompt or expected_packet == "architect_spec_packet"
+    assert "Acceptance criteria:" in prompt
+    assert sample_brief["acceptance criteria"] in prompt
+    assert "Stop conditions:" in prompt
+    assert sample_brief["stop conditions"] in prompt
+    assert "Approval boundaries:" in prompt
+    assert sample_brief["approval boundaries"] in prompt
+    assert "Do not execute external, destructive, publishing, spending, permission-widening, or secret-requesting actions without explicit approval." in prompt
+    assert "Do not change Hermes production-workflow state directly." in prompt
+    assert "Do not invoke another profile." in prompt
+    assert serialized["result_return_action"] in prompt
+    json.dumps(serialized)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [run_full_bridge, create_dev_complete_order, create_default_final_review_order],
+)
+def test_build_manual_fallback_handoff_rejects_unsupported_or_deferred_states(conn, sample_brief, factory):
+    if factory is run_full_bridge:
+        po = factory(
+            conn,
+            title=sample_brief["title"],
+            source_brief=json.dumps(sample_brief),
+            priority_lane="Relay",
+            repo_or_workspace=sample_brief["target repo or workspace"],
+        )
+    else:
+        po = factory(conn, sample_brief)
+
+    with pytest.raises(DispatchManifestError):
+        build_manual_fallback_handoff(conn, po.production_order_id)
+
+
+
+def test_build_manual_fallback_handoff_is_read_only(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    before_total_changes = conn.total_changes
+    before_tasks = conn.execute(
+        "SELECT id, current_state, status, body FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    before_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    handoff = build_manual_fallback_handoff(conn, po.production_order_id)
+
+    after_total_changes = conn.total_changes
+    after_tasks = conn.execute(
+        "SELECT id, current_state, status, body FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    after_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    assert after_total_changes == before_total_changes
+    assert after_tasks == before_tasks
+    assert after_events == before_events
+    assert handoff.production_order_id == po.production_order_id
+
+
+
+def test_manual_fallback_handoff_rejects_missing_expected_result_packet_details(conn, sample_brief):
+    envelope = build_profile_task_envelope(conn, create_ready_for_dev_order(conn, sample_brief).production_order_id)
+
+    with pytest.raises(DispatchManifestError, match="required_fields"):
+        manual_fallback_handoff_for_envelope(
+            replace(
+                envelope,
+                expected_output_packet={
+                    **envelope.expected_output_packet,
+                    "required_fields": [],
+                },
+            )
+        )
+
+    with pytest.raises(DispatchManifestError, match="bridge_function"):
+        manual_fallback_handoff_for_envelope(
+            replace(
+                envelope,
+                expected_output_packet={
+                    **envelope.expected_output_packet,
+                    "bridge_function": "",
+                },
+            )
+        )
+
 
 
 def test_build_profile_task_envelope_fails_loudly_for_missing_parent_child_and_graph_errors(conn, sample_brief):

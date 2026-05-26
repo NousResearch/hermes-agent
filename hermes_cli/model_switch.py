@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional
+from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     custom_provider_slug,
@@ -1044,6 +1044,57 @@ def switch_model(
 # Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
 
+def _model_entry_id(entry: Any) -> str:
+    """Coerce a config ``models:`` element into a plain model-id string.
+
+    Hermes accepts three on-disk shapes for the per-provider model list,
+    all of which must funnel down into the picker as plain strings — the
+    Dashboard's ``ModelPickerDialog`` (and the TUI's parallel picker)
+    calls ``.toLowerCase()`` on every entry while filtering, so a dict
+    leaking through unmasks as a TypeError / "objects are not valid as
+    a React child" crash that blanks the picker.  See issue #32334.
+
+    Accepted shapes:
+
+    * Plain string — ``"qwen3.5-coder"``
+    * Dict keyed by id, taking ``id`` (preferred) then ``model`` /
+      ``name`` as fallbacks for hand-edited configs.  Empty / missing
+      ids return ``""`` so callers can drop the entry instead of
+      surfacing a blank line in the picker.
+
+    Anything else (None, list, number, …) is coerced via ``str()`` only
+    when it actually round-trips back as a non-empty string; otherwise
+    ``""`` is returned.
+    """
+    if isinstance(entry, str):
+        return entry.strip()
+    if isinstance(entry, dict):
+        for key in ("id", "model", "name"):
+            val = entry.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return ""
+    if entry is None:
+        return ""
+    # Containers (list, tuple, set) and similar collections never
+    # represent a single model id — ``str([...])`` round-trips to a
+    # readable but bracket-prefixed value that would still render as
+    # junk in the picker. Reject explicitly so the caller drops the
+    # entry instead.
+    if isinstance(entry, (list, tuple, set, frozenset, bytes, bytearray)):
+        return ""
+    try:
+        text = str(entry).strip()
+    except Exception:
+        return ""
+    # Guard against ``str()`` round-trips that produce angle-bracket /
+    # repr-style noise like ``<object at 0x…>`` — never useful as a
+    # model id and would still crash the picker on display.
+    if not text or text.startswith("<"):
+        return ""
+    return text
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -1490,21 +1541,27 @@ def list_authenticated_providers(
 
             # Build models list from both default_model and full models array
             models_list = []
-            if default_model:
-                models_list.append(default_model)
+            default_model_id = _model_entry_id(default_model)
+            if default_model_id:
+                models_list.append(default_model_id)
             # Also include the full models list from config.
-            # Hermes writes ``models:`` as a dict keyed by model id
-            # (see hermes_cli/main.py::_save_custom_provider); older
-            # configs or hand-edited files may still use a list.
+            # Hermes writes ``models:`` as a dict keyed by model id (see
+            # hermes_cli/main.py::_save_custom_provider); hand-edited or
+            # imported configs may still use a list of strings OR a list
+            # of dicts like ``- {id: qwen36-mtp, name: Qwen3.6 MTP}``.
+            # Normalise every shape down to a plain id string here — the
+            # picker UI assumes strings end-to-end (#32334).
             cfg_models = ep_cfg.get("models", [])
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    mid = _model_entry_id(m)
+                    if mid and mid not in models_list:
+                        models_list.append(mid)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    mid = _model_entry_id(m)
+                    if mid and mid not in models_list:
+                        models_list.append(mid)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -1632,19 +1689,24 @@ def list_authenticated_providers(
             # stores every configured model as a dict under ``models:``;
             # downstream readers (agent/models_dev.py, gateway/run.py,
             # run_agent.py, hermes_cli/config.py) already consume that dict.
-            default_model = (entry.get("model") or "").strip()
+            # As in section 3, normalise every shape down to a plain id
+            # string so list-of-dict entries never reach the picker
+            # (#32334).
+            default_model = _model_entry_id(entry.get("model"))
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
             cfg_models = entry.get("models", {})
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+                    mid = _model_entry_id(m)
+                    if mid and mid not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(mid)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+                    mid = _model_entry_id(m)
+                    if mid and mid not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(mid)
 
         _section4_emitted_slugs: set = set()
         for grp_key, grp in groups.items():

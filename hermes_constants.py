@@ -255,6 +255,31 @@ def secure_parent_dir(path: Path) -> None:
         pass
 
 
+def secure_file(path: Path) -> None:
+    """Set an existing file to owner-only read/write permissions.
+
+    Missing files, unsupported platforms, and chmod failures are ignored so
+    callers can use this as a best-effort post-create hardening step.
+    """
+    try:
+        if path.exists():
+            os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def secure_dir(path: Path) -> None:
+    """Set an existing directory to owner-only access permissions."""
+    try:
+        resolved = path.resolve()
+        if resolved == Path("/") or len(resolved.parts) < 3:
+            return
+        if resolved.exists():
+            os.chmod(resolved, 0o700)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def get_subprocess_home() -> str | None:
     """Return a per-profile HOME directory for subprocesses, or None.
 

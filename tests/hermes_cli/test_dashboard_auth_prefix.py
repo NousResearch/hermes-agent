@@ -204,6 +204,191 @@ class TestOAuthRedirectUriRespectsPrefix:
 
 
 # ---------------------------------------------------------------------------
+# HERMES_DASHBOARD_PUBLIC_URL / dashboard.public_url override
+# ---------------------------------------------------------------------------
+
+
+class TestPublicUrlOverride:
+    """``dashboard.public_url`` (env override:
+    ``HERMES_DASHBOARD_PUBLIC_URL``) lets an operator force the absolute
+    base URL the OAuth ``redirect_uri`` is built from.
+
+    When set, it is the *complete authority* — scheme + host + optional
+    path prefix. ``X-Forwarded-Prefix`` is ignored on that code path
+    because the operator has explicitly declared the public URL and we
+    no longer need to guess from proxy headers. This is the relief
+    valve for deploys behind reverse proxies that don't set
+    ``X-Forwarded-Host`` / ``X-Forwarded-Proto`` / ``X-Forwarded-Prefix``
+    correctly (or at all) — manual nginx setups, on-prem ingresses,
+    Fly.io deploys with custom domains where the proxy header chain is
+    incomplete.
+
+    When unset, the existing ``proxy_headers=True`` + X-Forwarded-Prefix
+    reconstruction path runs untouched. Existing Fly.io deploys
+    continue to work without configuration.
+
+    Precedence (mirrors ``client_id``):
+
+        env (non-empty) > config.yaml > reconstructed from request
+    """
+
+    @pytest.fixture
+    def patch_config(self, monkeypatch):
+        """Replace ``hermes_cli.config.load_config`` with a stub
+        returning the given ``public_url``. Pass ``None`` to set no
+        config-side value."""
+
+        def _set(public_url) -> None:
+            cfg = {}
+            if public_url is not None:
+                cfg = {"dashboard": {"public_url": public_url}}
+            monkeypatch.setattr(
+                "hermes_cli.config.load_config", lambda: cfg
+            )
+
+        return _set
+
+    def _redirect_uri(self, gated_app, *, headers=None) -> str:
+        """Drive /auth/login and read the redirect_uri the IDP saw."""
+        r = gated_app.get(
+            "/auth/login?provider=stub",
+            headers=headers or {},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302, r.text
+        # Stub IDP echoes redirect_uri back as the prefix of the
+        # Location header (`{redirect_uri}?code=stub_code&state=…`).
+        return r.headers["location"].split("?", 1)[0]
+
+    def test_public_url_env_overrides_request_reconstruction(
+        self, gated_app_direct, patch_config, monkeypatch
+    ):
+        """``HERMES_DASHBOARD_PUBLIC_URL`` wins over the URL the
+        request would otherwise reconstruct to. Critical for deploys
+        whose proxy headers don't match the public URL."""
+        patch_config(None)
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://custom.example",
+        )
+        redirect_uri = self._redirect_uri(gated_app_direct)
+        assert redirect_uri == "https://custom.example/auth/callback", (
+            f"public_url env var didn't override reconstruction "
+            f"(got {redirect_uri!r})"
+        )
+
+    def test_public_url_config_yaml_used_when_env_unset(
+        self, gated_app_direct, patch_config, monkeypatch
+    ):
+        monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+        patch_config("https://from-config.example")
+        redirect_uri = self._redirect_uri(gated_app_direct)
+        assert redirect_uri == "https://from-config.example/auth/callback"
+
+    def test_env_overrides_config_public_url(
+        self, gated_app_direct, patch_config, monkeypatch
+    ):
+        """Precedence pin — env wins over config.yaml. Fly.io / CI
+        secret injection depends on this ordering."""
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://from-env.example",
+        )
+        patch_config("https://from-config.example")
+        redirect_uri = self._redirect_uri(gated_app_direct)
+        assert redirect_uri == "https://from-env.example/auth/callback", (
+            "env var must override config.yaml — Fly secret injection "
+            "depends on this precedence"
+        )
+
+    def test_public_url_with_path_prefix_baked_in(
+        self, gated_app_direct, patch_config, monkeypatch
+    ):
+        """When public_url already carries a path prefix
+        (``https://example.com/hermes``), the OAuth callback URL is
+        the path appended verbatim. The operator is declaring the
+        whole authority; we trust them."""
+        patch_config(None)
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://example.com/hermes",
+        )
+        redirect_uri = self._redirect_uri(gated_app_direct)
+        assert redirect_uri == "https://example.com/hermes/auth/callback"
+
+    def test_public_url_ignores_x_forwarded_prefix(
+        self, gated_app_proxied, patch_config, monkeypatch
+    ):
+        """X-Forwarded-Prefix is the auto-reconstruction signal; when
+        public_url is set we no longer need to guess, and stacking the
+        prefix on top would double-prefix in the common case where
+        the operator already baked their prefix into public_url."""
+        patch_config(None)
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://example.com/already-prefixed",
+        )
+        redirect_uri = self._redirect_uri(
+            gated_app_proxied,
+            headers={"x-forwarded-prefix": "/should-be-ignored"},
+        )
+        assert (
+            redirect_uri == "https://example.com/already-prefixed/auth/callback"
+        ), (
+            f"public_url should suppress X-Forwarded-Prefix layering, "
+            f"got {redirect_uri!r}"
+        )
+
+    def test_public_url_strips_trailing_slash(
+        self, gated_app_direct, patch_config, monkeypatch
+    ):
+        """``https://example.com/`` and ``https://example.com`` must
+        produce identical results — no ``//auth/callback`` double slash."""
+        patch_config(None)
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://example.com/",
+        )
+        redirect_uri = self._redirect_uri(gated_app_direct)
+        assert redirect_uri == "https://example.com/auth/callback"
+
+    def test_malformed_public_url_falls_through_to_reconstruction(
+        self, gated_app_direct, patch_config, monkeypatch
+    ):
+        """Defence against header injection: a public_url that doesn't
+        parse as ``http(s)://host[/path]`` is dropped and we fall back
+        to request reconstruction. The login flow continues to work
+        rather than dispatching the user to a hostile URL."""
+        from urllib.parse import urlparse
+
+        patch_config(None)
+        for bad in [
+            "javascript:alert(1)",
+            "ftp://example.com",
+            "example.com",                          # missing scheme
+            "https://",                             # missing host
+            'https://example.com/"injected',       # quote char
+            "https://example.com/\nhttps://evil",  # CRLF injection
+        ]:
+            monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", bad)
+            redirect_uri = self._redirect_uri(gated_app_direct)
+            # Fell through to request reconstruction — netloc is the
+            # bound host, NOT the hostile value.
+            parsed = urlparse(redirect_uri)
+            assert parsed.netloc == "fly-app.fly.dev", (
+                f"malformed public_url={bad!r} leaked into redirect_uri: "
+                f"{redirect_uri!r}"
+            )
+            assert parsed.path == "/auth/callback"
+
+    def test_empty_public_url_env_treated_as_unset(
+        self, gated_app_direct, patch_config, monkeypatch
+    ):
+        """Same defensive behaviour as the other env vars in this
+        plugin — an empty env var doesn't shadow a valid config.yaml
+        entry."""
+        monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "")
+        patch_config("https://from-config.example")
+        redirect_uri = self._redirect_uri(gated_app_direct)
+        assert redirect_uri == "https://from-config.example/auth/callback"
+
+
+# ---------------------------------------------------------------------------
 # Cookies: Path attribute + __Host- / __Secure- prefix rules
 # ---------------------------------------------------------------------------
 

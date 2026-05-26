@@ -402,6 +402,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         # OpenCode Go mixes API surfaces by model:
         # - GLM / Kimi use OpenAI-compatible chat completions under /v1
         # - MiniMax models use Anthropic Messages under /v1/messages
+        # - Qwen 3.7 uses Anthropic Messages under /v1/messages
         # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
         api_key_env_vars=("OPENCODE_GO_API_KEY",),

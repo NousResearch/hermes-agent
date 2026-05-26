@@ -40,7 +40,7 @@ TOKEN_VAR="GH_TOKEN_SAHILM_AI"
 GH_TOKEN=$(printenv "$TOKEN_VAR") gh pr view "$PR_URL" --json state,...
 ```
 
-Use `sahilm-ai` credentials exclusively. Set `GH_TOKEN` from `GH_TOKEN_SAHILM_AI` before every `gh` invocation.
+Use `sahilm-ai` credentials exclusively. Set `GH_TOKEN` from `GH_TOKEN_SAHILM_AI` before every `gh` invocation. Never use `sahilm-ti` credentials in this worker — that is Sahil's interactive identity and using it from an automated merger will (a) misattribute the merge to a human on the audit trail and (b) trigger keychain prompts on macOS that block the worker silently.
 
 ---
 
@@ -138,9 +138,9 @@ kanban_block(reason="CI failing on PR <url> — fix and re-approve. Failing chec
 
 ## kanban_complete / kanban_block contract
 
-- The ONLY success terminator is `kanban_complete`. The ONLY failure terminator is `kanban_block`.
+- The ONLY success terminator is `kanban_complete`. The ONLY failure terminator is `kanban_block`. Do NOT call `kanban_review` from this worker — the task was already reviewed and approved by Sahil; calling `kanban_review` here would re-loop the card through the auto-reviewer for no reason and confuse the human about whether their approval landed.
 - `kanban_block` always includes the PR URL and an actionable next step in the reason.
-- One and only one terminal call per run. After the single terminal call, stop.
+- One and only one terminal call per run. After the single terminal call, stop — do not attempt any further `gh`, `git`, or `kanban_*` operations. A second terminal call after `kanban_complete` / `kanban_block` corrupts the task event log and confuses downstream automation.
 
 ---
 

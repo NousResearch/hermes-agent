@@ -2319,6 +2319,52 @@ class TestParallelTick:
         assert len(ends) == 2
         assert max(starts) < min(ends), f"Jobs not concurrent: {call_order}"
 
+    def test_tick_releases_global_lock_before_running_jobs(self):
+        """A long-running job must not keep the global tick lock held.
+
+        Regression for production scheduler wedges: one cron job was executing
+        while later ticks skipped with "another instance holds the lock", so
+        unrelated due jobs and smoke tests stayed stuck behind it.
+        """
+        import threading
+        import time
+        from cron.scheduler import tick
+
+        job_started = threading.Event()
+        release_job = threading.Event()
+        get_due_calls = []
+
+        def mock_get_due_jobs():
+            get_due_calls.append(time.monotonic())
+            if len(get_due_calls) == 1:
+                return [{"id": "slow-job", "name": "slow", "deliver": "local"}]
+            return []
+
+        def mock_run_job(job):
+            job_started.set()
+            assert release_job.wait(timeout=5)
+            return (True, "output", "response", None)
+
+        with patch("cron.scheduler.get_due_jobs", side_effect=mock_get_due_jobs), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.run_job", side_effect=mock_run_job), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"):
+            first_tick = threading.Thread(target=tick, kwargs={"verbose": False})
+            first_tick.start()
+            assert job_started.wait(timeout=5)
+
+            # If the first tick still holds .tick.lock while executing the job,
+            # this call returns before get_due_jobs() runs. After the fix, it
+            # acquires the lock, observes no due jobs, and returns normally.
+            assert tick(verbose=False) == 0
+            assert len(get_due_calls) == 2
+
+            release_job.set()
+            first_tick.join(timeout=5)
+            assert not first_tick.is_alive()
+
     def test_parallel_jobs_isolated_contextvars(self):
         """Each job's ContextVars must be isolated — no cross-contamination."""
         from gateway.session_context import get_session_env

@@ -1901,6 +1901,19 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         for job in due_jobs:
             advance_next_run(job["id"])
 
+        # The global tick lock protects only scheduler metadata transitions
+        # (select due jobs + advance their next run). Job execution can take
+        # minutes and must not block later ticks or unrelated due jobs.
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        elif msvcrt:
+            try:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, IOError):
+                pass
+        lock_fd.close()
+        lock_fd = None
+
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
         _max_workers: Optional[int] = None
@@ -2022,17 +2035,18 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         return sum(_results)
     finally:
-        if fcntl:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+        if lock_fd is not None:
+            if fcntl:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            elif msvcrt:
+                try:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
+            lock_fd.close()
 
 
 if __name__ == "__main__":

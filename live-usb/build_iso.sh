@@ -3,21 +3,28 @@
 # Hermes AgentCyber — Live USB ISO Builder
 # =============================================================================
 #
-# Builds a bootable Debian 12 (bookworm) ISO with Hermes AgentCyber
-# pre-installed and configured to auto-start on boot.
+# Builds a bootable Kali Linux (kali-rolling) ISO with Hermes AgentCyber
+# pre-installed. Kali gives the full offensive/defensive toolkit out of the
+# box: nmap, Metasploit, Burp Suite, sqlmap, Hydra, hashcat, Wireshark,
+# aircrack-ng, and hundreds more — all pre-built and maintained by Offensive
+# Security.
 #
 # Supported architectures:
 #   amd64 — hybrid BIOS + UEFI boot (write with dd to any USB)
-#   arm64 — EFI-only boot (Raspberry Pi 4/5, Apple Silicon VMs, ARM servers)
+#   arm64 — EFI-only boot (Raspberry Pi 4/5, ARM servers)
 #           Requires qemu-user-static + binfmt-support on the build host.
 #
-# The resulting ISO boots straight into Hermes. On first boot it runs the
-# setup wizard; subsequent boots start hermes-gateway automatically.
-# Set HERMES_AUTOUPDATE=true in config.env to update hermes on every boot.
+# Kali metapackage options (--kali-meta):
+#   kali-tools-top10       ~10 essential tools; smallest ISO (~3 GB)
+#   kali-linux-headless    Full headless suite; recommended (~5 GB)  ← default
+#   kali-linux-default     Everything including GUI tools (~8 GB)
 #
-# Requirements — amd64 build host:
-#   apt-get install -y debootstrap squashfs-tools xorriso grub-efi-amd64-bin \
-#                      grub-pc-bin mtools dosfstools
+# Alternatively build on Debian with --suite bookworm --mirror http://deb.debian.org/debian
+# (omit --kali-meta; a base set of tools is installed instead).
+#
+# Requirements — amd64 Kali/Debian/Ubuntu build host:
+#   apt-get install -y debootstrap squashfs-tools xorriso \
+#                      grub-efi-amd64-bin grub-pc-bin mtools dosfstools
 #
 # Additional requirements — ARM64 cross-compilation:
 #   apt-get install -y qemu-user-static binfmt-support grub-efi-arm64-bin
@@ -27,8 +34,9 @@
 #
 # Options:
 #   --arch ARCH           Target architecture: amd64 (default) or arm64
-#   --suite SUITE         Debian suite (default: bookworm)
-#   --mirror URL          Debian mirror (default: http://deb.debian.org/debian)
+#   --suite SUITE         OS suite (default: kali-rolling)
+#   --mirror URL          APT mirror URL (default: Kali CDN)
+#   --kali-meta PKG       Kali metapackage (default: kali-linux-headless)
 #   --output PATH         Output ISO path (default: ./hermes-cyber-live.iso)
 #   --source-dir PATH     Path to hermes-agentcyber source (default: parent dir)
 #   --no-bundle-source    Don't bundle source; install from pip on first boot
@@ -44,8 +52,9 @@ REPO_DIR="${SCRIPT_DIR}/.."
 
 # ---- Defaults ---------------------------------------------------------------
 ARCH="amd64"
-SUITE="bookworm"
-MIRROR="http://deb.debian.org/debian"
+SUITE="kali-rolling"
+MIRROR="https://http.kali.org/kali"
+KALI_META="kali-linux-headless"
 OUTPUT="${SCRIPT_DIR}/hermes-cyber-live.iso"
 SOURCE_DIR="${REPO_DIR}"
 BUNDLE_SOURCE=true
@@ -60,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --arch)            ARCH="$2";         shift 2 ;;
     --suite)           SUITE="$2";        shift 2 ;;
     --mirror)          MIRROR="$2";       shift 2 ;;
+    --kali-meta)       KALI_META="$2";    shift 2 ;;
     --output)          OUTPUT="$2";       shift 2 ;;
     --source-dir)      SOURCE_DIR="$2";   shift 2 ;;
     --no-bundle-source) BUNDLE_SOURCE=false; shift ;;
@@ -68,6 +78,14 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
+
+# Detect OS family from suite name
+if [[ "$SUITE" == kali* ]]; then
+  BASE_OS="kali"
+else
+  BASE_OS="debian"
+  KALI_META=""   # no kali meta on Debian builds
+fi
 
 # ---- Architecture setup -----------------------------------------------------
 case "$ARCH" in
@@ -141,17 +159,41 @@ trap cleanup EXIT
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  Hermes AgentCyber — Live USB Builder"
-echo "  Suite: ${SUITE}  Arch: ${ARCH}  Mirror: ${MIRROR}"
+echo "  Base OS: ${BASE_OS^^}  Suite: ${SUITE}  Arch: ${ARCH}"
+[[ -n "$KALI_META" ]] && echo "  Kali meta: ${KALI_META}"
+echo "  Mirror: ${MIRROR}"
 echo "  Output: ${OUTPUT}"
 [[ "$CROSS_COMPILE" == "true" ]] && echo "  Mode: ARM64 cross-compilation (via qemu-user-static)"
 echo "═══════════════════════════════════════════════════════════"
 
 # ---- Step 1: debootstrap base system ----------------------------------------
 echo ""
-echo "▶ [1/7] Bootstrapping Debian ${SUITE} (${ARCH})..."
+echo "▶ [1/7] Bootstrapping ${SUITE} (${ARCH})..."
 mkdir -p "${ROOTFS}"
-DEBOOT_INCLUDES="systemd,systemd-sysv,dbus,locales,ca-certificates,curl,wget,iproute2,iputils-ping,net-tools,nmap,tcpdump,openssh-client,git,sudo,python3,python3-pip,python3-venv,less,vim,tmux,parted,usbutils,pciutils,lsof,strace,file,binutils,ncat,live-boot,live-config,live-config-systemd"
-DEBOOT_FLAGS="--arch=${ARCH} --include=${DEBOOT_INCLUDES}"
+
+# Kali bootstrap: need the Kali keyring and (on non-Kali hosts) the debootstrap script
+if [[ "$BASE_OS" == "kali" ]]; then
+  # Import Kali archive signing key so debootstrap can verify packages
+  if [[ ! -f /usr/share/keyrings/kali-archive-keyring.gpg ]]; then
+    echo "  Importing Kali archive key..."
+    curl -fsSL https://archive.kali.org/archive-key.asc \
+      | gpg --dearmor > /usr/share/keyrings/kali-archive-keyring.gpg
+  fi
+  # Provide kali-rolling debootstrap script if host debootstrap doesn't have it
+  if [[ ! -f /usr/share/debootstrap/scripts/kali-rolling ]]; then
+    ln -sf /usr/share/debootstrap/scripts/debian \
+           /usr/share/debootstrap/scripts/kali-rolling
+  fi
+  DEBOOT_KEYRING="--keyring=/usr/share/keyrings/kali-archive-keyring.gpg"
+  # Minimal includes: Kali meta installs the tools; live-boot handles squashfs mount
+  DEBOOT_INCLUDES="systemd,systemd-sysv,dbus,locales,ca-certificates,curl,wget,sudo,python3,python3-pip,python3-venv,less,vim,tmux,git,live-boot,live-config,live-config-systemd"
+else
+  DEBOOT_KEYRING=""
+  # Debian: install a base set of useful tools (Kali meta not available)
+  DEBOOT_INCLUDES="systemd,systemd-sysv,dbus,locales,ca-certificates,curl,wget,iproute2,iputils-ping,net-tools,nmap,tcpdump,openssh-client,git,sudo,python3,python3-pip,python3-venv,less,vim,tmux,parted,usbutils,pciutils,lsof,strace,file,binutils,ncat,live-boot,live-config,live-config-systemd"
+fi
+
+DEBOOT_FLAGS="--arch=${ARCH} ${DEBOOT_KEYRING} --include=${DEBOOT_INCLUDES}"
 
 if [[ "$CROSS_COMPILE" == "true" ]]; then
   # Two-stage bootstrap for cross-architecture builds
@@ -214,77 +256,103 @@ HEADLESS_FLAG=""
 [[ "$HEADLESS_SCAN" == "true" ]] && HEADLESS_FLAG="--headless-scan"
 BUNDLE_FLAG=""
 [[ "$BUNDLE_SOURCE" == "true" ]] && BUNDLE_FLAG="--bundled-source"
+KALI_META_FLAG=""
+[[ -n "$KALI_META" ]] && KALI_META_FLAG="--kali-meta=${KALI_META}"
 
-cat > "${ROOTFS}/tmp/chroot_setup.sh" << 'CHROOT_EOF'
+# Pass Kali mirror into chroot for sources.list
+KALI_MIRROR="${MIRROR}"
+
+cat > "${ROOTFS}/tmp/chroot_setup.sh" << CHROOT_EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
 BUNDLE_SOURCE=false
 HEADLESS_SCAN=false
-for arg in "$@"; do
-  [[ "$arg" == "--bundled-source" ]] && BUNDLE_SOURCE=true
-  [[ "$arg" == "--headless-scan" ]]  && HEADLESS_SCAN=true
+KALI_META=""
+for arg in "\$@"; do
+  [[ "\$arg" == "--bundled-source" ]] && BUNDLE_SOURCE=true
+  [[ "\$arg" == "--headless-scan" ]]  && HEADLESS_SCAN=true
+  [[ "\$arg" == --kali-meta=* ]]      && KALI_META="\${arg#--kali-meta=}"
 done
 
-# System basics
 export DEBIAN_FRONTEND=noninteractive
 locale-gen en_US.UTF-8
 update-locale LANG=en_US.UTF-8
 
-# Create hermes user (UID 1000)
-useradd -m -u 1000 -G sudo,adm -s /bin/bash hermes
+# ---- Kali tool installation -------------------------------------------------
+if [[ -n "\$KALI_META" ]]; then
+  echo "  Setting up Kali repositories and installing \${KALI_META}..."
+  # Write full sources.list with all Kali components
+  cat > /etc/apt/sources.list << 'SOURCES'
+deb ${KALI_MIRROR} kali-rolling main contrib non-free non-free-firmware
+SOURCES
+  # Kali keyring is already in the rootfs from debootstrap; just update + install
+  apt-get update -qq
+  # kali-linux-headless can take 15-30 min depending on mirror speed
+  apt-get install -y --no-install-recommends "\${KALI_META}" 2>&1 | \
+    grep -E "^(Setting up|Unpacking|Get:|Err:|E:)" || true
+  echo "  ✓ \${KALI_META} installed"
+fi
+
+# ---- hermes user ------------------------------------------------------------
+# Kali live creates a 'kali' user; we use 'hermes' (UID 1000) instead.
+# If a 'kali' user was created by live-config, remove it.
+id kali &>/dev/null && userdel -r kali 2>/dev/null || true
+id hermes &>/dev/null || useradd -m -u 1000 -G sudo,adm -s /bin/bash hermes
 echo "hermes:hermes" | chpasswd
 echo "hermes ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/hermes
 chmod 440 /etc/sudoers.d/hermes
 
-# Install uv (hermes package manager)
+# Disable Kali live-config's automatic user creation so it doesn't conflict
+mkdir -p /etc/live/config.conf.d
+echo 'LIVE_CONFIG_NOROOT=false' > /etc/live/config.conf.d/hermes.conf
+echo 'LIVE_CONFIG_USERNAME=hermes' >> /etc/live/config.conf.d/hermes.conf
+echo 'LIVE_CONFIG_USER_DEFAULT_GROUPS=sudo,adm,cdrom,floppy,audio,dip,video,plugdev,netdev,bluetooth,wireshark' \
+  >> /etc/live/config.conf.d/hermes.conf
+
+# ---- Python + uv + hermes ---------------------------------------------------
+# Install uv
 curl -fsSL https://astral.sh/uv/install.sh | INSTALLER_NO_MODIFY_PATH=1 sh
 install -m755 /root/.local/bin/uv /usr/local/bin/uv
 
-# Install Python 3.11 if not available
-python3 --version | grep -q "3.1[1-9]" || {
-  apt-get install -y python3.11 python3.11-venv python3.11-dev
-  update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 10
-}
+# Find best available Python (3.11+)
+PYTHON_BIN=\$(command -v python3.12 || command -v python3.11 || command -v python3)
+if [[ -z "\$PYTHON_BIN" ]]; then
+  apt-get install -y python3 python3-venv python3-dev
+  PYTHON_BIN=python3
+fi
 
-# Set up hermes virtual environment
 HERMES_VENV=/opt/hermes-venv
-uv venv --python python3.11 "${HERMES_VENV}"
-HERMES_PIP="${HERMES_VENV}/bin/pip"
-HERMES_PYTHON="${HERMES_VENV}/bin/python"
+uv venv --python "\${PYTHON_BIN}" "\${HERMES_VENV}"
+HERMES_PYTHON="\${HERMES_VENV}/bin/python"
 
-# Install hermes-agentcyber
-if [[ "$BUNDLE_SOURCE" == "true" && -f /opt/hermes-agentcyber.tar.gz ]]; then
+if [[ "\$BUNDLE_SOURCE" == "true" && -f /opt/hermes-agentcyber.tar.gz ]]; then
   cd /opt
   tar xzf hermes-agentcyber.tar.gz
-  HERMES_SRC_DIR=$(find /opt -maxdepth 1 -type d -name "hermes-agentcyber*" | head -1)
-  uv pip install --python "${HERMES_PYTHON}" --no-cache-dir -e "${HERMES_SRC_DIR}"
-  echo "${HERMES_SRC_DIR}" > /opt/hermes-source-path
+  HERMES_SRC_DIR=\$(find /opt -maxdepth 1 -type d -name "hermes-agentcyber*" | head -1)
+  uv pip install --python "\${HERMES_PYTHON}" --no-cache-dir -e "\${HERMES_SRC_DIR}"
+  echo "\${HERMES_SRC_DIR}" > /opt/hermes-source-path
   rm /opt/hermes-agentcyber.tar.gz
 else
-  # Install from PyPI on first boot (requires internet)
   touch /opt/hermes-install-on-firstboot
 fi
 
-# Add uv + venv binaries to PATH for hermes user
 cat >> /home/hermes/.bashrc << 'BASHRC'
-export PATH="/opt/hermes-venv/bin:/usr/local/bin:$PATH"
+export PATH="/opt/hermes-venv/bin:/usr/local/bin:\$PATH"
 export HERMES_HOME="/home/hermes/.hermes"
 BASHRC
 chown hermes:hermes /home/hermes/.bashrc
 
-# Set up hermes home directory
 mkdir -p /home/hermes/.hermes/logs
 chown -R hermes:hermes /home/hermes/.hermes
 
-# Headless flag file
-[[ "$HEADLESS_SCAN" == "true" ]] && touch /opt/hermes-headless-scan
+[[ "\$HEADLESS_SCAN" == "true" ]] && touch /opt/hermes-headless-scan
 
 echo "✓ chroot setup complete"
 CHROOT_EOF
 
 chmod +x "${ROOTFS}/tmp/chroot_setup.sh"
-chroot "${ROOTFS}" /tmp/chroot_setup.sh ${BUNDLE_FLAG} ${HEADLESS_FLAG}
+chroot "${ROOTFS}" /tmp/chroot_setup.sh ${BUNDLE_FLAG} ${HEADLESS_FLAG} ${KALI_META_FLAG}
 rm "${ROOTFS}/tmp/chroot_setup.sh"
 echo "  ✓ Hermes installed in chroot"
 

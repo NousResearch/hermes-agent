@@ -18,7 +18,7 @@ Use any model — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](h
 
 <table>
 <tr><td><b>Cybersecurity toolkit</b></td><td>Native tools for CVE lookup (NVD), IOC reputation (VirusTotal, AbuseIPDB), MITRE ATT&CK TTP lookup, IOC extraction from logs/reports, CVSS+EPSS vulnerability triage, and an in-session incident response playbook. All in the <code>cyber</code> toolset — no wiring required.</td></tr>
-<tr><td><b>Live USB — plug in and act</b></td><td>Build a bootable Debian 12 ISO for <b>x86-64</b> (BIOS + UEFI) or <b>ARM64</b> (Raspberry Pi 4/5). Boot any PC, complete a 60-second first-boot wizard, and the gateway starts. Add <code>--persistence 8G</code> to survive reboots; set <code>HERMES_AUTOUPDATE=true</code> to update hermes on each boot.</td></tr>
+<tr><td><b>Live USB — plug in and act</b></td><td>Builds on <b>Kali Linux Rolling</b> — the full offensive/defensive toolkit (nmap, Metasploit, Burp, sqlmap, Hydra, hashcat, Wireshark, aircrack-ng, and 300+ more) on x86-64 or ARM64. Boot any PC, complete a 60-second wizard, and the gateway starts. Add <code>--persistence 8G</code> to survive reboots; <code>HERMES_AUTOUPDATE=true</code> to update hermes on each boot.</td></tr>
 <tr><td><b>SOC audit trail</b></td><td>Set <code>HERMES_CYBER_AUDIT=true</code> to get a tamper-evident NDJSON log of every tool call at <code>~/.hermes/logs/cyber_audit.jsonl</code>. Credentials redacted. File mode 0600.</td></tr>
 <tr><td><b>Protected subagent operations</b></td><td>In-flight subagents (parallel CVE triage, recon sweeps) are shielded from accidental interrupts — a follow-up message queues rather than killing running work. <code>/stop</code> still force-cancels everything.</td></tr>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
@@ -98,7 +98,9 @@ NVD, EPSS (first.org), and MITRE ATT&CK TAXII are all free with no API key requi
 
 ## Live USB
 
-Build a bootable USB that turns any PC into a Hermes cyber operations node. Plug it in, pick a boot mode from the GRUB menu, and the agent starts — no install, no persistent traces on the host.
+Build a bootable USB that turns any PC into a Hermes cyber operations node. The ISO is based on **Kali Linux Rolling**, which ships the full offensive and defensive toolkit pre-built: nmap, Metasploit, Burp Suite, sqlmap, Hydra, hashcat, Wireshark, aircrack-ng, John the Ripper, Gobuster, enum4linux, Impacket, and hundreds more — all maintained by Offensive Security.
+
+Plug it in, pick a boot mode from the GRUB menu, and the agent starts — no install, no persistent traces on the host.
 
 **Supported targets:** Any x86-64 PC (UEFI or legacy BIOS) and ARM64 boards (Raspberry Pi 4/5, ARM servers).
 
@@ -106,7 +108,7 @@ Build a bootable USB that turns any PC into a Hermes cyber operations node. Plug
 
 ### Step 1 — Install build dependencies
 
-**amd64 ISO (builds on any Debian/Ubuntu host):**
+**amd64 ISO (builds on any Debian/Ubuntu/Kali host):**
 
 ```bash
 sudo apt-get install -y \
@@ -128,22 +130,40 @@ sudo apt-get install -y \
 ### Step 2 — Build the ISO
 
 ```bash
-# amd64 (default) — hybrid BIOS + UEFI boot
+# Default: Kali Rolling + kali-linux-headless (~5 GB ISO)
 sudo live-usb/build_iso.sh
 
-# arm64 — EFI-only (Raspberry Pi 4/5, ARM servers)
+# Smaller ISO — top 10 tools only (~3 GB)
+sudo live-usb/build_iso.sh --kali-meta kali-tools-top10
+
+# Full Kali including GUI tools (~8 GB)
+sudo live-usb/build_iso.sh --kali-meta kali-linux-default
+
+# ARM64 — EFI-only (Raspberry Pi 4/5, ARM servers)
 sudo live-usb/build_iso.sh --arch arm64
 
-# Options
+# Debian base instead of Kali (no metapackage, lighter)
+sudo live-usb/build_iso.sh --suite bookworm --mirror http://deb.debian.org/debian
+
+# All options
 sudo live-usb/build_iso.sh \
-  --arch amd64 \            # amd64 (default) or arm64
-  --suite bookworm \        # Debian suite (default: bookworm)
-  --output /tmp/hermes.iso \# output path
-  --headless-scan \         # enable auto-scan mode
-  --verbose                 # show full debootstrap output
+  --arch amd64 \                         # amd64 (default) or arm64
+  --suite kali-rolling \                 # default; use bookworm for Debian
+  --kali-meta kali-linux-headless \      # default Kali metapackage
+  --output /tmp/hermes-kali.iso \
+  --headless-scan \                      # enable auto-scan mode
+  --verbose                              # show full debootstrap output
 ```
 
-The build bundles the current repo into the ISO so the target PC needs no internet connection on boot. Build time is typically 10–20 minutes depending on host speed. Output size is ~2 GB.
+The build bundles the current repo into the ISO so the target PC needs no internet on boot. Build time is typically 20–40 minutes for `kali-linux-headless` (mirror-dependent).
+
+**Kali metapackage sizes:**
+
+| `--kali-meta` | What's included | ISO size |
+|---|---|---|
+| `kali-tools-top10` | nmap, Metasploit, Burp, sqlmap, Aircrack, Hydra, John, Wireshark, Responder, Maltego | ~3 GB |
+| `kali-linux-headless` | All of the above + 100+ additional tools, no desktop | ~5 GB |
+| `kali-linux-default` | Full default Kali install with XFCE desktop | ~8 GB |
 
 ---
 

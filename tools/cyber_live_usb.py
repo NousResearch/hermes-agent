@@ -151,6 +151,7 @@ def _build(args: dict, **_kw: Any) -> dict:
 
     if args.get("arch"):         cmd += ["--arch", args["arch"]]
     if args.get("suite"):        cmd += ["--suite", args["suite"]]
+    if args.get("kali_meta"):    cmd += ["--kali-meta", args["kali_meta"]]
     if args.get("output"):       cmd += ["--output", args["output"]]
     if args.get("source_dir"):   cmd += ["--source-dir", args["source_dir"]]
     if args.get("headless_scan"): cmd += ["--headless-scan"]
@@ -283,7 +284,8 @@ SCHEMA = {
                 },
                 # build
                 "arch":          {"type": "string", "description": "Target CPU arch (build): amd64, arm64."},
-                "suite":         {"type": "string", "description": "Debian suite (build): bookworm, trixie."},
+                "suite":         {"type": "string", "description": "OS suite (build): kali-rolling (default), bookworm."},
+                "kali_meta":     {"type": "string", "description": "Kali metapackage (build): kali-tools-top10, kali-linux-headless (default), kali-linux-default."},
                 "output":        {"type": "string", "description": "Output ISO path (build)."},
                 "source_dir":    {"type": "string", "description": "Path to hermes-agentcyber source tree (build)."},
                 "headless_scan": {"type": "boolean", "description": "Enable auto-scan on boot (build)."},

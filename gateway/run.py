@@ -198,7 +198,6 @@ def _gateway_loop_exception_handler(
     """
     exc = context.get("exception")
     if exc is not None and _is_transient_network_error(exc):
-        message = context.get("message") or "transient network error"
         task = context.get("future") or context.get("task")
         task_name = ""
         if task is not None:

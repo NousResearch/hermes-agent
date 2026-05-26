@@ -22,7 +22,6 @@ Usage:
 
 from __future__ import annotations
 
-import importlib
 import importlib.util
 import logging
 import sys

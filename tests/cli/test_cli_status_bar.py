@@ -332,6 +332,45 @@ class TestCLIStatusBar:
         assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
         assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
 
+    def test_input_rules_hide_after_resize_until_next_input(self):
+        """When _status_bar_suppressed_after_resize is set, both rules hide.
+
+        See _recover_after_resize — column shrink reflows already-rendered
+        bars into scrollback, so we hide the separators until the user
+        submits the next input, at which point the flag is cleared.
+        """
+        cli_obj = _make_cli()
+        cli_obj._status_bar_suppressed_after_resize = True
+
+        assert cli_obj._tui_input_rule_height("top", width=90) == 0
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 0
+
+        cli_obj._status_bar_suppressed_after_resize = False
+        assert cli_obj._tui_input_rule_height("top", width=90) == 1
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_scrollback_box_width_returns_viewport_width(self):
+        """Decorative scrollback boxes use the full viewport width.
+
+        The previous clamp (max 56 cols) was reverted in favour of the
+        prompt_toolkit ``_output_screen_diff`` monkey-patch landed in
+        #26137, which keeps chrome out of scrollback at the source.
+        We accept that an aggressive column-shrink may visually reflow
+        already printed Panel borders — that's a cosmetic artifact of
+        stamped scrollback history, not a live-render bug.
+        """
+        from cli import HermesCLI
+
+        # Floor at 32 — narrow terminals still get something usable
+        # (avoids negative ``'─' * (w - 2)`` math).
+        assert HermesCLI._scrollback_box_width(20) == 32
+        assert HermesCLI._scrollback_box_width(32) == 32
+        # Above the floor, return the actual viewport width — no cap.
+        assert HermesCLI._scrollback_box_width(48) == 48
+        assert HermesCLI._scrollback_box_width(80) == 80
+        assert HermesCLI._scrollback_box_width(120) == 120
+        assert HermesCLI._scrollback_box_width(200) == 200
+
     def test_agent_spacer_reclaimed_on_narrow_terminals(self):
         cli_obj = _make_cli()
         cli_obj._agent_running = True

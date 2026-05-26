@@ -42,6 +42,9 @@ const stdoutOnly = (diff: ReturnType<LogUpdate['render']>) =>
     .map(p => (p as { type: 'stdout'; content: string }).content)
     .join('')
 
+const ESC = '\u001b'
+const hasDecstbm = (text: string) => new RegExp(`${ESC}\\[\\d+;\\d+r`).test(text)
+
 describe('LogUpdate.render diff contract', () => {
   it('emits only changed cells when most rows match', () => {
     const w = 20
@@ -83,6 +86,25 @@ describe('LogUpdate.render diff contract', () => {
 
     expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
     expect(stdoutOnly(diff)).toContain('shorterrownow')
+  })
+
+  it('height growth emits a clearTerminal patch before repainting', () => {
+    const w = 20
+    const prevH = 3
+    const nextH = 6
+
+    const prev = mkScreen(w, prevH)
+    paint(prev, 0, 'old rows')
+
+    const next = mkScreen(w, nextH)
+    paint(next, 0, 'new rows')
+    next.damage = { x: 0, y: 0, width: w, height: nextH }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, w, prevH), mkFrame(next, w, nextH), true, false)
+
+    expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
+    expect(stdoutOnly(diff)).toContain('newrows')
   })
 
   it('drift repro: identical prev/next emits no heal, even when the physical terminal is stale', () => {
@@ -153,5 +175,49 @@ describe('LogUpdate.render diff contract', () => {
 
     expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
     expect(stdoutOnly(diff)).toContain('timer2s')
+  })
+
+  it('keeps DECSTBM fast-path when scroll region stays above bottom row', () => {
+    const w = 12
+    const h = 6
+    const prev = mkScreen(w, h)
+    const next = mkScreen(w, h)
+
+    paint(prev, 1, 'row one')
+    paint(next, 1, 'row one')
+
+    const prevFrame = mkFrame(prev, w, h)
+
+    const nextFrame: Frame = {
+      ...mkFrame(next, w, h),
+      scrollHint: { top: 1, bottom: 4, delta: 1 }
+    }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(prevFrame, nextFrame, true, true)
+
+    expect(hasDecstbm(stdoutOnly(diff))).toBe(true)
+  })
+
+  it('skips DECSTBM when scroll region touches the bottom row', () => {
+    const w = 12
+    const h = 6
+    const prev = mkScreen(w, h)
+    const next = mkScreen(w, h)
+
+    paint(prev, 1, 'row one')
+    paint(next, 1, 'row one')
+
+    const prevFrame = mkFrame(prev, w, h)
+
+    const nextFrame: Frame = {
+      ...mkFrame(next, w, h),
+      scrollHint: { top: 1, bottom: 5, delta: 1 }
+    }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(prevFrame, nextFrame, true, true)
+
+    expect(hasDecstbm(stdoutOnly(diff))).toBe(false)
   })
 })

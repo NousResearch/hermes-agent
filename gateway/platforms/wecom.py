@@ -345,6 +345,7 @@ class WeComAdapter(BasePlatformAdapter):
                 try:
                     await self._open_connection()
                     backoff_idx = 0
+                    self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
@@ -360,7 +361,7 @@ class WeComAdapter(BasePlatformAdapter):
                 payload = self._parse_json(msg.data)
                 if payload:
                     await self._dispatch_payload(payload)
-            elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
+            elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
@@ -615,6 +616,18 @@ class WeComAdapter(BasePlatformAdapter):
             else:
                 delay = self._text_batch_delay_seconds
             await asyncio.sleep(delay)
+            # Guard against the cancel-delivery race: when the sleep timer
+            # fires just before cancel() is called, CPython sets
+            # Task._must_cancel but cannot cancel the already-done sleep
+            # future, so CancelledError is delivered at the *next* await
+            # (handle_message) rather than here.  By that point this task
+            # has already popped the merged event, so the superseding task
+            # sees an empty batch and silently drops the message.
+            # This check is synchronous — no await between the sleep and
+            # the pop — so no other coroutine can modify the task registry
+            # in between.
+            if self._pending_text_batch_tasks.get(key) is not current_task:
+                return
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return

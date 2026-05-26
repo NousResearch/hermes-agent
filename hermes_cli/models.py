@@ -116,11 +116,21 @@ def _codex_curated_models() -> list[str]:
 # (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
+    "grok-4.3",
     "grok-4.20-0309-reasoning",
     "grok-4.20-0309-non-reasoning",
     "grok-4.20-multi-agent-0309",
-    "grok-4.3",
 ]
+
+
+_XAI_TOP_MODEL = "grok-4.3"
+
+
+def _xai_promote_top(ids: list[str]) -> list[str]:
+    """Pin the headline xAI model to the top of the curated list."""
+    if _XAI_TOP_MODEL in ids:
+        return [_XAI_TOP_MODEL] + [m for m in ids if m != _XAI_TOP_MODEL]
+    return ids
 
 
 def _xai_curated_models() -> list[str]:
@@ -142,7 +152,7 @@ def _xai_curated_models() -> list[str]:
         if isinstance(models, dict) and models:
             ids = [mid for mid in models.keys() if isinstance(mid, str)]
             if ids:
-                return sorted(ids)
+                return _xai_promote_top(sorted(ids))
     except Exception:
         # Any failure (missing file, malformed JSON, import error)
         # falls through to the static list.
@@ -189,7 +199,20 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
     ],
+    "openai-api": [
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5-mini",
+        "gpt-5.3-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "gpt-4o-mini",
+    ],
     "openai-codex": _codex_curated_models(),
+    "xai-oauth": _xai_curated_models(),
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -445,6 +468,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],
+    "novita": [
+        "moonshotai/kimi-k2.5",
+        "minimax/minimax-m2.7",
+        "zai-org/glm-5",
+        "deepseek/deepseek-v3-0324",
+        "deepseek/deepseek-r1-0528",
+        "qwen/qwen3-235b-a22b-fp8",
+    ],
 }
 
 # Vercel AI Gateway: derive the bare-model-id catalog from the curated
@@ -619,6 +650,71 @@ def union_with_portal_free_recommendations(
         augmented_ids = new_ones + augmented_ids
 
     return (augmented_ids, augmented_pricing)
+
+
+def union_with_portal_paid_recommendations(
+    curated_ids: list[str],
+    pricing: dict[str, dict[str, str]],
+    portal_base_url: str = "",
+    *,
+    force_refresh: bool = False,
+) -> tuple[list[str], dict[str, dict[str, str]]]:
+    """Augment curated list with the Portal's ``paidRecommendedModels``.
+
+    Mirror of :func:`union_with_portal_free_recommendations` for paid-tier
+    users. The Portal's ``/api/nous/recommended-models`` endpoint advertises
+    which paid models are blessed *right now* — independent of what the
+    in-repo ``_PROVIDER_MODELS["nous"]`` list happens to contain or whether
+    the docs-hosted catalog manifest has been rebuilt since the last release.
+
+    For paid-tier users this lets newly-launched paid models surface in the
+    picker even if the user is running an older Hermes that doesn't ship
+    them in its hardcoded curated list. This function returns an augmented
+    ``(model_ids, pricing)`` pair where:
+
+    * Portal paid recommendations missing from ``curated_ids`` are
+      appended at the front (so the picker shows them first).
+    * ``pricing`` is left untouched — we deliberately do NOT synthesize
+      pricing entries for paid models. Live pricing is fetched separately
+      via :func:`get_pricing_for_provider`; if the live endpoint hasn't
+      published pricing yet, the picker shows a blank price column rather
+      than fabricating numbers. (The free helper synthesizes ``$0`` so
+      :func:`partition_nous_models_by_tier` keeps free models selectable;
+      no equivalent gating applies on the paid side, so synthesis would
+      only mislead the user.)
+
+    Failures (network, parse, missing field) are silent and degrade to
+    returning the inputs unchanged — never block the picker on a
+    Portal-side hiccup.
+    """
+    try:
+        payload = fetch_nous_recommended_models(
+            portal_base_url, force_refresh=force_refresh
+        )
+    except Exception:
+        return (list(curated_ids), dict(pricing))
+
+    paid_block = payload.get("paidRecommendedModels") if isinstance(payload, dict) else None
+    if not isinstance(paid_block, list) or not paid_block:
+        return (list(curated_ids), dict(pricing))
+
+    portal_paid_ids: list[str] = []
+    for entry in paid_block:
+        name = _extract_model_name(entry)
+        if name:
+            portal_paid_ids.append(name)
+    if not portal_paid_ids:
+        return (list(curated_ids), dict(pricing))
+
+    augmented_ids = list(curated_ids)
+    seen = set(augmented_ids)
+    # Prepend Portal paid recommendations that aren't already curated, so
+    # the Portal-blessed picks surface first in the picker.
+    new_ones = [mid for mid in portal_paid_ids if mid not in seen]
+    if new_ones:
+        augmented_ids = new_ones + augmented_ids
+
+    return (augmented_ids, dict(pricing))
 
 
 # ---------------------------------------------------------------------------
@@ -840,13 +936,16 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
+    ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (AI-native cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
+    ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
+    ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope Coding (Qwen + multi-provider)"),
+    ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
-    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
@@ -861,7 +960,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
     ProviderEntry("minimax-oauth",  "MiniMax (OAuth)",          "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
-    ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
     ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (multi-model direct API)"),
@@ -871,6 +969,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
+    ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -949,6 +1048,8 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "novita-ai": "novita",
+    "novitaai": "novita",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
     "tencent": "tencent-tokenhub",
@@ -960,6 +1061,10 @@ _PROVIDER_ALIASES = {
     "amazon-bedrock": "bedrock",
     "amazon": "bedrock",
     "grok": "xai",
+    "grok-oauth": "xai-oauth",
+    "xai-oauth": "xai-oauth",
+    "x-ai-oauth": "xai-oauth",
+    "xai-grok-oauth": "xai-oauth",
     "x-ai": "xai",
     "x.ai": "xai",
     "nim": "nvidia",
@@ -1429,7 +1534,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, ai-gateway)."""
+    """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita)."""
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_models_with_pricing(
@@ -1439,6 +1544,8 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
         )
     if normalized == "ai-gateway":
         return fetch_ai_gateway_pricing(force_refresh=force_refresh)
+    if normalized == "novita":
+        return _fetch_novita_pricing(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
@@ -1453,6 +1560,65 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
                 force_refresh=force_refresh,
             )
     return {}
+
+
+def _fetch_novita_pricing(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Fetch pricing from NovitaAI /v1/models.
+
+    NovitaAI returns input/output prices per million tokens in units of
+    0.0001 USD. Convert them to the per-token strings used by the shared
+    pricing formatter.
+
+    Results are cached in ``_pricing_cache`` keyed on the resolved base URL,
+    matching the pattern used by ``fetch_ai_gateway_pricing`` — without this,
+    every menu render or pricing lookup re-hits the network.
+    """
+    api_key = os.getenv("NOVITA_API_KEY", "").strip()
+    if not api_key:
+        return {}
+
+    base_url = os.getenv("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1"
+    cache_key = base_url.rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    url = cache_key + "/models"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _pricing_cache[cache_key] = {}
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id")
+        if not mid:
+            continue
+        inp = item.get("input_token_price_per_m")
+        out = item.get("output_token_price_per_m")
+        if inp is None and out is None:
+            continue
+        result[str(mid)] = {
+            "prompt": str(float(inp or 0) / 10_000 / 1_000_000),
+            "completion": str(float(out or 0) / 10_000 / 1_000_000),
+        }
+
+    _pricing_cache[cache_key] = result
+    return result
 
 
 # All provider IDs and aliases that are valid for the provider:model syntax.
@@ -2029,6 +2195,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             access_token = None
         return get_codex_model_ids(access_token=access_token)
+    if normalized == "xai-oauth":
+        return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -2074,7 +2242,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
-    if normalized == "openai":
+    if normalized in ("openai", "openai-api"):
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
             base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
@@ -2370,6 +2538,7 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     return (
         normalized.startswith(COPILOT_BASE_URL)
         or normalized.startswith("https://models.github.ai/inference")
+        or normalized.startswith("https://models.inference.ai.azure.com")
     )
 
 
@@ -3307,14 +3476,14 @@ def validate_requested_model(
             "message": message,
         }
 
-    # OpenAI Codex has its own catalog path; /v1/models probing is not the right validation path.
-    if normalized == "openai-codex":
+    # Providers with non-standard catalog validation — /v1/models probing is not the right path.
+    if normalized in {"openai-codex", "xai-oauth"}:
         try:
-            codex_models = provider_model_ids("openai-codex")
+            catalog_models = provider_model_ids(normalized)
         except Exception:
-            codex_models = []
-        if codex_models:
-            if requested_for_lookup in set(codex_models):
+            catalog_models = []
+        if catalog_models:
+            if requested_for_lookup in set(catalog_models):
                 return {
                     "accepted": True,
                     "persist": True,
@@ -3322,7 +3491,7 @@ def validate_requested_model(
                     "message": None,
                 }
             # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, codex_models, n=1, cutoff=0.9)
+            auto = get_close_matches(requested_for_lookup, catalog_models, n=1, cutoff=0.9)
             if auto:
                 return {
                     "accepted": True,
@@ -3331,17 +3500,18 @@ def validate_requested_model(
                     "corrected_model": auto[0],
                     "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
                 }
-            suggestions = get_close_matches(requested_for_lookup, codex_models, n=3, cutoff=0.5)
+            suggestions = get_close_matches(requested_for_lookup, catalog_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
             return {
                 "accepted": True,
                 "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
-                    "It may still work if your ChatGPT/Codex account has access to a newer or hidden model ID."
+                    f"Note: `{requested}` was not found in the {provider_label} model listing. "
+                    "It may still work if your account has access to a newer or hidden model ID."
                     f"{suggestion_text}"
                 ),
             }
@@ -3565,13 +3735,12 @@ def validate_requested_model(
 
     # Static-catalog fallback: when the /models probe was unreachable,
     # validate against the curated list from provider_model_ids() — same
-    # pattern as the openai-codex and minimax branches above.  This fixes
-    # /model switches in the gateway for providers like opencode-go and
-    # opencode-zen whose /models endpoint returns 404 against the HTML
-    # marketing site.  Without this block, validate_requested_model would
-    # reject every model on such providers, switch_model() would return
-    # success=False, and the gateway would never write to
-    # _session_model_overrides.
+    # pattern as the openai-codex and minimax branches above.  This keeps
+    # /model switches working in the gateway for providers whose /models
+    # endpoint is temporarily unreachable or returns a non-JSON payload.
+    # Without this block, validate_requested_model would reject every model
+    # on such providers, switch_model() would return success=False, and
+    # the gateway would never write to _session_model_overrides.
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     try:
         catalog_models = provider_model_ids(normalized)

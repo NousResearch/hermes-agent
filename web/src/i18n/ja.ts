@@ -127,6 +127,7 @@ export const ja: Translations = {
 
   sessions: {
     title: "セッション",
+    overview: "概要",
     searchPlaceholder: "メッセージ内容を検索...",
     noSessions: "まだセッションがありません",
     noMatch: "検索条件に一致するセッションはありません",
@@ -269,7 +270,7 @@ export const ja: Translations = {
       "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",
     identifierLabel: "Git URL または owner/repo",
     inactive: "非アクティブ",
-    installBtn: "Git からインストール",
+    installBtn: "インストール",
     installHeading: "GitHub / Git URL からインストール",
     installHint: "owner/repo の短縮形、または完全な https:// もしくは git@ クローン URL を使用してください。",
     memoryProviderLabel: "メモリプロバイダー",
@@ -367,6 +368,8 @@ export const ja: Translations = {
     description: "API キーとシークレットを管理します。保存先:",
     hideAdvanced: "詳細設定を隠す",
     showAdvanced: "詳細設定を表示",
+    showLess: "表示を減らす",
+    showMore: "もっと見る",
     llmProviders: "LLM プロバイダー",
     providersConfigured: "{configured} / {total} プロバイダーが設定済み",
     getKey: "キーを取得",
@@ -392,7 +395,7 @@ export const ja: Translations = {
     disconnect: "切断",
     managedExternally: "外部で管理",
     copied: "コピーしました ✓",
-    cli: "CLI",
+    cli: "コピー",
     copyCliCommand: "CLI コマンドをコピー (外部 / フォールバック用)",
     connect: "接続",
     sessionExpires: "セッションは {time} 後に期限切れになります",
@@ -654,6 +657,7 @@ export const ja: Translations = {
     columnLabels: {
       triage: "トリアージ",
       todo: "ToDo",
+      scheduled: "スケジュール済み",
       ready: "準備完了",
       running: "進行中",
       blocked: "ブロック中",
@@ -663,7 +667,8 @@ export const ja: Translations = {
     columnHelp: {
       triage: "未整理のアイデア — スペシファイアが仕様を肉付けします",
       todo: "依存関係の待機中、または未割り当て",
-      ready: "割り当て済み、ディスパッチャーのティック待ち",
+      scheduled: "既知の時間遅延またはスケジュール済みのフォローアップ待ち",
+      ready: "依存関係は満たされています。ディスパッチするにはプロファイルを割り当ててください",
       running: "ワーカーが取得中 — 実行中",
       blocked: "ワーカーが人間の入力を求めています",
       done: "完了",

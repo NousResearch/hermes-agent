@@ -127,6 +127,7 @@ export const tr: Translations = {
 
   sessions: {
     title: "Oturumlar",
+    overview: "Genel bakış",
     searchPlaceholder: "Mesaj içeriğinde ara...",
     noSessions: "Henüz oturum yok",
     noMatch: "Aramanızla eşleşen oturum yok",
@@ -269,7 +270,7 @@ export const tr: Translations = {
       "Hermes eklentilerini keşfedin, yükleyin, etkinleştirin ve güncelleyin (`hermes plugins` ile eşdeğer).",
     identifierLabel: "Git URL veya owner/repo",
     inactive: "pasif",
-    installBtn: "Git'ten yükle",
+    installBtn: "Yükle",
     installHeading: "GitHub / Git URL'sinden yükle",
     installHint: "owner/repo kısayolunu veya tam https:// ya da git@ klon URL'sini kullanın.",
     memoryProviderLabel: "Bellek sağlayıcısı",
@@ -367,6 +368,8 @@ export const tr: Translations = {
     description: "Şurada saklanan API anahtarlarını ve sırları yönetin",
     hideAdvanced: "Gelişmişi Gizle",
     showAdvanced: "Gelişmişi Göster",
+    showLess: "Daha az göster",
+    showMore: "Daha fazla göster",
     llmProviders: "LLM Sağlayıcıları",
     providersConfigured: "{configured}/{total} sağlayıcı yapılandırıldı",
     getKey: "Anahtar al",
@@ -392,7 +395,7 @@ export const tr: Translations = {
     disconnect: "Bağlantıyı kes",
     managedExternally: "Harici olarak yönetiliyor",
     copied: "Kopyalandı ✓",
-    cli: "CLI",
+    cli: "Kopyala",
     copyCliCommand: "CLI komutunu kopyala (harici / yedek için)",
     connect: "Bağlan",
     sessionExpires: "Oturumun süresi {time} sonra dolacak",
@@ -654,6 +657,7 @@ export const tr: Translations = {
     columnLabels: {
       triage: "Triyaj",
       todo: "Yapılacak",
+      scheduled: "Zamanlandı",
       ready: "Hazır",
       running: "Sürüyor",
       blocked: "Engellendi",
@@ -663,7 +667,8 @@ export const tr: Translations = {
     columnHelp: {
       triage: "Ham fikirler — bir specifier şartnameyi detaylandıracak",
       todo: "Bağımlılıklar bekleniyor veya atanmamış",
-      ready: "Atanmış ve dispatcher tick'i bekleniyor",
+      scheduled: "Bilinen bir zaman gecikmesi veya zamanlanmış takip bekleniyor",
+      ready: "Bağımlılıklar karşılandı; dispatch için bir profil atayın",
       running: "Bir worker tarafından alındı — yürütülüyor",
       blocked: "Worker insan girdisi istedi",
       done: "Tamamlandı",

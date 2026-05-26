@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +77,33 @@ def _plugins_dir() -> Path:
     return plugins
 
 
-def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
+def _sanitize_plugin_name(
+    name: str,
+    plugins_dir: Path,
+    *,
+    allow_subdir: bool = False,
+) -> Path:
     """Validate a plugin name and return the safe target path inside *plugins_dir*.
 
     Raises ``ValueError`` if the name contains path-traversal sequences or would
     resolve outside the plugins directory.
+
+    ``allow_subdir=True`` permits a single forward slash inside *name* so
+    category-namespaced plugin keys like ``observability/langfuse`` or
+    ``image_gen/openai`` (the registry keys emitted by ``_discover_all_plugins``)
+    can be looked up. ``..`` and backslash are still rejected, leading and
+    trailing slashes are stripped, and the resolved target must still live
+    inside *plugins_dir*. Install paths leave this at the default ``False``
+    because a freshly-cloned plugin always lands top-level under
+    ``~/.hermes/plugins/<name>/``.
     """
     if not name:
         raise ValueError("Plugin name must not be empty.")
+
+    if allow_subdir:
+        name = name.strip("/")
+        if not name:
+            raise ValueError("Plugin name must not be empty.")
 
     if name in {".", ".."}:
         raise ValueError(
@@ -91,7 +111,8 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
         )
 
     # Reject obvious traversal characters
-    for bad in ("/", "\\", ".."):
+    bad_chars = ("\\", "..") if allow_subdir else ("/", "\\", "..")
+    for bad in bad_chars:
         if bad in name:
             raise ValueError(f"Invalid plugin name '{name}': must not contain '{bad}'.")
 
@@ -267,8 +288,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
 
         try:
             if secret:
-                import getpass
-                value = getpass.getpass(f"  {name}: ").strip()
+                value = masked_secret_prompt(f"  {name}: ").strip()
             else:
                 value = input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -326,7 +346,7 @@ def _display_removed(name: str, plugins_dir: Path) -> None:
 
 def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     """Return the plugin path if it exists, or exit with an error listing installed plugins."""
-    target = _sanitize_plugin_name(name, plugins_dir)
+    target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     if not target.exists():
         installed = ", ".join(d.name for d in plugins_dir.iterdir() if d.is_dir()) or "(none)"
         console.print(
@@ -708,55 +728,85 @@ def _plugin_exists(name: str) -> bool:
 
 
 def _discover_all_plugins() -> list:
-    """Return a list of (name, version, description, source, dir_path) for
-    every plugin the loader can see — user + bundled + project.
+    """Return a list of (key, version, description, source, dir_path) for
+    every plugin the loader can see — user + bundled.
 
-    Matches the ordering/dedup of ``PluginManager.discover_and_load``:
-    bundled first, then user, then project; user overrides bundled on
-    name collision.
+    Mirrors :meth:`PluginManager._scan_directory_level` so category-namespaced
+    plugins (``observability/langfuse``, ``image_gen/openai``) surface here
+    just like flat ones (``disk-cleanup``). A subdirectory with no
+    ``plugin.yaml`` of its own is treated as a category and recursed into
+    one level deeper (depth capped at 2, same as the loader).
+
+    The returned ``key`` is the path-derived registry key — the value the
+    user types into ``hermes plugins enable <key>``. For category-namespaced
+    plugins that's ``<category>/<dirname>``; for flat plugins it's the
+    manifest's ``name`` (or the directory name if the manifest omits it).
+
+    User entries override bundled on key collision, matching
+    ``PluginManager.discover_and_load``.
     """
     try:
         import yaml
     except ImportError:
         yaml = None
 
-    seen: dict = {}  # name -> (name, version, description, source, path)
+    seen: dict = {}  # key -> (key, version, description, source, path)
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    from hermes_cli.plugins import get_bundled_plugins_dir
-    repo_plugins = get_bundled_plugins_dir()
-    for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
+    def _scan(base: Path, source: str, prefix: str, depth: int) -> None:
         if not base.is_dir():
-            continue
+            return
         for d in sorted(base.iterdir()):
             if not d.is_dir():
                 continue
-            if source == "bundled" and d.name in {"memory", "context_engine"}:
+            if (
+                depth == 0
+                and source == "bundled"
+                and d.name in {"memory", "context_engine"}
+            ):
                 continue
             manifest_file = d / "plugin.yaml"
             if not manifest_file.exists():
                 manifest_file = d / "plugin.yml"
-            if not manifest_file.exists():
+
+            if manifest_file.exists():
+                manifest_name = d.name
+                version = ""
+                description = ""
+                if yaml:
+                    try:
+                        with open(manifest_file, encoding="utf-8") as f:
+                            manifest = yaml.safe_load(f) or {}
+                        manifest_name = manifest.get("name", d.name)
+                        version = manifest.get("version", "")
+                        description = manifest.get("description", "")
+                    except Exception:
+                        pass
+                # Path-derived key, intentionally ignoring the manifest
+                # ``name:`` field for category-namespaced plugins — mirrors
+                # ``PluginManager._parse_manifest`` in plugins.py:1027-1028
+                # so renaming a directory (without touching plugin.yaml) shifts
+                # the registry key in both places consistently.
+                key = f"{prefix}/{d.name}" if prefix else manifest_name
+                src_label = source
+                if source == "user" and (d / ".git").exists():
+                    src_label = "git"
+                # Bundled is scanned before user, so the user pass overwrites
+                # bundled entries with the same key — matches
+                # PluginManager.discover_and_load's "user wins" semantics.
+                seen[key] = (key, version, description, src_label, d)
                 continue
-            name = d.name
-            version = ""
-            description = ""
-            if yaml:
-                try:
-                    with open(manifest_file, encoding="utf-8") as f:
-                        manifest = yaml.safe_load(f) or {}
-                    name = manifest.get("name", d.name)
-                    version = manifest.get("version", "")
-                    description = manifest.get("description", "")
-                except Exception:
-                    pass
-            # User plugins override bundled on name collision.
-            if name in seen and source == "bundled":
+
+            # No manifest at this level — treat as a category namespace and
+            # recurse one level deeper. Cap at depth 2 (same as the loader).
+            if depth >= 1:
                 continue
-            src_label = source
-            if source == "user" and (d / ".git").exists():
-                src_label = "git"
-            seen[name] = (name, version, description, src_label, d)
+            sub_prefix = f"{prefix}/{d.name}" if prefix else d.name
+            _scan(d, source, sub_prefix, depth + 1)
+
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    _scan(get_bundled_plugins_dir(), "bundled", "", 0)
+    _scan(_plugins_dir(), "user", "", 0)
+
     return list(seen.values())
 
 
@@ -1021,7 +1071,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
             curses.init_pair(1, curses.COLOR_GREEN, -1)
             curses.init_pair(2, curses.COLOR_YELLOW, -1)
             curses.init_pair(3, curses.COLOR_CYAN, -1)
-            curses.init_pair(4, 8, -1)  # dim gray
+            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)  # dim gray
         cursor = 0
         scroll_offset = 0
 
@@ -1166,7 +1216,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                             curses.init_pair(1, curses.COLOR_GREEN, -1)
                             curses.init_pair(2, curses.COLOR_YELLOW, -1)
                             curses.init_pair(3, curses.COLOR_CYAN, -1)
-                            curses.init_pair(4, 8, -1)
+                            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
                         curses.curs_set(0)
             elif key in {curses.KEY_ENTER, 10, 13}:
                 if cursor < n_plugins:
@@ -1198,7 +1248,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                             curses.init_pair(1, curses.COLOR_GREEN, -1)
                             curses.init_pair(2, curses.COLOR_YELLOW, -1)
                             curses.init_pair(3, curses.COLOR_CYAN, -1)
-                            curses.init_pair(4, 8, -1)
+                            curses.init_pair(4, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)
                         curses.curs_set(0)
             elif key in {27, ord("q")}:
                 # Save plugin changes on exit
@@ -1478,7 +1528,7 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
     """Resolved path under ``~/.hermes/plugins/<name>`` if it exists."""
     plugins_dir = _plugins_dir()
     try:
-        target = _sanitize_plugin_name(name, plugins_dir)
+        target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     except ValueError:
         return None
     return target if target.is_dir() else None

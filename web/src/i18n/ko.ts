@@ -127,6 +127,7 @@ export const ko: Translations = {
 
   sessions: {
     title: "세션",
+    overview: "개요",
     searchPlaceholder: "메시지 내용 검색...",
     noSessions: "아직 세션이 없습니다",
     noMatch: "검색과 일치하는 세션이 없습니다",
@@ -269,7 +270,7 @@ export const ko: Translations = {
       "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
     identifierLabel: "Git URL 또는 owner/repo",
     inactive: "비활성",
-    installBtn: "Git에서 설치",
+    installBtn: "설치",
     installHeading: "GitHub / Git URL에서 설치",
     installHint: "owner/repo 약어 또는 전체 https:// 또는 git@ 클론 URL을 사용하세요.",
     memoryProviderLabel: "메모리 제공자",
@@ -367,6 +368,8 @@ export const ko: Translations = {
     description: "다음 위치에 저장된 API 키와 비밀을 관리합니다",
     hideAdvanced: "고급 숨기기",
     showAdvanced: "고급 표시",
+    showLess: "간략히",
+    showMore: "더 보기",
     llmProviders: "LLM 제공자",
     providersConfigured: "{configured}/{total} 제공자가 구성됨",
     getKey: "키 받기",
@@ -392,7 +395,7 @@ export const ko: Translations = {
     disconnect: "연결 해제",
     managedExternally: "외부에서 관리됨",
     copied: "복사됨 ✓",
-    cli: "CLI",
+    cli: "복사",
     copyCliCommand: "CLI 명령 복사 (외부 / 대체용)",
     connect: "연결",
     sessionExpires: "세션이 {time} 후 만료됩니다",
@@ -654,6 +657,7 @@ export const ko: Translations = {
     columnLabels: {
       triage: "분류",
       todo: "할 일",
+      scheduled: "예약됨",
       ready: "준비됨",
       running: "진행 중",
       blocked: "차단됨",
@@ -663,7 +667,8 @@ export const ko: Translations = {
     columnHelp: {
       triage: "원시 아이디어 — 스페시파이어가 사양을 구체화합니다",
       todo: "종속성 대기 중 또는 미지정",
-      ready: "지정되었으며 디스패처 틱 대기 중",
+      scheduled: "알려진 시간 지연 또는 예약된 후속 조치를 기다리는 중",
+      ready: "종속성이 충족됨; 디스패치하려면 프로필을 지정하세요",
       running: "워커가 점유 중 — 실행 중",
       blocked: "워커가 사람의 입력을 요청함",
       done: "완료됨",

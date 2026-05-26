@@ -130,7 +130,9 @@ def detect_audio_environment() -> dict:
         try:
             devices = sd.query_devices()
             if not devices:
-                if termux_capture:
+                if os.environ.get('PULSE_SERVER'):
+                    notices.append("No PortAudio devices detected but PULSE_SERVER is set -- continuing")
+                elif termux_capture:
                     notices.append("No PortAudio devices detected, but Termux:API microphone capture is available")
                 else:
                     warnings.append("No audio input/output devices detected")
@@ -798,9 +800,12 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     Returns:
         Dict with ``success``, ``transcript``, and optionally ``error``.
     """
-    from tools.transcription_tools import transcribe_audio
+    from tools.transcription_tools import MAX_FILE_SIZE, transcribe_audio
 
-    result = transcribe_audio(wav_path, model=model)
+    if _should_chunk_for_transcription(wav_path, MAX_FILE_SIZE):
+        result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
+    else:
+        result = transcribe_audio(wav_path, model=model)
 
     # Filter out Whisper hallucinations (common on silent/near-silent audio)
     if result.get("success") and is_whisper_hallucination(result.get("transcript", "")):
@@ -808,6 +813,114 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
         return {"success": True, "transcript": "", "filtered": True}
 
     return result
+
+
+def _should_chunk_for_transcription(file_path: str, max_file_size: int) -> bool:
+    """Return whether a CLI WAV recording needs to be split before STT."""
+    if not file_path.lower().endswith(".wav"):
+        return False
+    try:
+        return os.path.getsize(file_path) > max_file_size
+    except OSError:
+        return False
+
+
+def _transcribe_wav_in_chunks(
+    wav_path: str,
+    *,
+    model: Optional[str],
+    max_file_size: int,
+) -> Dict[str, Any]:
+    """Split an oversized WAV into provider-sized chunks and join transcripts."""
+    from tools.transcription_tools import transcribe_audio
+
+    chunk_paths: List[str] = []
+    transcripts: List[str] = []
+
+    try:
+        chunk_paths = _split_wav_for_transcription(wav_path, max_file_size=max_file_size)
+        if not chunk_paths:
+            return {"success": False, "transcript": "", "error": "No audio chunks were created"}
+
+        logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
+        for index, chunk_path in enumerate(chunk_paths, start=1):
+            result = transcribe_audio(chunk_path, model=model)
+            if not result.get("success"):
+                error = result.get("error", "Unknown transcription error")
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": f"Chunk {index}/{len(chunk_paths)} failed: {error}",
+                }
+
+            transcript = result.get("transcript", "").strip()
+            if transcript and not is_whisper_hallucination(transcript):
+                transcripts.append(transcript)
+
+        return {
+            "success": True,
+            "transcript": " ".join(transcripts).strip(),
+            "provider": result.get("provider"),
+            "chunks": len(chunk_paths),
+        }
+    except Exception as e:
+        logger.error("Chunked transcription failed for %s: %s", wav_path, e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Chunked transcription failed: {e}"}
+    finally:
+        for chunk_path in chunk_paths:
+            try:
+                if os.path.isfile(chunk_path):
+                    os.unlink(chunk_path)
+            except OSError:
+                pass
+
+
+def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[str]:
+    """Write WAV chunks small enough to pass the shared STT file-size gate."""
+    os.makedirs(_TEMP_DIR, exist_ok=True)
+    chunk_paths: List[str] = []
+    header_reserve = 64 * 1024
+
+    with wave.open(wav_path, "rb") as source:
+        params = source.getparams()
+        block_align = max(1, params.nchannels * params.sampwidth)
+        max_data_bytes = max_file_size - header_reserve
+        if max_data_bytes < block_align:
+            raise ValueError("STT max_file_size is too small for WAV chunking")
+
+        frames_per_chunk = max(1, max_data_bytes // block_align)
+        index = 0
+        while True:
+            frames = source.readframes(frames_per_chunk)
+            if not frames:
+                break
+
+            index += 1
+            temp = tempfile.NamedTemporaryFile(
+                prefix=f"{os.path.splitext(os.path.basename(wav_path))[0]}_chunk{index:03d}_",
+                suffix=".wav",
+                dir=_TEMP_DIR,
+                delete=False,
+            )
+            chunk_path = temp.name
+            temp.close()
+
+            try:
+                with wave.open(chunk_path, "wb") as chunk:
+                    chunk.setnchannels(params.nchannels)
+                    chunk.setsampwidth(params.sampwidth)
+                    chunk.setframerate(params.framerate)
+                    chunk.setcomptype(params.comptype, params.compname)
+                    chunk.writeframes(frames)
+                chunk_paths.append(chunk_path)
+            except Exception:
+                try:
+                    os.unlink(chunk_path)
+                except OSError:
+                    pass
+                raise
+
+    return chunk_paths
 
 
 # ============================================================================

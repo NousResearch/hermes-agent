@@ -40,3 +40,4 @@
 - 🏷️ **Native memory capacity full** — `memory(add)` for CodeGraph benchmark failed because compact memory store was 2,158/2,200 chars. Fix: save detailed durable lesson to agentmemory instead; only replace/remove compact memory when the fact is higher-priority than existing entries.
 
 - 🏷️ **Git author auto-used informal name** — Git commits initially used `Davie Lam` and one host-local email because global `user.name/user.email` were unset. Fix: set global git author to `Diet Lam <duclamvan@gmail.com>`, amend affected commits, and force-push updated heads.
+- 🏷️ **execute_code newline typo in config patch script** — 2026-05-26 EV topic setup: first profile/routing script had `marker = ...\n` outside the string and failed with `SyntaxError`; fix by keeping newlines inside quoted strings or using separate statements, then rerun idempotently and verify YAML/profile routing.

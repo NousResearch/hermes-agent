@@ -142,7 +142,11 @@ SEND_MESSAGE_SCHEMA = {
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> for a file under a Hermes media cache or HERMES_MEDIA_ALLOW_DIRS — the platform will deliver it as a native media attachment."
             }
         },
-        "required": []
+        "required": [],
+        "anyOf": [
+            {"properties": {"action": {"const": "list"}}, "required": ["action"]},
+            {"required": ["target", "message"]},
+        ]
     }
 }
 

@@ -102,6 +102,88 @@ class TestGetAndPoll:
         assert result["status"] == "exited"
         assert result["exit_code"] == 0
 
+    def test_poll_large_output_compacted_preserves_metadata(self, registry):
+        output = "HEAD\n" + ("A" * 30000) + "\nTAIL"
+        s = _make_session(output=output)
+        registry._running[s.id] = s
+
+        result = registry.poll(s.id)
+
+        assert result["status"] == "running"
+        assert result["session_id"] == s.id
+        assert result["command"] == "echo hello"
+        assert "HEAD" in result["output_preview"]
+        assert "TAIL" in result["output_preview"]
+        assert "[OUTPUT_PREVIEW COMPACTED" in result["output_preview"]
+        assert result["compacted"] is True
+        assert result["output_preview_omitted_chars"] > 0
+
+    def test_poll_result_mode_full_keeps_exact_preview_window(self, registry):
+        output = "HEAD\n" + ("A" * 30000) + "\nTAIL"
+        s = _make_session(output=output)
+        registry._running[s.id] = s
+
+        result = registry.poll(s.id, result_mode="full")
+
+        assert result["output_preview"] == output[-1000:]
+        assert "compacted" not in result
+
+
+class TestProcessResultShaping:
+    def test_read_log_large_window_compacted(self, registry):
+        lines = ["HEAD"] + [f"line {i} " + ("A" * 200) for i in range(180)] + ["TAIL"]
+        s = _make_session(output="\n".join(lines))
+        registry._running[s.id] = s
+
+        result = registry.read_log(s.id, offset=0, limit=500)
+
+        assert result["status"] == "running"
+        assert result["total_lines"] == len(lines)
+        assert "HEAD" in result["output"]
+        assert "TAIL" in result["output"]
+        assert "[OUTPUT COMPACTED" in result["output"]
+        assert result["compacted"] is True
+        assert "result_mode='full'" in result["_hint"]
+
+    def test_read_log_full_and_env_opt_out_keep_exact_window(self, registry, monkeypatch):
+        output = "HEAD\n" + ("A" * 30000) + "\nTAIL"
+        s = _make_session(output=output)
+        registry._running[s.id] = s
+
+        full_result = registry.read_log(s.id, offset=0, limit=10, result_mode="full")
+        assert full_result["output"] == output
+        assert "compacted" not in full_result
+
+        monkeypatch.setenv("HERMES_DISABLE_RESULT_COMPACTION", "on")
+        preview_result = registry.read_log(s.id, offset=0, limit=10, result_mode="preview")
+        assert preview_result["output"] == output
+        assert "compacted" not in preview_result
+
+    def test_wait_large_exited_output_compacted_preserves_exit_code(self, registry):
+        output = "HEAD\n" + ("A" * 30000) + "\nTAIL"
+        s = _make_session(exited=True, exit_code=7, output=output)
+        registry._finished[s.id] = s
+
+        result = registry.wait(s.id, timeout=1)
+
+        assert result["status"] == "exited"
+        assert result["exit_code"] == 7
+        assert "HEAD" in result["output"]
+        assert "TAIL" in result["output"]
+        assert "[OUTPUT COMPACTED" in result["output"]
+        assert result["compacted"] is True
+
+    def test_wait_full_keeps_exact_existing_tail_window(self, registry):
+        output = "HEAD\n" + ("A" * 30000) + "\nTAIL"
+        s = _make_session(exited=True, exit_code=0, output=output)
+        registry._finished[s.id] = s
+
+        result = registry.wait(s.id, timeout=1, result_mode="full")
+
+        assert result["status"] == "exited"
+        assert result["output"] == output[-2000:]
+        assert "compacted" not in result
+
 
 # =========================================================================
 # Orphaned-pipe reconciliation (issue #17327)

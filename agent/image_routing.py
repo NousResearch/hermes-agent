@@ -186,6 +186,66 @@ def _lookup_supports_vision(
     return bool(caps.supports_vision)
 
 
+# Hosts that identify an OpenAI-compatible local inference endpoint
+# (LM Studio, llama.cpp server, Ollama in OpenAI-compat mode, vLLM, etc.).
+# Local endpoints don't appear in models.dev, so capability lookup returns
+# None for them. When a user has wired the agent to a local vision-capable
+# model (e.g. qwen2.5-vl via LM Studio, #29066), defaulting to the text
+# pipeline silently bypasses their model entirely — vision_analyze runs on
+# a different backend or fails outright. Treating unknown-caps + local-host
+# as "native" sends pixels to the model the user actually configured.
+_LOCAL_HOST_TOKENS = (
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "::1",
+    "host.docker.internal",
+)
+
+
+def _is_local_openai_compatible(
+    provider: str,
+    cfg: Optional[Dict[str, Any]],
+) -> bool:
+    """True when the active provider points at a local OpenAI-compatible host.
+
+    Checks the active model's ``base_url`` (top-level ``model.base_url`` or
+    ``providers.<provider>.base_url``). Returns False if no base_url is set
+    or the host doesn't match a known loopback token.
+    """
+    if not isinstance(cfg, dict):
+        return False
+
+    candidates: List[str] = []
+
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        bu = model_cfg.get("base_url")
+        if isinstance(bu, str) and bu.strip():
+            candidates.append(bu.strip())
+
+    providers_cfg = cfg.get("providers")
+    if isinstance(providers_cfg, dict):
+        # Try the resolved provider id and the user-declared one (named
+        # custom providers get rewritten to "custom" at runtime).
+        config_provider = ""
+        if isinstance(model_cfg, dict):
+            config_provider = str(model_cfg.get("provider") or "").strip()
+        for p in dict.fromkeys(filter(None, (provider, config_provider))):
+            entry = providers_cfg.get(p)
+            if isinstance(entry, dict):
+                bu = entry.get("base_url")
+                if isinstance(bu, str) and bu.strip():
+                    candidates.append(bu.strip())
+
+    for raw in candidates:
+        lowered = raw.lower()
+        for token in _LOCAL_HOST_TOKENS:
+            if token in lowered:
+                return True
+    return False
+
+
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -215,6 +275,13 @@ def decide_image_input_mode(
 
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
+        return "native"
+    # When caps are unknown (None) and the active provider is a local
+    # OpenAI-compatible endpoint (LM Studio etc., #29066), default to native
+    # so a user-configured local vision model actually receives pixels
+    # instead of having them silently routed through vision_analyze.
+    # An explicit supports_vision: false override is still honoured above.
+    if supports is None and _is_local_openai_compatible(provider, cfg):
         return "native"
     return "text"
 

@@ -20,6 +20,21 @@ def _is_dm(source: Any) -> bool:
     return str(getattr(source, "chat_type", "dm") or "dm").lower() == "dm"
 
 
+async def _reject_if_possible(
+    signaling: NativeCallSignalingPort,
+    contact_id: str,
+    reason_code: str,
+) -> None:
+    try:
+        await signaling.reject(contact_id, reason_code)
+    except Exception:
+        logger.warning(
+            "SimpleX native call reject failed",
+            extra={"contact_id": contact_id, "reason_code": reason_code},
+            exc_info=True,
+        )
+
+
 class NativeCallApplication:
     def __init__(
         self,
@@ -48,6 +63,10 @@ class NativeCallApplication:
 
         if not _is_dm(source):
             await self.signaling.reject(contact_id, "call_private_chat_required")
+            logger.info(
+                "SimpleX native call rejected",
+                extra={"contact_id": contact_id, "reason_code": "call_private_chat_required"},
+            )
             return NativeCallResult(
                 ok=False,
                 code="call_private_chat_required",
@@ -62,6 +81,10 @@ class NativeCallApplication:
 
         if not authorized:
             await self.signaling.reject(contact_id, "call_auth_denied")
+            logger.info(
+                "SimpleX native call rejected",
+                extra={"contact_id": contact_id, "reason_code": "call_auth_denied"},
+            )
             return NativeCallResult(
                 ok=False,
                 code="call_auth_denied",
@@ -69,23 +92,43 @@ class NativeCallApplication:
             )
 
         call_id = f"call_{uuid.uuid4().hex}"
-        media_result = await self.media.start_incoming(
-            NativeMediaStartRequest(
-                call_id=call_id,
-                contact_id=contact_id,
-                media=invitation.media,
-                encrypted=invitation.encrypted,
-                shared_key=invitation.shared_key,
+        try:
+            media_result = await self.media.start_incoming(
+                NativeMediaStartRequest(
+                    call_id=call_id,
+                    contact_id=contact_id,
+                    media=invitation.media,
+                    encrypted=invitation.encrypted,
+                    shared_key=invitation.shared_key,
+                )
             )
-        )
+        except Exception as exc:
+            code = "call_simplex_native_media_failed"
+            logger.warning(
+                "SimpleX native call media start raised",
+                extra={
+                    "call_id": call_id,
+                    "contact_id": contact_id,
+                    "exception_type": type(exc).__name__,
+                    "reason_code": code,
+                },
+            )
+            await _reject_if_possible(self.signaling, contact_id, code)
+            return NativeCallResult(
+                ok=False,
+                code=code,
+                message="SimpleX-native call media setup failed.",
+                call_id=call_id,
+            )
         if not media_result.ok or media_result.offer is None:
             code = media_result.code or "call_simplex_native_media_failed"
             logger.warning(
                 "SimpleX native call media start failed: call_id=%s code=%s",
                 call_id,
                 code,
+                extra={"call_id": call_id, "contact_id": contact_id, "reason_code": code},
             )
-            await self.signaling.reject(contact_id, code)
+            await _reject_if_possible(self.signaling, contact_id, code)
             return NativeCallResult(
                 ok=False,
                 code=code,
@@ -93,8 +136,32 @@ class NativeCallApplication:
                 call_id=call_id,
             )
 
-        await self.signaling.send_offer(contact_id, media_result.offer)
-        await self.signaling.send_status(contact_id, "connecting")
+        try:
+            await self.signaling.send_offer(contact_id, media_result.offer)
+            await self.signaling.send_status(contact_id, "connecting")
+        except Exception:
+            code = "call_simplex_native_signaling_failed"
+            logger.warning(
+                "SimpleX native call signaling failed",
+                extra={"call_id": call_id, "contact_id": contact_id, "reason_code": code},
+                exc_info=True,
+            )
+            try:
+                await self.media.stop(call_id)
+            except Exception:
+                logger.warning(
+                    "SimpleX native call media stop failed after signaling failure",
+                    extra={"call_id": call_id, "contact_id": contact_id, "reason_code": code},
+                    exc_info=True,
+                )
+            await _reject_if_possible(self.signaling, contact_id, code)
+            return NativeCallResult(
+                ok=False,
+                code=code,
+                message="SimpleX-native call signaling failed.",
+                call_id=call_id,
+            )
+
         logger.info("SimpleX native call offer sent: call_id=%s", call_id)
         return NativeCallResult(
             ok=True,

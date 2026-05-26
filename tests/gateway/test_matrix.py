@@ -1394,6 +1394,65 @@ class TestMatrixEncryptedSendFallback:
         mock_crypto.share_keys.assert_awaited_once()
         assert fake_client.send_message_event.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_send_respects_matrix_retry_after_ms_on_rate_limit(self, monkeypatch):
+        """Matrix 429s should sleep for retry_after_ms before resending."""
+        from gateway.platforms import matrix as matrix_platform
+
+        class MatrixRateLimitError(Exception):
+            status_code = 429
+            errcode = "M_LIMIT_EXCEEDED"
+            retry_after_ms = 2500
+
+        adapter = _make_adapter()
+        adapter._encryption = False
+        fake_client = MagicMock()
+        fake_client.send_message_event = AsyncMock(side_effect=[
+            MatrixRateLimitError("Too Many Requests"),
+            "$event-after-wait",
+        ])
+        adapter._client = fake_client
+        sleep = AsyncMock()
+        monkeypatch.setattr(matrix_platform.asyncio, "sleep", sleep)
+        monkeypatch.setattr(matrix_platform.random, "uniform", lambda _a, _b: 0.0)
+
+        result = await adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        assert result.message_id == "$event-after-wait"
+        sleep.assert_awaited_once_with(2.5)
+        assert fake_client.send_message_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_send_serializes_parallel_matrix_sends(self):
+        """Parallel Matrix sends should queue through one adapter-level send lock."""
+        adapter = _make_adapter()
+        adapter._encryption = False
+        fake_client = MagicMock()
+        active = 0
+        max_active = 0
+        counter = 0
+
+        async def send_message_event(_room_id, _event_type, _content):
+            nonlocal active, max_active, counter
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            counter += 1
+            return f"$event{counter}"
+
+        fake_client.send_message_event = send_message_event
+        adapter._client = fake_client
+
+        results = await asyncio.gather(
+            adapter.send("!room:example.org", "first"),
+            adapter.send("!room:example.org", "second"),
+        )
+
+        assert [result.success for result in results] == [True, True]
+        assert max_active == 1
+
 
 # ---------------------------------------------------------------------------
 # E2EE: _joined_rooms reference preservation for CryptoStateStore

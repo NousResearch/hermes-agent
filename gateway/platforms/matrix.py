@@ -31,6 +31,7 @@ import asyncio
 import logging
 import mimetypes
 import os
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -122,6 +123,92 @@ class _MatrixApprovalPrompt:
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
 MAX_MESSAGE_LENGTH = 4000
+_MATRIX_SEND_TIMEOUT_SECONDS = 45
+_MATRIX_SEND_MAX_ATTEMPTS = 4
+_MATRIX_RATE_LIMIT_FALLBACK_DELAYS = (1.0, 2.0, 4.0)
+_MATRIX_RATE_LIMIT_MAX_DELAY_SECONDS = 30.0
+
+
+def _coerce_positive_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number < 0:
+        return None
+    return number
+
+
+def _matrix_rate_limit_delay(exc: BaseException, attempt: int) -> Optional[float]:
+    """Return a retry delay for Matrix 429/M_LIMIT_EXCEEDED errors.
+
+    mautrix exposes Synapse rate limits differently across versions: some
+    exceptions carry ``retry_after_ms`` directly, some expose a response body, and
+    some only stringify to ``Too Many Requests``.  Keep detection broad but only
+    retry when the error is clearly a Matrix rate limit.
+    """
+
+    status_values = [
+        getattr(exc, "status", None),
+        getattr(exc, "status_code", None),
+        getattr(exc, "http_status", None),
+        getattr(exc, "code", None),
+    ]
+    errcode_values = [getattr(exc, "errcode", None), getattr(exc, "err_code", None)]
+    payloads = [
+        getattr(exc, "body", None),
+        getattr(exc, "data", None),
+        getattr(exc, "response", None),
+    ]
+    for payload in payloads:
+        if isinstance(payload, dict):
+            status_values.extend([payload.get("status"), payload.get("status_code")])
+            errcode_values.extend([payload.get("errcode"), payload.get("err_code")])
+
+    text = str(exc)
+    is_rate_limited = any(str(value) == "429" for value in status_values if value is not None)
+    is_rate_limited = is_rate_limited or any(
+        str(value) == "M_LIMIT_EXCEEDED" for value in errcode_values if value is not None
+    )
+    is_rate_limited = is_rate_limited or "too many requests" in text.lower()
+    is_rate_limited = is_rate_limited or "m_limit_exceeded" in text.lower()
+    if not is_rate_limited:
+        return None
+
+    retry_after_seconds: Optional[float] = None
+    retry_after_ms = _coerce_positive_float(getattr(exc, "retry_after_ms", None))
+    if retry_after_ms is not None:
+        retry_after_seconds = retry_after_ms / 1000.0
+    else:
+        retry_after_seconds = _coerce_positive_float(getattr(exc, "retry_after", None))
+
+    if retry_after_seconds is None:
+        for payload in payloads:
+            if isinstance(payload, dict):
+                retry_after_ms = _coerce_positive_float(payload.get("retry_after_ms"))
+                if retry_after_ms is not None:
+                    retry_after_seconds = retry_after_ms / 1000.0
+                    break
+                retry_after_seconds = _coerce_positive_float(payload.get("retry_after"))
+                if retry_after_seconds is not None:
+                    break
+
+    if retry_after_seconds is None:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            getter = getattr(headers, "get", None)
+            if getter:
+                retry_after_seconds = _coerce_positive_float(getter("Retry-After"))
+
+    if retry_after_seconds is None:
+        retry_after_seconds = _MATRIX_RATE_LIMIT_FALLBACK_DELAYS[
+            min(attempt, len(_MATRIX_RATE_LIMIT_FALLBACK_DELAYS) - 1)
+        ]
+
+    retry_after_seconds = min(retry_after_seconds, _MATRIX_RATE_LIMIT_MAX_DELAY_SECONDS)
+    jitter = random.uniform(0.0, min(0.5, max(retry_after_seconds * 0.1, 0.05)))
+    return min(retry_after_seconds + jitter, _MATRIX_RATE_LIMIT_MAX_DELAY_SECONDS)
 
 # Store directory for E2EE keys and sync state.
 # Uses get_hermes_home() so each profile gets its own Matrix store.
@@ -461,6 +548,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # if that changes, add a config.yaml entry rather than an env var.
         self._reaction_redaction_delay_seconds = 5.0
         self._reaction_redaction_tasks: Set[asyncio.Task] = set()
+        self._send_lock = asyncio.Lock()
 
         # Proxy support — resolve once at init, reuse for all HTTP traffic.
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
@@ -1033,30 +1121,21 @@ class MatrixAdapter(BasePlatformAdapter):
                 msg_content["m.relates_to"] = relates_to
 
             try:
-                event_id = await asyncio.wait_for(
-                    self._client.send_message_event(
-                        RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
-                        msg_content,
-                    ),
-                    timeout=45,
-                )
-                last_event_id = str(event_id)
+                last_event_id = await self._send_message_event_with_retry(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
+                if _matrix_rate_limit_delay(exc, _MATRIX_SEND_MAX_ATTEMPTS - 1) is not None:
+                    logger.error(
+                        "Matrix: failed to send to %s after rate-limit retries: %s",
+                        chat_id,
+                        exc,
+                    )
+                    return SendResult(success=False, error=str(exc))
                 # On E2EE errors, retry after sharing keys.
                 if self._encryption and getattr(self._client, "crypto", None):
                     try:
                         await self._client.crypto.share_keys()
-                        event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
-                                RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
-                                msg_content,
-                            ),
-                            timeout=45,
-                        )
-                        last_event_id = str(event_id)
+                        last_event_id = await self._send_message_event_with_retry(chat_id, msg_content)
                         logger.info(
                             "Matrix: sent event %s to %s (after key share)",
                             last_event_id,
@@ -1074,6 +1153,40 @@ class MatrixAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(exc))
 
         return SendResult(success=True, message_id=last_event_id)
+
+    async def _send_message_event_with_retry(
+        self, chat_id: str, msg_content: Dict[str, Any]
+    ) -> str:
+        """Serialize Matrix sends and honor Synapse 429 retry hints."""
+
+        async with self._send_lock:
+            for attempt in range(_MATRIX_SEND_MAX_ATTEMPTS):
+                try:
+                    event_id = await asyncio.wait_for(
+                        self._client.send_message_event(
+                            RoomID(chat_id),
+                            EventType.ROOM_MESSAGE,
+                            msg_content,
+                        ),
+                        timeout=_MATRIX_SEND_TIMEOUT_SECONDS,
+                    )
+                    return str(event_id)
+                except Exception as exc:
+                    delay = _matrix_rate_limit_delay(exc, attempt)
+                    if delay is None or attempt >= _MATRIX_SEND_MAX_ATTEMPTS - 1:
+                        raise
+                    logger.warning(
+                        "Matrix: rate limited sending to %s; retrying in %.2fs "
+                        "(attempt %d/%d): %s",
+                        chat_id,
+                        delay,
+                        attempt + 1,
+                        _MATRIX_SEND_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+
+        raise RuntimeError("Matrix send retry loop exited unexpectedly")
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return room name and type (dm/group)."""
@@ -1139,12 +1252,8 @@ class MatrixAdapter(BasePlatformAdapter):
         }
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
-                msg_content,
-            )
-            return SendResult(success=True, message_id=str(event_id))
+            event_id = await self._send_message_event_with_retry(chat_id, msg_content)
+            return SendResult(success=True, message_id=event_id)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
@@ -1397,12 +1506,8 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["m.relates_to"] = relates_to
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(room_id),
-                EventType.ROOM_MESSAGE,
-                msg_content,
-            )
-            return SendResult(success=True, message_id=str(event_id))
+            event_id = await self._send_message_event_with_retry(room_id, msg_content)
+            return SendResult(success=True, message_id=event_id)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
@@ -2501,12 +2606,8 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_content = self._build_text_message_content(text, msgtype=msgtype)
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
-                msg_content,
-            )
-            return SendResult(success=True, message_id=str(event_id))
+            event_id = await self._send_message_event_with_retry(chat_id, msg_content)
+            return SendResult(success=True, message_id=event_id)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 

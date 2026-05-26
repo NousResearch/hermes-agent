@@ -1108,6 +1108,7 @@ display:
 #
 #   dashboard.oauth.client_id   <-  HERMES_DASHBOARD_OAUTH_CLIENT_ID
 #   dashboard.oauth.portal_url  <-  HERMES_DASHBOARD_PORTAL_URL
+#   dashboard.public_url        <-  HERMES_DASHBOARD_PUBLIC_URL
 #
 # Env wins when set to a non-empty value. This is what Fly.io's platform-
 # secret injection uses to push per-deploy client_ids without needing to
@@ -1121,3 +1122,21 @@ display:
 #   oauth:
 #     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy
 #     portal_url: ""   # blank → default https://portal.nousresearch.com
+#
+#   # Force the absolute base URL the OAuth callback (and any other public
+#   # URL the dashboard hands to external systems) is built from. Set this
+#   # for deploys behind reverse proxies that don't reliably forward
+#   # X-Forwarded-Host / X-Forwarded-Proto / X-Forwarded-Prefix (manual
+#   # nginx setups, on-prem ingresses, custom-domain Fly deploys without
+#   # full proxy header chains).
+#   #
+#   # When set, the value is the complete authority: scheme + host +
+#   # optional path prefix (e.g. "https://example.com/hermes"). The OAuth
+#   # callback URL becomes "<public_url>/auth/callback" — X-Forwarded-Prefix
+#   # is IGNORED on this code path because the operator has explicitly
+#   # declared the public URL and we no longer need to guess.
+#   #
+#   # Leave empty to use the existing proxy-header reconstruction (the
+#   # default — works on Fly.io out of the box).
+#   #
+#   #   public_url: "https://example.com/hermes"

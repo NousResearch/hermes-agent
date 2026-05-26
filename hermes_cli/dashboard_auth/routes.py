@@ -50,23 +50,47 @@ router = APIRouter()
 def _redirect_uri(request: Request) -> str:
     """Reconstruct the absolute callback URL the IDP redirects back to.
 
-    Reads from the request URL — under uvicorn's ``proxy_headers=True``
-    this picks up the public https URL from ``X-Forwarded-Host`` plus
-    ``X-Forwarded-Proto``.
+    Three resolution tiers:
 
-    Under ``X-Forwarded-Prefix: /hermes`` (Mission Control deploys), we
-    additionally prepend the prefix to the path so the IDP redirects
-    the user back to ``https://mission-control.tilos.com/hermes/auth/callback``
-    rather than the bare ``/auth/callback`` (which the proxy doesn't
-    route to the dashboard). FastAPI's ``url_for`` doesn't natively
-    honour X-Forwarded-Prefix — that header isn't part of the
-    Starlette/uvicorn proxy_headers set — so we splice the prefix in
-    manually.
+      1. ``HERMES_DASHBOARD_PUBLIC_URL`` env var or
+         ``dashboard.public_url`` in config.yaml — when set, this is
+         the complete authority (scheme + host + optional path prefix)
+         and we append ``/auth/callback`` verbatim. ``X-Forwarded-Prefix``
+         is IGNORED on this code path because the operator has declared
+         the public URL — we no longer need to guess from proxy headers,
+         and stacking the prefix on top would double-prefix the common
+         case where the prefix is already baked into ``public_url``.
+         Relief valve for deploys behind reverse proxies whose forwarded
+         headers aren't reliable.
+
+      2. ``X-Forwarded-Prefix: /hermes`` (Mission Control deploys) — we
+         prepend the prefix to the path FastAPI's ``url_for`` produces
+         (it doesn't natively honour this header — it isn't part of the
+         Starlette/uvicorn proxy_headers set).
+
+      3. Bare ``request.url_for("auth_callback")`` — under uvicorn's
+         ``proxy_headers=True`` this picks up the public https URL from
+         ``X-Forwarded-Host`` plus ``X-Forwarded-Proto``. Fly.io's
+         default path.
     """
     from urllib.parse import urlparse, urlunparse
 
-    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+    from hermes_cli.dashboard_auth.prefix import (
+        prefix_from_request,
+        resolve_public_url,
+    )
 
+    # Tier 1: operator-declared public URL.
+    public_url = resolve_public_url()
+    if public_url:
+        # ``public_url`` is the complete authority (possibly with a
+        # path prefix already baked in). Append the auth callback path
+        # verbatim. ``resolve_public_url`` already stripped any trailing
+        # slash so we don't produce ``//auth/callback`` double-slashes.
+        return f"{public_url}/auth/callback"
+
+    # Tier 2 + 3: reconstruct from the request URL, optionally with
+    # X-Forwarded-Prefix layered on top of the path.
     base = str(request.url_for("auth_callback"))
     prefix = prefix_from_request(request)
     if not prefix:

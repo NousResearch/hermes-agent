@@ -17,13 +17,17 @@ It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
 | ``text``, default ``auto``) and the active model's capability metadata.
 
 In ``auto`` mode:
-  - If the user has explicitly configured ``auxiliary.vision.provider``
-    (i.e. not ``auto`` and not empty), we assume they want the text pipeline
-    regardless of the main model — they've opted in to a specific vision
-    backend for a reason (cost, quality, local-only, etc.).
-  - Otherwise, if the active model reports ``supports_vision=True`` in its
-    models.dev metadata, we attach natively.
-  - Otherwise (non-vision model, no explicit override), we fall back to text.
+  - If the active model reports ``supports_vision=True`` (via config
+    override or models.dev metadata), we attach natively — vision-capable
+    main models should always see the original pixels, even when an
+    auxiliary vision backend is configured. That auxiliary backend then
+    acts as a *fallback* for sessions whose main model can't take images.
+  - Otherwise, if the user has explicitly configured ``auxiliary.vision``
+    (provider/model/base_url not ``auto``/empty), we route through the
+    text pipeline so the auxiliary vision backend can describe the image
+    for the text-only main model.
+  - Otherwise (non-vision model, no explicit override), we fall back to
+    text via the default vision_analyze flow.
 
 This keeps ``vision_analyze`` surfaced as a tool in every session — skills
 and agent flows that chain it (browser screenshots, deeper inspection of
@@ -342,8 +346,10 @@ def _coerce_mode(raw: Any) -> str:
 def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     """True when the user configured a specific auxiliary vision backend.
 
-    An explicit override means the user *wants* the text pipeline (they're
-    paying for a dedicated vision model), so we don't silently bypass it.
+    An explicit override means the user has a dedicated vision backend
+    available; it's used as a *fallback* when the main model can't take
+    images natively. In ``auto`` mode, native vision on a vision-capable
+    main model still wins over this fallback — see issue #29135.
     """
     if not isinstance(cfg, dict):
         return False
@@ -432,13 +438,15 @@ def decide_image_input_mode(
     if mode_cfg == "text":
         return "text"
 
-    # auto
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-
+    # auto: prefer native vision when the main model supports it. An
+    # explicit auxiliary.vision config acts as a *fallback* for text-only
+    # main models — it should not preempt native vision on a model that
+    # can natively inspect the pixels (issue #29135).
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+    if _explicit_aux_vision_override(cfg):
+        return "text"
     return "text"
 
 

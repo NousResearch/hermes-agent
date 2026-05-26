@@ -744,6 +744,45 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         model_extra = getattr(assistant_message, "model_extra", None) or {}
         if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
             raw_reasoning_content = model_extra["reasoning_content"]
+    # Normalize list/dict-form reasoning_content (e.g. kimi-k2.6:cloud returns
+    # a list of typed blocks) to a string so downstream surrogate scrubbing,
+    # dedup hashing, and JSON serialization don't hit
+    # ``TypeError: unhashable type: 'list'``. Refs #28787.
+    if raw_reasoning_content is not None and not isinstance(raw_reasoning_content, str):
+        # Inline coercion: list/dict shapes flatten to a single string.
+        def _flatten(value):
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (list, tuple)):
+                parts = []
+                for item in value:
+                    if isinstance(item, str) and item:
+                        parts.append(item)
+                    elif isinstance(item, dict):
+                        text = (
+                            item.get("text")
+                            or item.get("thinking")
+                            or item.get("summary")
+                            or item.get("content")
+                            or ""
+                        )
+                        if isinstance(text, str) and text:
+                            parts.append(text)
+                return "\n\n".join(parts) if parts else None
+            if isinstance(value, dict):
+                text = (
+                    value.get("text")
+                    or value.get("thinking")
+                    or value.get("summary")
+                    or value.get("content")
+                    or ""
+                )
+                return text if isinstance(text, str) and text else None
+            try:
+                return str(value)
+            except Exception:
+                return None
+        raw_reasoning_content = _flatten(raw_reasoning_content)
     if raw_reasoning_content is not None:
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():

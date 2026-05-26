@@ -978,16 +978,65 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
         Combined reasoning text, or None if no reasoning found
     """
     reasoning_parts = []
-    
+
+    def _coerce_reasoning(value):
+        """Normalize provider-supplied reasoning to a plain string.
+
+        Some models (e.g. kimi-k2.6:cloud via Ollama and direct cloud) return
+        the top-level ``reasoning`` / ``reasoning_content`` field as a list of
+        strings or a list of typed blocks instead of a single string. Joining
+        them here keeps the rest of the pipeline (``not in`` dedup checks,
+        ``str.join``, surrogate scrubbing, persistence) string-only and avoids
+        ``TypeError: unhashable type: 'list'`` downstream when these values
+        flow into hashing/dedup containers. Refs #28787.
+        """
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple)):
+            parts = []
+            for item in value:
+                if isinstance(item, str):
+                    if item:
+                        parts.append(item)
+                elif isinstance(item, dict):
+                    text = (
+                        item.get("text")
+                        or item.get("thinking")
+                        or item.get("summary")
+                        or item.get("content")
+                        or ""
+                    )
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+            return "\n\n".join(parts) if parts else None
+        if isinstance(value, dict):
+            text = (
+                value.get("text")
+                or value.get("thinking")
+                or value.get("summary")
+                or value.get("content")
+                or ""
+            )
+            return text if isinstance(text, str) and text else None
+        # Unknown shape — coerce to string defensively
+        try:
+            return str(value)
+        except Exception:
+            return None
+
     # Check direct reasoning field
-    if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-        reasoning_parts.append(assistant_message.reasoning)
-    
+    raw_reasoning = getattr(assistant_message, 'reasoning', None)
+    coerced_reasoning = _coerce_reasoning(raw_reasoning)
+    if coerced_reasoning:
+        reasoning_parts.append(coerced_reasoning)
+
     # Check reasoning_content field (alternative name used by some providers)
-    if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
-        # Don't duplicate if same as reasoning
-        if assistant_message.reasoning_content not in reasoning_parts:
-            reasoning_parts.append(assistant_message.reasoning_content)
+    raw_reasoning_content = getattr(assistant_message, 'reasoning_content', None)
+    coerced_reasoning_content = _coerce_reasoning(raw_reasoning_content)
+    if coerced_reasoning_content and coerced_reasoning_content not in reasoning_parts:
+        reasoning_parts.append(coerced_reasoning_content)
     
     # Check reasoning_details array (OpenRouter unified format)
     # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]

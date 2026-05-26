@@ -446,6 +446,35 @@ class TestExtractReasoningFormats(unittest.TestCase):
         result = extract(None, msg)
         self.assertIn("async/await", result)
 
+    def test_kimi_k2_list_form_reasoning(self):
+        """kimi-k2.6:cloud returns reasoning as a list of strings — must not
+        raise ``TypeError: unhashable type: 'list'`` and must flatten to a
+        single string. Refs #28787."""
+        extract = self._get_extractor()
+        msg = SimpleNamespace(
+            reasoning=["The user wants me to say hello.", "I will greet them."],
+            reasoning_content=None,
+        )
+        result = extract(None, msg)
+        self.assertIsInstance(result, str)
+        self.assertIn("greet them", result)
+        self.assertIn("say hello", result)
+
+    def test_kimi_k2_list_of_typed_blocks_reasoning_content(self):
+        """Some cloud responses use list-of-dict typed blocks. Refs #28787."""
+        extract = self._get_extractor()
+        msg = SimpleNamespace(
+            reasoning=None,
+            reasoning_content=[
+                {"type": "thinking", "text": "Step 1: parse."},
+                {"type": "thinking", "thinking": "Step 2: answer."},
+            ],
+        )
+        result = extract(None, msg)
+        self.assertIsInstance(result, str)
+        self.assertIn("Step 1", result)
+        self.assertIn("Step 2", result)
+
     def test_no_reasoning_returns_none(self):
         extract = self._get_extractor()
         msg = SimpleNamespace(content="Hello!")

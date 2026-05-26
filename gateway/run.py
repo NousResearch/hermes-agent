@@ -6172,6 +6172,10 @@ class GatewayRunner:
                     return "Queued for the next turn."
                 return f"Queued for the next turn. ({depth} queued)"
 
+            # /qstatus — show queue depth without adding anything.
+            if event.get_command() in {"qstatus", "qs"}:
+                return await self._handle_qstatus_command(event)
+
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
             # iterations inside the same agent run, by appending to the
@@ -6543,6 +6547,9 @@ class GatewayRunner:
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
+
+        if canonical == "qstatus":
+            return await self._handle_qstatus_command(event)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)
@@ -8662,6 +8669,69 @@ class GatewayRunner:
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
+
+        return "\n".join(lines)
+
+    async def _handle_qstatus_command(self, event: MessageEvent) -> str:
+        """Handle /qstatus — show queue depth for this session and totals."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+        adapter = self.adapters.get(source.platform) if source else None
+
+        # Current session depth
+        my_depth = self._queue_depth(session_key, adapter=adapter)
+
+        # Total across all sessions
+        queued_events = getattr(self, "_queued_events", None) or {}
+        total_overflow = sum(len(v) for v in queued_events.values())
+        # Count adapter-level pending slots
+        total_slots = 0
+        for adap in self.adapters.values():
+            pending = getattr(adap, "_pending_messages", None) or {}
+            total_slots += len(pending)
+        total_depth = total_overflow + total_slots
+
+        # Running agents count
+        running = getattr(self, "_running_agents", {}) or {}
+        running_count = len(running)
+
+        lines = ["📋 Queue Status", ""]
+
+        if my_depth:
+            lines.append(f"This session: {my_depth} queued")
+        else:
+            lines.append("This session: empty")
+
+        if total_depth > my_depth:
+            lines.append(f"Total (all sessions): {total_depth} queued")
+
+        if running_count:
+            lines.append(f"Active agents: {running_count}")
+
+        # Show pending items for current session if any
+        if my_depth and adapter:
+            pending_slot = getattr(adapter, "_pending_messages", None) or {}
+            if session_key in pending_slot:
+                evt = pending_slot[session_key]
+                preview = getattr(evt, "text", "")[:60]
+                if len(getattr(evt, "text", "")) > 60:
+                    preview += "..."
+                lines.append(f"\nNext up: \"{preview}\"")
+
+            overflow = queued_events.get(session_key, [])
+            if overflow:
+                lines.append(f"Overflow: {len(overflow)} more item(s)")
+                for i, evt in enumerate(overflow[:3], 1):
+                    preview = getattr(evt, "text", "")[:50]
+                    if len(getattr(evt, "text", "")) > 50:
+                        preview += "..."
+                    lines.append(f"  {i}. \"{preview}\"")
+                if len(overflow) > 3:
+                    lines.append(f"  ...and {len(overflow) - 3} more")
+
+        if not my_depth and not total_depth and not running_count:
+            lines.append("All clear — nothing queued, no active agents.")
 
         return "\n".join(lines)
 

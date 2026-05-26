@@ -1575,13 +1575,13 @@ def interactive_setup() -> None:
     print()
 
     try:
-        from hermes_cli.config import get_env_var, set_env_var
+        from hermes_cli.config import get_env_value as _get_env, save_env_value as _set_env
     except ImportError:
         print("hermes_cli.config not available; set LINE_* vars manually in ~/.hermes/.env")
         return
 
     def _prompt(var: str, prompt: str, *, secret: bool = False) -> None:
-        existing = get_env_var(var) if callable(get_env_var) else None
+        existing = _get_env(var) if callable(_get_env) else None
         suffix = " [keep current]" if existing else ""
         try:
             if secret:
@@ -1593,7 +1593,7 @@ def interactive_setup() -> None:
             print()
             return
         if value:
-            set_env_var(var, value)
+            _set_env(var, value)
 
     _prompt("LINE_CHANNEL_ACCESS_TOKEN", "Channel access token", secret=True)
     _prompt("LINE_CHANNEL_SECRET", "Channel secret", secret=True)

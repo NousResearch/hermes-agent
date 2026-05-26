@@ -240,6 +240,36 @@ def _resolve_group_thread_ids(con: Any, group_name: str) -> set:
     return set()
 
 
+def _get_stored_embedding_dim(con: Any) -> Optional[int]:
+    """Read the embedding dimension from the vec_chunks table definition."""
+    import re
+    try:
+        row = con.execute(
+            "SELECT sql FROM sqlite_master WHERE name='vec_chunks'"
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        match = re.search(r"float\[(\d+)\]", row[0])
+        return int(match.group(1)) if match else None
+    except Exception:
+        return None
+
+
+def _validate_embedding_dimension(con: Any, current_dim: int) -> None:
+    """Raise if the archive's stored vectors have a different dimension."""
+    stored_dim = _get_stored_embedding_dim(con)
+    if stored_dim is None:
+        return
+    if stored_dim != current_dim:
+        raise RuntimeError(
+            f"Embedding dimension mismatch: archive has {stored_dim}-dim "
+            f"vectors but current model produces {current_dim}-dim. "
+            f"Re-run `mychatarchive embed --force` to rebuild vectors with "
+            f"the current model, or restore the original embedding model "
+            f"in ~/.mychatarchive/config.json."
+        )
+
+
 def _cutoff_iso(hours_back: int) -> str:
     """Return an ISO timestamp N hours in the past."""
     from datetime import timedelta
@@ -450,14 +480,21 @@ class MyChatArchiveProvider(MemoryProvider):
         try:
             from mychatarchive import db as mca_db
             from mychatarchive import embeddings as mca_embeddings
+            from mychatarchive.config import get_embedding_model, get_embedding_dim
 
             self._db = mca_db
             self._embeddings = mca_embeddings
             self._con = mca_db.get_connection(db_path)
             mca_db.ensure_schema(self._con)
+
+            _validate_embedding_dimension(self._con, get_embedding_dim())
+
             logger.info(
-                "MyChatArchive initialized: db=%s, messages=%d, chunks=%d, thoughts=%d",
+                "MyChatArchive initialized: db=%s, model=%s, dim=%d, "
+                "messages=%d, chunks=%d, thoughts=%d",
                 db_path,
+                get_embedding_model(),
+                get_embedding_dim(),
                 mca_db.message_count(self._con),
                 mca_db.chunk_count(self._con),
                 mca_db.thought_count(self._con),

@@ -122,5 +122,8 @@ required.
   (run `mychatarchive sync && mychatarchive embed` to populate)
 - `sentence-transformers` (installed as a dependency of mychatarchive)
 
-The plugin must use the same embedding model as the stored vectors. MCA
+The plugin validates embedding dimensions at startup. If the current
+model produces vectors with a different dimension than those stored in
+the archive, initialization fails with a clear error message and
+instructions to either re-embed or restore the original model. MCA
 defaults to `sentence-transformers/all-MiniLM-L6-v2` (384-dim, cosine).

@@ -10248,6 +10248,8 @@ class GatewayRunner:
                 return "SimpleX-native calls are unavailable: SimpleX adapter not connected."
             if not bool(getattr(adapter, "native_calls_enabled", False)):
                 return "SimpleX-native calls are unavailable: native WebRTC bridge is not enabled."
+            if not callable(getattr(adapter, "native_call_handler", None)):
+                return "SimpleX-native calls are unavailable: native WebRTC bridge is not ready."
             return (
                 "SimpleX-native calls are enabled for incoming SimpleX app calls."
             )

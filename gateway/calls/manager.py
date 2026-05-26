@@ -106,6 +106,9 @@ class CallManager:
         state: str = CallState.CONNECTING.value,
     ) -> CallSession:
         key = _session_key(source)
+        existing = self._sessions.get(key)
+        if existing and existing.state not in {CallState.ENDED, CallState.FAILED}:
+            return existing
         created_at = self.now()
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)

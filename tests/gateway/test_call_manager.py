@@ -79,6 +79,25 @@ async def test_native_session_status_reports_connecting():
 
 
 @pytest.mark.asyncio
+async def test_record_native_call_preserves_existing_browser_session():
+    manager = CallManager(
+        browser_provider=BrowserRoomProvider(BrowserRoomConfig(base_url="https://host.ts.net/call")),
+        token_service=CallTokenService("secret"),
+    )
+    source = _source(platform="simplex")
+    browser_result = await manager.start_browser_call(source)
+
+    session = manager.record_native_call(source, "native-call-1")
+    status = await manager.status(source)
+
+    assert browser_result.session is not None
+    assert session == browser_result.session
+    assert session.mode == "browser"
+    assert session.call_id != "native-call-1"
+    assert "native-call-1" not in status.message
+
+
+@pytest.mark.asyncio
 async def test_end_marks_session_ended():
     manager = CallManager(
         browser_provider=BrowserRoomProvider(BrowserRoomConfig(base_url="https://host.ts.net/call")),

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -31,9 +31,10 @@ def _runner():
     return runner
 
 
-def _event(text="/call", chat_type="dm", platform="telegram"):
+def _event(text="/call", chat_type="dm", platform="telegram", wrap_platform=True):
+    source_platform = SimpleNamespace(value=platform) if wrap_platform else platform
     source = SimpleNamespace(
-        platform=SimpleNamespace(value=platform),
+        platform=source_platform,
         chat_id="123",
         user_id="456",
         chat_type=chat_type,
@@ -74,9 +75,26 @@ async def test_handle_call_native_reports_native_disabled():
 
 
 @pytest.mark.asyncio
+async def test_handle_call_native_reports_handler_not_ready_with_platform_key():
+    runner = _runner()
+    platform = Platform("simplex")
+    runner.adapters[platform] = SimpleNamespace(native_calls_enabled=True)
+
+    result = await runner._handle_call_command(
+        _event("/call native", platform=platform, wrap_platform=False)
+    )
+
+    assert "native WebRTC bridge" in result
+    assert "not ready" in result
+
+
+@pytest.mark.asyncio
 async def test_handle_call_native_reports_native_enabled():
     runner = _runner()
-    runner.adapters["simplex"] = SimpleNamespace(native_calls_enabled=True)
+    runner.adapters["simplex"] = SimpleNamespace(
+        native_calls_enabled=True,
+        native_call_handler=lambda call: call,
+    )
 
     result = await runner._handle_call_command(_event("/call native", platform="simplex"))
 

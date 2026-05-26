@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1858,6 +1859,43 @@ class TestSilentDelivery:
             from cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_called_once()
+
+    def test_profile_job_delivery_uses_profile_context_and_standalone_sender(self):
+        """Profile-pinned jobs must not reuse another gateway's live adapter.
+
+        Telegram chat IDs are per bot conversation. If a Scorandum cron is
+        dispatched by a process holding Nagatha's live Telegram adapter, using
+        that adapter sends to the Nagatha DM even when the numeric chat_id is
+        Tyler's. Profile-pinned delivery should enter that profile's env/config
+        and force the standalone send path instead.
+        """
+        job = self._make_job()
+        job["profile"] = "scorandum"
+        seen_contexts = []
+
+        @contextmanager
+        def fake_profile_context(job_id, profile):
+            seen_contexts.append((job_id, profile))
+            yield
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "visible result", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._job_profile_context", side_effect=fake_profile_context), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            live_adapter = object()
+            live_loop = object()
+            tick(verbose=False, adapters={"telegram": live_adapter}, loop=live_loop)
+
+        assert seen_contexts == [("monitor-job", "scorandum")]
+        deliver_mock.assert_called_once_with(
+            job,
+            "visible result",
+            adapters=None,
+            loop=None,
+        )
 
     def test_output_saved_even_when_delivery_suppressed(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \

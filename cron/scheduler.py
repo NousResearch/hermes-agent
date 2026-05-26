@@ -1952,7 +1952,22 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        # Delivery must respect the job's runtime profile too.
+                        # Otherwise a Scorandum cron with profile=scorandum can run
+                        # with Scorandum context but deliver through the scheduler's
+                        # default/Nagatha Telegram token. That sends the right chat_id
+                        # to the wrong bot conversation. Keep the same profile env
+                        # bridge used during run_job() for load_gateway_config() and
+                        # standalone platform sends.
+                        with _job_profile_context(job["id"], job.get("profile")):
+                            delivery_adapters = None if job.get("profile") else adapters
+                            delivery_loop = None if job.get("profile") else loop
+                            delivery_error = _deliver_result(
+                                job,
+                                deliver_content,
+                                adapters=delivery_adapters,
+                                loop=delivery_loop,
+                            )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)

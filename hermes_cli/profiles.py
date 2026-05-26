@@ -723,7 +723,17 @@ def create_profile(
             for filename in _CLONE_CONFIG_FILES:
                 src = source_dir / filename
                 if src.exists():
-                    shutil.copy2(src, profile_dir / filename)
+                    dst = profile_dir / filename
+                    shutil.copy2(src, dst)
+                    # Tighten .env to owner-only after copy. shutil.copy2
+                    # preserves source mode bits, but if the source's .env
+                    # was loose (host umask 0o022 leaving 0o644), tighten
+                    # explicitly so the clone doesn't inherit weak perms.
+                    if filename == ".env":
+                        try:
+                            os.chmod(str(dst), 0o600)
+                        except OSError:
+                            pass
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled

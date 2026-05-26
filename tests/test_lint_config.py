@@ -93,6 +93,33 @@ class TestCleanRUF100:
 
 
 
+class TestCleanF821:
+    """F821 (undefined name) must stay at zero for source files.
+
+    F821 fires when a name used in an annotation or expression is not
+    importable at module level.  Forward-reference string annotations
+    that reference names imported only inside function bodies (to avoid
+    circular imports) must have a TYPE_CHECKING guard so ruff can
+    resolve the name statically.
+    """
+
+    TARGET = REPO_ROOT / "tools" / "patch_parser.py"
+
+    def test_tools_patch_parser_py_has_zero_f821_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F821",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has F821 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+
+
 
 class TestLintWorkflow:
     WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lint.yml"

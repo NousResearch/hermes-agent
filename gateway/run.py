@@ -6758,6 +6758,9 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "call":
+            return await self._handle_call_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -10173,6 +10176,68 @@ class GatewayRunner:
                 if adapter:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return t("gateway.voice.disabled_short")
+
+    def _get_call_manager(self):
+        manager = getattr(self, "_call_manager", None)
+        if manager is not None:
+            return manager
+
+        from gateway.calls.browser_room import BrowserRoomConfig, BrowserRoomProvider
+        from gateway.calls.manager import CallManager
+        from gateway.calls.tokens import CallTokenService
+
+        calls_cfg = {}
+        config_obj = getattr(self, "config", None)
+        if isinstance(config_obj, dict):
+            calls_cfg = config_obj.get("calls", {}) or {}
+        else:
+            extra = getattr(config_obj, "extra", {}) or {}
+            calls_cfg = extra.get("calls", {}) if isinstance(extra, dict) else {}
+
+        browser_cfg = calls_cfg.get("browser", {}) if isinstance(calls_cfg, dict) else {}
+        base_url = str(browser_cfg.get("base_url", "") or "")
+        public_enabled = bool(browser_cfg.get("public_exposure_enabled", False))
+        try:
+            ttl_seconds = int(browser_cfg.get("ttl_seconds", 600) or 600)
+        except (TypeError, ValueError):
+            ttl_seconds = 600
+        secret = str(browser_cfg.get("token_secret", "") or "")
+        if not secret:
+            secret = f"hermes-call-token:{base_url}"
+
+        manager = CallManager(
+            browser_provider=BrowserRoomProvider(
+                BrowserRoomConfig(
+                    base_url=base_url,
+                    public_exposure_enabled=public_enabled,
+                )
+            ),
+            token_service=CallTokenService(secret),
+            ttl_seconds=ttl_seconds,
+        )
+        self._call_manager = manager
+        return manager
+
+    async def _handle_call_command(self, event: MessageEvent) -> str:
+        """Handle /call [browser|native|status|end] command."""
+        args = event.get_command_args().strip().lower()
+        manager = self._get_call_manager()
+
+        if args in {"", "browser"}:
+            result = await manager.start_browser_call(event.source)
+            return result.message
+        if args == "status":
+            result = await manager.status(event.source)
+            return result.message
+        if args == "end":
+            result = await manager.end(event.source)
+            return result.message
+        if args == "native":
+            platform = getattr(event.source.platform, "value", event.source.platform)
+            if str(platform) != "simplex":
+                return "SimpleX-native calls are only available from an authorized SimpleX DM."
+            return "SimpleX-native calls are unavailable: native WebRTC bridge is not enabled."
+        return "Usage: /call [browser|native|status|end]"
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""

@@ -472,6 +472,7 @@ async def _handle_yb_send_dm(args, **kw):
     embedded_media, message = BasePlatformAdapter.extract_media(message)
     if embedded_media:
         media_files.extend(embedded_media)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     return tool_result(await send_dm(
         group_code=group_code,        name=args.get("name", ""),

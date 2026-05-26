@@ -25,10 +25,13 @@ Security notes:
 
 from __future__ import annotations
 
+import hashlib
+import hmac as _hmac
 import json
 import logging
 import os
 import re
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -78,9 +81,82 @@ def _redact(obj: Any, depth: int = 0) -> Any:
     return obj
 
 
+# ---------------------------------------------------------------------------
+# HMAC-chain helpers — tamper-evident audit log
+# ---------------------------------------------------------------------------
+
+def _audit_key_path() -> Path:
+    try:
+        from hermes_cli.config import get_hermes_home
+        return get_hermes_home() / "audit.key"
+    except Exception:
+        return Path.home() / ".hermes" / "audit.key"
+
+
+def _load_or_create_audit_key() -> bytes:
+    """Load or generate the per-install HMAC signing key (256-bit, hex-encoded)."""
+    key_path = _audit_key_path()
+    try:
+        if key_path.exists():
+            raw = key_path.read_text(encoding="utf-8").strip()
+            if len(raw) == 64:  # 32 bytes hex
+                return bytes.fromhex(raw)
+        # Generate a fresh key and persist it with mode 0600
+        key_bytes = secrets.token_bytes(32)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(key_bytes.hex())
+        return key_bytes
+    except Exception as exc:
+        logger.warning("cyber_audit: could not load/create audit.key: %s — HMAC disabled", exc)
+        return b""
+
+
+def _last_log_line(path: Path) -> bytes:
+    """Return the raw bytes of the last non-empty line in the audit log."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            if size == 0:
+                return b""
+            # Walk back to find the second-to-last newline (last complete line)
+            pos = size - 1
+            # Skip trailing newline of the last line
+            if fh.read(1) == b"\n":
+                pos -= 1
+            fh.seek(pos)
+            buf = b""
+            while pos >= 0:
+                fh.seek(pos)
+                ch = fh.read(1)
+                if ch == b"\n":
+                    break
+                buf = ch + buf
+                pos -= 1
+            return buf
+    except Exception:
+        return b""
+
+
+def _hmac_of(data: bytes, key: bytes) -> str:
+    """Return hex HMAC-SHA256 of data under key, or '' if key is empty."""
+    if not key:
+        return ""
+    return _hmac.new(key, data, hashlib.sha256).hexdigest()
+
+
 def _write(record: dict) -> None:
     try:
-        path = _audit_log_path()
+        path   = _audit_log_path()
+        key    = _load_or_create_audit_key()
+        # Chain: include HMAC of the previous line so tampering breaks the chain
+        prev_line = _last_log_line(path)
+        record["prev_hmac"] = _hmac_of(prev_line, key) if key else None
+        # Sign this record itself (without the hmac field, to avoid circularity)
+        body  = json.dumps(record, default=str, separators=(",", ":"), sort_keys=True)
+        record["hmac"] = _hmac_of(body.encode(), key) if key else None
         line = json.dumps(record, default=str, separators=(",", ":")) + "\n"
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line)

@@ -18,6 +18,10 @@
 #   --persistence [SIZE] Create a read-write persistence partition (default: 4G).
 #                        Changes made on the live system survive reboots.
 #                        Choose "Persistence" from the GRUB boot menu to use it.
+#   --encrypt            Encrypt the persistence partition with LUKS2 (AES-256-XTS).
+#                        Requires cryptsetup. Prompts for passphrase unless
+#                        LUKS_PASSPHRASE env var is set. live-boot will ask for
+#                        the passphrase at boot before mounting persistence.
 #   --verify             Verify the write with SHA-256 after completion
 #   --list               List removable block devices and exit
 #   --yes                Skip confirmation prompt (non-interactive mode)
@@ -38,6 +42,7 @@ ISO="${SCRIPT_DIR}/hermes-cyber-live.iso"
 DEVICE=""
 PROVISION_PATH=""
 PERSISTENCE_SIZE=""   # empty = no persistence partition
+ENCRYPT_PERSIST=false
 VERIFY=false
 LIST_ONLY=false
 AUTO_YES=false
@@ -56,6 +61,7 @@ while [[ $# -gt 0 ]]; do
         PERSISTENCE_SIZE="4G"; shift
       fi
       ;;
+    --encrypt)     ENCRYPT_PERSIST=true;   shift ;;
     --verify)      VERIFY=true;           shift ;;
     --list)        LIST_ONLY=true;        shift ;;
     --yes)         AUTO_YES=true;         shift ;;
@@ -152,7 +158,11 @@ echo "════════════════════════�
 echo "  Source ISO    : ${ISO} (${ISO_SIZE})"
 echo "  Target        : ${DEVICE}  (${DRIVE_SIZE}, ${DRIVE_MODEL})"
 [[ -n "$PROVISION_PATH" ]]  && echo "  Config        : ${PROVISION_PATH} → p3 FAT32 HERMESCFG"
-[[ -n "$PERSISTENCE_SIZE" ]] && echo "  Persistence   : ${PERSISTENCE_SIZE} → ext4 HERMESPST (select in GRUB)"
+if [[ -n "$PERSISTENCE_SIZE" ]]; then
+  _enc_label="ext4 HERMESPST"
+  [[ "$ENCRYPT_PERSIST" == "true" ]] && _enc_label="LUKS2+ext4 HERMESPST (encrypted)"
+  echo "  Persistence   : ${PERSISTENCE_SIZE} → ${_enc_label} (select in GRUB)"
+fi
 echo "══════════════════════════════════════════════"
 echo ""
 
@@ -246,21 +256,70 @@ if [[ -n "$PERSISTENCE_SIZE" ]]; then
   PERSIST_PART=$(lsblk -ln -o NAME "$DEVICE" | grep -v "^$(basename "$DEVICE")$" | tail -1)
   PERSIST_PART="/dev/${PERSIST_PART}"
 
-  mkfs.ext4 -L HERMESPST -E lazy_itable_init=0 "${PERSIST_PART}" 2>&1 | tail -3
+  if [[ "$ENCRYPT_PERSIST" == "true" ]]; then
+    # ---- LUKS2 encrypted persistence ----------------------------------------
+    if ! command -v cryptsetup &>/dev/null; then
+      echo "❌  cryptsetup not found. Install: apt-get install cryptsetup"
+      exit 1
+    fi
 
-  # Populate persistence.conf — "/" union means the entire root is overlaid
-  MNT_TMP=$(mktemp -d)
-  mount "${PERSIST_PART}" "${MNT_TMP}"
-  echo "/ union" > "${MNT_TMP}/persistence.conf"
-  # Pre-create the hermes home structure so it's immediately writable on boot
-  mkdir -p "${MNT_TMP}/home/hermes/.hermes/logs"
-  chown -R 1000:1000 "${MNT_TMP}/home" 2>/dev/null || true
-  sync
-  umount "${MNT_TMP}"
-  rm -rf "${MNT_TMP}"
+    # Obtain passphrase — env var for non-interactive CI, interactive prompt otherwise
+    if [[ -z "${LUKS_PASSPHRASE:-}" ]]; then
+      read -r -s -p "  Enter LUKS passphrase for persistence partition: " LUKS_PASSPHRASE
+      echo
+      read -r -s -p "  Confirm passphrase: " LUKS_CONFIRM
+      echo
+      if [[ "$LUKS_PASSPHRASE" != "$LUKS_CONFIRM" ]]; then
+        echo "❌  Passphrases do not match."
+        exit 1
+      fi
+    fi
 
-  echo "  ✓ Persistence partition ready (${PERSIST_PART}, label=HERMESPST)"
-  echo "  ℹ  Select 'Persistence' in the GRUB boot menu to use it."
+    echo "  Formatting LUKS2 container on ${PERSIST_PART}..."
+    echo "$LUKS_PASSPHRASE" | cryptsetup luksFormat \
+      --batch-mode \
+      --type luks2 \
+      --cipher aes-xts-plain64 \
+      --key-size 512 \
+      --hash sha256 \
+      --iter-time 2000 \
+      "${PERSIST_PART}"
+
+    echo "  Opening LUKS container..."
+    echo "$LUKS_PASSPHRASE" | cryptsetup luksOpen "${PERSIST_PART}" hermespst
+
+    _MAPPED="/dev/mapper/hermespst"
+    mkfs.ext4 -L HERMESPST -E lazy_itable_init=0 "${_MAPPED}" 2>&1 | tail -3
+
+    MNT_TMP=$(mktemp -d)
+    mount "${_MAPPED}" "${MNT_TMP}"
+    echo "/ union" > "${MNT_TMP}/persistence.conf"
+    mkdir -p "${MNT_TMP}/home/hermes/.hermes/logs"
+    chown -R 1000:1000 "${MNT_TMP}/home" 2>/dev/null || true
+    sync
+    umount "${MNT_TMP}"
+    rm -rf "${MNT_TMP}"
+
+    cryptsetup luksClose hermespst
+
+    echo "  ✓ Persistence partition ready (${PERSIST_PART}, LUKS2-encrypted, label=HERMESPST)"
+    echo "  ℹ  live-boot will prompt for the LUKS passphrase at boot."
+  else
+    # ---- Plain ext4 persistence (default) -----------------------------------
+    mkfs.ext4 -L HERMESPST -E lazy_itable_init=0 "${PERSIST_PART}" 2>&1 | tail -3
+
+    MNT_TMP=$(mktemp -d)
+    mount "${PERSIST_PART}" "${MNT_TMP}"
+    echo "/ union" > "${MNT_TMP}/persistence.conf"
+    mkdir -p "${MNT_TMP}/home/hermes/.hermes/logs"
+    chown -R 1000:1000 "${MNT_TMP}/home" 2>/dev/null || true
+    sync
+    umount "${MNT_TMP}"
+    rm -rf "${MNT_TMP}"
+
+    echo "  ✓ Persistence partition ready (${PERSIST_PART}, label=HERMESPST)"
+    echo "  ℹ  Select 'Persistence' in the GRUB boot menu to use it."
+  fi
 fi
 
 # ---- Verify -----------------------------------------------------------------
@@ -286,6 +345,10 @@ echo "════════════════════════�
 echo "  ✅  USB ready. Eject and plug into target PC."
 echo "  🔑  Default login: hermes / hermes"
 echo "  🤖  Gateway starts automatically after setup."
-[[ -n "$PERSISTENCE_SIZE" ]] && \
-echo "  💾  Persistence: select it in the GRUB menu."
+if [[ -n "$PERSISTENCE_SIZE" ]]; then
+  [[ "$ENCRYPT_PERSIST" == "true" ]] && \
+    echo "  🔒  Encrypted persistence: LUKS passphrase required at boot."
+  [[ "$ENCRYPT_PERSIST" != "true" ]] && \
+    echo "  💾  Persistence: select it in the GRUB menu."
+fi
 echo "═══════════════════════════════════════════════"

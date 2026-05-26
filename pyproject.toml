@@ -238,6 +238,7 @@ markers = [
 # file a fresh Python interpreter; pytest-timeout catches Python-level
 # hangs within a file.
 addopts = "-m 'not integration' --timeout=30 --timeout-method=signal"
+asyncio_mode = "auto"
 
 [tool.ty.environment]
 python-version = "3.13"

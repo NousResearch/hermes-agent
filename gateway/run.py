@@ -6900,13 +6900,6 @@ class GatewayRunner:
                 return None
             return SignalAdapter(config)
 
-        elif platform == Platform.HOMEASSISTANT:
-            from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
-            if not check_ha_requirements():
-                logger.warning("HomeAssistant: aiohttp not installed or HASS_TOKEN not set")
-                return None
-            return HomeAssistantAdapter(config)
-
         elif platform == Platform.EMAIL:
             from gateway.platforms.email import EmailAdapter, check_email_requirements
             if not check_email_requirements():

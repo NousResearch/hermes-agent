@@ -269,6 +269,129 @@ class TestRunBackgroundTask:
         mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_image_attachment_uses_native_routing_when_model_supports_vision(self, monkeypatch):
+        """Background tasks should mirror the native image path used by the main gateway flow."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._decide_image_input_mode = MagicMock(return_value="native")
+        runner._enrich_message_with_vision = AsyncMock(return_value="should not be used")
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(side_effect=lambda fn: fn())
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+        native_parts = [
+            {"type": "text", "text": "test prompt\n\n[Image attached at: /tmp/img.png]"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ==" }},
+        ]
+
+        with patch("agent.image_routing.build_native_content_parts", return_value=(native_parts, [])), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": "done",
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task(
+                "test prompt",
+                source,
+                "bg_test",
+                media_urls=["/tmp/img.png"],
+                media_types=["image/png"],
+            )
+
+        runner._decide_image_input_mode.assert_called_once_with()
+        runner._enrich_message_with_vision.assert_not_awaited()
+        assert mock_agent_instance.run_conversation.call_args.kwargs["user_message"] == native_parts
+
+    @pytest.mark.asyncio
+    async def test_image_attachment_uses_text_routing_when_native_mode_not_selected(self, monkeypatch):
+        """Background tasks should keep the existing text pipeline for non-native routes."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._decide_image_input_mode = MagicMock(return_value="text")
+        runner._enrich_message_with_vision = AsyncMock(return_value="enriched prompt")
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(side_effect=lambda fn: fn())
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("agent.image_routing.build_native_content_parts") as mock_build_parts, \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.return_value = {
+                "final_response": "done",
+                "messages": [],
+            }
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task(
+                "test prompt",
+                source,
+                "bg_test",
+                media_urls=["/tmp/img.png"],
+                media_types=["image/png"],
+            )
+
+        runner._decide_image_input_mode.assert_called_once_with()
+        runner._enrich_message_with_vision.assert_awaited_once_with("test prompt", ["/tmp/img.png"])
+        mock_build_parts.assert_not_called()
+        assert mock_agent_instance.run_conversation.call_args.kwargs["user_message"] == "enriched prompt"
+
+    @pytest.mark.asyncio
     async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):
         """Background completion metadata must let Telegram send thread id plus reply id."""
         from gateway import run as gateway_run

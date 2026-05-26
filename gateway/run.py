@@ -11698,9 +11698,10 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
-            # Enrich the prompt with image descriptions so the background
-            # agent can see user-attached images (same as the main flow).
-            enriched_prompt = prompt
+            # Match the main gateway/CLI image ingress behavior: attach
+            # pixels natively for vision-capable models, otherwise fall back
+            # to the vision_analyze text pipeline.
+            enriched_prompt: Any = prompt
             if media_urls:
                 image_paths = []
                 for i, path in enumerate(media_urls):
@@ -11708,12 +11709,61 @@ class GatewayRunner:
                     if mtype.startswith("image/"):
                         image_paths.append(path)
                 if image_paths:
-                    try:
-                        enriched_prompt = await self._enrich_message_with_vision(
-                            prompt, image_paths,
+                    _img_mode = self._decide_image_input_mode()
+                    if _img_mode == "native":
+                        try:
+                            from agent.image_routing import build_native_content_parts
+
+                            _parts, _skipped = build_native_content_parts(
+                                prompt,
+                                image_paths,
+                            )
+                            if _skipped:
+                                logger.warning(
+                                    "Background task native image attachment skipped %d unreadable path(s): %s",
+                                    len(_skipped), _skipped,
+                                )
+                            if any(p.get("type") == "image_url" for p in _parts):
+                                logger.info(
+                                    "Background task image routing: native (model supports vision). Attaching %d image(s) inline.",
+                                    len(image_paths),
+                                )
+                                enriched_prompt = _parts
+                            else:
+                                logger.warning(
+                                    "Background task native image attachment produced no readable images; falling back to text vision enrichment."
+                                )
+                                enriched_prompt = await self._enrich_message_with_vision(
+                                    prompt,
+                                    image_paths,
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                "Background task native image attachment failed; falling back to text vision enrichment: %s",
+                                e,
+                            )
+                            try:
+                                enriched_prompt = await self._enrich_message_with_vision(
+                                    prompt,
+                                    image_paths,
+                                )
+                            except Exception as enrich_exc:
+                                logger.warning(
+                                    "Background task vision enrichment failed after native attach fallback: %s",
+                                    enrich_exc,
+                                )
+                    else:
+                        logger.info(
+                            "Background task image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
+                            _img_mode, len(image_paths),
                         )
-                    except Exception as e:
-                        logger.warning("Background task vision enrichment failed: %s", e)
+                        try:
+                            enriched_prompt = await self._enrich_message_with_vision(
+                                prompt,
+                                image_paths,
+                            )
+                        except Exception as e:
+                            logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
                 agent = AIAgent(

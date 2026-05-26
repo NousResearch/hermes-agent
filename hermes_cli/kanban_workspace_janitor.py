@@ -26,6 +26,7 @@ ARTIFACT_NAMES = {
     "dist",
     "build",
     "target",
+    "coverage",
 }
 TERMINAL_STATUSES = {"done", "archived", "cancelled", "superseded"}
 
@@ -318,10 +319,84 @@ def plan_artifact_cleanup_actions(
     return actions
 
 
+def validate_artifact_safety(
+    artifact_path: str,
+    workspace_path: str,
+    kind: str,
+    *,
+    proc_cwds: Sequence[str] | None = None,
+    pane_cwds: Sequence[str] | None = None,
+    kanban_db_path: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    """Validate safety of an artifact cleanup action.
+
+    Returns ``{"safe": True, "guard_errors": []}`` when all checks pass,
+    or ``{"safe": False, "guard_errors": [...]}`` with reasons when any
+    guard fails.  This function is intentionally reusable by the closeout
+    verifier and other lifecycle gate callers.
+
+    Guards (fail-closed, in order):
+    - kind is in ARTIFACT_NAMES allowlist
+    - artifact basename matches the allowlisted kind
+    - artifact path is under the declared workspace
+    - artifact is not a symlink
+    - artifact exists and is a directory (source file deletion fails)
+    - no active process cwd under target
+    - no active tmux pane cwd under target
+    - no active kanban worker/run for this task (when kanban_db_path provided)
+    """
+    artifact = Path(artifact_path)
+    workspace = Path(workspace_path)
+    guard_errors: list[str] = []
+
+    if kind not in ARTIFACT_NAMES:
+        guard_errors.append("kind_not_allowlisted")
+    if artifact.name != kind:
+        guard_errors.append("artifact_basename_mismatch")
+    if not _is_relative_to(artifact, workspace):
+        guard_errors.append("artifact_not_under_workspace")
+    if artifact.is_symlink():
+        guard_errors.append("artifact_is_symlink")
+    if not artifact.exists():
+        guard_errors.append("artifact_missing")
+    if artifact.exists() and not artifact.is_dir():
+        guard_errors.append("artifact_not_directory")
+
+    # Active process CWD guard
+    cwds = list(proc_cwds or ())
+    if any(_is_relative_to(Path(c), artifact) for c in cwds):
+        guard_errors.append("active_process_cwd")
+
+    # Active tmux CWD guard
+    panes = list(pane_cwds or ())
+    if any(_is_relative_to(Path(p), artifact) for p in panes):
+        guard_errors.append("active_tmux_cwd")
+
+    # Active Kanban worker guard
+    if kanban_db_path and task_id:
+        try:
+            conn = sqlite3.connect(kanban_db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT current_run_id, worker_pid FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if row and (row["current_run_id"] or row["worker_pid"]):
+                guard_errors.append("active_kanban_worker")
+        except sqlite3.Error:
+            pass  # fail open on DB read errors — cleanup is not security-critical
+
+    return {"safe": len(guard_errors) == 0, "guard_errors": guard_errors}
+
+
 def apply_artifact_cleanup_actions(
     actions: Iterable[CleanupAction],
     *,
     dry_run: bool = True,
+    proc_cwds: Sequence[str] | None = None,
+    pane_cwds: Sequence[str] | None = None,
+    kanban_db_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """Apply or preview exact artifact cleanup actions.
 
@@ -331,31 +406,30 @@ def apply_artifact_cleanup_actions(
     - artifact path exists and is a directory;
     - artifact is not a symlink;
     - artifact path remains under the recorded workspace;
-    - basename still matches the allowlisted artifact kind.
+    - basename still matches the allowlisted artifact kind;
+    - no active process cwd under target;
+    - no active tmux pane cwd under target;
+    - no active kanban worker/run for this task.
     """
     results: list[dict[str, Any]] = []
     for action in actions:
-        artifact = Path(action.artifact_path)
-        workspace = Path(action.workspace_path)
-        guard_errors: list[str] = []
-        if action.kind not in ARTIFACT_NAMES:
-            guard_errors.append("kind_not_allowlisted")
-        if artifact.name != action.kind:
-            guard_errors.append("artifact_basename_mismatch")
-        if not _is_relative_to(artifact, workspace):
-            guard_errors.append("artifact_not_under_workspace")
-        if artifact.is_symlink():
-            guard_errors.append("artifact_is_symlink")
-        if not artifact.exists():
-            guard_errors.append("artifact_missing")
-        if artifact.exists() and not artifact.is_dir():
-            guard_errors.append("artifact_not_directory")
+        safety = validate_artifact_safety(
+            artifact_path=action.artifact_path,
+            workspace_path=action.workspace_path,
+            kind=action.kind,
+            proc_cwds=proc_cwds,
+            pane_cwds=pane_cwds,
+            kanban_db_path=kanban_db_path,
+            task_id=action.task_id,
+        )
+        guard_errors = safety["guard_errors"]
 
         result = action.to_dict()
         result.update({"dry_run": dry_run, "deleted": False, "guard_errors": guard_errors})
         if guard_errors or dry_run:
             results.append(result)
             continue
+        artifact = Path(action.artifact_path)
         before = path_size(artifact)
         shutil.rmtree(artifact)
         result.update({

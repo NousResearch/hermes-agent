@@ -7,7 +7,7 @@ def _review_ready_closeout_evidence() -> dict:
     return {
         "summary": "worker completed implementation",
         "proof": "focused tests and git diff check passed",
-        "cleanup": {"proof": "git status --short clean", "worktree_clean": True},
+        "cleanup": {"proof": "git status --short clean", "worktree_clean": True, "artifacts_removed": []},
         "residue": {"summary": "no residue", "items": [{"kind": "none", "disposition": "none"}]},
         "pr": {"number": 58, "url": "https://github.com/chriskim12/hermes-agent/pull/58"},
         "git": {"head_sha": "abc123", "worktree_clean": True, "status_short": ""},

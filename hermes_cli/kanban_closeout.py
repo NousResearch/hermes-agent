@@ -241,6 +241,7 @@ def _cleanup_proven(evidence: Mapping[str, Any]) -> tuple[bool, str | None]:
     proof = _text(cleanup.get("proof")) or _text(evidence.get("cleanup_proof"))
     if not proof:
         return False, "missing_cleanup_proof"
+
     git = _as_mapping(evidence.get("git"))
     for value in (cleanup.get("worktree_clean"), git.get("worktree_clean")):
         if value is False:
@@ -248,6 +249,18 @@ def _cleanup_proven(evidence: Mapping[str, Any]) -> tuple[bool, str | None]:
     status_short = _text(git.get("status_short"))
     if status_short:
         return False, "dirty_worktree"
+
+    # Require structured evidence — prose-only "cleaned up" is insufficient.
+    artifacts_removed = cleanup.get("artifacts_removed")
+    worktree_retained = cleanup.get("worktree_retained")
+    if artifacts_removed is None and worktree_retained is None:
+        return False, "missing_structured_cleanup_evidence"
+    if worktree_retained is True:
+        if not _text(cleanup.get("retained_reason")):
+            return False, "retained_worktree_missing_reason"
+        if not _has_ttl_or_revisit(cleanup):
+            return False, "retained_worktree_missing_ttl"
+
     return True, None
 
 
@@ -355,6 +368,36 @@ def _check_pr(evidence: Mapping[str, Any]) -> list[str]:
     return blockers
 
 
+def _check_closed_pr(evidence: Mapping[str, Any]) -> list[str]:
+    """Verify PR evidence for the ``closed`` phase — PR must be MERGED/CLOSED.
+
+    Unlike ``_check_pr`` (which requires OPEN for ``review_ready``), this
+    gate only accepts a merged or closed PR because final Done should not
+    happen while a review surface is still open.
+    """
+    blockers: list[str] = []
+    candidates = _extract_pr_candidates(evidence)
+    if len(candidates) != 1:
+        return ["missing_pr" if not candidates else "ambiguous_pr_evidence"]
+
+    pr = candidates[0]
+    if pr.get("live") is not True:
+        blockers.append("missing_live_pr")
+    state = _lower(pr.get("state"))
+    if state in {"open", "opened"}:
+        blockers.append("pr_not_merged")
+    elif state not in {"merged", "closed"}:
+        blockers.append("pr_unrecognized_state")
+
+    pr_head = _text(pr.get("head_sha") or pr.get("headRefOid") or pr.get("head_oid"))
+    git_head = _text(_as_mapping(evidence.get("git")).get("head_sha"))
+    if not pr_head:
+        blockers.append("missing_pr_head_sha")
+    elif git_head and pr_head != git_head:
+        blockers.append("stale_pr")
+    return blockers
+
+
 def _normalize_check(item: Any) -> tuple[str, str, str]:
     if not isinstance(item, Mapping):
         return ("check", "", "")
@@ -423,6 +466,42 @@ def _review_ready_blockers(evidence: Mapping[str, Any]) -> list[str]:
     if evidence.get("ambiguous") is True:
         blockers.append("ambiguous_evidence")
     # Preserve order while de-duplicating.
+    return list(dict.fromkeys(blockers))
+
+
+def _closed_blockers(evidence: Mapping[str, Any]) -> list[str]:
+    """Fail-closed verification specifically for the ``closed`` terminal phase.
+
+    This is intentionally stricter than ``_review_ready_blockers`` because
+    final Done requires post-merge cleanup proof, not just pre-review cleanup.
+    The PR must be MERGED/CLOSED (or a documented no-PR exception must be
+    present) because closing a task while its review surface is still open is
+    an operational lie per the RALPLAN lifecycle ladder.
+    """
+    blockers: list[str] = []
+
+    no_pr_exception = _as_mapping(evidence.get("no_pr_exception"))
+    if no_pr_exception and _text(no_pr_exception.get("policy")) and _text(no_pr_exception.get("reason")):
+        # Documented no-PR exception — skip the PR check entirely.
+        pass
+    else:
+        blockers.extend(_check_closed_pr(evidence))
+
+    if not _has_worker_evidence(evidence):
+        blockers.append("missing_worker_evidence")
+    if not _verifier_pass_present(evidence):
+        blockers.append("missing_verifier_pass")
+    blockers.extend(_check_statuses(evidence))
+
+    cleanup_ok, cleanup_blocker = _cleanup_proven(evidence)
+    if not cleanup_ok and cleanup_blocker:
+        blockers.append(cleanup_blocker)
+
+    blockers.extend(_residue_blockers(evidence))
+
+    if evidence.get("ambiguous") is True:
+        blockers.append("ambiguous_evidence")
+
     return list(dict.fromkeys(blockers))
 
 
@@ -521,15 +600,7 @@ def verify_closeout_transition(
             blockers.append("closed_requires_review_ready")
         if not _approval_present(normalized) and not has_exception:
             blockers.append("missing_close_approval")
-        if has_exception:
-            cleanup_ok, cleanup_blocker = _cleanup_proven(normalized)
-            if not cleanup_ok and cleanup_blocker:
-                blockers.append(cleanup_blocker)
-            if not _has_worker_evidence(normalized):
-                blockers.append("missing_worker_evidence")
-            blockers.extend(_residue_blockers(normalized))
-        else:
-            blockers.extend(_review_ready_blockers(normalized))
+        blockers.extend(_closed_blockers(normalized))
 
     blockers = list(dict.fromkeys(blockers))
     normalized["verification"] = {

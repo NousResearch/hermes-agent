@@ -457,3 +457,277 @@ def test_format_disk_pressure_report_shows_resolved_symlink_target():
     )
 
     assert "/home/ubuntu/.hermes/kanban/workspaces -> /mnt/hermes-data/hermes/kanban-workspaces" in rendered
+
+
+# --- Slice 3: artifact cleanup executor safety gate tests ---
+
+from hermes_cli.kanban_workspace_janitor import ARTIFACT_NAMES
+
+
+def test_artifact_names_includes_coverage():
+    """RALPLAN Slice 3: 'coverage' must be in the allowlisted artifact names."""
+    assert "coverage" in ARTIFACT_NAMES
+
+
+def test_apply_artifact_cleanup_rejects_active_process_cwd(tmp_path):
+    """Active process CWD under target blocks artifact deletion."""
+    workspace = tmp_path / "t_active"
+    artifact = workspace / "node_modules"
+    artifact.mkdir(parents=True)
+    (artifact / "pkg.js").write_text("x")
+
+    action = CleanupAction(
+        task_id="t_active",
+        workspace_path=str(workspace),
+        artifact_path=str(artifact),
+        kind="node_modules",
+        size_bytes=1,
+        candidate_state="safe-artifact-candidate",
+        reason="fixture",
+    )
+
+    results = apply_artifact_cleanup_actions(
+        [action], dry_run=False, proc_cwds=[str(artifact)]
+    )
+
+    assert results[0]["deleted"] is False
+    assert "active_process_cwd" in results[0]["guard_errors"]
+    assert artifact.exists()
+
+
+def test_apply_artifact_cleanup_rejects_active_tmux_cwd(tmp_path):
+    """Active tmux pane CWD under target blocks artifact deletion."""
+    workspace = tmp_path / "t_tmux"
+    artifact = workspace / "node_modules"
+    artifact.mkdir(parents=True)
+    (artifact / "pkg.js").write_text("x")
+
+    action = CleanupAction(
+        task_id="t_tmux",
+        workspace_path=str(workspace),
+        artifact_path=str(artifact),
+        kind="node_modules",
+        size_bytes=1,
+        candidate_state="safe-artifact-candidate",
+        reason="fixture",
+    )
+
+    results = apply_artifact_cleanup_actions(
+        [action], dry_run=False, pane_cwds=[str(artifact)]
+    )
+
+    assert results[0]["deleted"] is False
+    assert "active_tmux_cwd" in results[0]["guard_errors"]
+    assert artifact.exists()
+
+
+def test_apply_artifact_cleanup_rejects_active_kanban_worker(
+    tmp_path, monkeypatch
+):
+    """Active Kanban worker/run blocks artifact deletion."""
+    workspace = tmp_path / "t_worker"
+    artifact = workspace / ".pytest_cache"
+    artifact.mkdir(parents=True)
+    (artifact / "v").mkdir()
+
+    action = CleanupAction(
+        task_id="t_worker",
+        workspace_path=str(workspace),
+        artifact_path=str(artifact),
+        kind=".pytest_cache",
+        size_bytes=1,
+        candidate_state="safe-artifact-candidate",
+        reason="fixture",
+    )
+
+    # Simulate an active kanban DB row for this task.
+    db_path = tmp_path / "kanban.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            public_id TEXT,
+            title TEXT,
+            status TEXT,
+            review_phase TEXT,
+            completed_at INTEGER,
+            result TEXT,
+            closeout_evidence TEXT,
+            current_run_id INTEGER,
+            worker_pid INTEGER,
+            assignee TEXT,
+            workspace_kind TEXT,
+            workspace_path TEXT
+        )"""
+    )
+    conn.execute(
+        "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "t_worker", "BO-999", "Active", "running", None,
+            None, None, None, 42, 99999, "arisu", "scratch", None,
+        ),
+    )
+    conn.commit()
+
+    results = apply_artifact_cleanup_actions(
+        [action], dry_run=False, kanban_db_path=str(db_path)
+    )
+
+    assert results[0]["deleted"] is False
+    assert "active_kanban_worker" in results[0]["guard_errors"]
+    assert artifact.exists()
+
+
+def test_apply_artifact_cleanup_allows_worker_task_without_active_run(
+    tmp_path
+):
+    """Task with no current_run_id and no worker_pid is safe to clean."""
+    workspace = tmp_path / "t_idle"
+    artifact = workspace / ".ruff_cache"
+    artifact.mkdir(parents=True)
+    (artifact / "0.1").mkdir()
+
+    action = CleanupAction(
+        task_id="t_idle",
+        workspace_path=str(workspace),
+        artifact_path=str(artifact),
+        kind=".ruff_cache",
+        size_bytes=1,
+        candidate_state="safe-artifact-candidate",
+        reason="fixture",
+    )
+
+    db_path = tmp_path / "kanban.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            public_id TEXT,
+            title TEXT,
+            status TEXT,
+            review_phase TEXT,
+            completed_at INTEGER,
+            result TEXT,
+            closeout_evidence TEXT,
+            current_run_id INTEGER,
+            worker_pid INTEGER,
+            assignee TEXT,
+            workspace_kind TEXT,
+            workspace_path TEXT
+        )"""
+    )
+    conn.execute(
+        "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "t_idle", "BO-888", "Done task", "done", "worker_done",
+            1, "kept", None, None, None, "arisu", "scratch", None,
+        ),
+    )
+    conn.commit()
+
+    results = apply_artifact_cleanup_actions(
+        [action], dry_run=False, kanban_db_path=str(db_path)
+    )
+
+    assert results[0]["deleted"] is True
+    assert not artifact.exists()
+
+
+def test_discover_artifacts_finds_coverage_dir(tmp_path):
+    """coverage directory is discovered as a cleanable artifact."""
+    workspace = tmp_path / "t_cov"
+    cov = workspace / "coverage"
+    cov.mkdir(parents=True)
+    (cov / "lcov.info").write_text("SF:src/app.py\nDA:1,1\n")
+
+    artifacts = discover_artifacts(workspace)
+
+    assert any(a["kind"] == "coverage" for a in artifacts)
+
+
+def test_apply_artifact_cleanup_dry_run_reports_without_deleting(tmp_path):
+    """Dry-run mode reports candidates but never mutates the workspace."""
+    workspace = tmp_path / "t_dry"
+    artifact = workspace / ".mypy_cache"
+    artifact.mkdir(parents=True)
+    (artifact / "3.8").mkdir()
+
+    action = CleanupAction(
+        task_id="t_dry",
+        workspace_path=str(workspace),
+        artifact_path=str(artifact),
+        kind=".mypy_cache",
+        size_bytes=1,
+        candidate_state="safe-artifact-candidate",
+        reason="fixture",
+    )
+
+    results = apply_artifact_cleanup_actions([action], dry_run=True)
+
+    assert results[0]["dry_run"] is True
+    assert results[0]["deleted"] is False
+    assert artifact.exists()  # never mutated
+
+
+def test_apply_artifact_cleanup_rejects_symlink_artifact(tmp_path):
+    """Symlink artifact path is rejected even if basename is allowlisted."""
+    workspace = tmp_path / "t_sym"
+    real_artifact = tmp_path / "real_node_modules"
+    real_artifact.mkdir(parents=True)
+    (real_artifact / "pkg.js").write_text("x")
+    workspace.mkdir(parents=True)
+    (workspace / "node_modules").symlink_to(real_artifact)
+
+    action = CleanupAction(
+        task_id="t_sym",
+        workspace_path=str(workspace),
+        artifact_path=str(workspace / "node_modules"),
+        kind="node_modules",
+        size_bytes=1,
+        candidate_state="safe-artifact-candidate",
+        reason="fixture",
+    )
+
+    results = apply_artifact_cleanup_actions([action], dry_run=False)
+
+    assert results[0]["deleted"] is False
+    assert "artifact_is_symlink" in results[0]["guard_errors"]
+    assert real_artifact.exists()
+
+
+def test_apply_artifact_cleanup_rejects_outside_workspace(tmp_path):
+    """Path outside the declared workspace is rejected."""
+    workspace = tmp_path / "t_out"
+    workspace.mkdir()
+    outside = tmp_path / "outside" / "dist"
+    outside.mkdir(parents=True)
+
+    action = CleanupAction(
+        task_id="t_out",
+        workspace_path=str(workspace),
+        artifact_path=str(outside),
+        kind="dist",
+        size_bytes=1,
+        candidate_state="safe-artifact-candidate",
+        reason="fixture",
+    )
+
+    results = apply_artifact_cleanup_actions([action], dry_run=False)
+
+    assert results[0]["deleted"] is False
+    assert "artifact_not_under_workspace" in results[0]["guard_errors"]
+    assert outside.exists()
+
+
+def test_validate_artifact_safety_exported():
+    """validate_artifact_safety function is importable for closeout verifier reuse."""
+    from hermes_cli.kanban_workspace_janitor import validate_artifact_safety
+
+    result = validate_artifact_safety(
+        artifact_path="/tmp/nonexistent_node_modules",
+        workspace_path="/tmp",
+        kind="node_modules",
+    )
+    assert isinstance(result, dict)
+    assert "safe" in result
+    assert "guard_errors" in result

@@ -343,6 +343,8 @@ def test_complete_autopromotes_review_ready_when_worker_submits_closeout_package
             "proof": "temporary smoke workspace removed; no branches left behind",
             "workspace_removed": True,
             "branches_removed": True,
+            "artifacts_removed": [],
+            "worktree_retained": False,
         },
         "no_pr_exception": {
             "policy": "no-code smoke fixture",

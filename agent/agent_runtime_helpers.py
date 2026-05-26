@@ -39,7 +39,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_surrogates,
 )
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.tool_dispatch_helpers import _trajectory_normalize_msg
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import classify_api_error, FailoverReason
@@ -318,11 +318,12 @@ def sanitize_tool_call_arguments(
                 if existing_tool_msg is None:
                     messages.insert(
                         insert_at,
-                        make_tool_result_message(
-                            function_name if function_name != "?" else "",
-                            marker,
-                            tool_call_id,
-                        ),
+                        {
+                            "role": "tool",
+                            "name": function_name if function_name != "?" else "",
+                            "tool_call_id": tool_call_id,
+                            "content": marker,
+                        },
                     )
                     insert_at += 1
                 else:
@@ -1292,6 +1293,40 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 agent._client_log_context(),
             )
             return client
+    # GigaChat: auto-refresh OAuth token + disable SSL verification
+    _base_url = str(client_kwargs.get("base_url", "") or "").lower()
+    _is_gigachat = "gigachat.devices.sberbank.ru" in _base_url
+    if _is_gigachat:
+        import httpx as _httpx_gc
+        import ssl as _ssl_gc
+        # Auto-refresh OAuth token using GIGACHAT_AUTH_KEY
+        _auth_key = os.environ.get("GIGACHAT_AUTH_KEY", "").strip()
+        if _auth_key:
+            try:
+                _resp = _httpx_gc.post(
+                    "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                        "RqUID": "04c6fe8d-f4d6-46c5-84a9-693b660a17f8",
+                        "Authorization": f"Basic {_auth_key}",
+                    },
+                    data={"scope": "GIGACHAT_API_PERS"},
+                    timeout=10,
+                    verify=False,
+                )
+                if _resp.status_code == 200:
+                    _fresh_token = _resp.json().get("access_token", "")
+                    if _fresh_token:
+                        client_kwargs["api_key"] = _fresh_token
+            except Exception:
+                pass  # fall back to existing api_key if refresh fails
+        # Disable SSL verification (GigaChat uses self-signed certs)
+        _ctx = _ssl_gc.create_default_context()
+        _ctx.check_hostname = False
+        _ctx.verify_mode = _ssl_gc.CERT_NONE
+        client_kwargs["http_client"] = _httpx_gc.Client(verify=_ctx)
+
     # Inject TCP keepalives so the kernel detects dead provider connections
     # instead of letting them sit silently in CLOSE-WAIT (#10324).  Without
     # this, a peer that drops mid-stream leaves the socket in a state where
@@ -1309,7 +1344,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # constructs a fresh one — no stale closed transport can be reused.
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-    if "http_client" not in client_kwargs:
+    if _is_gigachat:
+        # GigaChat already has http_client with verify=False — keepalive not needed
+        pass
+    elif "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http

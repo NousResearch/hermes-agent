@@ -43,12 +43,15 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import ssl
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
+
+import httpx
 
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
@@ -1307,10 +1310,7 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     with xAI Grok OAuth.
     """
     try:
-        from hermes_cli.auth import (
-            DEFAULT_XAI_OAUTH_BASE_URL,
-            _xai_validate_inference_base_url,
-        )
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
 
         pool = load_pool("xai-oauth")
         if pool and pool.has_credentials():
@@ -1321,13 +1321,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                     or getattr(entry, "access_token", "")
                     or ""
                 ).strip()
-                base_url = _xai_validate_inference_base_url(
+                base_url = str(
                     os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
                     or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
-                    or str(getattr(entry, "runtime_base_url", None) or "").strip().rstrip("/")
-                    or str(getattr(entry, "base_url", None) or "").strip().rstrip("/"),
-                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
-                )
+                    or getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or DEFAULT_XAI_OAUTH_BASE_URL
+                ).strip().rstrip("/")
                 if api_key and base_url:
                     return api_key, base_url
     except Exception as exc:
@@ -1816,6 +1816,34 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
+    # GigaChat uses self-signed SSL certificates — disable verification
+    if _clean_base and "gigachat.devices.sberbank.ru" in str(_clean_base).lower():
+        _gc_ctx = ssl.create_default_context()
+        _gc_ctx.check_hostname = False
+        _gc_ctx.verify_mode = ssl.CERT_NONE
+        _extra["http_client"] = httpx.Client(verify=_gc_ctx)
+        # Auto-refresh OAuth token
+        _auth_key_gc = os.environ.get("GIGACHAT_AUTH_KEY", "").strip()
+        if _auth_key_gc:
+            try:
+                _resp = httpx.post(
+                    "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                        "RqUID": "04c6fe8d-f4d6-46c5-84a9-693b660a17f8",
+                        "Authorization": f"Basic {_auth_key_gc}",
+                    },
+                    data={"scope": "GIGACHAT_API_PERS"},
+                    timeout=10,
+                    verify=False,
+                )
+                if _resp.status_code == 200:
+                    _fresh = _resp.json().get("access_token", "")
+                    if _fresh:
+                        custom_key = _fresh
+            except Exception:
+                pass
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
@@ -3356,6 +3384,33 @@ def resolve_provider_client(
             _clean_base, _dq = _extract_url_query_params(custom_base)
             if _dq:
                 extra["default_query"] = _dq
+            # GigaChat: auto-refresh OAuth token + disable SSL verification
+            if _clean_base and "gigachat.devices.sberbank.ru" in str(_clean_base).lower():
+                _gc_ctx2 = ssl.create_default_context()
+                _gc_ctx2.check_hostname = False
+                _gc_ctx2.verify_mode = ssl.CERT_NONE
+                extra["http_client"] = httpx.Client(verify=_gc_ctx2)
+                _auth_key2 = os.environ.get("GIGACHAT_AUTH_KEY", "").strip()
+                if _auth_key2:
+                    try:
+                        _resp2 = httpx.post(
+                            "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+                            headers={
+                                "Content-Type": "application/x-www-form-urlencoded",
+                                "Accept": "application/json",
+                                "RqUID": "04c6fe8d-f4d6-46c5-84a9-693b660a17f8",
+                                "Authorization": f"Basic {_auth_key2}",
+                            },
+                            data={"scope": "GIGACHAT_API_PERS"},
+                            timeout=10,
+                            verify=False,
+                        )
+                        if _resp2.status_code == 200:
+                            _fresh2 = _resp2.json().get("access_token", "")
+                            if _fresh2:
+                                custom_key = _fresh2
+                    except Exception:
+                        pass
             if base_url_host_matches(custom_base, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):

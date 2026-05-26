@@ -79,6 +79,7 @@ Thread safety:
 
 import asyncio
 import concurrent.futures
+import copy
 import inspect
 import json
 import logging
@@ -2737,19 +2738,57 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     if not schema:
         return {"type": "object", "properties": {}}
 
-    def _rewrite_local_refs(node):
+    def _rewrite_local_refs(node, root=None):
+        if root is None:
+            root = node
         if isinstance(node, dict):
             normalized = {}
             for key, value in node.items():
                 out_key = "$defs" if key == "definitions" else key
-                normalized[out_key] = _rewrite_local_refs(value)
+                normalized[out_key] = _rewrite_local_refs(value, root)
             ref = normalized.get("$ref")
-            if isinstance(ref, str) and ref.startswith("#/definitions/"):
-                normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
+            if isinstance(ref, str):
+                if ref.startswith("#/definitions/"):
+                    normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
+                elif ref.startswith("#/properties/") and isinstance(root, dict):
+                    # Resolve property-local $ref by walking the root's properties tree
+                    resolved = _resolve_json_pointer(root, ref[1:])
+                    if resolved is not None:
+                        # Inline the resolved schema at this node (keep other
+                        # keywords from the parent so required/default etc.
+                        # survive; $ref is replaced with the inlined schema).
+                        normalized.pop("$ref")
+                        resolved_copy = _rewrite_local_refs(
+                            copy.deepcopy(resolved), root
+                        )
+                        if isinstance(resolved_copy, dict):
+                            for rk, rv in resolved_copy.items():
+                                if rk not in normalized:
+                                    normalized[rk] = rv
             return normalized
         if isinstance(node, list):
-            return [_rewrite_local_refs(item) for item in node]
+            return [_rewrite_local_refs(item, root) for item in node]
         return node
+
+    def _resolve_json_pointer(root, pointer):
+        """Resolve a JSON Pointer (RFC 6901) within *root*, or return None."""
+        if not pointer or not isinstance(root, (dict, list)):
+            return None
+        parts = pointer.lstrip("/").split("/")
+        current = root
+        for part in parts:
+            part = part.replace("~1", "/").replace("~0", "~")
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            elif isinstance(current, list):
+                try:
+                    idx = int(part)
+                    current = current[idx]
+                except (ValueError, IndexError):
+                    return None
+            else:
+                return None
+        return current
 
     def _strip_nullable_union(node):
         """Collapse JSON Schema nullable unions to provider-safe non-null schemas.

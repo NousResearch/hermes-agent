@@ -159,6 +159,23 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
     # target node, which Moonshot accepts.
     # (Ported from anomalyco/opencode#24730.)
     if "$ref" in repaired:
+        ref_val = repaired["$ref"]
+        # Moonshot also requires that $ref values point into $defs
+        # (e.g. '#/$defs/StrokeColor').  Local property refs like
+        # '#/properties/x' are rejected even after sibling stripping.
+        # If the $ref doesn't match an accepted pattern, strip it so
+        # _fill_missing_type can infer a replacement schema instead of
+        # sending a guaranteed-400 ref to the API.
+        if isinstance(ref_val, str):
+            if ref_val.startswith("#/definitions/"):
+                repaired["$ref"] = "#/$defs/" + ref_val[len("#/definitions/"):]
+            elif not ref_val.startswith("#/$defs/"):
+                # Unacceptable $ref — strip it. The missing-type filler
+                # below will provide a best-effort type.
+                repaired.pop("$ref")
+                repaired.pop("type", None)  # let _fill_missing_type re-infer
+                repaired = _fill_missing_type(repaired)
+                return repaired
         return {"$ref": repaired["$ref"]}
 
     return repaired

@@ -697,6 +697,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        from gateway.run import GatewayRunner
+        self.reasoning_config = GatewayRunner._load_reasoning_config()
+        self.show_reasoning = GatewayRunner._load_show_reasoning()
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -941,6 +944,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        reasoning_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -962,7 +966,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        reasoning_config = GatewayRunner._load_reasoning_config()
+        # reasoning_config = GatewayRunner._load_reasoning_config() # Move to __init__()
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
@@ -990,8 +994,9 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
-            reasoning_config=reasoning_config,
+            reasoning_config=self.reasoning_config,
             gateway_session_key=gateway_session_key,
+            reasoning_callback=reasoning_callback,
         )
         return agent
 
@@ -1125,6 +1130,44 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
+        # 用于控制推理显示或推理程度的 extra body
+        # 为不影响其它Client端的兼容性，Hermes相关的参数放在extra_body的HermesConfig的二级json中，避免和OpenAI官方API的参数冲突
+        # 目的，可以通过extra_body中的HermesConfig.reasoning.display来临时控制是否展示推理过程，通过extra_body中的HermesConfig.reasoning.effort来临时控制推理的推理程度，方便API消费者根据需要选择性使用推理功能
+        # API消费者可通过以下方式请求推理内容：
+        #   "extra_body": {"HermesConfig":{"reasoning": {"display": "show","effort": "high"}}}
+
+        # extra body for reasoning display or effort control
+        # To avoid affecting compatibility with other clients, Hermes-related parameters are placed in a secondary JSON under HermesConfig in extra_body, avoiding conflicts with OpenAI's official API parameters.
+        # The purpose is to temporarily control whether to display the reasoning process via HermesConfig.reasoning.display in extra_body, and to temporarily control the reasoning effort via HermesConfig.reasoning.effort, allowing API consumers to selectively use reasoning functionality as needed.
+        # API consumers can request reasoning content via:
+        #   "extra_body": {"HermesConfig":{"reasoning": {"display": "show","effort": "high"}}}
+        
+        body_lower = {k.lower(): v for k, v in body.items() if isinstance(k, str)}
+
+        _extra_body = body_lower.get("hermesconfig", {})
+
+        _reason_body = {}
+        if isinstance(_extra_body, dict):
+            # 规范化二级键
+            extra_lower = {k.lower(): v for k, v in _extra_body.items() if isinstance(k, str)}
+            _reason_body = extra_lower.get("reasoning", {})
+
+        if isinstance(_reason_body, dict):
+            _reason_lower = {k.lower(): v for k, v in _reason_body.items() if isinstance(k, str)}
+            if "display" in _reason_lower:
+                _reason_display_value = _reason_lower["display"].lower()
+                if _reason_display_value in ("show", "true", "yes", "1"):
+                    self.show_reasoning = True
+                if _reason_display_value in ("hide", "false", "no", "0"):
+                    self.show_reasoning = False
+            
+            if "effort" in _reason_lower:
+                _reason_effort_value = _reason_lower["effort"].lower()
+                if _reason_effort_value in ("minimal", "low", "medium", "high", "xhigh"):
+                    self.reasoning_config = {"enabled": True, "effort": _reason_effort_value}
+                if _reason_effort_value in ("none", "off", "false", "no", "0"):
+                    self.reasoning_config = {"enabled": False}
+
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []
@@ -1237,6 +1280,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_reasoning(reasoning):
+                """Emit reasoning delta as a custom SSE event."""
+                _stream_q.put(("__reasoning__", reasoning))
+
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
             # (e.g. internal/filtered tools) is silently dropped instead of
@@ -1304,6 +1351,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                reasoning_callback=_on_reasoning if self.show_reasoning else None,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1389,6 +1437,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
         # truncation via finish_reason="length" + Hermes-specific extras.
+
+        _message = {
+            "role": "assistant",
+            "content": final_response,
+            }
+        
+        if self.show_reasoning:
+            _last_reasoning = result.get("last_reasoning")
+            if _last_reasoning:
+                _message["reasoning"] = _last_reasoning.strip()
+                _message["reasoning_content"] = _last_reasoning.strip()
+
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -1397,10 +1457,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": final_response,
-                    },
+                    "message": _message,
                     "finish_reason": finish_reason,
                 }
             ],
@@ -1484,6 +1541,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {"reasoning_content": item[1]}, "finish_reason": None}],
+                    }
+                    await response.write(f"data: {json.dumps(reasoning_chunk)}\n\n".encode())
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -2833,6 +2897,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        reasoning_callback=None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2856,6 +2921,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                reasoning_callback=reasoning_callback,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

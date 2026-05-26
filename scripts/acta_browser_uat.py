@@ -20,7 +20,7 @@ from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Mapping, cast
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 
 DEV_ROW_RE = re.compile(r"<(?:section|article)\b(?=[^>]*\bclass=\"[^\"]*(?:brief-row|lead)\b)(?=[^>]*\bdata-feed-lane=\"dev\")[\s\S]*?</(?:section|article)>", re.I)
@@ -234,6 +234,88 @@ def _has_clickable_open_affordance(row_html: str) -> bool:
     return parser.has_affordance
 
 
+class _FirstOutputArtifactTargetParser(HTMLParser):
+    """Find the first real artifact-open target in rendered Outputs row HTML."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.target: str | None = None
+        self._seen_root = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.target is not None:
+            return
+        tag = tag.lower()
+        attr_map = {key.lower(): value for key, value in attrs}
+        if not self._seen_root:
+            self._seen_root = True
+            data_open_url = attr_map.get("data-open-url")
+            if _is_usable_open_url(data_open_url):
+                self.target = data_open_url.strip() if data_open_url is not None else None
+                return
+        if tag != "a" or not _is_usable_open_url(attr_map.get("href")):
+            return
+        classes = set((attr_map.get("class") or "").lower().split())
+        if classes & _ARTIFACT_OPEN_ANCHOR_CLASSES and not classes & _ARTIFACT_OPEN_EXCLUDED_ANCHOR_CLASSES:
+            href = attr_map.get("href")
+            self.target = href.strip() if href is not None else None
+
+
+def _safe_output_artifact_url(target: str | None, base_url: str) -> str | None:
+    if not _is_usable_open_url(target):
+        return None
+    assert target is not None
+    target = target.strip()
+    if target.startswith("//") or "\\" in target:
+        return None
+    parsed_target = urlparse(target)
+    parsed_base = urlparse(base_url)
+    target_path_lower = parsed_target.path.lower()
+    if not parsed_target.path:
+        return None
+    if ".." in parsed_target.path or "%2e" in target_path_lower or "%2f" in target_path_lower:
+        return None
+    if parsed_target.username is not None or parsed_target.password is not None:
+        return None
+    if parsed_target.scheme and parsed_target.scheme not in {"http", "https"}:
+        return None
+    if parsed_base.scheme == "file":
+        if parsed_target.scheme or parsed_target.netloc or target.startswith("/"):
+            return None
+        target_path = parsed_target.path
+        if "/" in target_path or ".." in target_path or "%2e" in target_path.lower():
+            return None
+        return urljoin(base_url, target)
+    if parsed_base.scheme not in {"http", "https"}:
+        return None
+    resolved = urljoin(base_url, target)
+    parsed_resolved = urlparse(resolved)
+    if parsed_resolved.scheme not in {"http", "https"}:
+        return None
+    if parsed_resolved.username is not None or parsed_resolved.password is not None:
+        return None
+    if (parsed_resolved.scheme, parsed_resolved.hostname, parsed_resolved.port) != (
+        parsed_base.scheme,
+        parsed_base.hostname,
+        parsed_base.port,
+    ):
+        return None
+    if parsed_resolved.hostname == "t.me" or (parsed_resolved.hostname or "").endswith(".t.me"):
+        return None
+    return resolved
+
+
+def _first_output_artifact_url(dom: str, base_url: str) -> str | None:
+    for row_html in _extract_html_by_class(dom, "output-row"):
+        parser = _FirstOutputArtifactTargetParser()
+        parser.feed(row_html)
+        parser.close()
+        safe_url = _safe_output_artifact_url(parser.target, base_url)
+        if safe_url:
+            return safe_url
+    return None
+
+
 class _ArchiveHrefParser(HTMLParser):
     """Extract anchor hrefs from an archive-card fragment."""
 
@@ -317,8 +399,10 @@ def _target_url(args: argparse.Namespace) -> str:
 def _report_url(url: str) -> str:
     """Return a report-safe URL without credentials, query strings, or fragments."""
     parsed = urlparse(url)
+    if parsed.scheme == "file":
+        return f"file://{parsed.path}"
     if parsed.scheme not in {"http", "https"}:
-        return url
+        return f"{parsed.scheme}:" if parsed.scheme else parsed.path
     if parsed.username or parsed.password:
         raise ValueError("Report URL must not include userinfo")
     try:
@@ -668,6 +752,27 @@ def _validate_outputs_contract(
     return failures
 
 
+def _validate_output_artifact_contract(
+    dom: str,
+    *,
+    horizontal_overflow: bool = False,
+    console_output: str = "",
+    errors_output: str = "",
+) -> list[str]:
+    failures, auth_wall = _common_browser_failures(
+        dom,
+        horizontal_overflow=horizontal_overflow,
+        console_output=console_output,
+        errors_output=errors_output,
+    )
+    if auth_wall:
+        return failures
+    if OUTPUT_LEAK_RE.search(dom):
+        failures.append("Opened output artifact contains raw prompt/tool/path leakage")
+    return failures
+
+
+
 def _validate_archive_contract(
     dom: str,
     *,
@@ -738,6 +843,9 @@ def run(args: argparse.Namespace) -> int:
     artifact_dir = Path(args.artifact_dir).expanduser().resolve()
     url = _target_url(args)
     scenario = getattr(args, "scenario", "feed")
+    output_artifact_result: BrowserResult | None = None
+    output_artifact_url: str | None = None
+    output_artifact_failures: list[str] = []
     try:
         result = _run_chrome(url, artifact_dir, args.timeout, args.viewport_width, args.viewport_height)
         if scenario == "archive":
@@ -755,6 +863,25 @@ def run(args: argparse.Namespace) -> int:
             errors_output=result.errors_output,
             **({"action_state_probe": result.action_state_probe or {}} if scenario == "feed" else {}),
         )
+        if scenario == "outputs":
+            output_artifact_url = _first_output_artifact_url(result.dom, result.url)
+            if output_artifact_url:
+                output_artifact_result = _run_chrome(
+                    output_artifact_url,
+                    artifact_dir / "output-artifact",
+                    args.timeout,
+                    args.viewport_width,
+                    args.viewport_height,
+                )
+                output_artifact_failures = _validate_output_artifact_contract(
+                    output_artifact_result.dom,
+                    horizontal_overflow=output_artifact_result.horizontal_overflow,
+                    console_output=output_artifact_result.console_output,
+                    errors_output=output_artifact_result.errors_output,
+                )
+                failures.extend(output_artifact_failures)
+            elif _extract_text_by_class(result.dom, "output-row"):
+                failures.append("No actionable Outputs artifact target found/opened")
     except Exception as exc:  # noqa: BLE001 - CLI harness should print actionable failure text.
         print("FAIL Acta browser UAT")
         print(str(exc))
@@ -778,6 +905,12 @@ def run(args: argparse.Namespace) -> int:
         report["archive_cards"] = len(_extract_text_by_class(result.dom, "archive-card"))
     elif scenario == "outputs":
         report["output_rows"] = len(_extract_text_by_class(result.dom, "output-row"))
+        report["opened_output_artifact_url"] = _report_url(output_artifact_url) if output_artifact_url else ""
+        report["output_artifact_screenshot"] = str(output_artifact_result.screenshot) if output_artifact_result else ""
+        report["output_artifact_horizontal_overflow"] = (
+            output_artifact_result.horizontal_overflow if output_artifact_result else False
+        )
+        report["output_artifact_failures"] = output_artifact_failures
     elif scenario == "jobs":
         report["job_rows"] = len(_extract_text_by_class(result.dom, "job-row"))
     else:
@@ -799,6 +932,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"Archive cards: {report['archive_cards']}")
     elif scenario == "outputs":
         print(f"Output rows: {report['output_rows']}")
+        if report.get("opened_output_artifact_url"):
+            print(f"Opened output artifact: {report['opened_output_artifact_url']}")
     elif scenario == "jobs":
         print(f"Job rows: {report['job_rows']}")
     else:

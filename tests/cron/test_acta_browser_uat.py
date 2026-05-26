@@ -832,14 +832,20 @@ def test_run_writes_jobs_report_metadata_for_jobs_scenario(tmp_path: Path, monke
 
 def test_run_writes_outputs_report_metadata_for_outputs_scenario(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
     screenshot = tmp_path / "uat" / "acta-uat.png"
+    artifact_screenshot = tmp_path / "uat" / "output-artifact" / "acta-uat.png"
+    opened_urls: list[str] = []
 
     def fake_run_chrome(url: str, artifact_dir: Path, timeout: int, viewport_width: int, viewport_height: int):
+        opened_urls.append(url)
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        screenshot.write_bytes(b"png")
+        shot = artifact_screenshot if "morning-operator-brief" in url else screenshot
+        shot.write_bytes(b"png")
         return acta_browser_uat.BrowserResult(
             url=url,
-            dom=_valid_outputs_dom(),
-            screenshot=screenshot,
+            dom="<html><body><main><h1>Morning operator brief</h1><p>Decision-ready output artifact.</p></main></body></html>"
+            if "morning-operator-brief" in url
+            else _valid_outputs_dom(),
+            screenshot=shot,
             browser_path=Path("fake-browser"),
             viewport_width=viewport_width,
             viewport_height=viewport_height,
@@ -865,15 +871,180 @@ def test_run_writes_outputs_report_metadata_for_outputs_scenario(tmp_path: Path,
     output = capsys.readouterr().out
     report = json.loads((tmp_path / "uat" / "acta-uat-report.json").read_text(encoding="utf-8"))
     assert "Output rows: 2" in output
+    assert "Opened output artifact: https://example.com/acta/outputs/morning-operator-brief" in output
+    assert opened_urls == [
+        "https://example.com/acta/outputs?token=secret#frag",
+        "https://example.com/acta/outputs/morning-operator-brief",
+    ]
     assert report["url"] == "https://example.com/acta/outputs"
     assert report["scenario_key"] == "outputs"
     assert report["persona"] == "mobile Acta operator inspecting Outputs shelf artifacts"
     assert "Outputs shelf" in report["scenario"]
     assert report["output_rows"] == 2
+    assert report["opened_output_artifact_url"] == "https://example.com/acta/outputs/morning-operator-brief"
+    assert report["output_artifact_screenshot"] == str(artifact_screenshot)
+    assert report["output_artifact_horizontal_overflow"] is False
+    assert report["output_artifact_failures"] == []
     assert report["action_state_probe"] == {}
     assert "job_rows" not in report
     assert "daily_rows" not in report
     assert "dev_rows" not in report
+
+
+def test_first_output_artifact_url_prefers_real_artifact_affordance_over_followup_links():
+    dom = """
+    <html><body>
+      <article class="output-row">
+        <h2>Signed output</h2>
+        <a class="followup" href="https://t.me/c/1/2">FOLLOW-UP</a>
+        <a class="output-open-overlay" href="brief.html?sig=abc&token=secret">OPEN</a>
+      </article>
+    </body></html>
+    """
+
+    assert acta_browser_uat._first_output_artifact_url(dom, "file:///tmp/acta/outputs.html") == "file:///tmp/acta/brief.html?sig=abc&token=secret"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "//evil.example/artifact.html",
+        "https://evil.example/artifact.html",
+        "https://user:pass@example.com/artifact.html",
+        "file:///Users/mozzie/.hermes/config.yaml",
+        "data:text/html,<h1>leak</h1>",
+        "ftp://example.com/artifact.html",
+        "../secret.html",
+        "%2e%2e%2fsecret.html",
+        "https://t.me/c/1/2",
+        "?token=secret",
+        "#artifact",
+    ],
+)
+def test_first_output_artifact_url_rejects_unsafe_or_non_artifact_targets(target: str):
+    dom = f"""
+    <html><body>
+      <article class="output-row" data-open-url="{target}">
+        <h2>Signed output</h2><span>OPEN</span>
+      </article>
+    </body></html>
+    """
+
+    assert acta_browser_uat._first_output_artifact_url(dom, "https://example.com/acta/outputs") is None
+
+
+def test_first_output_artifact_url_allows_same_origin_root_relative_target():
+    dom = """
+    <html><body>
+      <article class="output-row" data-open-url="/acta/outputs/morning-brief.html?sig=abc&token=secret">
+        <h2>Signed output</h2><span>OPEN</span>
+      </article>
+    </body></html>
+    """
+
+    assert (
+        acta_browser_uat._first_output_artifact_url(dom, "https://example.com/acta/outputs")
+        == "https://example.com/acta/outputs/morning-brief.html?sig=abc&token=secret"
+    )
+
+
+def test_report_url_strips_file_query_and_fragment():
+    assert (
+        acta_browser_uat._report_url("file:///tmp/acta/brief.html?sig=abc&token=secret#frag")
+        == "file:///tmp/acta/brief.html"
+    )
+
+
+def test_run_outputs_scenario_fails_when_no_artifact_target_opens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    screenshot = tmp_path / "uat" / "acta-uat.png"
+
+    def fake_run_chrome(url: str, artifact_dir: Path, timeout: int, viewport_width: int, viewport_height: int):
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        screenshot.write_bytes(b"png")
+        return acta_browser_uat.BrowserResult(
+            url=url,
+            dom="""
+            <html><body><main><h1>Outputs</h1><article class="output-row">
+              <h2>Catalog-only artifact</h2><span>CATALOG</span><span>SOURCE system ID catalog-17</span>
+              <span>PINNED catalog age 1 day ago</span><span>No public link</span>
+            </article></main></body></html>
+            """,
+            screenshot=screenshot,
+            browser_path=Path("fake-browser"),
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+            layout_metrics={"innerWidth": viewport_width, "innerHeight": viewport_height, "scrollWidth": viewport_width},
+        )
+
+    monkeypatch.setattr(acta_browser_uat, "_run_chrome", fake_run_chrome)
+    args = type(
+        "Args",
+        (),
+        {
+            "html": None,
+            "url": "https://example.com/acta/outputs",
+            "artifact_dir": str(tmp_path / "uat"),
+            "timeout": 1,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "scenario": "outputs",
+        },
+    )()
+
+    assert acta_browser_uat.run(args) == 1
+    assert "No actionable Outputs artifact target found/opened" in capsys.readouterr().out
+
+
+def test_validate_output_artifact_contract_fails_on_raw_log_leakage():
+    dom = """
+    <html><body><pre>## Prompt\nTool call: terminal\n/Users/mozzie/.hermes/secrets.env\napi_key=secret</pre></body></html>
+    """
+
+    assert acta_browser_uat._validate_output_artifact_contract(dom) == [
+        "Opened output artifact contains raw prompt/tool/path leakage"
+    ]
+
+
+def test_run_outputs_scenario_fails_when_opened_artifact_leaks_raw_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    screenshot = tmp_path / "uat" / "acta-uat.png"
+    artifact_screenshot = tmp_path / "uat" / "output-artifact" / "acta-uat.png"
+
+    def fake_run_chrome(url: str, artifact_dir: Path, timeout: int, viewport_width: int, viewport_height: int):
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        shot = artifact_screenshot if "morning-operator-brief" in url else screenshot
+        shot.write_bytes(b"png")
+        return acta_browser_uat.BrowserResult(
+            url=url,
+            dom="<html><body><pre>## Prompt\nTool output\n/Users/mozzie/.hermes/config.yaml</pre></body></html>"
+            if "morning-operator-brief" in url
+            else _valid_outputs_dom(),
+            screenshot=shot,
+            browser_path=Path("fake-browser"),
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+            layout_metrics={"innerWidth": viewport_width, "innerHeight": viewport_height, "scrollWidth": viewport_width},
+        )
+
+    monkeypatch.setattr(acta_browser_uat, "_run_chrome", fake_run_chrome)
+    args = type(
+        "Args",
+        (),
+        {
+            "html": None,
+            "url": "https://example.com/acta/outputs",
+            "artifact_dir": str(tmp_path / "uat"),
+            "timeout": 1,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "scenario": "outputs",
+        },
+    )()
+
+    assert acta_browser_uat.run(args) == 1
+    output = capsys.readouterr().out
+    report = json.loads((tmp_path / "uat" / "acta-uat-report.json").read_text(encoding="utf-8"))
+    assert "Opened output artifact contains raw prompt/tool/path leakage" in output
+    assert report["output_artifact_failures"] == ["Opened output artifact contains raw prompt/tool/path leakage"]
 
 
 def test_main_defaults_to_feed_scenario(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

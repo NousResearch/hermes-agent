@@ -26,6 +26,7 @@ Usage:
 """
 
 import os
+import platform
 import re
 import difflib
 from abc import ABC, abstractmethod
@@ -753,6 +754,14 @@ class ShellFileOperations(FileOperations):
             return _detect_line_ending(pre_content)
         # File may not exist (new write) — `head` exits 0 with empty
         # stdout in that case which yields None below.  Cheap probe.
+        # On Windows, `head` is not available; fall back to a direct Python read.
+        if platform.system() == "Windows":
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as _f:
+                    sample = _f.read(4096)
+            except OSError:
+                return None
+            return _detect_line_ending(sample)
         head_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
         head_result = self._exec(head_cmd)
         if head_result.exit_code != 0 or not head_result.stdout:

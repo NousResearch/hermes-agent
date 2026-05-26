@@ -1,0 +1,20 @@
+[Unit]
+Description=Hermes AgentCyber Auto-Update
+Documentation=https://github.com/breakingcircuits1337/hermes-agentcyber
+DefaultDependencies=no
+After=network-online.target
+Wants=network-online.target
+Before=hermes-gateway.service
+
+[Service]
+Type=oneshot
+User=hermes
+EnvironmentFile=-/home/hermes/.hermes/config.env
+ExecStart=/usr/local/bin/hermes-autoupdate
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

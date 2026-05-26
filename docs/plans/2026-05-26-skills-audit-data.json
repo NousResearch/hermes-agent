@@ -163,14 +163,6 @@
       ]
     },
     {
-      "active_path": "/Users/alfred/.hermes/skills/software-development/hermes-agent-skill-authoring/SKILL.md",
-      "exact": false,
-      "name": "hermes-agent-skill-authoring",
-      "source_paths": [
-        "/Users/alfred/.hermes/hermes-agent/skills/software-development/hermes-agent-skill-authoring/SKILL.md"
-      ]
-    },
-    {
       "active_path": "/Users/alfred/.hermes/skills/software-development/spike/SKILL.md",
       "exact": false,
       "name": "spike",
@@ -2179,7 +2171,7 @@
         "requesting-code-review"
       ],
       "relative_path": "software-development/hermes-agent-skill-authoring/SKILL.md",
-      "sha256": "f9b797ff1977b0a448d00a58f5b87571f591a08c844bb67d09ffba4b664e9d3b",
+      "sha256": "cb5937a199094bd974ef8d5f206b8373caa3f92b7f1f4425e058b539472d789b",
       "source": "active_user_local",
       "tags": [
         "skills",
@@ -4034,7 +4026,7 @@
         "requesting-code-review"
       ],
       "relative_path": "software-development/hermes-agent-skill-authoring/SKILL.md",
-      "sha256": "4b564cbaf9f6ed6fad90a294f9855aa9d0f5398d48f51a6619d6790147192c6f",
+      "sha256": "cb5937a199094bd974ef8d5f206b8373caa3f92b7f1f4425e058b539472d789b",
       "source": "repo_builtin",
       "tags": [
         "skills",
@@ -6052,8 +6044,8 @@
       ]
     }
   ],
-  "source_duplicate_divergent": 15,
-  "source_duplicate_exact": 76,
+  "source_duplicate_divergent": 14,
+  "source_duplicate_exact": 77,
   "source_duplicate_total": 91,
   "total_scanned": 282
 }

@@ -18,13 +18,13 @@ metadata:
 There are two places a SKILL.md can live:
 
 1. **User-local:** `~/.hermes/skills/<maybe-category>/<name>/SKILL.md` — personal, not shared. Created via `skill_manage(action='create')`.
-2. **In-repo (this skill is about this case):** `/home/bb/hermes-agent/skills/<category>/<name>/SKILL.md` — committed, shipped with the package. Use `write_file` + `git add`. `skill_manage(action='create')` does NOT target this tree.
+2. **In-repo (this skill is about this case):** `<repo-root>/skills/<category>/<name>/SKILL.md` — committed, shipped with the package. Use `write_file` + `git add`. `skill_manage(action='create')` does NOT target this tree.
 
 ## When to Use
 
 - User asks you to add a skill "in this branch / repo / commit"
 - You're committing a reusable workflow that should ship with hermes-agent
-- You're editing an existing skill under `/home/bb/hermes-agent/skills/` (use `patch` for small edits, `write_file` for rewrites; `skill_manage` still works for patch on in-repo skills, but not for `create`)
+- You're editing an existing skill under `<repo-root>/skills/` (use `patch` for small edits, `write_file` for rewrites; `skill_manage` still works for patch on in-repo skills, but not for `create`)
 
 ## Required Frontmatter
 
@@ -104,14 +104,15 @@ Pick the closest existing category. Don't invent new top-level categories casual
 
 ## Workflow
 
-1. **Survey peers** in the target category:
+1. **Prefer updating an existing owner skill before creating anything new.** Search/list the active skill library for the nearest class-level owner. Patch the owner skill when the new learning is a pitfall, command, verifier, workflow correction, or user preference. Add support files under the owner when the learning is long, session-specific, or template/script shaped. Create a new top-level skill only when the trigger is truly distinct and no class-level owner exists.
+2. **Survey peers** in the target category:
    ```
    ls skills/<category>/
    ```
    Read 2-3 peer SKILL.md files to match tone and structure.
-2. **Check validator constraints** in `tools/skill_manager_tool.py` if unsure.
-3. **Draft** with `write_file` to `skills/<category>/<name>/SKILL.md`.
-4. **Validate locally**:
+3. **Check validator constraints** in `tools/skill_manager_tool.py` if unsure.
+4. **Draft** with `write_file` to `skills/<category>/<name>/SKILL.md`.
+5. **Validate locally**:
    ```python
    import yaml, re, pathlib
    content = pathlib.Path("skills/<category>/<name>/SKILL.md").read_text()
@@ -122,8 +123,30 @@ Pick the closest existing category. Don't invent new top-level categories casual
    assert len(fm["description"]) <= 1024
    assert len(content) <= 100_000
    ```
-5. **Git add + commit** on the active branch.
-6. **Note:** the CURRENT session's skill loader is cached — `skill_view` / `skills_list` will not see the new skill until a new session. This is expected, not a bug.
+6. **Git add + commit** on the active branch.
+7. **Note:** the CURRENT session's skill loader is cached — `skill_view` / `skills_list` will not see the new skill until a new session. This is expected, not a bug.
+
+## Update-First Library Shape
+
+Target shape for a healthy skill library:
+
+1. **Router / umbrella skills** — class-level owners that decide which leaf skill applies and carry shared policy, quality bars, routing rules, and anti-duplication guidance.
+2. **Leaf / executor skills** — exact commands, tool quirks, setup/readiness, and verification for one distinct execution surface.
+3. **Support files** — `references/` for session detail and condensed knowledge banks, `templates/` for starter artifacts, and `scripts/` for deterministic probes or reusable actions.
+
+Before creating a skill, classify the new content:
+
+- **Pitfall / command / verifier / workflow correction / user preference:** patch the owner SKILL.md.
+- **Long transcript, audit, API notes, postmortem, or task-specific evidence:** write `references/<topic>.md` under the owner and add a one-line pointer from SKILL.md.
+- **Reusable starter file:** write `templates/<name>.<ext>`.
+- **Re-runnable deterministic action:** write `scripts/<name>.<ext>`.
+- **Distinct trigger + distinct tools + no owner exists:** create a new class-level umbrella or executor skill, then relate it to an umbrella.
+
+Avoid one-session-one-skill names (`fix-X`, PR numbers, today's error string, feature codenames). If the name only makes sense for the current session, it belongs in a reference file under an existing owner, not as a top-level skill.
+
+See `references/update-first-skill-library.md` for a concrete consolidation model and phased audit plan.
+
+For repo/local skill divergence, use `references/divergent-skill-reconciliation.md`: diff active vs source, classify every hunk as generic promote / MJ-local preserve / repo preserve / needs split / needs verification / stale, write a decision artifact first, then promote the lowest-risk generic changes before touching large umbrellas.
 
 ## Cross-Referencing Other Skills
 
@@ -146,11 +169,15 @@ Pick the closest existing category. Don't invent new top-level categories casual
 
 4. **Forgetting the author/license/metadata block.** Not validator-enforced, but every peer has it; omitting makes the skill look half-finished.
 
-5. **Writing a skill that duplicates a peer.** Before creating, `ls skills/<category>/` and open 2-3 peers. Prefer extending an existing skill to creating a narrow sibling.
+5. **Writing a skill that duplicates a peer.** Before creating, `ls skills/<category>/` and open 2-3 peers. Prefer extending an existing skill to creating a narrow sibling. If the new material is session-specific, put it in `references/` under the owner skill and add a pointer from SKILL.md.
 
-6. **Expecting the current session to see the new skill.** It won't. The skill loader is initialized at session start. Verify in a fresh session or via `skill_view` using the exact path.
+6. **Turning every successful session into a new top-level skill.** Most sessions should improve the currently-loaded or nearest umbrella skill. Top-level creation is reserved for a durable class of work with a distinct trigger and execution surface.
 
-7. **Linking to skills that don't exist in-repo.** `related_skills: [some-user-local-skill]` works for you but breaks for other clones. Prefer only in-repo links.
+7. **Treating a session-end skill review as optional.** When the user asks to review the conversation and update skills, actively look for at least one class-level patch, pitfall, or support file. “Nothing to save” is valid only after checking loaded skills, existing umbrellas, and whether a reference file would capture the durable part without creating a new skill.
+
+8. **Expecting the current session to see the new skill.** It won't. The skill loader is initialized at session start. Verify in a fresh session or via `skill_view` using the exact path.
+
+9. **Linking to skills that don't exist in-repo.** `related_skills: [some-user-local-skill]` works for you but breaks for other clones. Prefer only in-repo links.
 
 ## Verification Checklist
 

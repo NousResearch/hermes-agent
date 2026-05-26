@@ -153,6 +153,18 @@ Active local adds the exact update-first behavior this consolidation effort need
 
 Promote this active copy into repo source, after ensuring the referenced update-first reference exists. This is the cleanest and lowest-risk Phase 2A merge.
 
+### Implementation proof (2026-05-26)
+
+Implemented first because it was the lowest-risk generic promotion.
+
+- Repo `SKILL.md` updated with the active update-first workflow and pitfalls.
+- Repo references created:
+  - `skills/software-development/hermes-agent-skill-authoring/references/update-first-skill-library.md`
+  - `skills/software-development/hermes-agent-skill-authoring/references/divergent-skill-reconciliation.md`
+- Stale hardcoded `/home/bb/hermes-agent` examples replaced with `<repo-root>` in both repo and active local copy.
+- Inventory after promotion: exact duplicates 77, divergent copies 14, active validation failures 0.
+- Owner routing harness after promotion: 21/21 passed.
+
 ### Proof gate before editing
 
 - Repo skill validates.

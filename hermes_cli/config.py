@@ -1905,13 +1905,25 @@ DEFAULT_CONFIG = {
     },
 
     # Paste collapse thresholds (TUI + CLI).
-    # collapse_threshold: paste collapses to a file reference when line count
-    #   exceeds this value (bracketed paste, safe: appends to existing text).
-    # collapse_threshold_fallback: same but for the fallback heuristic used
-    #   by terminals without bracketed paste support (destructive: replaces
-    #   entire buffer).  0 = disabled.
+    #
+    # paste_collapse_threshold (default 5)
+    #   Bracketed-paste handler. Pastes with this many newlines or more
+    #   collapse to a file reference. Set 0 to disable.
+    #
+    # paste_collapse_threshold_fallback (default 5)
+    #   Fallback heuristic for terminals without bracketed paste support.
+    #   Same line count test but heuristically gated by chars-added /
+    #   newlines-added to avoid false positives from normal typing.
+    #   Set 0 to disable.
+    #
+    # paste_collapse_char_threshold (default 2000)
+    #   Long single-line paste guard. Pastes whose total char length
+    #   reaches this value collapse to a file reference even if line
+    #   count is below the line threshold. Catches the "8000 chars of
+    #   minified JSON / log output on one line" case. Set 0 to disable.
     "paste_collapse_threshold": 5,
-    "paste_collapse_threshold_fallback": 0,
+    "paste_collapse_threshold_fallback": 5,
+    "paste_collapse_char_threshold": 2000,
 
 
     # Config schema version - bump this when adding new required fields

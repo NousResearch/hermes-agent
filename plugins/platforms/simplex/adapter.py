@@ -836,7 +836,7 @@ class SimplexAdapter(BasePlatformAdapter):
                 await self._mark_chat_items_read(chat_id, [item_id])
             return
 
-        authorized = True
+        authorized = False
         runner = getattr(self, "gateway_runner", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
@@ -848,6 +848,11 @@ class SimplexAdapter(BasePlatformAdapter):
                     "SimpleX: authorization check failed for native call from chat_id=%s",
                     chat_id,
                 )
+        else:
+            logger.warning(
+                "SimpleX: rejected native call from chat_id=%s because authorization handler is unavailable",
+                chat_id,
+            )
 
         if not authorized:
             logger.warning(
@@ -875,11 +880,6 @@ class SimplexAdapter(BasePlatformAdapter):
                     await self._mark_chat_items_read(chat_id, [item_id])
                 return
 
-            code = (
-                getattr(result, "code", None)
-                or "call_simplex_native_media_failed"
-            )
-            await self.reject_native_call(chat_id, code)
             note = getattr(result, "message", "") if result is not None else ""
             if not note:
                 note = (

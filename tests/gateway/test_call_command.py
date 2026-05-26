@@ -93,11 +93,57 @@ async def test_handle_call_native_reports_handler_not_ready_with_platform_key():
 
 
 @pytest.mark.asyncio
+async def test_handle_call_native_reports_sidecar_not_configured():
+    runner = _runner()
+    runner.adapters["simplex"] = SimpleNamespace(
+        native_calls_enabled=True,
+        native_call_handler=lambda source, invitation: None,
+        config=SimpleNamespace(extra={"native_calls": {"enabled": True}}),
+    )
+
+    result = await runner._handle_call_command(_event("/call native", platform="simplex"))
+
+    assert "SimpleX-native calls are unavailable" in result
+    assert "sidecar" in result
+    assert "not configured" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_call_native_requires_simplex_dm():
+    runner = _runner()
+    runner.adapters["simplex"] = SimpleNamespace(
+        native_calls_enabled=True,
+        native_call_handler=lambda source, invitation: None,
+        config=SimpleNamespace(
+            extra={
+                "native_calls": {
+                    "enabled": True,
+                    "sidecar_command": [sys.executable, "-c", "print('ok')"],
+                }
+            }
+        ),
+    )
+
+    result = await runner._handle_call_command(
+        _event("/call native", chat_type="group", platform="simplex")
+    )
+
+    assert "private-only" in result
+
+
+@pytest.mark.asyncio
 async def test_handle_call_native_reports_native_enabled():
     runner = _runner()
     runner.adapters["simplex"] = SimpleNamespace(
         native_calls_enabled=True,
         native_call_handler=lambda call: call,
+        config=SimpleNamespace(
+            extra={
+                "native_calls": {
+                    "sidecar_command": [sys.executable, "-c", "print('ok')"],
+                }
+            }
+        ),
     )
 
     result = await runner._handle_call_command(_event("/call native", platform="simplex"))
@@ -113,6 +159,13 @@ async def test_handle_call_native_finds_platform_key_from_value_wrapper():
         platform=Platform("simplex"),
         native_calls_enabled=True,
         native_call_handler=lambda source, invitation: None,
+        config=SimpleNamespace(
+            extra={
+                "native_calls": {
+                    "sidecar_command": [sys.executable, "-c", "print('ok')"],
+                }
+            }
+        ),
     )
 
     result = await runner._handle_call_command(_event("/call native", platform="simplex"))
@@ -132,7 +185,37 @@ def test_configure_native_call_handlers_installs_simplex_handler():
     runner._configure_native_call_handlers()
 
     assert callable(adapter.native_call_handler)
-    assert adapter.native_call_handler == runner._handle_simplex_native_call
+
+
+@pytest.mark.asyncio
+async def test_configure_native_call_handler_uses_pending_adapter_before_registry_insert():
+    runner = _runner()
+    adapter = SimpleNamespace(
+        platform=Platform("simplex"),
+        native_calls_enabled=True,
+        native_call_handler=None,
+    )
+    observed = {}
+
+    async def handle_with_adapter(pending_adapter, source, invitation):
+        observed["adapter"] = pending_adapter
+        observed["source"] = source
+        observed["invitation"] = invitation
+        return SimpleNamespace(ok=True, code="accepted", message="", call_id="call-1")
+
+    runner._handle_simplex_native_call_with_adapter = handle_with_adapter
+    runner._configure_native_call_handler(adapter)
+
+    source = SimpleNamespace(platform=Platform("simplex"), chat_id="123")
+    invitation = NativeCallInvitation(contact_id="contact-1")
+    result = await adapter.native_call_handler(source, invitation)
+
+    assert result.ok is True
+    assert observed == {
+        "adapter": adapter,
+        "source": source,
+        "invitation": invitation,
+    }
 
 
 @pytest.mark.asyncio

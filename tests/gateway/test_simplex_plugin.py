@@ -926,7 +926,7 @@ async def test_handle_new_chat_item_routes_native_call_to_enabled_handler():
 
 
 @pytest.mark.asyncio
-async def test_handle_new_chat_item_handler_failure_rejects_native_call_with_loud_message():
+async def test_handle_new_chat_item_handler_failure_sends_loud_message_without_double_reject():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(
         enabled=True,
@@ -970,10 +970,58 @@ async def test_handle_new_chat_item_handler_failure_rejects_native_call_with_lou
     )
 
     adapter.handle_message.assert_not_awaited()
-    adapter.reject_native_call.assert_awaited_once_with("4", "sidecar_failure")
+    adapter.reject_native_call.assert_not_awaited()
     adapter.send.assert_awaited_once()
     assert "sidecar failure" in adapter.send.await_args.args[1]
     adapter._mark_chat_items_read.assert_awaited_once_with("4", [15])
+
+
+@pytest.mark.asyncio
+async def test_handle_new_chat_item_rejects_native_call_when_auth_fn_missing(caplog):
+    """Missing gateway auth wiring must reject without advertising fallback details."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "ws_url": "ws://localhost:5225",
+            "native_calls": {"enabled": True},
+        },
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.handle_message = AsyncMock()  # type: ignore[method-assign]
+    adapter._send_command = AsyncMock(return_value={"type": "ok"})  # type: ignore[attr-defined]
+    adapter.send = AsyncMock()  # type: ignore[method-assign]
+    adapter._mark_chat_items_read = AsyncMock()  # type: ignore[method-assign]
+    adapter.native_call_handler = AsyncMock(
+        return_value=NativeCallResult(ok=True, code="accepted", message="")
+    )
+    caplog.set_level("WARNING")
+
+    await adapter._handle_new_chat_item(
+        {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": 16, "itemStatus": {"type": "rcvNew"}},
+                "content": {
+                    "type": "rcvCall",
+                    "status": "pending",
+                    "duration": 0,
+                    "callType": {"media": "audio"},
+                },
+            },
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.native_call_handler.assert_not_awaited()
+    adapter._send_command.assert_awaited_once_with("/_call reject @4")
+    adapter.send.assert_not_awaited()
+    adapter._mark_chat_items_read.assert_awaited_once_with("4", [16])
+    assert "authorization" in caplog.text
 
 
 @pytest.mark.asyncio

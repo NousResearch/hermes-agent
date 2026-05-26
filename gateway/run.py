@@ -10235,11 +10235,47 @@ class GatewayRunner:
         if not bool(getattr(adapter, "native_calls_enabled", False)):
             return
         try:
-            adapter.native_call_handler = self._handle_simplex_native_call
+            async def _native_call_handler(source, invitation, _adapter=adapter):
+                return await self._handle_simplex_native_call_with_adapter(
+                    _adapter,
+                    source,
+                    invitation,
+                )
+
+            adapter.native_call_handler = _native_call_handler
         except Exception:
             logger.exception(
                 "Failed to install SimpleX native call handler on connected adapter"
             )
+
+    def _simplex_native_sidecar_command(self, adapter) -> list[str]:
+        extra = getattr(getattr(adapter, "config", None), "extra", {}) or {}
+        native_calls = extra.get("native_calls", {}) if isinstance(extra, dict) else {}
+        sidecar_command = (
+            native_calls.get("sidecar_command", [])
+            if isinstance(native_calls, dict)
+            else []
+        )
+        if isinstance(sidecar_command, str):
+            sidecar_command = shlex.split(sidecar_command)
+        elif not isinstance(sidecar_command, (list, tuple)):
+            sidecar_command = []
+        return [str(part) for part in sidecar_command if str(part)]
+
+    def _simplex_native_ready_message(self, adapter) -> str:
+        if not bool(getattr(adapter, "native_calls_enabled", False)):
+            return (
+                "SimpleX-native calls are unavailable: native WebRTC bridge is not enabled."
+            )
+        if not callable(getattr(adapter, "native_call_handler", None)):
+            return (
+                "SimpleX-native calls are unavailable: native WebRTC bridge is not ready."
+            )
+        if not self._simplex_native_sidecar_command(adapter):
+            return (
+                "SimpleX-native calls are unavailable: native WebRTC sidecar is not configured."
+            )
+        return "SimpleX-native calls are enabled for incoming SimpleX app calls."
 
     def _find_simplex_adapter(self, source) -> Any:
         adapters = getattr(self, "adapters", {}) or {}
@@ -10272,9 +10308,6 @@ class GatewayRunner:
     async def _handle_simplex_native_call(self, source, invitation):
         from types import SimpleNamespace
 
-        from gateway.calls.native.application import NativeCallApplication
-        from gateway.calls.native.sidecar import SidecarMediaPort
-
         adapter = self._find_simplex_adapter(source)
         if adapter is None:
             return SimpleNamespace(
@@ -10285,18 +10318,38 @@ class GatewayRunner:
                 ),
                 call_id=None,
             )
-
-        extra = getattr(getattr(adapter, "config", None), "extra", {}) or {}
-        native_calls = extra.get("native_calls", {}) if isinstance(extra, dict) else {}
-        sidecar_command = (
-            native_calls.get("sidecar_command", [])
-            if isinstance(native_calls, dict)
-            else []
+        return await self._handle_simplex_native_call_with_adapter(
+            adapter,
+            source,
+            invitation,
         )
-        if isinstance(sidecar_command, str):
-            sidecar_command = shlex.split(sidecar_command)
-        elif not isinstance(sidecar_command, (list, tuple)):
-            sidecar_command = []
+
+    async def _handle_simplex_native_call_with_adapter(self, adapter, source, invitation):
+        from types import SimpleNamespace
+
+        from gateway.calls.native.application import NativeCallApplication
+        from gateway.calls.native.sidecar import SidecarMediaPort
+
+        if adapter is None:
+            return SimpleNamespace(
+                ok=False,
+                code="call_simplex_ws_disconnected",
+                message=(
+                    "SimpleX-native call setup failed: SimpleX adapter is not connected."
+                ),
+                call_id=None,
+            )
+
+        sidecar_command = self._simplex_native_sidecar_command(adapter)
+        if not sidecar_command:
+            return SimpleNamespace(
+                ok=False,
+                code="call_simplex_native_sidecar_not_configured",
+                message=(
+                    "SimpleX-native call setup failed: native WebRTC sidecar is not configured."
+                ),
+                call_id=None,
+            )
 
         app = NativeCallApplication(
             signaling=adapter,
@@ -10332,16 +10385,13 @@ class GatewayRunner:
             platform = getattr(source_platform, "value", source_platform)
             if str(platform) != "simplex":
                 return "SimpleX-native calls are only available from an authorized SimpleX DM."
+            chat_type = str(getattr(event.source, "chat_type", "") or "").lower()
+            if chat_type not in {"dm", "direct", "private"}:
+                return "SimpleX-native calls are private-only; start one from a SimpleX DM."
             adapter = self._find_simplex_adapter(event.source)
             if adapter is None:
                 return "SimpleX-native calls are unavailable: SimpleX adapter not connected."
-            if not bool(getattr(adapter, "native_calls_enabled", False)):
-                return "SimpleX-native calls are unavailable: native WebRTC bridge is not enabled."
-            if not callable(getattr(adapter, "native_call_handler", None)):
-                return "SimpleX-native calls are unavailable: native WebRTC bridge is not ready."
-            return (
-                "SimpleX-native calls are enabled for incoming SimpleX app calls."
-            )
+            return self._simplex_native_ready_message(adapter)
         return "Usage: /call [browser|native|status|end]"
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:

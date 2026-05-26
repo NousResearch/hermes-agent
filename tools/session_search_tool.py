@@ -119,9 +119,28 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         current_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
 
         results = []
+        if current_session_id:
+            cur = db.get_session(current_session_id)
+            if cur:
+                cur_msgs = db.get_messages(current_session_id)
+                cur_preview = ""
+                if cur_msgs:
+                    cur_preview = (cur_msgs[0].get("content") or "")[:63].replace("\n", " ").replace("\r", " ")
+                results.append({
+                    "session_id": current_session_id,
+                    "title": cur.get("title") or None,
+                    "source": cur.get("source", ""),
+                    "started_at": cur.get("started_at", ""),
+                    "last_active": cur.get("last_active", ""),
+                    "message_count": cur.get("message_count", 0),
+                    "preview": cur_preview,
+                })
+
         for s in sessions:
             sid = s.get("id", "")
-            if current_root and (sid == current_root or sid == current_session_id):
+            if sid == current_session_id:
+                continue
+            if current_root and sid == current_root:
                 continue
             # Skip child / delegation sessions
             if s.get("parent_session_id"):
@@ -317,11 +336,6 @@ def _discover(
     for r in raw_results:
         raw_sid = r["session_id"]
         resolved_sid = _resolve_to_parent(db, raw_sid)
-        # Skip the current session lineage
-        if current_lineage_root and resolved_sid == current_lineage_root:
-            continue
-        if current_session_id and raw_sid == current_session_id:
-            continue
         if resolved_sid not in seen_sessions:
             row = dict(r)
             row["_lineage_root"] = resolved_sid

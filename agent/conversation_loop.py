@@ -127,6 +127,29 @@ def _ra():
     return run_agent
 
 
+def _extract_system_prompt_field(system_prompt: str, field: str) -> str:
+    """Extract a timestamp-line field value from a stored system prompt.
+
+    The system prompt's volatile section contains lines like::
+
+        Model: deepseek-v4-pro
+        Provider: deepseek
+
+    This helper parses the stored prompt and returns the value for a
+    given field name, or an empty string if not found.
+    """
+    import re
+
+    if not system_prompt or not field:
+        return ""
+    pattern = rf"^{re.escape(field)}:\s*(.+)$"
+    for line in system_prompt.splitlines():
+        m = re.match(pattern, line.strip())
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -178,9 +201,30 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     if stored_prompt:
         # Continuing session — reuse the exact system prompt from the
-        # previous turn so the Anthropic cache prefix matches.
-        agent._cached_system_prompt = stored_prompt
-        return
+        # previous turn so the Anthropic cache prefix matches, BUT only
+        # when the model/provider haven't changed.  A model switch (e.g.
+        # config update + gateway retry) can leave the stored prompt
+        # advertising a different model than the one the agent now uses,
+        # which confuses both the user and the model.
+        _stored_model = _extract_system_prompt_field(stored_prompt, "Model")
+        _stored_provider = _extract_system_prompt_field(stored_prompt, "Provider")
+        _model_mismatch = (
+            _stored_model
+            and agent.model
+            and _stored_model != agent.model
+        ) or (
+            _stored_provider
+            and agent.provider
+            and _stored_provider != agent.provider
+        )
+        if not _model_mismatch:
+            agent._cached_system_prompt = stored_prompt
+            return
+        logger.info(
+            "Stored system prompt model/provider (%s/%s) does not match "
+            "current agent (%s/%s) — rebuilding.",
+            _stored_model, _stored_provider, agent.model, agent.provider,
+        )
 
     if conversation_history and stored_state in ("null", "empty"):
         # Continuing session whose stored prompt is unusable.  The

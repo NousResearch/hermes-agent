@@ -319,6 +319,11 @@ def auth_add_command(args) -> None:
             creds["tokens"]["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),
         )
+        auth_mod._save_codex_tokens(
+            creds["tokens"],
+            creds.get("last_refresh"),
+            set_active=False,
+        )
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],

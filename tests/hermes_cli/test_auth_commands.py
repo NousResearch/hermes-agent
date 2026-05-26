@@ -308,6 +308,10 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+    provider_state = payload["providers"]["openai-codex"]
+    assert provider_state["tokens"]["access_token"] == token
+    assert provider_state["tokens"]["refresh_token"] == "refresh-token"
+    assert provider_state["last_refresh"] == "2026-03-23T10:00:00Z"
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):

@@ -3191,9 +3191,14 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     if _lock:
         with _auth_store_lock():
             auth_store = _load_auth_store()
+            state = _load_provider_state(auth_store, "openai-codex")
+            if not state:
+                state = _recover_codex_provider_state_from_pool(auth_store)
     else:
         auth_store = _load_auth_store()
-    state = _load_provider_state(auth_store, "openai-codex")
+        state = _load_provider_state(auth_store, "openai-codex")
+        if not state:
+            state = _recover_codex_provider_state_from_pool(auth_store)
     if not state:
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
@@ -3231,7 +3236,66 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
+def _recover_codex_provider_state_from_pool(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Repair providers.openai-codex from a pool-only OAuth credential.
+
+    `hermes auth add openai-codex` and the dashboard device-code flow used
+    to write only credential_pool.openai-codex. That worked until the pool
+    entry was marked exhausted, then runtime resolution fell back to the
+    missing provider state and reported "No Codex credentials stored." Keep
+    this recovery path so old auth stores self-heal instead of stranding the
+    user.
+    """
+    pool = auth_store.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list):
+        return None
+
+    allowed_sources = {
+        "device_code",
+        "manual:device_code",
+        "manual:dashboard_device_code",
+    }
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("auth_type") != "oauth":
+            continue
+        if entry.get("source") not in allowed_sources:
+            continue
+        access_token = str(entry.get("access_token") or "").strip()
+        refresh_token = str(entry.get("refresh_token") or "").strip()
+        if not access_token or not refresh_token:
+            continue
+        state: Dict[str, Any] = {
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+            },
+            "auth_mode": "chatgpt",
+            "source": "credential_pool_recovery",
+        }
+        if entry.get("last_refresh"):
+            state["last_refresh"] = entry["last_refresh"]
+        if entry.get("base_url"):
+            state["base_url"] = entry["base_url"]
+        _store_provider_state(auth_store, "openai-codex", state, set_active=False)
+        _save_auth_store(auth_store)
+        logger.warning(
+            "Recovered providers.openai-codex from credential_pool.openai-codex "
+            "entry %s",
+            entry.get("id") or "<unknown>",
+        )
+        return state
+    return None
+
+
+def _save_codex_tokens(
+    tokens: Dict[str, str],
+    last_refresh: str = None,
+    *,
+    set_active: bool = True,
+) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -3241,7 +3305,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
-        _save_provider_state(auth_store, "openai-codex", state)
+        _store_provider_state(auth_store, "openai-codex", state, set_active=set_active)
         _save_auth_store(auth_store)
 
 

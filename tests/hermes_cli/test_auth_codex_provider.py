@@ -75,6 +75,44 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_read_codex_tokens_recovers_pool_only_login(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_file = hermes_home / "auth.json"
+    auth_file.write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "pool-1",
+                    "label": "dashboard login",
+                    "auth_type": "oauth",
+                    "source": "manual:dashboard_device_code",
+                    "access_token": "pool-access",
+                    "refresh_token": "pool-refresh",
+                    "base_url": DEFAULT_CODEX_BASE_URL,
+                    "last_refresh": "2026-05-20T04:42:19Z",
+                    "last_status": "exhausted",
+                    "last_error_code": 429,
+                }
+            ]
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    data = _read_codex_tokens()
+
+    assert data["tokens"]["access_token"] == "pool-access"
+    assert data["tokens"]["refresh_token"] == "pool-refresh"
+    assert data["last_refresh"] == "2026-05-20T04:42:19Z"
+    repaired = json.loads(auth_file.read_text())
+    provider_state = repaired["providers"]["openai-codex"]
+    assert provider_state["tokens"]["access_token"] == "pool-access"
+    assert provider_state["tokens"]["refresh_token"] == "pool-refresh"
+    assert provider_state["source"] == "credential_pool_recovery"
+
+
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")

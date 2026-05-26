@@ -2185,6 +2185,7 @@ def _codex_full_login_worker(session_id: str) -> None:
             CODEX_OAUTH_CLIENT_ID,
             CODEX_OAUTH_TOKEN_URL,
             DEFAULT_CODEX_BASE_URL,
+            _save_codex_tokens,
         )
         issuer = "https://auth.openai.com"
 
@@ -2287,6 +2288,13 @@ def _codex_full_login_worker(session_id: str) -> None:
             access_token=access_token,
             refresh_token=refresh_token,
             base_url=base_url,
+        )
+        _save_codex_tokens(
+            {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+            },
+            set_active=False,
         )
         pool.add_entry(entry)
         with _oauth_sessions_lock:

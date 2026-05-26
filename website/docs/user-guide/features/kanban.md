@@ -673,9 +673,21 @@ This is the whole point of the separation:
 - You spot a card that needs human context → `/kanban comment t_xyz "use the 2026 schema, not 2025"` lands on the task thread and the *next* run of that task will read it in `kanban_show()`.
 - You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine` or `/kanban stats` inspects the board without touching your main conversation.
 
-### Auto-subscribe on `/kanban create` (gateway only)
+### Auto-subscribe on task creation
 
 When you create a task from the gateway with `/kanban create "…"`, the originating chat (platform + chat id + thread id) is automatically subscribed to that task's terminal events (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`). You'll get one message back per terminal event — including the first line of the worker's result summary on `completed` — without having to poll or remember the task id.
+
+Installations that want every task to notify a fixed home channel — including tasks created by CLI commands, scripts, worker tools, dashboard actions, or swarm/decompose helpers — can configure DB-layer defaults:
+
+```yaml
+kanban:
+  default_notify_subscriptions:
+    - platform: telegram
+      chat_id: "12345678"
+      notifier_profile: default
+```
+
+These defaults are applied by `kanban_db.create_task`, so they cover all creation paths. Remove the config entry, or remove a single row with `hermes kanban notify-unsubscribe`, to opt out.
 
 ```
 you> /kanban create "transcribe today's podcast" --assignee transcriber
@@ -731,7 +743,7 @@ Workers receive `$HERMES_TENANT` and namespace their memory writes by prefix. Th
 
 ## Gateway notifications
 
-When you run `/kanban create …` from the gateway (Telegram, Discord, Slack, etc.), the originating chat is automatically subscribed to the new task. The gateway's background notifier polls `task_events` every few seconds and delivers one message per terminal event (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`) to that chat. Completed tasks also send the first line of the worker's `--result` so you see the outcome without having to `/kanban show`.
+When you run `/kanban create …` from the gateway (Telegram, Discord, Slack, etc.), the originating chat is automatically subscribed to the new task. The gateway's background notifier polls `task_events` every few seconds and delivers one message per terminal event (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`) to that chat. Completed tasks also send the first line of the worker's `--result` so you see the outcome without having to `/kanban show`. If `kanban.default_notify_subscriptions` is configured, those fixed subscriptions are added to every new task as well, including non-gateway creation paths.
 
 You can manage subscriptions explicitly from the CLI — useful when a script / cron job wants to notify a chat it didn't originate from:
 

@@ -1524,6 +1524,74 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _default_notify_subscriptions() -> list[dict[str, Optional[str]]]:
+    """Return configured subscriptions applied to every newly-created task.
+
+    ``kanban.default_notify_subscriptions`` is intentionally evaluated in
+    the DB layer instead of the CLI/gateway/tool wrappers so all creation
+    paths (CLI, scripts, worker tools, dashboard, swarm/decompose helpers)
+    get the same durable notification default.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        raw_entries = cfg.get("kanban", {}).get("default_notify_subscriptions") or []
+    except Exception:
+        return []
+
+    if isinstance(raw_entries, dict):
+        raw_entries = [raw_entries]
+    if not isinstance(raw_entries, list):
+        return []
+
+    out: list[dict[str, Optional[str]]] = []
+    for raw in raw_entries:
+        if not isinstance(raw, dict):
+            continue
+        platform = str(raw.get("platform") or "").strip().lower()
+        chat_id = str(raw.get("chat_id") or "").strip()
+        if not platform or not chat_id:
+            continue
+
+        def _optional_text(key: str) -> Optional[str]:
+            value = raw.get(key)
+            if value is None:
+                return None
+            text = str(value).strip()
+            return text or None
+
+        out.append({
+            "platform": platform,
+            "chat_id": chat_id,
+            "thread_id": _optional_text("thread_id"),
+            "user_id": _optional_text("user_id"),
+            "notifier_profile": _optional_text("notifier_profile"),
+        })
+    return out
+
+
+def _apply_default_notify_subscriptions(conn: sqlite3.Connection, task_id: str) -> None:
+    """Attach configured default gateway notifications to ``task_id``."""
+    for sub in _default_notify_subscriptions():
+        try:
+            add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=sub["platform"] or "",
+                chat_id=sub["chat_id"] or "",
+                thread_id=sub.get("thread_id"),
+                user_id=sub.get("user_id"),
+                notifier_profile=sub.get("notifier_profile"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive, best effort
+            _log.warning(
+                "failed to apply default kanban notify subscription to %s: %s",
+                task_id,
+                exc,
+            )
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -1646,7 +1714,9 @@ def create_task(
             (idempotency_key,),
         ).fetchone()
         if row:
-            return row["id"]
+            existing_id = row["id"]
+            _apply_default_notify_subscriptions(conn, existing_id)
+            return existing_id
 
     now = int(time.time())
 
@@ -1750,6 +1820,7 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+            _apply_default_notify_subscriptions(conn, task_id)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

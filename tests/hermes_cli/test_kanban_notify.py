@@ -26,6 +26,39 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def test_create_task_applies_default_notify_subscriptions(kanban_home, monkeypatch):
+    """Configured default subscriptions should attach at the DB create layer."""
+    monkeypatch.setattr(
+        kb,
+        "_default_notify_subscriptions",
+        lambda: [{
+            "platform": "telegram",
+            "chat_id": "235856371",
+            "thread_id": None,
+            "user_id": None,
+            "notifier_profile": "default",
+        }],
+    )
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="notify by default", assignee="worker1")
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert subs == [{
+        "task_id": tid,
+        "platform": "telegram",
+        "chat_id": "235856371",
+        "thread_id": "",
+        "user_id": None,
+        "notifier_profile": "default",
+        "created_at": subs[0]["created_at"],
+        "last_event_id": 0,
+    }]
+
+
 @pytest.mark.asyncio
 async def test_notifier_unsubs_after_completed_event(kanban_home):
     """

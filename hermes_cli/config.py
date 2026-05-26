@@ -1652,6 +1652,12 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Optional gateway notification subscriptions applied by the DB layer
+        # to every newly-created task, regardless of whether it was created
+        # from the CLI, dashboard, gateway, worker tools, scripts, or swarm
+        # helpers. Each entry accepts platform, chat_id, optional thread_id,
+        # optional user_id, and optional notifier_profile.
+        "default_notify_subscriptions": [],
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

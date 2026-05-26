@@ -2838,6 +2838,7 @@ def _(rid, params: dict) -> dict:
                 session_id=new_key,
                 role=msg.get("role", "user"),
                 content=msg.get("content"),
+                timestamp=msg.get("timestamp"),
             )
         db.set_session_title(new_key, title)
     except Exception as e:

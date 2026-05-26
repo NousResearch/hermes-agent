@@ -1462,6 +1462,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        timestamp: float = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -1498,6 +1499,8 @@ class SessionDB:
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
+        ts_value = timestamp if timestamp is not None else time.time()
+
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
@@ -1512,7 +1515,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    time.time(),
+                    ts_value,
                     token_count,
                     finish_reason,
                     reasoning,
@@ -1589,6 +1592,15 @@ class SessionDB:
                     msg.get("platform_message_id") or msg.get("message_id")
                 )
 
+                # Preserve the message's original timestamp when present so
+                # fork/compress/branch rewrites don't clobber wall-clock times
+                # with the rewrite moment. Fall back to a monotonically
+                # increasing now_ts for messages that lack one.
+                msg_ts = msg.get("timestamp")
+                if msg_ts is None:
+                    msg_ts = now_ts
+                    now_ts += 1e-6
+
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
@@ -1602,7 +1614,7 @@ class SessionDB:
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
-                        now_ts,
+                        msg_ts,
                         msg.get("token_count"),
                         msg.get("finish_reason"),
                         msg.get("reasoning") if role == "assistant" else None,
@@ -1619,7 +1631,6 @@ class SessionDB:
                     total_tool_calls += (
                         len(tool_calls) if isinstance(tool_calls, list) else 1
                     )
-                now_ts += 1e-6
 
             conn.execute(
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",

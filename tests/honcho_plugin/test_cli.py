@@ -346,7 +346,10 @@ class TestSetupWizardDeploymentShape:
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers)
         assert host["pinPeerName"] is False
-        assert host["userPeerAliases"] == {}
+        # Multi must NOT auto-write ``userPeerAliases: {}``: an empty host
+        # map would silently override a root-level baseline.  Absence is
+        # the correct "no host opinion" signal.
+        assert "userPeerAliases" not in host
         assert host["runtimePeerPrefix"] == "telegram_"
 
     def test_hybrid_shape_aliases_operator_runtime_ids_to_peer_name(self, monkeypatch, tmp_path):
@@ -431,5 +434,143 @@ class TestSetupWizardDeploymentShape:
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
         assert host["pinPeerName"] is False
-        assert host["userPeerAliases"] == {}
+        # See test_multi_shape_leaves_pin_false_and_accepts_prefix.
+        assert "userPeerAliases" not in host
         assert host["runtimePeerPrefix"] == "telegram_"
+
+    def test_host_pin_user_peer_true_is_detected_as_single(self, monkeypatch, tmp_path):
+        """Host-level ``pinUserPeer: true`` must classify as ``single``.
+
+        Pressing Enter at the shape prompt then preserves the pin instead
+        of falling through to ``multi`` and orphaning the user's memory
+        pool — the bug the wizard regressed when ``pinUserPeer`` landed
+        as a higher-precedence alias.
+        """
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"pinUserPeer": True, "peerName": "eri"}},
+        }
+        # Exhaust the iterator before the shape prompt so the scripted
+        # mock falls through to the prompt's default (which is the
+        # wizard-detected shape).  Scripting an explicit "" would NOT
+        # exercise that fallthrough — the mock returns it literally.
+        answers = ["cloud", "", "eri", "hermetika", "hermes"]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        # Scrub-then-write normalises onto pinPeerName and drops the alias
+        # so resolver precedence can't reintroduce ambiguity.
+        assert host["pinPeerName"] is True
+        assert "pinUserPeer" not in host
+
+    def test_host_pin_user_peer_false_overrides_root_pin_peer_name(
+        self, monkeypatch, tmp_path
+    ):
+        """Host ``pinUserPeer: false`` outranks host ``pinPeerName`` in the
+        resolver.  Detection must agree, otherwise the wizard would offer
+        ``single`` as the default and silently re-pin a profile the
+        operator explicitly unpinned via the newer key.
+        """
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {
+                "pinUserPeer": False,
+                "pinPeerName": True,
+                "peerName": "eri",
+            }},
+        }
+        answers = ["cloud", "", "eri", "hermetika", "hermes"]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinPeerName"] is False
+        assert "pinUserPeer" not in host
+
+    def test_root_user_peer_aliases_detected_as_hybrid(self, monkeypatch, tmp_path):
+        """Root-level ``userPeerAliases`` must classify as ``hybrid`` even
+        when the host block has no aliases of its own.
+        """
+        initial_cfg = {
+            "apiKey": "***",
+            "userPeerAliases": {"86701400": "eri"},
+            "hosts": {"hermes": {"peerName": "eri"}},
+        }
+        answers = ["cloud", "", "eri", "hermetika", "hermes"]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinPeerName"] is False
+        # Hybrid materialises the root aliases into the host so subsequent
+        # operator edits live on the host block they're inspecting.
+        assert host["userPeerAliases"] == {"86701400": "eri"}
+
+    def test_multi_does_not_override_root_user_peer_aliases(self, monkeypatch, tmp_path):
+        """Explicit ``multi`` must leave the host ``userPeerAliases`` key
+        absent, preserving any root-level aliases as a cross-host baseline.
+
+        Picking ``multi`` here is an active choice — detection would have
+        defaulted to ``hybrid`` because root aliases exist — so the
+        operator's intent is to drop the alias mapping for this host.
+        We honor that by writing ``pinPeerName: false`` only, and rely
+        on the host's absence of ``userPeerAliases`` to inherit root.
+        That inheritance is intentional: a true wipe would require the
+        operator to delete the root key explicitly.
+        """
+        initial_cfg = {
+            "apiKey": "***",
+            "userPeerAliases": {"baseline": "eri"},
+            "hosts": {"hermes": {"peerName": "eri"}},
+        }
+        answers = [
+            "cloud", "", "eri", "hermetika", "hermes",
+            "multi",           # explicit multi override of detected hybrid
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinPeerName"] is False
+        assert "userPeerAliases" not in host
+
+    def test_single_scrubs_stale_pin_user_peer_false(self, monkeypatch, tmp_path):
+        """Choosing ``single`` must drop any host-level ``pinUserPeer``,
+        otherwise an existing ``pinUserPeer: false`` would outrank the
+        freshly written ``pinPeerName: true`` and leave the profile
+        effectively unpinned (the P1 latent-precedence regression).
+        """
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {
+                "pinUserPeer": False,
+                "peerName": "eri",
+            }},
+        }
+        answers = [
+            "cloud", "", "eri", "hermetika", "hermes",
+            "single",
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinPeerName"] is True
+        assert "pinUserPeer" not in host
+
+
+class TestCloneCarriesPinUserPeer:
+    """``pinUserPeer`` (canonical name for ``pinPeerName``) must survive a
+    profile clone.  Without this, a default profile that uses the newer
+    key would silently produce cloned profiles without the pin even
+    though the resolver prefers ``pinUserPeer`` over ``pinPeerName``.
+    """
+
+    def test_clone_inherits_host_pin_user_peer(self, monkeypatch, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"pinUserPeer": True, "peerName": "eri"}},
+        }
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}")
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: True)
+        written = {}
+        monkeypatch.setattr(
+            honcho_cli, "_write_config", lambda c, path=None: written.setdefault("cfg", c),
+        )
+
+        ok = honcho_cli.clone_honcho_for_profile("partner")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes.partner"]
+        assert new_block["pinUserPeer"] is True

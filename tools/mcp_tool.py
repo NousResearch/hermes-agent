@@ -1069,18 +1069,29 @@ class MCPServerTask:
 
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
 
-    async def _refresh_tools_task(self):
-        """Run a dynamic tool refresh and log failures from background tasks."""
+    async def _refresh_tools_task(self, prefetched=None):
+        """Run a dynamic tool refresh and log failures from background tasks.
+
+        ``prefetched`` is an optional ``ListToolsResult`` from a prior
+        ``session.list_tools()`` call (e.g., from the keepalive). Passing
+        it through avoids a duplicate round-trip per refresh.
+        """
         try:
-            await self._refresh_tools()
+            await self._refresh_tools(prefetched=prefetched)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
 
-    def _schedule_tools_refresh(self) -> asyncio.Task:
-        """Schedule a background tool refresh and keep it strongly referenced."""
-        task = asyncio.create_task(self._refresh_tools_task())
+    def _schedule_tools_refresh(self, prefetched=None) -> asyncio.Task:
+        """Schedule a background tool refresh and keep it strongly referenced.
+
+        ``prefetched`` lets callers (notably the keepalive loop) hand in
+        an already-fetched ``ListToolsResult`` so the refresh doesn't
+        re-call ``list_tools()`` and so the second wire frame doesn't
+        race the keepalive's frame.
+        """
+        task = asyncio.create_task(self._refresh_tools_task(prefetched=prefetched))
         self._pending_refresh_tasks.add(task)
         task.add_done_callback(self._pending_refresh_tasks.discard)
         return task
@@ -1128,13 +1139,19 @@ class MCPServerTask:
                 logger.exception("Error in MCP message handler for '%s'", self.name)
         return _handler
 
-    async def _refresh_tools(self):
+    async def _refresh_tools(self, prefetched=None):
         """Re-fetch tools from the server and update the registry.
 
-        Called when the server sends ``notifications/tools/list_changed``.
-        The lock prevents overlapping refreshes from rapid-fire notifications.
-        After the initial ``await`` (list_tools), all mutations are synchronous
-        — atomic from the event loop's perspective.
+        Called when the server sends ``notifications/tools/list_changed``
+        or after a successful keepalive (see ``_run_keepalive_once``).
+        The lock prevents overlapping refreshes from rapid-fire triggers.
+        After the initial ``await`` (list_tools), all mutations are
+        synchronous — atomic from the event loop's perspective.
+
+        ``prefetched`` is an optional ``ListToolsResult`` from a prior
+        ``session.list_tools()`` call. When provided we skip the inner
+        round-trip — keeps the keepalive path single-RPC and prevents
+        an extra wire frame from racing the keepalive's frame.
         """
         from tools.registry import registry
 
@@ -1142,9 +1159,12 @@ class MCPServerTask:
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
 
-            # 1. Fetch current tool list from server
-            async with self._rpc_lock:
-                tools_result = await self.session.list_tools()
+            # 1. Fetch current tool list from server (unless caller pre-fetched)
+            if prefetched is not None:
+                tools_result = prefetched
+            else:
+                async with self._rpc_lock:
+                    tools_result = await self.session.list_tools()
             new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
@@ -1190,6 +1210,37 @@ class MCPServerTask:
                     self.name, len(self._registered_tool_names),
                 )
 
+    async def _run_keepalive_once(self):
+        """Run one keepalive cycle: call ``list_tools()`` under ``_rpc_lock``
+        and return the result on success.
+
+        Extracted as a separate method to (a) make the RPC lock acquisition
+        explicit and consistent with every other ``self.session`` call in
+        this file (which all hold ``_rpc_lock`` to serialize JSON-RPC frames),
+        and (b) make the keepalive testable in isolation without patching
+        ``asyncio.wait``.
+
+        Raises whatever ``session.list_tools()`` raises (or
+        ``asyncio.TimeoutError`` if the 30s wait expires). Callers handle
+        the exception by setting ``_reconnect_event`` and breaking out of
+        the lifecycle loop.
+
+        Returns:
+            The ``ListToolsResult`` from the server. Caller may pass this
+            into ``_schedule_tools_refresh(prefetched=...)`` to drive a
+            registry refresh without a second round-trip.
+        """
+        # The 30s timeout is inside the lock by design: if the session is
+        # wedged, concurrent ``call_tool`` frames would fail too. Holding
+        # the lock for the timeout duration is preferable to letting them
+        # race a half-dead session. On timeout the exception propagates
+        # and the async-with releases the lock so reconnects can proceed.
+        async with self._rpc_lock:
+            return await asyncio.wait_for(
+                self.session.list_tools(),
+                timeout=30.0,
+            )
+
     async def _wait_for_lifecycle_event(self) -> str:
         """Block until either _shutdown_event or _reconnect_event fires.
 
@@ -1206,10 +1257,28 @@ class MCPServerTask:
         Periodically sends a lightweight keepalive (``list_tools``) to
         prevent TCP connections from going stale during long idle
         periods (#17003).  If the keepalive fails, triggers a reconnect.
+
+        Side benefit: on every successful keepalive, schedules a tool-
+        registry refresh using the keepalive's already-fetched result
+        (no extra round-trip). ``tools/list_changed`` notifications are
+        the primary discovery mechanism, but some MCP servers (notably
+        gateway-style services that proxy a backend registry) don't emit
+        them — leaving clients with a stale tool list until the next
+        process restart. Reusing the keepalive's result drives fresh
+        discovery at the keepalive cadence for free.
+
+        Opt-out: ``mcp_servers.<name>.refresh_on_keepalive: false`` in
+        config disables the auto-refresh while keeping the keepalive
+        itself (e.g., for long-running sessions where stable catalogs
+        are preferred to converging-but-occasionally-noisy ones).
         """
         # Keepalive interval in seconds.  Must be shorter than typical
         # LB / NAT idle-timeout (commonly 300-600s).
         _KEEPALIVE_INTERVAL = 180  # 3 minutes
+
+        # Opt-out config gate: default ON. Servers that explicitly want
+        # stable catalogs across the session can set this false.
+        refresh_on_keepalive = bool(self._config.get("refresh_on_keepalive", True))
 
         shutdown_task = asyncio.create_task(self._shutdown_event.wait())
         reconnect_task = asyncio.create_task(self._reconnect_event.wait())
@@ -1227,10 +1296,7 @@ class MCPServerTask:
                 # to exercise the connection and detect stale sockets.
                 if self.session:
                     try:
-                        await asyncio.wait_for(
-                            self.session.list_tools(),
-                            timeout=30.0,
-                        )
+                        tools_result = await self._run_keepalive_once()
                     except Exception as exc:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
@@ -1239,6 +1305,14 @@ class MCPServerTask:
                         )
                         self._reconnect_event.set()
                         break
+
+                    # Keepalive succeeded — drive a registry refresh with
+                    # the result we already have. ``_refresh_tools`` is
+                    # idempotent (set-diffs the result) and lock-protected
+                    # against overlapping refreshes from concurrent
+                    # ``tools/list_changed`` notifications.
+                    if refresh_on_keepalive:
+                        self._schedule_tools_refresh(prefetched=tools_result)
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():

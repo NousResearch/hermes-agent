@@ -212,7 +212,7 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
 def build_acp_edit_tool_call(proposal: EditProposal):
     """Build the ToolCallUpdate payload for ACP request_permission."""
 
-    import acp
+    from acp_adapter import acp_compat as acp
 
     tool_call_id = f"edit-approval-{next(_PERMISSION_REQUEST_IDS)}"
     return acp.update_tool_call(
@@ -241,7 +241,7 @@ def make_acp_edit_approval_requester(
     """Return a sync requester that bridges edit proposals to ACP permissions."""
 
     def _requester(proposal: EditProposal) -> bool:
-        from acp.schema import PermissionOption
+        from acp_adapter.acp_compat import PermissionOption
         from agent.async_utils import safe_schedule_threadsafe
 
         if auto_approve_getter is not None:

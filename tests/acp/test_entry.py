@@ -2,8 +2,9 @@
 
 import sys
 
-import acp
 import pytest
+
+from acp_adapter import acp_compat as acp
 
 from acp_adapter import entry
 

@@ -6,8 +6,8 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 
-import acp
-from acp.schema import (
+from acp_adapter import acp_compat as acp
+from acp_adapter.acp_compat import (
     ToolCallLocation,
     ToolCallStart,
     ToolCallProgress,

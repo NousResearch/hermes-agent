@@ -1,7 +1,8 @@
 import base64
 
 import pytest
-from acp.schema import (
+from acp_adapter import server as acp_server
+from acp_adapter.acp_compat import (
     BlobResourceContents,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
@@ -57,6 +58,28 @@ def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
         f"URI: {attached.as_uri()}\n\n"
         "# Notes\n\nAttached file body"
     )
+
+
+@pytest.mark.skipif(acp_server.os.name == "nt", reason="WSL path mapping needs POSIX pathlib")
+def test_windows_file_uri_maps_to_wsl_only_in_wsl(monkeypatch):
+    monkeypatch.setattr(acp_server.os, "name", "posix")
+    monkeypatch.setattr(acp_server, "is_wsl", lambda: True)
+
+    path = acp_server._path_from_file_uri("file:///C:/Users/me/notes.md")
+
+    assert path is not None
+    assert path.as_posix() == "/mnt/c/Users/me/notes.md"
+
+
+@pytest.mark.skipif(acp_server.os.name == "nt", reason="POSIX path mapping needs POSIX pathlib")
+def test_windows_file_uri_is_not_wsl_mapped_on_non_wsl_posix(monkeypatch):
+    monkeypatch.setattr(acp_server.os, "name", "posix")
+    monkeypatch.setattr(acp_server, "is_wsl", lambda: False)
+
+    path = acp_server._path_from_file_uri("file:///C:/Users/me/notes.md")
+
+    assert path is not None
+    assert path.as_posix() == "/C:/Users/me/notes.md"
 
 
 def test_acp_embedded_text_resource_is_inlined_as_text():

@@ -3,8 +3,11 @@
 /_pycache/
 *.pyc*
 __pycache__/
+C*Users*AppDataLocalTemp*calls.log
+C*Users*AppDataLocalTemp*payload.json
 .venv/
 .vscode/
+.hermes/
 .env
 .env.local
 .env.development.local

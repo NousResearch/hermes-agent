@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
-import acp
-from acp.agent.router import build_agent_router
-from acp.schema import (
+from acp_adapter import acp_compat as acp
+from acp_adapter.acp_router_compat import build_agent_router
+from acp_adapter.acp_compat import (
     AgentCapabilities,
     AgentMessageChunk,
     AgentPlanUpdate,
@@ -1650,7 +1650,7 @@ class TestRegisterSessionMcpServers:
     @pytest.mark.asyncio
     async def test_registers_stdio_servers(self, agent, mock_manager):
         """McpServerStdio servers are converted and passed to register_mcp_servers."""
-        from acp.schema import McpServerStdio, EnvVariable
+        from acp_adapter.acp_compat import McpServerStdio, EnvVariable
 
         state = mock_manager.create_session(cwd="/tmp")
         # Give the mock agent the attributes _register_session_mcp_servers reads
@@ -1684,7 +1684,7 @@ class TestRegisterSessionMcpServers:
     @pytest.mark.asyncio
     async def test_registers_http_servers(self, agent, mock_manager):
         """McpServerHttp servers are converted correctly."""
-        from acp.schema import McpServerHttp, HttpHeader
+        from acp_adapter.acp_compat import McpServerHttp, HttpHeader
 
         state = mock_manager.create_session(cwd="/tmp")
         state.agent.enabled_toolsets = ["hermes-acp"]
@@ -1715,7 +1715,7 @@ class TestRegisterSessionMcpServers:
     @pytest.mark.asyncio
     async def test_refreshes_agent_tool_surface(self, agent, mock_manager):
         """After MCP registration, agent.tools and valid_tool_names are refreshed."""
-        from acp.schema import McpServerStdio
+        from acp_adapter.acp_compat import McpServerStdio
 
         state = mock_manager.create_session(cwd="/tmp")
         state.agent.enabled_toolsets = ["hermes-acp"]
@@ -1754,7 +1754,7 @@ class TestRegisterSessionMcpServers:
     @pytest.mark.asyncio
     async def test_register_failure_logs_warning(self, agent, mock_manager):
         """If register_mcp_servers raises, warning is logged but no crash."""
-        from acp.schema import McpServerStdio
+        from acp_adapter.acp_compat import McpServerStdio
 
         state = mock_manager.create_session(cwd="/tmp")
         server = McpServerStdio(

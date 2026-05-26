@@ -16,7 +16,7 @@ from io import StringIO
 
 import pytest
 
-from acp.exceptions import RequestError
+from acp_adapter.acp_compat import RequestError
 
 from acp_adapter.entry import _BenignProbeMethodFilter
 
@@ -94,17 +94,17 @@ class _FakeAgent:
     """Minimal acp.Agent stub — we only need the router to build."""
 
     async def initialize(self, **kwargs):  # noqa: ANN003
-        from acp.schema import AgentCapabilities, InitializeResponse
+        from acp_adapter.acp_compat import AgentCapabilities, InitializeResponse
 
         return InitializeResponse(protocol_version=1, agent_capabilities=AgentCapabilities())
 
     async def new_session(self, cwd, mcp_servers=None, **kwargs):  # noqa: ANN001, ANN003
-        from acp.schema import NewSessionResponse
+        from acp_adapter.acp_compat import NewSessionResponse
 
         return NewSessionResponse(session_id="test")
 
     async def prompt(self, session_id, prompt, **kwargs):  # noqa: ANN001, ANN003
-        from acp.schema import PromptResponse
+        from acp_adapter.acp_compat import PromptResponse
 
         return PromptResponse(stop_reason="end_turn")
 
@@ -125,7 +125,10 @@ async def test_bare_ping_request_produces_proper_response_and_no_stderr_noise(
     """A bare ``ping`` must get a JSON-RPC -32601 back AND leave stderr clean
     when the filter is installed on the handler.
     """
-    import acp
+    if os.name == "nt":
+        pytest.skip("Windows proactor pipe transport is not compatible with this stdio harness test")
+
+    from acp_adapter import acp_compat as acp
 
     # Attach the filter to a fresh stream handler that mirrors entry._setup_logging.
     stream = StringIO()

@@ -59,10 +59,7 @@ class _BenignProbeMethodFilter(logging.Filter):
         exc = exc_info[1]
         # Imported lazily so this module stays importable when the optional
         # ``agent-client-protocol`` dependency is not installed.
-        try:
-            from acp.exceptions import RequestError
-        except ImportError:
-            return True
+        from acp_adapter.acp_compat import RequestError
         if not isinstance(exc, RequestError):
             return True
         if getattr(exc, "code", None) != -32601:
@@ -148,7 +145,7 @@ def _print_version() -> None:
 
 
 def _run_check() -> None:
-    import acp  # noqa: F401
+    from acp_adapter import acp_compat as acp  # noqa: F401
     from acp_adapter.server import HermesACPAgent  # noqa: F401
 
     print("Hermes ACP check OK")
@@ -238,7 +235,7 @@ def main(argv: list[str] | None = None) -> None:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    import acp
+    from acp_adapter import acp_compat as acp
     from .server import HermesACPAgent
 
     # MCP tool discovery from config.yaml — run before asyncio.run() so

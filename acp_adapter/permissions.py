@@ -8,7 +8,8 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from itertools import count
 from typing import Callable
 
-from acp.schema import (
+from acp_adapter import acp_compat as acp
+from acp_adapter.acp_compat import (
     AllowedOutcome,
     PermissionOption,
 )
@@ -77,17 +78,15 @@ def _build_permission_tool_call(command: str, description: str):
     by ``_acp.update_tool_call`` — not a ``ToolCallStart``. Each request
     gets a unique ``perm-check-N`` id so concurrent requests don't collide.
     """
-    import acp as _acp
-
     tool_call_id = f"perm-check-{next(_PERMISSION_REQUEST_IDS)}"
     title = f"{description}: {command}" if description else command
     content_text = f"{description}\n$ {command}" if description else f"$ {command}"
-    return _acp.update_tool_call(
+    return acp.update_tool_call(
         tool_call_id,
         title=title,
         kind="execute",
         status="pending",
-        content=[_acp.tool_content(_acp.text_block(content_text))],
+        content=[acp.tool_content(acp.text_block(content_text))],
         raw_input={"command": command, "description": description},
     )
 

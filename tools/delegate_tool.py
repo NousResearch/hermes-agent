@@ -901,6 +901,16 @@ def _build_child_agent(
     those credentials instead of inheriting from the parent.  This enables
     routing subagents to a different provider:model pair (e.g. cheap/fast
     model on OpenRouter while the parent runs on Nous Portal).
+
+    profile_name: when set (i.e. the delegation came from a named
+    agent_profiles entry), MCP toolsets in the requested toolset list bypass
+    the parent-intersection check and are resolved directly from the global
+    mcp_servers config.  This is intentional: a profile explicitly declares
+    which MCP servers its worker needs, and those servers should be available
+    regardless of whether the orchestrator itself loaded them (e.g. it
+    restricted its own context via no_mcp).  Non-MCP toolsets still go
+    through intersection — that security boundary is preserved for ad-hoc
+    delegation.  See NousResearch/hermes-agent#32668.
     """
     from run_agent import AIAgent
     import uuid as _uuid

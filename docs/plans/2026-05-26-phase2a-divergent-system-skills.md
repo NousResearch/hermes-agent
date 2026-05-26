@@ -161,8 +161,9 @@ Implemented first because it was the lowest-risk generic promotion.
 - Repo references created:
   - `skills/software-development/hermes-agent-skill-authoring/references/update-first-skill-library.md`
   - `skills/software-development/hermes-agent-skill-authoring/references/divergent-skill-reconciliation.md`
+  - `skills/software-development/hermes-agent-skill-authoring/references/session-end-memory-skill-maintenance.md`
 - Stale hardcoded `/home/bb/hermes-agent` examples replaced with `<repo-root>` in both repo and active local copy.
-- Inventory after promotion: exact duplicates 77, divergent copies 14, active validation failures 0.
+- Inventory after authoring + kanban-worker correction: exact duplicates 78, divergent copies 13, active validation failures 0.
 - Owner routing harness after promotion: 21/21 passed.
 
 ### Proof gate before editing
@@ -243,6 +244,26 @@ Run a code/config verification before editing repo source:
 - grep for `notification_sources` in gateway/config handling.
 
 If both are implemented, promote both hunks. If not, keep local or mark stale.
+
+### Implementation proof (2026-05-26)
+
+Verification result:
+
+- `HERMES_KANBAN_TASK` is real in current source (`hermes_cli/kanban_db.py`, `tools/kanban_tools.py`, docs/tests).
+- `HERMES_KANBAN_BRANCH` is **not** implemented in current repo source; only found in an unrelated worktree/local docs.
+- `notification_sources` is **not** implemented in current repo source; only found in local/worktree skill docs and this decision file.
+
+Decision:
+
+- Did **not** promote the local `HERMES_KANBAN_BRANCH` worktree default into repo source.
+- Did **not** promote the local `notification_sources` section into repo source.
+- Corrected the active local `kanban-worker` copy back to repo behavior by removing the two unverified/stale hunks.
+
+Result:
+
+- `kanban-worker` is no longer a divergent active/source skill.
+- Inventory after correction: exact duplicates 78, divergent copies 13, active validation failures 0.
+- Owner routing harness after correction: 21/21 passed.
 
 ### Proof gate before editing
 

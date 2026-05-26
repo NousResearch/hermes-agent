@@ -148,6 +148,8 @@ See `references/update-first-skill-library.md` for a concrete consolidation mode
 
 For repo/local skill divergence, use `references/divergent-skill-reconciliation.md`: diff active vs source, classify every hunk as generic promote / MJ-local preserve / repo preserve / needs split / needs verification / stale, write a decision artifact first, then promote the lowest-risk generic changes before touching large umbrellas.
 
+For end-of-session review requests, use `references/session-end-memory-skill-maintenance.md`: update compact user memory where there is durable user signal, then patch currently-loaded/class-level skills or add owner references before creating any new skill.
+
 ## Cross-Referencing Other Skills
 
 `metadata.hermes.related_skills` unions both trees (`skills/` in-repo and `~/.hermes/skills/`) at load time. You CAN reference a user-local skill from an in-repo skill, but it won't resolve for other users who clone the repo fresh. Prefer referencing only in-repo skills from in-repo skills. If a frequently-referenced skill lives only in `~/.hermes/skills/`, consider promoting it to the repo.

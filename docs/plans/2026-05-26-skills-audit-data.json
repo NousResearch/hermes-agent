@@ -99,14 +99,6 @@
       ]
     },
     {
-      "active_path": "/Users/alfred/.hermes/skills/devops/kanban-worker/SKILL.md",
-      "exact": false,
-      "name": "kanban-worker",
-      "source_paths": [
-        "/Users/alfred/.hermes/hermes-agent/skills/devops/kanban-worker/SKILL.md"
-      ]
-    },
-    {
       "active_path": "/Users/alfred/.hermes/skills/mlops/inference/outlines/SKILL.md",
       "exact": false,
       "name": "outlines",
@@ -972,7 +964,7 @@
         "kanban-orchestrator"
       ],
       "relative_path": "devops/kanban-worker/SKILL.md",
-      "sha256": "1a4324dc156cd65bf38fc02c97d344983f3d09cf135fd09561622e725fc4b3a1",
+      "sha256": "aef52e7513b68e0fb2308cc0e3680e49dcb01badd9bc4a0ae428eed1958873fd",
       "source": "active_user_local",
       "tags": [
         "kanban",
@@ -2171,7 +2163,7 @@
         "requesting-code-review"
       ],
       "relative_path": "software-development/hermes-agent-skill-authoring/SKILL.md",
-      "sha256": "cb5937a199094bd974ef8d5f206b8373caa3f92b7f1f4425e058b539472d789b",
+      "sha256": "597d993166bde6e061e20c4b56bd6f0cc4cfc0666a0be08292f744324f2c1593",
       "source": "active_user_local",
       "tags": [
         "skills",
@@ -4026,7 +4018,7 @@
         "requesting-code-review"
       ],
       "relative_path": "software-development/hermes-agent-skill-authoring/SKILL.md",
-      "sha256": "cb5937a199094bd974ef8d5f206b8373caa3f92b7f1f4425e058b539472d789b",
+      "sha256": "597d993166bde6e061e20c4b56bd6f0cc4cfc0666a0be08292f744324f2c1593",
       "source": "repo_builtin",
       "tags": [
         "skills",
@@ -6044,8 +6036,8 @@
       ]
     }
   ],
-  "source_duplicate_divergent": 14,
-  "source_duplicate_exact": 77,
+  "source_duplicate_divergent": 13,
+  "source_duplicate_exact": 78,
   "source_duplicate_total": 91,
   "total_scanned": 282
 }

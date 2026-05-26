@@ -839,6 +839,76 @@ def test_computer_use_post_setup_missing_override_does_not_accept_default_binary
     assert "curl" in seen
 
 
+def test_browser_needs_configuration_when_agent_browser_bootstrap_missing(monkeypatch, tmp_path):
+    """Re-enabling browser with a saved provider should rerun missing bootstrap."""
+    from hermes_cli import tools_config as mod
+
+    monkeypatch.setattr(mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        mod,
+        "_visible_providers",
+        lambda cat, config: [
+            {
+                "name": "Browser Use",
+                "browser_provider": "browser-use",
+                "env_vars": [],
+                "post_setup": "agent_browser",
+            }
+        ],
+    )
+
+    config = {"browser": {"cloud_provider": "browser-use"}}
+    assert _toolset_needs_configuration_prompt("browser", config) is True
+
+
+def test_browser_skips_configuration_when_agent_browser_bootstrap_present(monkeypatch, tmp_path):
+    """Saved browser providers stay no-op once agent-browser is installed."""
+    from hermes_cli import tools_config as mod
+
+    monkeypatch.setattr(mod, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        mod,
+        "_visible_providers",
+        lambda cat, config: [
+            {
+                "name": "Browser Use",
+                "browser_provider": "browser-use",
+                "env_vars": [],
+                "post_setup": "agent_browser",
+            }
+        ],
+    )
+    (tmp_path / "node_modules" / "agent-browser").mkdir(parents=True)
+
+    config = {"browser": {"cloud_provider": "browser-use"}}
+    assert _toolset_needs_configuration_prompt("browser", config) is False
+
+
+def test_browser_only_checks_active_provider_post_setup(monkeypatch):
+    """An unrelated provider's bootstrap gap must not force browser re-setup."""
+    from hermes_cli import tools_config as mod
+
+    providers = [
+        {"name": "Browserbase", "browser_provider": "browserbase", "env_vars": []},
+        {
+            "name": "Local Browser",
+            "browser_provider": "local",
+            "env_vars": [],
+            "post_setup": "agent_browser",
+        },
+    ]
+
+    monkeypatch.setattr(mod, "_visible_providers", lambda cat, config: providers)
+    monkeypatch.setattr(
+        mod,
+        "_post_setup_already_installed",
+        lambda key: False if key == "agent_browser" else True,
+    )
+
+    config = {"browser": {"cloud_provider": "browserbase"}}
+    assert _toolset_needs_configuration_prompt("browser", config) is False
+
+
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
 

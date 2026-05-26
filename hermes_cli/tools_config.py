@@ -1869,6 +1869,7 @@ _POST_SETUP_INSTALLED: dict = {
     # entry when (a) the post_setup is the ONLY install side-effect for
     # a no-key provider, and (b) an installed-state check is cheap and
     # doesn't trigger a heavy import.
+    "agent_browser": lambda: (PROJECT_ROOT / "node_modules" / "agent-browser").exists(),
     "cua_driver": lambda: bool(shutil.which(_cua_driver_cmd())),
 }
 
@@ -1892,11 +1893,19 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
     if not cat:
         return not _toolset_has_keys(ts_key, config)
 
+    providers = _visible_providers(cat, config)
+    active_providers = [provider for provider in providers if _is_provider_active(provider, config)]
+    post_setup_candidates = active_providers or providers
+
     # If any visible provider has a registered post_setup install-state
     # check that hasn't been satisfied (e.g. cua-driver binary not on
     # PATH yet), force the configuration flow so `_configure_provider`
-    # invokes `_run_post_setup` and the install actually runs.
-    for provider in _visible_providers(cat, config):
+    # invokes `_run_post_setup` and the install actually runs. When the
+    # toolset already has an active provider in config, only that
+    # provider's post_setup gap should count; otherwise unrelated rows can
+    # spuriously force setup (for example Browserbase inheriting the
+    # Local Browser bootstrap requirement).
+    for provider in post_setup_candidates:
         post_setup = provider.get("post_setup")
         if post_setup and not _post_setup_already_installed(post_setup):
             return True

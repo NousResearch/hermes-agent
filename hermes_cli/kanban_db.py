@@ -1050,6 +1050,30 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     # anyway so static analyzers can see the containment guarantee.
     if candidate.parent != parent:
         return None
+    # Backup cap @5: prune oldest .corrupt.*.bak before adding new one.
+    # Without this a cascade bug can flood the board dir (93+ files seen 2026-05-26).
+    # Patched locally — see ~/.hermes/scripts/reapply-cascade-patch.sh
+    _BACKUP_CAP = 5
+    try:
+        existing = sorted(
+            parent.glob(f"{base_name}.corrupt.*.bak"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        excess = len(existing) - (_BACKUP_CAP - 1)
+        if excess > 0:
+            for old in existing[:excess]:
+                if old.parent != parent:
+                    continue
+                for suffix in ("", "-wal", "-shm"):
+                    sibling = parent / (old.name + suffix)
+                    if sibling.parent != parent or not sibling.exists():
+                        continue
+                    try:
+                        sibling.unlink()
+                    except OSError:
+                        pass
+    except OSError:
+        pass
     counter = 0
     while candidate.exists():
         counter += 1

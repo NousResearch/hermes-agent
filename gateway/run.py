@@ -3590,6 +3590,7 @@ class GatewayRunner:
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
+                    self._configure_native_call_handlers()
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
@@ -4973,6 +4974,7 @@ class GatewayRunner:
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
+                        self._configure_native_call_handlers()
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
@@ -10217,6 +10219,94 @@ class GatewayRunner:
         )
         self._call_manager = manager
         return manager
+
+    def _configure_native_call_handlers(self) -> None:
+        adapters = getattr(self, "adapters", {}) or {}
+        for adapter in adapters.values():
+            adapter_platform = getattr(adapter, "platform", None)
+            platform_value = getattr(adapter_platform, "value", adapter_platform)
+            if str(platform_value) != "simplex":
+                continue
+            if not bool(getattr(adapter, "native_calls_enabled", False)):
+                continue
+            try:
+                adapter.native_call_handler = self._handle_simplex_native_call
+            except Exception:
+                logger.exception(
+                    "Failed to install SimpleX native call handler on connected adapter"
+                )
+
+    def _find_simplex_adapter(self, source) -> Any:
+        adapters = getattr(self, "adapters", {}) or {}
+        source_platform = getattr(source, "platform", None)
+        platform_value = getattr(source_platform, "value", source_platform)
+
+        for key in (source_platform, platform_value, str(platform_value), "simplex"):
+            try:
+                adapter = adapters.get(key)
+            except TypeError:
+                adapter = None
+            if adapter is not None:
+                return adapter
+
+        try:
+            simplex_platform = Platform("simplex")
+            adapter = adapters.get(simplex_platform)
+            if adapter is not None:
+                return adapter
+        except Exception:
+            pass
+
+        for adapter in adapters.values():
+            adapter_platform = getattr(adapter, "platform", None)
+            adapter_value = getattr(adapter_platform, "value", adapter_platform)
+            if str(adapter_value) == "simplex":
+                return adapter
+        return None
+
+    async def _handle_simplex_native_call(self, source, invitation):
+        from types import SimpleNamespace
+
+        from gateway.calls.native.application import NativeCallApplication
+        from gateway.calls.native.sidecar import SidecarMediaPort
+
+        adapter = self._find_simplex_adapter(source)
+        if adapter is None:
+            return SimpleNamespace(
+                ok=False,
+                code="call_simplex_ws_disconnected",
+                message=(
+                    "SimpleX-native call setup failed: SimpleX adapter is not connected."
+                ),
+                call_id=None,
+            )
+
+        extra = getattr(getattr(adapter, "config", None), "extra", {}) or {}
+        native_calls = extra.get("native_calls", {}) if isinstance(extra, dict) else {}
+        sidecar_command = (
+            native_calls.get("sidecar_command", [])
+            if isinstance(native_calls, dict)
+            else []
+        )
+        if isinstance(sidecar_command, str):
+            sidecar_command = shlex.split(sidecar_command)
+        elif not isinstance(sidecar_command, (list, tuple)):
+            sidecar_command = []
+
+        app = NativeCallApplication(
+            signaling=adapter,
+            media=SidecarMediaPort(command=sidecar_command),
+            is_authorized=self._is_user_authorized,
+        )
+        result = await app.handle_incoming_invitation(source, invitation)
+        call_id = getattr(result, "call_id", None)
+        if call_id:
+            self._get_call_manager().record_native_call(
+                source,
+                call_id,
+                "connecting" if getattr(result, "ok", False) else "failed",
+            )
+        return result
 
     async def _handle_call_command(self, event: MessageEvent) -> str:
         """Handle /call [browser|native|status|end] command."""

@@ -1,9 +1,11 @@
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, gateway_help_lines, resolve_command
 
 from types import SimpleNamespace
+import sys
 
 import pytest
 
+from gateway.calls.native.ports import NativeCallInvitation
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
@@ -28,6 +30,7 @@ def _runner():
     runner.config = SimpleNamespace(extra={})
     runner._call_manager = None
     runner.adapters = {}
+    runner._is_user_authorized = lambda _source: True
     return runner
 
 
@@ -100,6 +103,109 @@ async def test_handle_call_native_reports_native_enabled():
 
     assert "SimpleX-native calls are enabled" in result
     assert "incoming SimpleX app calls" in result
+
+
+def test_configure_native_call_handlers_installs_simplex_handler():
+    runner = _runner()
+    adapter = SimpleNamespace(
+        platform=Platform("simplex"),
+        native_calls_enabled=True,
+        native_call_handler=None,
+    )
+    runner.adapters[Platform("simplex")] = adapter
+
+    runner._configure_native_call_handlers()
+
+    assert callable(adapter.native_call_handler)
+    assert adapter.native_call_handler == runner._handle_simplex_native_call
+
+
+@pytest.mark.asyncio
+async def test_handle_simplex_native_call_reports_disconnected_without_adapter():
+    runner = _runner()
+    source = SimpleNamespace(
+        platform=Platform("simplex"),
+        chat_id="123",
+        user_id="456",
+        chat_type="dm",
+    )
+
+    result = await runner._handle_simplex_native_call(
+        source,
+        NativeCallInvitation(contact_id="contact-1"),
+    )
+
+    assert result.ok is False
+    assert result.code == "call_simplex_ws_disconnected"
+    assert result.message == (
+        "SimpleX-native call setup failed: SimpleX adapter is not connected."
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_simplex_native_call_records_connecting_native_call():
+    runner = _runner()
+    source = SimpleNamespace(
+        platform=Platform("simplex"),
+        chat_id="123",
+        user_id="456",
+        chat_type="dm",
+    )
+    adapter = SimpleNamespace(
+        platform=Platform("simplex"),
+        native_calls_enabled=True,
+        config=SimpleNamespace(
+            extra={
+                "native_calls": {
+                    "sidecar_command": [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import json; "
+                            "print(json.dumps({'ok': True, 'offer': "
+                            "{'rtcSession': 'v=0', 'rtcIceCandidates': 'candidate:1'}}))"
+                        ),
+                    ]
+                }
+            }
+        ),
+        offers=[],
+        statuses=[],
+        rejected=[],
+        ended=[],
+    )
+
+    async def send_offer(contact_id, offer):
+        adapter.offers.append((contact_id, offer))
+
+    async def send_status(contact_id, status):
+        adapter.statuses.append((contact_id, status))
+
+    async def reject(contact_id, reason_code):
+        adapter.rejected.append((contact_id, reason_code))
+
+    async def end(contact_id):
+        adapter.ended.append(contact_id)
+
+    adapter.send_offer = send_offer
+    adapter.send_status = send_status
+    adapter.reject = reject
+    adapter.end = end
+    runner.adapters[Platform("simplex")] = adapter
+
+    result = await runner._handle_simplex_native_call(
+        source,
+        NativeCallInvitation(contact_id="contact-1"),
+    )
+    status = await runner._get_call_manager().status(source)
+
+    assert result.ok is True
+    assert result.call_id
+    assert adapter.offers[0][0] == "contact-1"
+    assert adapter.statuses == [("contact-1", "connecting")]
+    assert status.session.call_id == result.call_id
+    assert status.session.mode == "simplex_native"
+    assert status.session.state.value == "connecting"
 
 
 @pytest.mark.asyncio

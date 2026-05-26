@@ -2177,10 +2177,16 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
-def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
-    """Mark ``provider`` as recently-402'd, hidden from chain iteration
-    until the TTL expires. Called from the payment-fallback branches in
-    ``call_llm`` and ``acall_llm`` after a confirmed payment error.
+def _mark_provider_unhealthy(
+    provider: str,
+    ttl: Optional[float] = None,
+    reason: str = "payment / credit error",
+) -> None:
+    """Mark ``provider`` temporarily hidden from fallback-chain iteration.
+
+    Used for capacity failures (credit exhaustion, missing credentials, brief
+    endpoint/connectivity failures) so subsequent auxiliary calls do not burn
+    another doomed RTT before trying a working backend.
     """
     label = _normalize_chain_label(provider)
     if not label:
@@ -2188,10 +2194,11 @@ def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None
     expires_at = time.time() + (ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS)
     _aux_unhealthy_until[label] = expires_at
     logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+        "Auxiliary: marking %s unhealthy for %ds (%s). "
         "Subsequent auxiliary calls will skip it until %s.",
         label,
         int(ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS),
+        reason,
         time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
@@ -2836,17 +2843,18 @@ def _try_configured_fallback_chain(
         label = f"fallback_chain[{i}]({fb_provider})"
 
         try:
-            fb_client = _resolve_single_provider(
+            fb_client, resolved_model = _resolve_single_provider(
                 fb_provider, fb_model, fb_base_url, fb_api_key)
         except Exception:
-            fb_client = None
+            fb_client, resolved_model = None, None
 
         if fb_client is not None:
+            final_model = resolved_model or fb_model
             logger.info(
                 "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
-                task, reason, failed_provider, label, fb_model or "default",
+                task, reason, failed_provider, label, final_model or "default",
             )
-            return fb_client, fb_model, label
+            return fb_client, final_model, label
         tried.append(label)
 
     if tried:
@@ -2862,19 +2870,21 @@ def _resolve_single_provider(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
-) -> Optional[Any]:
-    """Resolve a single provider entry from fallback_chain to an OpenAI client.
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Resolve a single provider entry from fallback_chain to a client + model.
 
     Uses the existing provider resolution infrastructure where possible.
     """
-    # Reuse resolve_provider_client which handles provider→client mapping
-    client, resolved_model = resolve_provider_client(
+    # Reuse resolve_provider_client which handles provider→client mapping.
+    # The resolver's direct-endpoint parameters are named explicit_*; passing
+    # base_url/api_key here used to raise TypeError, which silently disabled
+    # every configured fallback_chain entry.
+    return resolve_provider_client(
         provider=provider,
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
+        model=model or "",
+        explicit_base_url=base_url or "",
+        explicit_api_key=api_key or "",
     )
-    return client
 
 def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
@@ -2887,8 +2897,11 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
          on DeepSeek/ZAI/Alibaba get theirs; etc.  Running aux tasks on the
          user's picked model keeps behavior predictable — no surprise
          switches to a cheap fallback model for side tasks.
-      2. OpenRouter → Nous → custom → Codex → API-key providers (fallback
+      2. OpenRouter → Nous → custom/local → API-key providers (fallback
          chain, only used when the main provider has no working client).
+         OpenAI Codex is not probed generically because ChatGPT-account model
+         allow-lists are undocumented and can shift; it is only used when the
+         main runtime or explicit task configuration selects it.
     """
     global auxiliary_is_nous, _stale_base_url_warned
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
@@ -4879,18 +4892,30 @@ def call_llm(
                 # 402). Mark THAT label unhealthy so subsequent aux calls
                 # skip it instead of paying another doomed RTT.
                 _mark_provider_unhealthy(
-                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    reason="payment / credit error",
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
             else:
                 reason = "connection error"
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    ttl=60,
+                    reason="connection error",
+                )
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. Main agent model (last-resort safety net)
+            #   3. Remaining auto-detection providers, skipping the failed
+            #      backend. This is intentionally limited to capacity errors
+            #      (payment/quota/connection) so explicit-provider validation
+            #      failures still fail fast, but pinned compression can recover
+            #      when the selected runtime stalls and another configured
+            #      auxiliary backend exists.
             # For auto users (no explicit aux provider), use the full
             # auto-detection chain instead — its Step 1 IS the main agent
             # model, so users on `auto` already get main-model fallback.
@@ -4904,6 +4929,9 @@ def call_llm(
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
+                if fb_client is None:
+                    fb_client, fb_model, fb_label = _try_payment_fallback(
+                        resolved_provider or "auto", task, reason=reason)
 
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
@@ -4919,7 +4947,7 @@ def call_llm(
             # (#26882) The error itself is re-raised below.
             logger.warning(
                 "Auxiliary %s: %s on %s and all fallbacks exhausted "
-                "(fallback_chain + main agent model). Raising original error.",
+                "(fallback_chain + main agent model + auto chain). Raising original error.",
                 task or "call", reason, resolved_provider,
             )
         # Connection/timeout errors leave the cached client poisoned (closed
@@ -5232,18 +5260,27 @@ async def async_call_llm(
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(
-                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    reason="payment / credit error",
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
             else:
                 reason = "connection error"
+                _mark_provider_unhealthy(
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider,
+                    ttl=60,
+                    reason="connection error",
+                )
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
 
             # Fallback order (#26882, #26803):
             #   1. User-configured fallback_chain (per-task) if set
             #   2. Main agent model (last-resort safety net)
+            #   3. Remaining auto-detection providers, skipping the failed
+            #      backend. This mirrors sync call_llm and is limited to
+            #      capacity errors.
             # Auto users get the full auto-detection chain instead — its
             # Step 1 IS the main agent model.
             fb_client, fb_model, fb_label = (None, None, "")
@@ -5256,6 +5293,9 @@ async def async_call_llm(
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
+                if fb_client is None:
+                    fb_client, fb_model, fb_label = _try_payment_fallback(
+                        resolved_provider or "auto", task, reason=reason)
 
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
@@ -5275,7 +5315,7 @@ async def async_call_llm(
             # All fallback layers exhausted — warn before re-raising. (#26882)
             logger.warning(
                 "Auxiliary %s (async): %s on %s and all fallbacks exhausted "
-                "(fallback_chain + main agent model). Raising original error.",
+                "(fallback_chain + main agent model + auto chain). Raising original error.",
                 task or "call", reason, resolved_provider,
             )
         # Mirror the sync path: drop poisoned clients on connection/timeout

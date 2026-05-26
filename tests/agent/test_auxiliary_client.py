@@ -1245,13 +1245,45 @@ class TestAuxiliaryFallbackLayering:
              patch("agent.auxiliary_client._try_configured_fallback_chain",
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_main_agent_model_fallback",
-                   return_value=(main_client, "claude-sonnet-4", "main-agent(openrouter)")):
+                   return_value=(main_client, "claude-sonnet-4", "main-agent(openrouter)")), \
+             patch("agent.auxiliary_client._try_payment_fallback") as auto_fallback:
             result = call_llm(
                 task="vision",
                 messages=[{"role": "user", "content": "hello"}],
             )
 
         assert main_client.chat.completions.create.called
+        auto_fallback.assert_not_called()
+
+    def test_explicit_provider_falls_back_to_auto_chain_after_chain_and_main(self):
+        """Pinned compression can still use another configured backend when Codex stalls."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        auto_client = MagicMock()
+        auto_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from gemini"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.5", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(auto_client, "gemini-3-flash-preview", "api-key")) as auto_fallback:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert auto_client.chat.completions.create.called
+        auto_fallback.assert_called_once_with(
+            "openai-codex", "compression", reason="payment error"
+        )
 
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
@@ -1268,6 +1300,8 @@ class TestAuxiliaryFallbackLayering:
                    return_value=(None, None, "")), \
              patch("agent.auxiliary_client._try_main_agent_model_fallback",
                    return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(None, None, "")), \
              caplog.at_level("WARNING", logger="agent.auxiliary_client"):
             with pytest.raises(Exception, match="Payment Required"):
                 call_llm(
@@ -1278,6 +1312,39 @@ class TestAuxiliaryFallbackLayering:
         assert any(
             "all fallbacks exhausted" in r.message for r in caplog.records
         ), f"Expected exhaustion warning, got: {[r.message for r in caplog.records]}"
+
+    def test_configured_fallback_chain_resolves_base_url_api_key_and_model(self):
+        """fallback_chain entries must pass custom endpoint credentials through the resolver."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fallback_client = MagicMock()
+        task_config = {
+            "fallback_chain": [
+                {
+                    "provider": "custom",
+                    "model": "gemini-3-flash-preview",
+                    "base_url": "https://fallback.example/v1",
+                    "api_key": "test-api-key-value",
+                }
+            ]
+        }
+
+        with patch("agent.auxiliary_client._get_auxiliary_task_config",
+                   return_value=task_config), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(fallback_client, "gemini-3-flash-preview")) as resolver:
+            client, model, label = _try_configured_fallback_chain(
+                "compression", "openai-codex", reason="connection error")
+
+        assert client is fallback_client
+        assert model == "gemini-3-flash-preview"
+        assert label == "fallback_chain[0](custom)"
+        resolver.assert_called_once_with(
+            provider="custom",
+            model="gemini-3-flash-preview",
+            explicit_base_url="https://fallback.example/v1",
+            explicit_api_key="test-api-key-value",
+        )
 
 
 class TestTryMainAgentModelFallback:

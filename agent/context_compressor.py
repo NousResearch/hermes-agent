@@ -480,6 +480,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._last_summary_skipped_by_cooldown = False
 
     def update_model(
         self,
@@ -586,6 +587,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
+        self._last_summary_skipped_by_cooldown: bool = False
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
         # record how many turns were unrecoverably dropped so callers
@@ -929,7 +931,9 @@ class ContextCompressor(ContextEngine):
         placeholder.
         """
         now = time.monotonic()
+        self._last_summary_skipped_by_cooldown = False
         if now < self._summary_failure_cooldown_until:
+            self._last_summary_skipped_by_cooldown = True
             logger.debug(
                 "Skipping context summary during cooldown (%.0fs remaining)",
                 self._summary_failure_cooldown_until - now,
@@ -1521,6 +1525,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_summary_skipped_by_cooldown = False
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -1612,18 +1617,33 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         #           middle window.  Records _last_summary_fallback_used /
         #           _last_summary_dropped_count for gateway hygiene to
         #           surface a warning.
-        # Default is False (historical behavior).
-        if not summary and self.abort_on_summary_failure:
+        # Default is False (historical behavior).  However, if the failure is
+        # only because an earlier failed attempt placed the summarizer in
+        # cooldown, this attempt did not actually try to summarize; abort even
+        # in legacy mode so auto-compress retry loops do not repeatedly drop
+        # middle turns behind static "summary unavailable" markers.
+        _abort_summary_failure = self.abort_on_summary_failure or getattr(
+            self,
+            "_last_summary_skipped_by_cooldown",
+            False,
+        )
+        if not summary and _abort_summary_failure:
             n_skipped = compress_end - compress_start
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
             self._last_compress_aborted = True
             if not self.quiet_mode:
+                _abort_reason = (
+                    "summary failure cooldown is active"
+                    if getattr(self, "_last_summary_skipped_by_cooldown", False)
+                    else "compression.abort_on_summary_failure=true"
+                )
                 logger.warning(
                     "Summary generation failed — aborting compression "
-                    "(compression.abort_on_summary_failure=true). "
+                    "(%s). "
                     "%d message(s) preserved unchanged. Conversation is "
                     "frozen until the next /compress or /new.",
+                    _abort_reason,
                     n_skipped,
                 )
             return messages

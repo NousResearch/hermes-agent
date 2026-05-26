@@ -8,6 +8,8 @@ advancement through multiple providers.
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
+from agent.conversation_loop import _is_stale_non_streaming_timeout
+from agent.error_classifier import FailoverReason, classify_api_error
 
 
 def _make_agent(fallback_model=None):
@@ -89,6 +91,7 @@ class TestFallbackChainAdvancement:
     def test_exhausted_returns_false(self):
         agent = _make_agent(fallback_model=None)
         assert agent._try_activate_fallback() is False
+
 
     def test_advances_index(self):
         fbs = [
@@ -181,6 +184,33 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+
+class TestStaleNonStreamingTimeoutDetection:
+    def test_watchdog_timeout_is_detected(self):
+        err = TimeoutError(
+            "Non-streaming API call timed out after 300s "
+            "with no response (threshold: 300s)"
+        )
+
+        classified = classify_api_error(err, provider="openrouter")
+
+        assert classified.reason == FailoverReason.timeout
+        assert classified.retryable is True
+        assert _is_stale_non_streaming_timeout(err) is True
+
+    def test_plain_timeout_is_not_eager_fallback_marker(self):
+        err = TimeoutError("request timed out while reading response")
+
+        classified = classify_api_error(err, provider="openrouter")
+
+        assert classified.reason == FailoverReason.timeout
+        assert _is_stale_non_streaming_timeout(err) is False
+
+    def test_non_timeout_message_is_not_eager_fallback_marker(self):
+        err = RuntimeError("No response from provider for 300s")
+
+        assert _is_stale_non_streaming_timeout(err) is False
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

@@ -74,6 +74,28 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+_STALE_NON_STREAMING_TIMEOUT_MARKERS = (
+    "non-streaming api call timed out",
+    "non-streaming api call stale",
+    "no response from provider",
+)
+
+
+def _is_stale_non_streaming_timeout(error: BaseException) -> bool:
+    """Return True for the non-streaming stale-call watchdog timeout.
+
+    Plain provider timeouts should still use the normal retry/rebuild path.
+    This marker is emitted only after Hermes has already waited the full
+    stale threshold with no bytes/status from a non-streaming request and
+    forcibly closed the transport, so a configured fallback is preferable to
+    spending another full stale window on the same endpoint.
+    """
+    if not isinstance(error, TimeoutError):
+        return False
+    message = str(error).lower()
+    return any(marker in message for marker in _STALE_NON_STREAMING_TIMEOUT_MARKERS)
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -2418,6 +2440,27 @@ def run_conversation(
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
+
+                # Non-streaming stale watchdog timeouts are already expensive:
+                # Hermes waited the configured stale window with no provider
+                # bytes/status, then forcibly closed the request.  If the user
+                # configured a fallback, switch immediately instead of burning
+                # another full stale window (often 300s) on the same endpoint.
+                if (
+                    classified.reason == FailoverReason.timeout
+                    and _is_stale_non_streaming_timeout(api_error)
+                    and agent._fallback_index < len(agent._fallback_chain)
+                ):
+                    agent._emit_status(
+                        "⚠️ Non-streaming provider response went stale — "
+                        "switching to fallback provider..."
+                    )
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        retry_count = 0
+                        compression_attempts = 0
+                        primary_recovery_attempted = False
+                        continue
+
                 if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit

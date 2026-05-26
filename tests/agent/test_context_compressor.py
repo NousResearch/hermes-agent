@@ -78,14 +78,17 @@ class TestCompress:
         assert compressor._last_compress_aborted is False
         assert compressor._last_summary_fallback_used is True
 
-    def test_compression_increments_count(self, compressor):
+    def test_compression_count_only_increments_for_actual_compression(self, compressor):
         msgs = self._make_messages(10)
-        # Default config (abort_on_summary_failure=False) — fallback path
-        # increments the count even on summary failure.
-        compressor.compress(msgs)
+        # First summary failure uses the legacy static fallback and counts as
+        # compression; a second attempt inside the failure cooldown aborts to
+        # preserve messages and must not increment the count.
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            compressor.compress(msgs)
+            assert compressor.compression_count == 1
+            compressor.compress(msgs)
         assert compressor.compression_count == 1
-        compressor.compress(msgs)
-        assert compressor.compression_count == 2
+        assert compressor._last_compress_aborted is True
 
     def test_protects_first_and_last(self, compressor):
         msgs = self._make_messages(10)
@@ -782,6 +785,40 @@ class TestSummaryFailureTrackingForGatewayWarning:
         c._summary_failure_cooldown_until = 0.0
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             c.compress(msgs)
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+
+    def test_cooldown_skips_abort_without_static_fallback_loss(self):
+        """Auto-compress during summary cooldown must not drop turns.
+
+        The first failure may use the legacy static fallback in default mode,
+        but subsequent automatic attempts inside the cooldown are known not to
+        even call the summarizer. Treat those as an abort so retry loops do not
+        repeatedly replace middle context with unsummarized placeholders.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        import time as _time
+        c._summary_failure_cooldown_until = _time.monotonic() + 999.0
+
+        with patch("agent.context_compressor.call_llm") as mock_call_llm:
+            result = c.compress(msgs)
+
+        mock_call_llm.assert_not_called()
+        assert result == msgs
+        assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
 

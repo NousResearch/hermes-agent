@@ -1,7 +1,10 @@
 """Tests for the delivery routing module."""
 
-from gateway.config import Platform
-from gateway.delivery import DeliveryTarget
+import pytest
+
+from gateway.config import GatewayConfig, Platform
+from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.platforms.base import SendResult
 from gateway.session import SessionSource
 
 
@@ -122,5 +125,159 @@ class TestPlatformNameCaseInsensitivity:
         assert target.platform == Platform.TELEGRAM
         assert target.chat_id == "12345"
 
+class RecordingAdapter:
+    def __init__(self):
+        self.calls = []
+        self.ensure_dm_topic_calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": metadata})
+        return {"success": True}
+
+    async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
+        self.ensure_dm_topic_calls.append(
+            {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
+        )
+        return "38049"
 
 
+class StaleTopicAdapter:
+    def __init__(self):
+        self.calls = []
+        self.ensure_dm_topic_calls = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.calls.append({"chat_id": chat_id, "content": content, "metadata": dict(metadata or {})})
+        if len(self.calls) == 1:
+            return SendResult(success=False, error="Bad Request: message thread not found")
+        return SendResult(success=True, message_id="fresh-message")
+
+    async def ensure_dm_topic(self, chat_id, topic_name, force_create=False):
+        self.ensure_dm_topic_calls.append(
+            {"chat_id": chat_id, "topic_name": topic_name, "force_create": force_create}
+        )
+        return "38064" if force_create else "32343"
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_private_thread_requires_reply_anchor(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    with pytest.raises(RuntimeError, match="requires telegram_reply_to_message_id"):
+        await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Hermes API Test")
+
+    await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.ensure_dm_topic_calls == [
+        {"chat_id": "722341991", "topic_name": "Hermes API Test", "force_create": False}
+    ]
+    assert adapter.calls == [
+        {
+            "chat_id": "722341991",
+            "content": "hello",
+            "metadata": {
+                "thread_id": "38049",
+                "telegram_dm_topic_created_for_send": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_named_telegram_private_topic_refreshes_stale_thread_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = StaleTopicAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:Personal")
+
+    result = await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert getattr(result, "message_id", None) == "fresh-message"
+    assert adapter.ensure_dm_topic_calls == [
+        {"chat_id": "722341991", "topic_name": "Personal", "force_create": False},
+        {"chat_id": "722341991", "topic_name": "Personal", "force_create": True},
+    ]
+    assert [call["metadata"]["thread_id"] for call in adapter.calls] == ["32343", "38064"]
+    assert all(call["metadata"]["telegram_dm_topic_created_for_send"] is True for call in adapter.calls)
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    await router._deliver_to_platform(
+        target,
+        "hello",
+        metadata={"telegram_reply_to_message_id": "9001"},
+    )
+
+    assert adapter.calls == [
+        {
+            "chat_id": "722341991",
+            "content": "hello",
+            "metadata": {
+                "telegram_reply_to_message_id": "9001",
+                "thread_id": "32344",
+                "telegram_dm_topic_reply_fallback": True,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_direct_messages_topic_metadata_is_respected(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    await router._deliver_to_platform(
+        target,
+        "hello",
+        metadata={"telegram_direct_messages_topic_id": "32344"},
+    )
+
+    assert adapter.calls[0]["metadata"] == {"telegram_direct_messages_topic_id": "32344"}
+
+
+@pytest.mark.asyncio
+async def test_explicit_telegram_group_thread_does_not_mark_dm_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:-100123:42")
+
+    await router._deliver_to_platform(target, "hello", metadata=None)
+
+    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
+
+
+class FailingAdapter:
+    async def send(self, chat_id, content, metadata=None):
+        return SendResult(success=False, error="route failed", retryable=False)
+
+
+@pytest.mark.asyncio
+async def test_platform_send_failure_raises_for_delivery_result(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: FailingAdapter()})
+    target = DeliveryTarget.parse("telegram:722341991:32344")
+
+    with pytest.raises(RuntimeError, match="route failed"):
+        await router._deliver_to_platform(target, "hello", metadata={"telegram_reply_to_message_id": "9001"})

@@ -10683,7 +10683,27 @@ def cmd_dashboard(args):
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
 
+    from hermes_cli.config import load_config
     from hermes_cli.web_server import start_server
+
+    def _split_hosts(value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            raw_values = value
+        else:
+            raw_values = [value]
+        hosts = []
+        for raw in raw_values:
+            hosts.extend(str(raw).split(","))
+        return [host.strip() for host in hosts if host.strip()]
+
+    cfg = load_config()
+    dashboard_cfg = cfg.get("dashboard", {}) if isinstance(cfg, dict) else {}
+    allowed_hosts = []
+    allowed_hosts.extend(_split_hosts(dashboard_cfg.get("allowed_hosts")))
+    allowed_hosts.extend(_split_hosts(os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS")))
+    allowed_hosts.extend(_split_hosts(getattr(args, "allowed_host", None)))
 
     embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
     start_server(
@@ -10692,6 +10712,7 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         embedded_chat=embedded_chat,
+        allowed_hosts=allowed_hosts,
     )
 
 
@@ -13749,6 +13770,17 @@ Examples:
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+    )
+    dashboard_parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help=(
+            "Additional exact Host header accepted by the dashboard. Use for "
+            "Cloudflare Access/reverse-proxy hostnames while binding origin "
+            "to 127.0.0.1. Can be repeated or comma-separated."
+        ),
     )
     dashboard_parser.add_argument(
         "--tui",

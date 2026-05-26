@@ -1166,6 +1166,12 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Extra public hostnames the dashboard should accept in the HTTP Host
+        # header while still binding the origin to loopback. This is intended
+        # for reverse-proxy / Cloudflare Access deployments where the browser
+        # reaches https://dashboard.example.com but the origin listens on
+        # 127.0.0.1:9119. Keep empty for localhost-only operation.
+        "allowed_hosts": [],
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

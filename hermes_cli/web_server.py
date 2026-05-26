@@ -160,23 +160,10 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
-
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
+def _host_header_name(host_header: str) -> str:
+    """Return the normalized hostname portion of a Host header."""
     if not host_header:
-        return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
+        return ""
     h = host_header.strip()
     if h.startswith("["):
         # IPv6 bracketed — port (if any) follows "]:"
@@ -187,12 +174,62 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
             host_only = h.strip("[]")
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    return host_only.strip().lower().rstrip(".")
+
+
+def _normalize_allowed_hosts(allowed_hosts: Optional[List[str]] = None) -> Tuple[str, ...]:
+    """Normalize configured extra dashboard Host values.
+
+    Values are exact hostnames (optionally with a port suffix). Schemes,
+    paths, blanks and duplicates are ignored so config/env/CLI inputs remain
+    operator-friendly without widening the trust boundary.
+    """
+    normalized: List[str] = []
+    seen = set()
+    for value in allowed_hosts or []:
+        raw = str(value or "").strip()
+        if not raw or "*" in raw:
+            continue
+        if "://" in raw:
+            parsed = urllib.parse.urlparse(raw)
+            raw = parsed.netloc or parsed.path
+        else:
+            raw = raw.split("/", 1)[0]
+        host = _host_header_name(raw)
+        if host and host not in seen:
+            seen.add(host)
+            normalized.append(host)
+    return tuple(normalized)
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    allowed_hosts: Optional[List[str]] = None,
+) -> bool:
+    """True if the Host header targets the interface we bound to.
+
+    Accepts:
+    - Exact bound host (with or without port suffix)
+    - Loopback aliases when bound to loopback
+    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
+      no protection possible at this layer)
+    - Extra exact hosts supplied by --allowed-host / dashboard.allowed_hosts
+      for loopback reverse-proxy deployments.
+    """
+    host_only = _host_header_name(host_header)
+    if not host_only:
+        return False
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
     if bound_host in {"0.0.0.0", "::"}:
+        return True
+
+    # Explicit reverse-proxy names are exact matches only; wildcards are not
+    # supported because they would weaken the DNS-rebinding defence.
+    if host_only in _normalize_allowed_hosts(allowed_hosts):
         return True
 
     # Loopback bind: accept the loopback names
@@ -221,7 +258,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", ())
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -4698,6 +4736,7 @@ def start_server(
     allow_public: bool = False,
     *,
     embedded_chat: bool = False,
+    allowed_hosts: Optional[List[str]] = None,
 ):
     """Start the web UI server."""
     import uvicorn
@@ -4724,6 +4763,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allowed_hosts = _normalize_allowed_hosts(allowed_hosts)
 
     if open_browser:
         import webbrowser

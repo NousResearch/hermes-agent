@@ -3546,7 +3546,7 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
         return
 
     models = list(_PROVIDER_MODELS.get("google-gemini-cli") or [])
-    default = current_model or (models[0] if models else "gemini-3-flash-preview")
+    default = current_model or (models[0] if models else "gemini-3.5-flash")
     selected = _prompt_model_selection(models, current_model=default)
     if selected:
         _save_model_choice(selected)
@@ -5633,7 +5633,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 print()
                 print(
                     "❌ This Google API key is on the free tier "
-                    "(<= 250 requests/day for gemini-2.5-flash)."
+                    "(<= 250 requests/day for gemini-3.5-flash)."
                 )
                 print(
                     "   Hermes typically makes 3-10 API calls per user turn "

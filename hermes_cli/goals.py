@@ -681,7 +681,7 @@ class GoalManager:
         # Auto-pause when the judge model can't produce the expected JSON
         # verdict N turns in a row. Points the user at the goal_judge config
         # so they can route this side task to a model that follows the
-        # contract (e.g. google/gemini-3-flash-preview). Without this guard,
+        # contract (e.g. google/gemini-3.5-flash). Without this guard,
         # weak judge models burn the entire turn budget returning prose or
         # empty strings.
         if state.consecutive_parse_failures >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
@@ -703,7 +703,7 @@ class GoalManager:
                     "  auxiliary:\n"
                     "    goal_judge:\n"
                     "      provider: openrouter\n"
-                    "      model: google/gemini-3-flash-preview\n"
+                    "      model: google/gemini-3.5-flash\n"
                     "Then /goal resume to continue."
                 ),
             }

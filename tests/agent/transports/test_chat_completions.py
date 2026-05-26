@@ -772,6 +772,103 @@ class TestChatCompletionsKimi:
         # The parameters dict is passed through untouched (no synthetic type)
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
+    def test_gemini_tool_schemas_sanitized_union_type(self, transport):
+        """Gemini models via chat_completions get union type arrays collapsed (#30676)."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lcm_grep",
+                    "description": "d",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "time_from": {"type": ["number", "string"]},
+                        },
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
+        kw = transport.build_kwargs(
+            model="gemini-3.5-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        props = kw["tools"][0]["function"]["parameters"]["properties"]
+        assert props["time_from"]["type"] == "string"
+
+    def test_gemini_tool_schemas_sanitized_integer_enum(self, transport):
+        """Gemini models via chat_completions get non-string enums dropped (#30676)."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "discord",
+                    "description": "d",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["create_thread"]},
+                            "auto_archive_duration": {
+                                "type": "integer",
+                                "enum": [60, 1440, 4320, 10080],
+                            },
+                        },
+                        "required": ["action"],
+                    },
+                },
+            }
+        ]
+        kw = transport.build_kwargs(
+            model="google/gemini-3.5-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        props = kw["tools"][0]["function"]["parameters"]["properties"]
+        assert "enum" not in props["auto_archive_duration"]
+        assert props["action"]["enum"] == ["create_thread"]
+
+    def test_gemini_tool_schemas_sanitized_on_profile_route_copilot(self, transport):
+        """Registered-provider traffic (Copilot) takes the profile route; the
+        Gemini sanitizer must apply there too, not just on the legacy path (#30676)."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("copilot")
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "discord",
+                    "description": "d",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "auto_archive_duration": {
+                                "type": "integer",
+                                "enum": [60, 1440, 4320, 10080],
+                            },
+                            "time_from": {"type": ["number", "string"]},
+                        },
+                        "required": ["auto_archive_duration"],
+                    },
+                },
+            }
+        ]
+        kw = transport.build_kwargs(
+            model="gemini-3.5-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            provider_profile=profile,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        props = kw["tools"][0]["function"]["parameters"]["properties"]
+        assert "enum" not in props["auto_archive_duration"]
+        assert props["time_from"]["type"] == "string"
+
 
 class TestChatCompletionsLmStudioReasoning:
     """LM Studio publishes per-model reasoning ``allowed_options``. When the

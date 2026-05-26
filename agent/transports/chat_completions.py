@@ -11,6 +11,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 
 from typing import Any, Dict
 
+from agent.gemini_schema import sanitize_gemini_tools
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -126,6 +127,20 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     """
     m = str(model or "").lower()
     return "gemini" in m or "gemma" in m
+
+
+def _is_gemini_chat_completions_model(model: str) -> bool:
+    """True for Gemini models reaching the chat-completions transport.
+
+    Applies to direct endpoints (Copilot, Google AI Studio /openai) and
+    aggregators (OpenRouter, Nous) that forward the model name unchanged.
+    The sanitizer only drops schema constructs Gemini rejects — it is safe
+    to apply even on tolerant aggregators that would accept the richer form.
+    """
+    m = (model or "").strip().lower()
+    if m.startswith("google/"):
+        m = m[7:]
+    return m.startswith("gemini-")
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -371,6 +386,8 @@ class ChatCompletionsTransport(ProviderTransport):
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
+            elif _is_gemini_chat_completions_model(model):
+                tools = sanitize_gemini_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > provider default
@@ -554,10 +571,12 @@ class ChatCompletionsTransport(ProviderTransport):
         if timeout is not None:
             api_kwargs["timeout"] = timeout
 
-        # Tools — apply Moonshot/Kimi schema sanitization regardless of path
+        # Tools — apply model-specific schema sanitization regardless of path
         if tools:
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
+            elif _is_gemini_chat_completions_model(model):
+                tools = sanitize_gemini_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > profile default

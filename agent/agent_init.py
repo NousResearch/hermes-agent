@@ -487,13 +487,9 @@ def init_agent(
         pass
 
     # Iteration budget: the LLM is only notified when it actually exhausts
-    # the iteration budget (api_call_count >= max_iterations).  At that
-    # point we inject ONE message, allow one final API call, and if the
-    # model doesn't produce a text response, force a user-message asking
-    # it to summarise.  No intermediate pressure warnings — they caused
-    # models to "give up" prematurely on complex tasks (#7915).
-    agent._budget_exhausted_injected = False
-    agent._budget_grace_call = False
+    # the iteration budget (api_call_count >= max_iterations).  No
+    # intermediate pressure warnings — they caused models to "give up"
+    # prematurely on complex tasks (#7915).
 
     # Activity tracking — updated on each API call, tool execution, and
     # stream chunk.  Used by the gateway timeout handler to report what the

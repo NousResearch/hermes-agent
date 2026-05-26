@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
 import signal
 import subprocess
@@ -73,6 +74,26 @@ WATCH_STRIKE_LIMIT = 3            # Strikes in a row → disable watch + promote
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
 WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
+
+
+def _redact_command_for_display(command: str) -> str:
+    """Redact credential-shaped values before exposing process commands."""
+    text = str(command or "")
+    # Redact bearer headers before generic ``Authorization: ...`` key/value
+    # handling. Otherwise the generic regex replaces only ``Bearer`` and leaves
+    # the actual token behind as a bare word.
+    text = re.sub(r"(?i)(authorization:\s*bearer\s+)[^\s'\"]+", r"\1[REDACTED]", text)
+    # Common provider/GitHub token shapes, including Perplexity's ``pplx-``
+    # Search API tokens and legacy underscore-prefixed service tokens.
+    text = re.sub(r"\b(?:sk|pplx)-[A-Za-z0-9_\-]{12,}\b", "[REDACTED]", text)
+    text = re.sub(r"\b(?:sk|pplx|ghs|ghp)_[A-Za-z0-9_\-]{12,}\b", "[REDACTED]", text)
+    text = re.sub(r"\bgithub_pat_[A-Za-z0-9_\-]{20,}\b", "[REDACTED]", text)
+    # KEY=value / --key value / JSON-ish credential fields.  Match both
+    # exact keys (`token=`) and prefixed env vars (`OPENAI_API_KEY=`).
+    secret_key = r"(?:[A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|passwd|authorization|bearer|credential|client[_-]?secret)[A-Za-z0-9_.-]*)"
+    text = re.sub(rf"(?i)(\b{secret_key}\b\s*[=:]\s*)([^\s'\"]+|['\"][^'\"]+['\"])", r"\1[REDACTED]", text)
+    text = re.sub(rf"(?i)(--{secret_key}(?:=|\s+))([^\s'\"]+|['\"][^'\"]+['\"])", r"\1[REDACTED]", text)
+    return text
 
 
 def format_uptime_short(seconds: int) -> str:
@@ -132,6 +153,13 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    env_type: str = "local"                    # Backend type for stdin guard checks
+    # Rolling buffer of stdin written since the last newline, so the stdin
+    # guard sees the full pending shell/REPL line even when a dangerous
+    # command is split across multiple write_stdin() chunks (e.g. "echo x >
+    # ~/.hermes/" then "config.yaml\n"). Only populated for guarded
+    # shells/REPLs; reset once a newline flushes the line to the process.
+    _stdin_guard_buffer: str = field(default="", repr=False)
 
 
 class ProcessRegistry:
@@ -272,7 +300,7 @@ class ProcessRegistry:
                 self.completion_queue.put({
                     "session_id": session.id,
                     "session_key": session.session_key,
-                    "command": session.command,
+                    "command": _redact_command_for_display(session.command),
                     "type": "watch_disabled",
                     "suppressed": session._watch_suppressed,
                     "platform": session.watcher_platform,
@@ -303,7 +331,7 @@ class ProcessRegistry:
         self.completion_queue.put({
             "session_id": session.id,
             "session_key": session.session_key,
-            "command": session.command,
+            "command": _redact_command_for_display(session.command),
             "type": "watch_match",
             "pattern": matched_pattern,
             "output": output,
@@ -538,6 +566,7 @@ class ProcessRegistry:
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
+            env_type="local",
         )
 
         if use_pty:
@@ -677,6 +706,7 @@ class ProcessRegistry:
             started_at=time.time(),
             env_ref=env,
             pid_scope="sandbox",
+            env_type=getattr(env, "env_type", getattr(env, "name", "sandbox")),
         )
 
         # Run the command in the sandbox with output capture
@@ -863,7 +893,7 @@ class ProcessRegistry:
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
-                "command": session.command,
+                "command": _redact_command_for_display(session.command),
                 "exit_code": session.exit_code,
                 "output": output_tail,
             })
@@ -989,7 +1019,7 @@ class ProcessRegistry:
 
         result = {
             "session_id": session.id,
-            "command": session.command,
+            "command": _redact_command_for_display(session.command),
             "status": "exited" if session.exited else "running",
             "pid": session.pid,
             "uptime_seconds": int(time.time() - session.started_at),
@@ -1181,6 +1211,96 @@ class ProcessRegistry:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    def _guard_stdin_for_interactive_shell(self, session: ProcessSession, data: str) -> dict | None:
+        """Run unbypassable guards for stdin sent to interactive shells/REPLs."""
+        if not isinstance(data, str) or not data.strip():
+            return None
+        try:
+            words = shlex.split(session.command or "")
+        except Exception:
+            words = (session.command or "").split()
+        if not words:
+            return None
+        try:
+            from tools.approval import (
+                _command_basename,
+                _command_word_indices,
+                _inline_script_payload_writes_protected_path,
+                _is_inline_script_interpreter,
+                check_unbypassable_command_guards,
+            )
+            command_indices = _command_word_indices(words)
+            effective_word = words[command_indices[-1]] if command_indices else words[0]
+            command_name = _command_basename(effective_word).lower()
+        except Exception:
+            command_name = os.path.basename(words[0]).lower()
+            check_unbypassable_command_guards = None
+            _inline_script_payload_writes_protected_path = None
+            _is_inline_script_interpreter = None
+        guarded_shells = {"bash", "sh", "zsh", "ksh", "dash", "fish"}
+        # Match versioned REPL names (python3.12, /usr/bin/python3.12, node20,
+        # nodejs20, ruby3.2, perl5.36, …) via the shared approval interpreter
+        # matcher; the literal set is only a fallback for the degraded-import
+        # path where the helper is unavailable.
+        if _is_inline_script_interpreter is not None:
+            is_repl = _is_inline_script_interpreter(command_name)
+        else:
+            is_repl = command_name in {"python", "python3", "node", "nodejs", "ruby", "perl"}
+        if command_name not in guarded_shells and not is_repl:
+            return None
+        # Stateful buffering: combine with stdin already written but not yet
+        # executed (no newline seen) so a protected write split across chunks
+        # cannot evade the guard by being individually benign. The candidate
+        # reconstructs the full pending line; if blocked we reject WITHOUT
+        # updating the buffer, so the dangerous bytes never gain a newline.
+        with session._lock:
+            pending = session._stdin_guard_buffer
+        candidate = pending + data if pending else data
+        try:
+            if is_repl and _inline_script_payload_writes_protected_path:
+                if _inline_script_payload_writes_protected_path(candidate, session.cwd):
+                    return {
+                        "status": "blocked",
+                        "error": "stdin blocked by protected Hermes config/env guard",
+                        "exit_code": -1,
+                    }
+            if check_unbypassable_command_guards is None:
+                return None
+            approval = check_unbypassable_command_guards(
+                candidate,
+                session.env_type or "local",
+                cwd=session.cwd,
+            )
+        except Exception as exc:
+            logger.warning("Failed to guard process stdin for %s: %s", session.id, exc)
+            return None
+        if approval.get("approved", True):
+            self._remember_stdin_tail(session, candidate)
+            return None
+        return {
+            "status": "blocked",
+            "error": approval.get("message", "stdin blocked by unbypassable command guard"),
+            "exit_code": -1,
+        }
+
+    # Cap on the buffered un-executed stdin line. Generous enough for any
+    # realistic protected-write command; longer pathological single lines
+    # only keep their tail.
+    _STDIN_GUARD_BUFFER_MAX = 16384
+
+    def _remember_stdin_tail(self, session: ProcessSession, candidate: str) -> None:
+        """Retain the still-pending stdin tail (text after the last newline).
+
+        Lines completed by a newline have been flushed to the process and are
+        no longer part of the pending command, so only the trailing fragment
+        is carried forward for the next chunk's guard check.
+        """
+        tail = candidate.rsplit("\n", 1)[-1] if "\n" in candidate else candidate
+        if len(tail) > self._STDIN_GUARD_BUFFER_MAX:
+            tail = tail[-self._STDIN_GUARD_BUFFER_MAX:]
+        with session._lock:
+            session._stdin_guard_buffer = tail
+
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
         session = self.get(session_id)
@@ -1188,6 +1308,10 @@ class ProcessRegistry:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
+
+        guard_block = self._guard_stdin_for_interactive_shell(session, data)
+        if guard_block:
+            return guard_block
 
         # PTY mode -- write through pty handle (expects bytes)
         if hasattr(session, '_pty') and session._pty:
@@ -1262,7 +1386,7 @@ class ProcessRegistry:
         for s in all_sessions:
             entry = {
                 "session_id": s.id,
-                "command": s.command[:200],
+                "command": _redact_command_for_display(s.command)[:200],
                 "cwd": s.cwd,
                 "pid": s.pid,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
@@ -1362,7 +1486,7 @@ class ProcessRegistry:
                     if not s.exited:
                         entries.append({
                             "session_id": s.id,
-                            "command": s.command,
+                            "command": _redact_command_for_display(s.command),
                             "pid": s.pid,
                             "pid_scope": s.pid_scope,
                             "cwd": s.cwd,
@@ -1413,7 +1537,7 @@ class ProcessRegistry:
                 # process once the original environment handle is gone.
                 logger.info(
                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
-                    entry.get("command", "unknown")[:60],
+                    _redact_command_for_display(entry.get("command", "unknown"))[:60],
                     pid,
                     pid_scope,
                 )
@@ -1446,7 +1570,7 @@ class ProcessRegistry:
                 with self._lock:
                     self._running[session.id] = session
                 recovered += 1
-                logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
+                logger.info("Recovered detached process: %s (pid=%d)", _redact_command_for_display(session.command)[:60], pid)
 
                 # Re-enqueue watcher so gateway can resume notifications
                 if session.watcher_interval > 0:
@@ -1480,7 +1604,7 @@ def format_process_notification(evt: dict) -> "str | None":
     """
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
+    _cmd = _redact_command_for_display(evt.get("command", "unknown"))
 
     if evt_type == "watch_disabled":
         return f"[IMPORTANT: {evt.get('message', '')}]"

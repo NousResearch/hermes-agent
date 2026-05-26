@@ -140,7 +140,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "perplexity", "searxng", "brave-free", "ddgs", "xai"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -153,6 +153,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("perplexity", _has_env("PERPLEXITY_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -206,6 +207,8 @@ def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
     if backend == "exa":
         return _has_env("EXA_API_KEY")
+    if backend == "perplexity":
+        return _has_env("PERPLEXITY_API_KEY")
     if backend == "parallel":
         return _has_env("PARALLEL_API_KEY")
     if backend == "firecrawl":
@@ -269,6 +272,7 @@ def _web_requires_env() -> list[str]:
     """
     return [
         "EXA_API_KEY",
+        "PERPLEXITY_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
@@ -799,8 +803,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
+        # Dispatch through the web search registry. All built-in providers
+        # (brave-free, ddgs, searxng, exa, perplexity, parallel, tavily,
+        # firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
         # delegation. Sync only — every provider's search() is sync.
         from agent.web_search_registry import (
@@ -1367,11 +1372,11 @@ async def web_crawl_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    if configured in {"exa", "perplexity", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
+        for backend in ("exa", "perplexity", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
     )
 
 
@@ -1403,6 +1408,8 @@ if __name__ == "__main__":
         print(f"✅ Web backend: {backend}")
         if backend == "exa":
             print("   Using Exa API (https://exa.ai)")
+        elif backend == "perplexity":
+            print("   Using Perplexity Search API (search only)")
         elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
@@ -1424,7 +1431,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PERPLEXITY_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

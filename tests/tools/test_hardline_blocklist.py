@@ -6,6 +6,7 @@ gateway /yolo, approvals.mode=off, or cron approve mode.
 
 Inspired by Mercury Agent's permission-hardened blocklist.
 """
+import logging
 import os
 
 import pytest
@@ -15,6 +16,7 @@ from tools.approval import (
     HARDLINE_PATTERNS,
     check_all_command_guards,
     check_dangerous_command,
+    check_unbypassable_command_guards,
     detect_dangerous_command,
     detect_hardline_command,
     disable_session_yolo,
@@ -376,3 +378,716 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+# =========================================================================
+# Protected Hermes config guard — direct writes must go through config CLI
+# =========================================================================
+
+_PROTECTED_CONFIG_BLOCK = [
+    "echo x > ~/.hermes/config.yaml",
+    "echo TOKEN=x >> ~/.hermes/.env",
+    "printf x | tee $HERMES_HOME/config.yaml",
+    "sed -i 's/a/b/' ${HERMES_HOME}/.env",
+    "python3 -c \"open('~/.hermes/config.yaml','w').write('x')\"",
+    "/usr/bin/python3 -c \"open('~/.hermes/config.yaml','w').write('x')\"",
+    "/usr/bin/node -e \"require('fs').writeFileSync('~/.hermes/config.yaml','x')\"",
+    "/usr/bin/perl -e \"open(my $fh, '>', '~/.hermes/config.yaml')\"",
+    "/usr/bin/ruby -e \"File.write('~/.hermes/config.yaml','x')\"",
+    "cat >| ~/.hermes/config.yaml",
+    "touch ~/.hermes/config.yaml",
+    "/usr/bin/touch ~/.hermes/config.yaml",
+    "dd if=/tmp/config.yaml of=~/.hermes/config.yaml",
+    # dd overwriting protected files must be blocked just like redirection/tee.
+    "dd if=/tmp/x of=~/.hermes/config.yaml",
+    f"dd if=/tmp/x of={os.path.expanduser('~/.hermes/.env')}",
+    f'echo x > "{os.path.expanduser("~")}"/.hermes/config.yaml',
+    f'echo x > "{os.path.expanduser("~/.hermes")}"/config.yaml',
+    "echo x > ~/.hermes/./config.yaml",
+    "echo x > ~/.hermes/../.hermes/config.yaml",
+    "echo x > ~/.hermes//config.yaml",
+    "echo x > ~/.hermes/logs/../config.yaml",
+    "echo x > ~/\\.hermes/con\\fig.yaml",
+    "echo x > ~/\\.hermes/.\\env",
+    f"echo x > ~/../{os.path.basename(os.path.expanduser('~'))}/.hermes/config.yaml",
+    f"echo x > $HOME/../{os.path.basename(os.path.expanduser('~'))}/.hermes/.env",
+    "cd ~/.hermes && echo x > config.yaml",
+    "cd -- ~/.hermes && echo x > config.yaml",
+    "cd ~/.hermes || exit; echo x > config.yaml",
+    "cd ~/.hermes/logs && echo x > ../config.yaml",
+    "cd ~/.hermes && python3 -c \"open('config.yaml','w').write('x')\"",
+    "env python3 -c \"open('~/.hermes/config.yaml','w').write('x')\"",
+    "python3.12 -c \"open('~/.hermes/config.yaml','w').write('x')\"",
+    "cd ~/.hermes && python3 -c \"from pathlib import Path; Path('config.yaml').write_text('x')\"",
+    "cd ~/.hermes && /usr/bin/env node -e \"require('fs').writeFileSync('config.yaml','x')\"",
+    "cd ~/.hermes && /usr/bin/node -e \"require('fs').writeFileSync('config.yaml','x')\"",
+    "cd ~/.hermes && /usr/bin/ruby -e \"File.write('config.yaml','x')\"",
+    "cd ~/.hermes && /usr/bin/perl -e \"open(my $fh, '>', 'config.yaml')\"",
+    "cd ~/.hermes && echo x > config.yaml; cd /tmp && true",
+    "cd -- ~/.hermes && echo x > config.yaml; cd /tmp && true",
+    "cd ~/.hermes || exit; echo x > config.yaml; cd /tmp && true",
+    "cd ~/.hermes && python3 -c \"open('config.yaml','w').write('x')\"; cd /tmp && true",
+    "cd ~/.hermes && python3 -c \"from pathlib import Path; Path('config.yaml').write_text('x')\"; cd /tmp && true",
+    "(cd ~/.hermes && echo x > config.yaml)",
+    "{ cd ~/.hermes && echo x > config.yaml; }",
+    "cd ~/.hermes && (cd /tmp) && echo x > config.yaml",
+    "bash -c 'echo x > ~/.hermes/config.yaml'",
+    "bash -o pipefail -c 'echo x > ~/.hermes/config.yaml'",
+    "bash --rcfile /tmp/r -c 'echo x > ~/.hermes/config.yaml'",
+    "/bin/sh -c 'cd ~/.hermes && echo x > config.yaml'",
+    "cd ~/.hermes && bash -c 'echo x > config.yaml'",
+    "cd ~/.hermes && python3 -c \"p='config.yaml'; open(p,'w').write('x')\"",
+    "cd ~/.hermes && python3 -c \"from pathlib import Path; p=Path('config.yaml'); p.write_text('x')\"",
+    "cd ~/.hermes && ln -s config.yaml /tmp/hermes-review-link && echo x > /tmp/hermes-review-link",
+    "cd ~/.hermes && ln -s config.yaml /tmp/hermes-review-link && printf x | tee /tmp/hermes-review-link",
+    "cd ~/.hermes && ln -s config.yaml /tmp/hermes-review-link && truncate -s0 /tmp/hermes-review-link",
+    "cd ~/.hermes && ln -s config.yaml /tmp/hermes-review-link && cp /tmp/x /tmp/hermes-review-link",
+    "rm ~/.hermes/config.yaml",
+    "mv /tmp/config.yaml ~/.hermes/config.yaml",
+    "/bin/mv /tmp/config.yaml ~/.hermes/config.yaml",
+    "/bin/cp /tmp/config.yaml ~/.hermes/config.yaml",
+    "/bin/cp /tmp/config.yaml ~/.hermes/",
+    "/bin/mv /tmp/.env ~/.hermes/",
+    "/usr/bin/install /tmp/config.yaml ~/.hermes/config.yaml",
+    "/usr/bin/install /tmp/config.yaml ~/.hermes/",
+    "cp -t ~/.hermes /tmp/config.yaml",
+    "cp -t~/.hermes /tmp/config.yaml",
+    "cp -at ~/.hermes /tmp/config.yaml",
+    "install -t ~/.hermes /tmp/.env",
+    "install -t~/.hermes /tmp/.env",
+    "install -Ct ~/.hermes /tmp/.env",
+    "mv -t~/.hermes /tmp/config.yaml",
+    "mv -vt ~/.hermes /tmp/config.yaml",
+    "bash -euxo pipefail -c 'echo x > ~/.hermes/config.yaml'",
+    "cd ~/.hermes && mv config.yaml /tmp/config.yaml.bak",
+    "cd ~/.hermes && /usr/bin/python3 -c \"open('config.yaml','w').write('x')\"",
+    "cd ~/.hermes && mv config.yaml /tmp/config.yaml.bak; cd /tmp && true",
+]
+
+_PROTECTED_CONFIG_ALLOW = [
+    "hermes config set web.search_backend brave-free",
+    "cat ~/.hermes/config.yaml | head -n 1",
+    "grep web ~/.hermes/config.yaml",
+    "touch /tmp/done && grep web ~/.hermes/config.yaml",
+    "rm -rf node_modules && cat ~/.hermes/config.yaml",
+    "cp ~/.hermes/config.yaml /tmp/config.yaml.bak",
+    "echo '~/.hermes/config.yaml'",
+    "echo 'echo x > ~/.hermes/config.yaml'",
+    "echo 'foo && echo x > ~/.hermes/config.yaml'",
+    "printf '%s\\n' 'printf x | tee ~/.hermes/config.yaml'",
+    "echo 'touch ~/.hermes/config.yaml'",
+    "echo 'python3 -c open(~/.hermes/config.yaml,w)'",
+    "python3 -c \"print(1)\" ~/.hermes/config.yaml",
+    "/usr/bin/env python3 -c \"print(1)\" ~/.hermes/config.yaml",
+    "node -e \"console.log(1)\" ~/.hermes/config.yaml",
+    "echo x > /tmp/config.yaml",
+    # Read-only nested shell payloads under find/xargs must stay allowed.
+    "find /tmp -maxdepth 0 -exec sh -c 'cat ~/.hermes/config.yaml' \\;",
+    "xargs -I{} sh -c 'cat ~/.hermes/config.yaml' <<< foo",
+    "find /usr/bin -name sh",
+    # Symlink whose destination is OUTSIDE protected config (source protected,
+    # link lands in /tmp) is not itself a write — stays allowed.
+    "cd ~/.hermes && ln -s config.yaml /tmp/readonly-link",
+]
+
+
+def test_protected_config_guard_detects_direct_writes(clean_session):
+    import tools.approval as approval_mod
+
+    for cmd in _PROTECTED_CONFIG_BLOCK:
+        is_blocked, desc = approval_mod._check_protected_config_write_guard(cmd)
+        assert is_blocked, f"expected protected config guard to block {cmd!r}"
+        assert "protected" in desc.lower()
+
+
+def test_protected_config_guard_detects_literal_active_home(clean_session):
+    from hermes_constants import get_hermes_home
+    import tools.approval as approval_mod
+
+    for name in ("config.yaml", ".env"):
+        cmd = f"echo x > {get_hermes_home() / name}"
+        is_blocked, desc = approval_mod._check_protected_config_write_guard(cmd)
+        assert is_blocked, f"expected protected config guard to block active HERMES_HOME path {name!r}"
+        assert "protected" in desc.lower()
+
+
+def test_protected_config_guard_detects_default_root_in_profile_mode(clean_session, monkeypatch, tmp_path):
+    root = tmp_path / "hermes-root"
+    profile_home = root / "profiles" / "ops" / "home"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(profile_home))
+    monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
+
+    for name in ("config.yaml", ".env"):
+        cmd = f"echo x > {root / name}"
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"expected default Hermes root path to block {name!r}"
+        assert result.get("protected_config") is True
+
+
+def test_protected_config_guard_detects_relative_cwd_with_spaces(clean_session, monkeypatch, tmp_path):
+    import tools.approval as approval_mod
+
+    hermes_home = tmp_path / "hermes home with spaces"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    is_blocked, desc = approval_mod._check_protected_config_write_guard(
+        "echo x > config.yaml",
+        cwd=str(hermes_home),
+    )
+    assert is_blocked
+    assert "protected" in desc.lower()
+
+    absolute_cmd = f'echo x > "{hermes_home / "config.yaml"}"'
+    is_blocked, desc = approval_mod._check_protected_config_write_guard(absolute_cmd)
+    assert is_blocked
+    assert "protected" in desc.lower()
+
+    read_copy_cmd = f'cp "{hermes_home / "config.yaml"}" /tmp/config.yaml.bak'
+    is_blocked, desc = approval_mod._check_protected_config_write_guard(read_copy_cmd)
+    assert not is_blocked, f"protected source read should not be treated as direct write (got {desc})"
+
+    quoted_cd_cmd = f'cd "{hermes_home}" && echo x > config.yaml'
+    is_blocked, desc = approval_mod._check_protected_config_write_guard(quoted_cd_cmd)
+    assert is_blocked
+    assert "protected" in desc.lower()
+
+    for cmd in (
+        f'(cd "{hermes_home}"); echo x > config.yaml',
+        f'(cd "{hermes_home}" && cat config.yaml); echo x > config.yaml',
+    ):
+        is_blocked, desc = approval_mod._check_protected_config_write_guard(cmd, cwd="/tmp")
+        assert not is_blocked, f"subshell cd should not leak to parent cwd for {cmd!r} (got {desc})"
+
+
+def test_protected_config_guard_detects_relative_guard_cwd(clean_session, monkeypatch, tmp_path):
+    import tools.approval as approval_mod
+
+    hermes_home = tmp_path / "hermes-home"
+    repo_dir = hermes_home / "hermes-agent"
+    repo_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.chdir(repo_dir)
+
+    is_blocked, desc = approval_mod._check_protected_config_write_guard(
+        "echo x > config.yaml",
+        cwd="..",
+    )
+    assert is_blocked
+    assert "protected" in desc.lower()
+
+
+def test_protected_config_guard_detects_hermes_home_symbolic_parent(clean_session, monkeypatch, tmp_path):
+    import tools.approval as approval_mod
+
+    base = tmp_path / "base"
+    hermes_home = base / "hermes-home"
+    hermes_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    cmd = "echo x > $HERMES_HOME/../hermes-home/config.yaml"
+    is_blocked, desc = approval_mod._check_protected_config_write_guard(cmd)
+    assert is_blocked
+    assert "protected" in desc.lower()
+
+
+def test_protected_config_guard_allows_non_writes(clean_session):
+    import tools.approval as approval_mod
+
+    for cmd in _PROTECTED_CONFIG_ALLOW:
+        is_blocked, desc = approval_mod._check_protected_config_write_guard(cmd)
+        assert not is_blocked, f"expected protected config guard NOT to block {cmd!r} (got {desc})"
+
+
+def test_protected_config_guard_below_yolo_and_off(clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    for cmd in _PROTECTED_CONFIG_BLOCK:
+        r1 = check_dangerous_command(cmd, "local")
+        assert r1["approved"] is False, f"yolo leaked protected config guard on {cmd!r}"
+        assert r1.get("protected_config") is True
+
+        r2 = check_all_command_guards(cmd, "local")
+        assert r2["approved"] is False, f"yolo leaked protected config guard on {cmd!r}"
+        assert r2.get("protected_config") is True
+
+
+def test_protected_config_guard_below_approvals_off(clean_session, monkeypatch):
+    import tools.approval as approval_mod
+
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    monkeypatch.setattr(approval_mod, "_get_approval_mode", lambda: "off")
+    result = check_all_command_guards("echo x > ~/.hermes/config.yaml", "local")
+    assert result["approved"] is False
+    assert result.get("protected_config") is True
+
+
+def test_unbypassable_guard_blocks_protected_config_direct_write(clean_session):
+    result = check_unbypassable_command_guards("echo x > ~/.hermes/config.yaml", "local")
+    assert result["approved"] is False
+    assert result.get("protected_config") is True
+    assert "Secret values were not inspected" in result["message"]
+
+
+def test_protected_config_guard_log_does_not_leak_raw_command(clean_session, caplog):
+    caplog.set_level(logging.WARNING, logger="tools.approval")
+
+    result = check_unbypassable_command_guards(
+        "echo SECRET_VALUE > ~/.hermes/config.yaml && sudo -S whoami",
+        "local",
+    )
+
+    assert result["approved"] is False
+    assert result.get("protected_config") is True
+    assert "Protected config guard block" in caplog.text
+    assert "SECRET_VALUE" not in caplog.text
+
+
+def test_protected_config_guard_container_bypass(clean_session):
+    for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+        result = check_all_command_guards("echo x > ~/.hermes/config.yaml", env)
+        assert result["approved"] is True, f"container {env} should bypass protected config guard"
+
+
+# =========================================================================
+# Independent review regressions — wrapper/stdin/argv bypasses
+# =========================================================================
+
+_REVIEW_SUDO_STDIN_BLOCK = [
+    "sudo -nS whoami",
+    "sudo -Sn whoami",
+    "sudo --stdin whoami",
+    "echo x | sudo -nS whoami",
+    "/usr/bin/env -S 'sudo -S whoami'",
+    "/usr/bin/env -S 'sh -c \"sudo -S whoami\"'",
+    "/usr/bin/env --split-string='sudo --stdin whoami'",
+]
+
+
+def test_sudo_stdin_guard_blocks_combined_and_long_forms(clean_session, monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    for cmd in _REVIEW_SUDO_STDIN_BLOCK:
+        result = check_unbypassable_command_guards(cmd, "local")
+        assert result["approved"] is False, f"expected sudo stdin guard to block {cmd!r}"
+        assert "sudo password guessing" in result["message"]
+
+
+def test_sudo_stdin_guard_log_does_not_leak_raw_command(clean_session, monkeypatch, caplog):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    caplog.set_level(logging.WARNING, logger="tools.approval")
+
+    result = check_unbypassable_command_guards(
+        "printf SECRET_VALUE | sudo -S whoami",
+        "local",
+    )
+
+    assert result["approved"] is False
+    assert "Sudo stdin guard block" in caplog.text
+    assert "SECRET_VALUE" not in caplog.text
+
+
+_REVIEW_PROTECTED_CONFIG_BLOCK = [
+    "nice truncate -s0 ~/.hermes/config.yaml",
+    "time truncate -s0 ~/.hermes/.env",
+    "sudo sh -c 'echo x > ~/.hermes/config.yaml'",
+    "rsync /tmp/config.yaml ~/.hermes/config.yaml",
+    "rsync /tmp/.env ~/.hermes/",
+    "echo x > ~/.hermes/$'config.yaml'",
+    "touch ~/.hermes/{config.yaml}",
+    "python3 -c \"import sys; open(sys.argv[1], 'w').write('x')\" ~/.hermes/config.yaml",
+    "python3 -c \"from pathlib import Path; import sys; Path(sys.argv[1]).write_text('x')\" ~/.hermes/config.yaml",
+    "node -e \"require('fs').writeFileSync(process.argv[1], 'x')\" ~/.hermes/config.yaml",
+    # env -S / --split-string must preserve the split-string flag payload and
+    # recurse into nested shell writes.
+    "/usr/bin/env -S 'sh -c \"echo x > ~/.hermes/config.yaml\"'",
+    "/usr/bin/env --split-string='sh -c \"echo x > ~/.hermes/.env\"'",
+    "env -S 'sh -c \"echo x > ~/.hermes/config.yaml\"'",
+    # Nested shell payloads under xargs / find -exec — the inner `sh -c`
+    # argument is opaque to the outer-command word scan, so the guard must
+    # recurse into it.
+    "find /tmp -maxdepth 0 -exec sh -c 'echo x > ~/.hermes/config.yaml' \\;",
+    "find /tmp -maxdepth 0 -execdir sh -c 'echo x > ~/.hermes/.env' \\;",
+    "xargs -I{} sh -c 'echo x > ~/.hermes/config.yaml' <<< foo",
+    "echo foo | xargs sh -c 'echo x > ~/.hermes/config.yaml'",
+    # Relative symlink whose destination IS the protected config after a cd —
+    # creating the link overwrites config.yaml. The absolute dest form was
+    # already blocked; this closes the relative-cwd gap.
+    "cd ~/.hermes && ln -sf /tmp/x config.yaml",
+    "cd ~/.hermes && ln -f /tmp/x .env",
+    # Directory destinations must be treated like copy/move semantics: the
+    # source basename becomes the link name inside the protected config dir.
+    "ln -sf /tmp/config.yaml ~/.hermes/",
+    "ln -sf /tmp/.env ~/.hermes/",
+    "cd ~/.hermes && ln -sf /tmp/config.yaml .",
+    "cd ~/.hermes && ln -sf /tmp/.env .",
+]
+
+
+def test_protected_config_guard_blocks_review_bypasses(clean_session):
+    import tools.approval as approval_mod
+
+    for cmd in _REVIEW_PROTECTED_CONFIG_BLOCK:
+        is_blocked, desc = approval_mod._check_protected_config_write_guard(cmd)
+        assert is_blocked, f"expected protected config guard to block {cmd!r} (got {desc})"
+
+
+_REVIEW_HARDLINE_BLOCK = [
+    "env -i reboot",
+    "env -i PATH=/sbin reboot",
+    "/usr/bin/env -S 'reboot'",
+    "/usr/bin/env -S 'sh -c reboot'",
+    "env --split-string='sh -c reboot'",
+    "command reboot",
+    "time -p reboot",
+    "bash -c 'reboot'",
+    "rm -rf '$HOME'",
+    'rm -rf "$HOME"',
+    "rm -rf '~'",
+]
+
+
+def test_hardline_guard_blocks_wrapper_forms(clean_session):
+    for cmd in _REVIEW_HARDLINE_BLOCK:
+        result = check_unbypassable_command_guards(cmd, "local")
+        assert result["approved"] is False, f"expected hardline guard to block {cmd!r}"
+        assert result.get("hardline") is True
+
+
+def test_shell_stdin_and_shell_c_payloads_are_unbypassable(clean_session):
+    import tools.approval as approval_mod
+
+    hardline_cases = [
+        "printf 'reboot' | sh",
+        "bash <<< 'reboot'",
+    ]
+    for cmd in hardline_cases:
+        approval = approval_mod.check_unbypassable_command_guards(cmd, "local")
+        assert not approval["approved"], cmd
+
+    protected_cases = [
+        "printf 'echo x > ~/.hermes/config.yaml' | sh",
+        "bash <<< 'echo x > ~/.hermes/config.yaml'",
+    ]
+    for cmd in protected_cases:
+        assert approval_mod._check_protected_config_write_guard(cmd)[0], cmd
+
+    sudo_cases = [
+        "printf x | bash -c 'sudo -S whoami'",
+        "sh -c 'sudo --stdin whoami'",
+    ]
+    for cmd in sudo_cases:
+        approval = approval_mod.check_unbypassable_command_guards(cmd, "local")
+        assert not approval["approved"], cmd
+
+
+def test_export_alias_to_protected_config_is_blocked(clean_session):
+    import tools.approval as approval_mod
+
+    assert approval_mod._check_protected_config_write_guard(
+        "export p=~/.hermes/config.yaml; echo x > $p"
+    )[0]
+    assert approval_mod._check_protected_config_write_guard(
+        "readonly p=~/.hermes/.env; touch $p"
+    )[0]
+
+
+def test_process_stdin_wrapped_shell_and_repl_guards(tmp_path):
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    class FakePty:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, data):
+            self.writes.append(data)
+
+    registry = ProcessRegistry()
+    shell_session = ProcessSession(
+        id="wrapped-shell",
+        command="/usr/bin/env bash",
+        cwd=str(tmp_path),
+        started_at=0,
+    )
+    shell_session._pty = FakePty()
+    registry._running[shell_session.id] = shell_session
+
+    blocked = registry.submit_stdin(shell_session.id, "reboot")
+    assert blocked["status"] == "blocked"
+    assert shell_session._pty.writes == []
+
+    repl_session = ProcessSession(
+        id="py-repl",
+        command="python3",
+        cwd=str(tmp_path),
+        started_at=0,
+    )
+    repl_session._pty = FakePty()
+    registry._running[repl_session.id] = repl_session
+
+    blocked = registry.submit_stdin(
+        repl_session.id,
+        "open('~/.hermes/config.yaml', 'w').write('x')",
+    )
+    assert blocked["status"] == "blocked"
+    assert repl_session._pty.writes == []
+
+
+@pytest.mark.parametrize("command", [
+    "python3.12",
+    "/usr/bin/python3.12",
+    "node20",
+    "nodejs20",
+    "ruby3.2",
+    "perl5.36",
+])
+def test_process_stdin_versioned_repl_names_are_guarded(tmp_path, command):
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    class FakePty:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, data):
+            self.writes.append(data)
+
+    registry = ProcessRegistry()
+    session = ProcessSession(
+        id="versioned-repl-" + command.replace("/", "_"),
+        command=command,
+        cwd=str(tmp_path),
+        started_at=0,
+    )
+    session._pty = FakePty()
+    registry._running[session.id] = session
+
+    blocked = registry.submit_stdin(
+        session.id,
+        "open('~/.hermes/config.yaml', 'w').write('x')",
+    )
+    assert blocked["status"] == "blocked"
+    assert session._pty.writes == []
+
+
+def test_process_stdin_split_writes_are_buffered(tmp_path):
+    """Protected writes split across write_stdin chunks must still block.
+
+    Each chunk is individually benign ("echo x > ~/.hermes/" is an incomplete
+    path; "config.yaml" alone is harmless), but combined they overwrite the
+    protected config. The stateful guard buffer reconstructs the pending line
+    and blocks the completing chunk before its newline reaches the shell.
+    """
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    class FakePty:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, data):
+            self.writes.append(data)
+
+    registry = ProcessRegistry()
+    shell_session = ProcessSession(
+        id="split-shell",
+        command="/usr/bin/env bash",
+        cwd=str(tmp_path),
+        started_at=0,
+    )
+    shell_session._pty = FakePty()
+    registry._running[shell_session.id] = shell_session
+
+    # Benign incomplete prefix — allowed and buffered.
+    ok = registry.write_stdin(shell_session.id, "echo x > ~/.hermes/")
+    assert ok["status"] == "ok"
+    # Completing chunk + newline reconstructs the protected write → blocked,
+    # and the dangerous tail must never reach the shell.
+    blocked = registry.submit_stdin(shell_session.id, "config.yaml")
+    assert blocked["status"] == "blocked"
+    assert all(b"config.yaml" not in w for w in shell_session._pty.writes)
+
+    # REPL variant: split an inline Python write across two chunks.
+    repl_session = ProcessSession(
+        id="split-repl",
+        command="python3",
+        cwd=str(tmp_path),
+        started_at=0,
+    )
+    repl_session._pty = FakePty()
+    registry._running[repl_session.id] = repl_session
+
+    ok = registry.write_stdin(repl_session.id, "open('~/.hermes/")
+    assert ok["status"] == "ok"
+    blocked = registry.submit_stdin(repl_session.id, "config.yaml','w').write('x')")
+    assert blocked["status"] == "blocked"
+    assert all(b"config.yaml" not in w for w in repl_session._pty.writes)
+
+
+def test_process_stdin_buffer_resets_after_newline(tmp_path):
+    """A completed (newline-terminated) benign line must not leave stale state
+    that falsely blocks a later unrelated write."""
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    class FakePty:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, data):
+            self.writes.append(data)
+
+    registry = ProcessRegistry()
+    session = ProcessSession(
+        id="reset-shell",
+        command="/usr/bin/env bash",
+        cwd=str(tmp_path),
+        started_at=0,
+    )
+    session._pty = FakePty()
+    registry._running[session.id] = session
+
+    first = registry.submit_stdin(session.id, "echo hello > /tmp/safe.txt")
+    assert first["status"] == "ok"
+    second = registry.submit_stdin(session.id, "echo world > /tmp/other.txt")
+    assert second["status"] == "ok"
+
+
+def test_eval_and_piped_interpreter_payloads_are_unbypassable(clean_session):
+    import tools.approval as approval_mod
+
+    guard_cases = [
+        "eval reboot",
+        'eval "sudo -S whoami"',
+        'eval "echo x > ~/.hermes/config.yaml"',
+    ]
+    for cmd in guard_cases:
+        approval = approval_mod.check_unbypassable_command_guards(cmd, "local")
+        assert not approval["approved"], cmd
+
+    interpreter_cases = [
+        "printf \"open('~/.hermes/config.yaml','w').write('x')\" | python3",
+        "printf \"import os; os.system('echo x > ~/.hermes/config.yaml')\" | python3",
+        "python3 <<'PY'\nimport os; os.system('echo x > ~/.hermes/config.yaml')\nPY",
+        "printf \"require('fs').writeFileSync('~/.hermes/config.yaml','x')\" | node",
+    ]
+    for cmd in interpreter_cases:
+        assert approval_mod._check_protected_config_write_guard(cmd)[0], cmd
+
+
+def test_process_command_metadata_is_redacted():
+    from tools.process_registry import ProcessRegistry, ProcessSession, format_process_notification
+
+    secret = "sk-" + "A" * 24
+    command = f"python worker.py --api-key {secret} token={secret}"
+    registry = ProcessRegistry()
+    session = ProcessSession(id="redact-proc", command=command, cwd="/tmp", started_at=0)
+    registry._running[session.id] = session
+
+    listed = registry.list_sessions()
+    polled = registry.poll(session.id)
+    notice = format_process_notification({
+        "type": "completion",
+        "session_id": session.id,
+        "command": command,
+        "exit_code": 0,
+        "output": "ok",
+    })
+
+    assert secret not in listed[0]["command"]
+    assert secret not in polled["command"]
+    assert secret not in notice
+    assert "[REDACTED]" in listed[0]["command"]
+    assert "[REDACTED]" in polled["command"]
+    assert "[REDACTED]" in notice
+
+
+def test_static_stdin_parser_handles_unquoted_echo_and_printf_format(clean_session):
+    import tools.approval as approval_mod
+
+    assert not approval_mod.check_unbypassable_command_guards(
+        "echo reboot | sh",
+        "local",
+    )["approved"]
+    assert not approval_mod.check_unbypassable_command_guards(
+        "printf '%s\\n' reboot | sh",
+        "local",
+    )["approved"]
+    assert approval_mod._check_protected_config_write_guard(
+        "printf '%s\\n' \"open('~/.hermes/config.yaml','w').write('x')\" | python3"
+    )[0]
+
+
+def test_process_command_redaction_handles_prefixed_env_secret_names():
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    value = "DUMMY_NOT_A_REAL_SECRET_12345"
+    command = f"OPENAI_API_KEY={value} AWS_SECRET_ACCESS_KEY={value} python worker.py"
+    registry = ProcessRegistry()
+    session = ProcessSession(id="redact-env-proc", command=command, cwd="/tmp", started_at=0)
+    registry._running[session.id] = session
+
+    polled = registry.poll(session.id)["command"]
+    listed = registry.list_sessions()[0]["command"]
+
+    assert value not in polled
+    assert value not in listed
+    assert polled.count("[REDACTED]") >= 2
+
+
+def test_process_command_redaction_handles_bearer_and_perplexity_tokens():
+    from tools.process_registry import ProcessRegistry, ProcessSession, format_process_notification
+
+    bearer = "pplx-" + "A" * 24
+    command = f"curl -H 'Authorization: Bearer {bearer}' https://api.perplexity.ai/search"
+    registry = ProcessRegistry()
+    session = ProcessSession(id="redact-bearer-proc", command=command, cwd="/tmp", started_at=0)
+    registry._running[session.id] = session
+
+    rendered = [
+        registry.poll(session.id)["command"],
+        registry.list_sessions()[0]["command"],
+        format_process_notification({
+            "type": "completion",
+            "session_id": session.id,
+            "command": command,
+            "exit_code": 0,
+            "output": "ok",
+        }),
+    ]
+
+    assert all(bearer not in item for item in rendered)
+    assert all("[REDACTED]" in item for item in rendered)
+
+
+def test_repl_stdin_nested_shell_and_eval_writes_are_guarded(clean_session, tmp_path):
+    from tools.process_registry import ProcessRegistry, ProcessSession
+
+    class FakePty:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, data):
+            self.writes.append(data)
+
+    cases = [
+        "import os; os.system('echo x > ~/.hermes/config.yaml')",
+        "__import__('os').system('echo x > ~/.hermes/config.yaml')",
+        "import subprocess; subprocess.run('echo x > ~/.hermes/config.yaml', shell=True)",
+        "import subprocess; subprocess.run(['sh','-c','echo x > ~/.hermes/config.yaml'])",
+        "import subprocess; subprocess.run(['/bin/sh','-c','echo x > ~/.hermes/config.yaml'])",
+        "import subprocess; subprocess.run(['bash','-lc','echo x > ~/.hermes/config.yaml'])",
+        "from subprocess import run; run('echo x > ~/.hermes/config.yaml', shell=True)",
+        "import subprocess; subprocess.run(args='echo x > ~/.hermes/config.yaml', shell=True)",
+        "eval(\"open('~/.hermes/config.yaml','w').write('x')\")",
+    ]
+    for idx, command in enumerate(cases):
+        registry = ProcessRegistry()
+        session = ProcessSession(
+            id=f"repl-nested-{idx}",
+            command="python3",
+            cwd=str(tmp_path),
+            started_at=0,
+        )
+        session._pty = FakePty()
+        registry._running[session.id] = session
+
+        blocked = registry.submit_stdin(session.id, command)
+
+        assert blocked["status"] == "blocked", command
+        assert session._pty.writes == []

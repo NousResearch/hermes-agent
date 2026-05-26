@@ -284,6 +284,7 @@ def get_nous_subscription_features(
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
+    direct_perplexity = bool(get_env_value("PERPLEXITY_API_KEY"))
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
     direct_fal = fal_key_is_configured()
     direct_openai_tts = bool(resolve_openai_audio_api_key())
@@ -299,6 +300,7 @@ def get_nous_subscription_features(
         direct_exa = False
         direct_parallel = False
         direct_tavily = False
+        direct_perplexity = False
     if image_use_gateway:
         direct_fal = False
     if tts_use_gateway:
@@ -328,6 +330,7 @@ def get_nous_subscription_features(
             or (web_backend == "firecrawl" and direct_firecrawl)
             or (web_backend == "parallel" and direct_parallel)
             or (web_backend == "tavily" and direct_tavily)
+            or (web_backend == "perplexity" and direct_perplexity)
             or (web_backend == "searxng" and direct_searxng)
             # Per-capability overrides: search_backend or extract_backend may be set
             # without web.backend (using the new split config from #20061)
@@ -336,10 +339,17 @@ def get_nous_subscription_features(
             or (web_search_backend == "firecrawl" and direct_firecrawl)
             or (web_search_backend == "parallel" and direct_parallel)
             or (web_search_backend == "tavily" and direct_tavily)
+            or (web_search_backend == "perplexity" and direct_perplexity)
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
+        managed_web_available
+        or direct_exa
+        or direct_firecrawl
+        or direct_parallel
+        or direct_tavily
+        or direct_perplexity
+        or direct_searxng
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal

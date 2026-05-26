@@ -3,7 +3,11 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import (
+    ContextCompressor,
+    SUMMARY_PREFIX,
+    _safe_user_warning_detail,
+)
 
 
 @pytest.fixture()
@@ -785,6 +789,173 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
 
+    def test_fallback_drops_stale_protected_head_task_without_system(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "user", "content": "Resume Kadr real style cards closeout: deploy/restart and live smoke"},
+            {"role": "assistant", "content": "old Kadr acknowledgement"},
+            {"role": "user", "content": "Honcho memory question"},
+            {"role": "assistant", "content": "Honcho answer"},
+            {"role": "user", "content": "more memory discussion"},
+            {"role": "assistant", "content": "memory answer"},
+            {"role": "user", "content": "latest user context"},
+            {"role": "assistant", "content": "latest assistant context"},
+            {"role": "user", "content": "Ответь по человечески"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("summary unavailable")):
+            result = c.compress(msgs)
+
+        joined = "\n".join(str(m.get("content", "")) for m in result)
+        assert result[0]["role"] == "user"
+        assert "Resume Kadr" not in joined
+        assert "deploy/restart" not in joined
+        assert "live smoke" not in joined
+        assert "Ответь по человечески" in joined
+        assert "CONTEXT COMPACTION FALLBACK" in joined
+        assert "contains NO active task" in joined
+        assert "ask the user to confirm" in joined
+        assert "side effects" in joined
+        assert c._last_summary_dropped_count == 6
+        assert c._previous_summary is None
+        for idx in range(1, len(result)):
+            prev_role = result[idx - 1].get("role")
+            role = result[idx].get("role")
+            if prev_role in {"user", "assistant"} and role in {"user", "assistant"}:
+                assert prev_role != role, f"consecutive {role} at indices {idx - 1},{idx}"
+
+    def test_fallback_preserves_system_but_drops_stale_first_user_task(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Resume Kadr real style cards closeout: deploy/restart and live smoke"},
+            {"role": "assistant", "content": "old Kadr acknowledgement"},
+            {"role": "user", "content": "Honcho memory question"},
+            {"role": "assistant", "content": "Honcho answer"},
+            {"role": "user", "content": "more memory discussion"},
+            {"role": "assistant", "content": "memory answer"},
+            {"role": "user", "content": "Ответь по человечески"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("summary unavailable")):
+            result = c.compress(msgs)
+
+        assert result[0]["role"] == "system"
+        assert result[0]["content"].startswith("sys")
+        joined = "\n".join(str(m.get("content", "")) for m in result)
+        assert "Resume Kadr" not in joined
+        assert "deploy/restart" not in joined
+        assert "live smoke" not in joined
+        assert "Ответь по человечески" in joined
+        assert "CONTEXT COMPACTION FALLBACK" in joined
+
+    def test_summary_error_stored_for_user_warning_is_redacted(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "user", "content": f"msg {i}"}
+            if i % 2 == 0 else {"role": "assistant", "content": f"msg {i}"}
+            for i in range(8)
+        ]
+        bearer = "sk-" + "warningtokenabcdef7890"
+        env_secret = "sk-" + "envtokenabcdef7890"
+        err = (
+            r"failed opening C:\Program Files\Hermes Agent\cache\token.txt "
+            r"for C:\Users\Jane Doe\.hermes\.env and /Users/Jane Doe/.hermes/config.yaml "
+            f"Authorization: Bearer {bearer} OPENAI_API_KEY={env_secret}"
+        )
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception(err)):
+            c.compress(msgs)
+
+        detail = c._last_summary_error or ""
+        assert "[local path]" in detail
+        assert "[secret]" in detail
+        assert "Program Files" not in detail
+        assert "Jane Doe" not in detail
+        assert ".hermes" not in detail
+        assert "sk-" not in detail
+        assert "...7890" not in detail
+
+    def test_user_warning_detail_redacts_paths_with_spaces_and_secrets(self):
+        pplx_secret = "pplx-" + "sampletoken123456"
+        env_secret = "sk-" + "envtokenabcdef7890"
+        detail = _safe_user_warning_detail(
+            r"open C:\Program Files\Hermes Agent\cache\x.txt; "
+            r"read C:\Users\Jane Doe\.hermes\auth.json; "
+            "load /Users/Jane Doe/.hermes/config.yaml; "
+            f"Authorization: Bearer {pplx_secret} OPENAI_API_KEY={env_secret}"
+        )
+
+        assert detail.count("[local path]") >= 3
+        assert "[secret]" in detail
+        assert "Program Files" not in detail
+        assert "Jane Doe" not in detail
+        assert ".hermes" not in detail
+        assert "pplx-" not in detail
+        assert "sk-" not in detail
+        assert "...3456" not in detail
+        assert "...7890" not in detail
+
+    def test_user_warning_detail_redacts_basename_paths_with_spaces(self):
+        detail = _safe_user_warning_detail(
+            r"open C:\Users\Jane Doe\My Secret File.txt failed; "
+            "open /Users/Jane Doe/My Secret File.txt failed; "
+            r"open C:\Program Files\Hermes Agent\cache\token file.txt failed"
+        )
+
+        assert detail.count("[local path]") == 3
+        assert "My Secret File.txt" not in detail
+        assert "token file.txt" not in detail
+        assert "Jane Doe" not in detail
+        assert "Program Files" not in detail
+        assert "failed" in detail
+
+    def test_user_warning_detail_redacts_quoted_colon_and_private_var_paths(self):
+        detail = _safe_user_warning_detail(
+            "open '/Users/Jane Doe/My Secret Basename': denied; "
+            "trace /private/var/folders/zz/T/hermes_test: failed; "
+            'read "/Users/Jane Doe/.hermes/config.yaml": failed'
+        )
+
+        assert detail.count("[local path]") == 3
+        assert "My Secret Basename" not in detail
+        assert "/private/var/folders" not in detail
+        assert "hermes_test" not in detail
+        assert "config.yaml" not in detail
+        assert "Jane Doe" not in detail
+        assert "denied" in detail
+
+    def test_user_warning_detail_redacts_unquoted_no_extension_paths_with_spaces(self):
+        detail = _safe_user_warning_detail(
+            r"open C:\Users\Jane Doe\My Secret Basename failed; "
+            "open /Users/Jane Doe/My Secret Basename failed"
+        )
+
+        assert detail.count("[local path]") == 2
+        assert "My Secret Basename" not in detail
+        assert "Jane Doe" not in detail
+        assert "Users" not in detail
+
+    def test_user_warning_detail_fully_redacts_log_masked_token_fragments(self):
+        detail = _safe_user_warning_detail(
+            "provider kept fragments "
+            + "pplx-" + "a...7890"
+            + " and Authorization: Bearer " + "ghs_" + "a...7890"
+            + " plus OPENAI_API_KEY=" + "sk-" + "env...7890"
+        )
+
+        assert detail.count("[secret]") >= 3
+        assert "pplx-" not in detail
+        assert "ghs_" not in detail
+        assert "sk-" not in detail
+        assert "...7890" not in detail
+
 
 class TestAbortOnSummaryFailure:
     """Opt-in behavior (compression.abort_on_summary_failure=True):
@@ -875,6 +1046,35 @@ class TestAbortOnSummaryFailure:
 
 
 class TestSummaryPrefixNormalization:
+    def test_fallback_prefix_is_recognized_as_context_summary(self):
+        fallback = "[CONTEXT COMPACTION FALLBACK — REFERENCE ONLY] no active task"
+
+        assert ContextCompressor._is_context_summary_content(fallback)
+        assert ContextCompressor._strip_summary_prefix(fallback) == "no active task"
+
+    def test_old_context_compaction_marker_is_still_recognized(self):
+        old_summary = (
+            "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into "
+            "the summary below. Your current task is identified in the '## Active Task' "
+            "section of the summary — resume exactly from there:\n## Active Task\nold body"
+        )
+
+        assert ContextCompressor._is_context_summary_content(old_summary)
+        assert ContextCompressor._strip_summary_prefix(old_summary) == "## Active Task\nold body"
+
+    def test_fallback_summary_does_not_seed_previous_summary_body(self):
+        fallback = "[CONTEXT COMPACTION FALLBACK — REFERENCE ONLY]\ncontains NO active task"
+        messages = [
+            {"role": "user", "content": "before"},
+            {"role": "assistant", "content": fallback},
+            {"role": "user", "content": "after"},
+        ]
+
+        idx, body = ContextCompressor._find_latest_context_summary(messages, 0, len(messages))
+
+        assert idx == 1
+        assert body == ""
+
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
         assert summary == f"{SUMMARY_PREFIX}\ndid work"

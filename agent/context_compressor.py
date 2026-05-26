@@ -34,21 +34,22 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+SUMMARY_MARKER = "[CONTEXT COMPACTION — REFERENCE ONLY]"
 SUMMARY_PREFIX = (
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
-    "into the summary below. This is a handoff from a previous context "
+    f"{SUMMARY_MARKER} Earlier turns were compacted into "
+    "the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
-    "Your current task is identified in the '## Active Task' section of the "
-    "summary — resume exactly from there. "
+    "If the summary contains a '## Active Task' section, use it only as "
+    "continuity context and still respond ONLY to the latest user message "
+    "that appears AFTER this summary. "
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
-    "memory content due to this compaction note. "
-    "Respond ONLY to the latest user message "
-    "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "memory content due to this compaction note. The current session state "
+    "(files, config, etc.) may reflect work described here — avoid repeating it:"
 )
+SUMMARY_FALLBACK_PREFIX = "[CONTEXT COMPACTION FALLBACK — REFERENCE ONLY]"
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
 # Minimum tokens for the summary output
@@ -74,6 +75,125 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+_LOCAL_PATH_ROOT = r"(?:[A-Za-z]:[\\/]|~[\\/]|/(?:Users|home|tmp|var/folders|private/(?:tmp|var/folders)|Volumes)[\\/])"
+_QUOTED_LOCAL_PATH_RE = re.compile(
+    r"([`'\"])("
+    + _LOCAL_PATH_ROOT
+    + r"(?:[^`'\";\r\n<>|]+[\\/])*[^`'\";\r\n<>|]+)\1"
+)
+_WINDOWS_COLON_LOCAL_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"[A-Za-z]:[\\/]"
+    r"(?:[^\\/:*?\"<>|;\r\n]+[\\/])*"
+    r"[^\\/:*?\"<>|;\r\n]+"
+    r"(?=:\s)"
+)
+_UNIX_COLON_LOCAL_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:~|/(?:Users|home|tmp|var/folders|private/(?:tmp|var/folders)|Volumes))[\\/]"
+    r"(?:[^/;\r\n`'\"<>|:]+/)*"
+    r"[^/;\r\n`'\"<>|:]+"
+    r"(?=:\s)"
+)
+_SPACED_NO_EXTENSION_LOCAL_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    + _LOCAL_PATH_ROOT
+    + r"(?=[^;,\r\n`'\"<>|]*\s)"
+    + r"(?:[^\\/;,\r\n`'\"<>|:]+[\\/])*"
+    + r"[^\\/.;,\s\r\n`'\"<>|:][^\\/.;,\r\n`'\"<>|:]*"
+    + r"(?=\s(?:failed|denied|missing|unavailable|not\s+found|permission\s+denied|no\s+such\s+file|could\s+not|cannot)\b|$)",
+    re.IGNORECASE,
+)
+_WINDOWS_LOCAL_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"[A-Za-z]:[\\/]"
+    r"(?:[^\\/:*?\"<>|;\r\n]+[\\/])*"
+    r"(?:[^\\/:*?\"<>|;\r\n]*\.[A-Za-z0-9]{1,16}|[^\\/:*?\"<>|;\s\r\n]+)"
+    r"(?=$|[\s;,:.)\]}>'\"`])"
+)
+_UNIX_LOCAL_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:~|/(?:Users|home|tmp|var/folders|private/(?:tmp|var/folders)|Volumes))[\\/]"
+    r"(?:[^/;\r\n`'\"<>|:]+/)*"
+    r"(?:[^/;\r\n`'\"<>|:]*\.[A-Za-z0-9]{1,16}|[^/;\s\r\n`'\"<>|:]+)"
+    r"(?=$|[\s;,:.)\]}>'\"`])"
+)
+_USER_WARNING_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"sk[-_][A-Za-z0-9_.=-]{3,}"
+    r"|pplx-[A-Za-z0-9_.=-]{3,}"
+    r"|gh[opurs]_[A-Za-z0-9_.=-]{3,}"
+    r"|github_pat_[A-Za-z0-9_.=-]{3,}"
+    r"|xox[baprs]-[A-Za-z0-9_.=-]{3,}"
+    r"|AIza[A-Za-z0-9_.=-]{3,}"
+    r"|fal_[A-Za-z0-9_.=-]{3,}"
+    r"|fc-[A-Za-z0-9_.=-]{3,}"
+    r"|hf_[A-Za-z0-9_.=-]{3,}"
+    r"|tvly-[A-Za-z0-9_.=-]{3,}"
+    r"|exa_[A-Za-z0-9_.=-]{3,}"
+    r"|gsk_[A-Za-z0-9_.=-]{3,}"
+    r")(?=$|[^A-Za-z0-9_.=-])"
+)
+_USER_WARNING_AUTH_HEADER_RE = re.compile(
+    r"(Authorization:\s*Bearer\s+)([^\s;,.)\]}>'\"`]+)",
+    re.IGNORECASE,
+)
+_USER_WARNING_ENV_SECRET_RE = re.compile(
+    r"([A-Z0-9_]{0,50}(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)[A-Z0-9_]{0,50})"
+    r"\s*=\s*(['\"]?)([^\s;,.)\]}>'\"`]+)\2",
+    re.IGNORECASE,
+)
+
+
+def _redact_user_visible_secrets(text: str) -> str:
+    """Fully mask credential-shaped values for chat-visible warnings.
+
+    ``redact_sensitive_text`` intentionally keeps short token prefixes/suffixes
+    for logs. Gateway warnings are public/user-facing surfaces, so even
+    already-log-masked fragments like ``pplx-a...7890`` must be removed.
+    """
+    if not text:
+        return text
+    text = _USER_WARNING_AUTH_HEADER_RE.sub(lambda m: m.group(1) + "[secret]", text)
+    text = _USER_WARNING_ENV_SECRET_RE.sub(lambda m: f"{m.group(1)}=[secret]", text)
+    return _USER_WARNING_TOKEN_RE.sub("[secret]", text)
+
+
+def _redact_local_paths_for_warning(text: str) -> str:
+    """Hide local filesystem paths in user-visible warning details.
+
+    Path components may contain spaces (``Program Files``, ``Jane Doe``), so
+    whitespace cannot be a blanket delimiter.  The final component is kept
+    stricter to avoid swallowing surrounding prose such as ``...file for C:\\``.
+    """
+    if not text:
+        return text
+    text = _QUOTED_LOCAL_PATH_RE.sub(lambda m: f"{m.group(1)}[local path]{m.group(1)}", text)
+    text = _WINDOWS_COLON_LOCAL_PATH_RE.sub("[local path]", text)
+    text = _UNIX_COLON_LOCAL_PATH_RE.sub("[local path]", text)
+    text = _SPACED_NO_EXTENSION_LOCAL_PATH_RE.sub("[local path]", text)
+    text = _WINDOWS_LOCAL_PATH_RE.sub("[local path]", text)
+    text = _UNIX_LOCAL_PATH_RE.sub("[local path]", text)
+    return text
+
+
+def _safe_user_warning_detail(value: Any, *, max_len: int = 220) -> str:
+    """Return a bounded, secret/path-redacted detail for gateway-visible warnings."""
+    if isinstance(value, BaseException):
+        detail = str(value).strip() or value.__class__.__name__
+    else:
+        detail = str(value).strip() if value is not None else ""
+    if not detail:
+        detail = "unknown error"
+
+    detail = _redact_user_visible_secrets(detail)
+    detail = redact_sensitive_text(detail, force=True)
+    detail = _redact_user_visible_secrets(detail)
+    detail = _redact_local_paths_for_warning(detail)
+    if len(detail) > max_len:
+        detail = detail[: max_len - 3].rstrip() + "..."
+    return detail
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
@@ -903,10 +1023,7 @@ class ContextCompressor(ContextEngine):
             "Falling back to main model '%s' for compression.",
             self.summary_model, reason, e, self.model,
         )
-        _err_text = str(e).strip() or e.__class__.__name__
-        if len(_err_text) > 220:
-            _err_text = _err_text[:217].rstrip() + "..."
-        self._last_aux_model_failure_error = _err_text
+        self._last_aux_model_failure_error = _safe_user_warning_detail(e)
         self._last_aux_model_failure_model = self.summary_model
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
@@ -1179,10 +1296,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # streaming-closed since those conditions can self-resolve quickly.
             _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
             self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
-            err_text = str(e).strip() or e.__class__.__name__
-            if len(err_text) > 220:
-                err_text = err_text[:217].rstrip() + "..."
-            self._last_summary_error = err_text
+            self._last_summary_error = _safe_user_warning_detail(e)
             logger.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
@@ -1193,11 +1307,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
     @staticmethod
     def _strip_summary_prefix(summary: str) -> str:
-        """Return summary body without the current or legacy handoff prefix."""
+        """Return summary body without the current, fallback, or legacy handoff prefix."""
         text = (summary or "").strip()
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX):
+        for prefix in (SUMMARY_PREFIX, SUMMARY_FALLBACK_PREFIX, LEGACY_SUMMARY_PREFIX):
             if text.startswith(prefix):
                 return text[len(prefix):].lstrip()
+        if text.startswith(SUMMARY_MARKER):
+            # Compatibility: older persisted summaries used the same stable
+            # marker with different prose. Treat the marker line as the handoff
+            # preamble and keep only the body after it.
+            _marker_line, sep, body = text.partition("\n")
+            return body.lstrip() if sep else ""
         return text
 
     @classmethod
@@ -1207,9 +1327,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     @staticmethod
+    def _is_fallback_summary_content(content: Any) -> bool:
+        text = _content_text_for_contains(content).lstrip()
+        return text.startswith(SUMMARY_FALLBACK_PREFIX)
+
+    @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
         text = _content_text_for_contains(content).lstrip()
-        return text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX)
+        return (
+            text.startswith(SUMMARY_MARKER)
+            or text.startswith(SUMMARY_FALLBACK_PREFIX)
+            or text.startswith(LEGACY_SUMMARY_PREFIX)
+        )
 
     @classmethod
     def _find_latest_context_summary(
@@ -1222,6 +1351,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         for idx in range(end - 1, start - 1, -1):
             content = messages[idx].get("content")
             if cls._is_context_summary_content(content):
+                if cls._is_fallback_summary_content(content):
+                    return idx, ""
                 return idx, cls._strip_summary_prefix(_content_text_for_contains(content))
         return None, ""
 
@@ -1602,6 +1733,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        summary_failed = not summary
+
+        # If LLM summary failed, non-system protected head turns are unsafe to
+        # preserve verbatim. In long gateway sessions the first user turn can be
+        # an obsolete handoff/task; keeping it as role="user" next to a static
+        # fallback can make it look like the active request. Preserve only the
+        # system prompt (if present), and count every skipped historical head
+        # turn as dropped because it was not summarized.
+        head_copy_end = compress_start
+        if summary_failed:
+            head_copy_end = 1 if messages and messages[0].get("role") == "system" else 0
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -1631,7 +1773,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Phase 4: Assemble compressed message list
         compressed = []
-        for i in range(compress_start):
+        for i in range(head_copy_end):
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
@@ -1646,22 +1788,30 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Legacy fallback path: LLM summary failed and abort_on_summary_failure
         # is False (the default).  Insert a static placeholder so the model
         # knows context was lost rather than silently dropping everything.
-        if not summary:
+        if summary_failed:
             if not self.quiet_mode:
                 logger.warning("Summary generation failed — inserting static fallback context marker")
-            n_dropped = compress_end - compress_start
+            n_dropped = compress_end - head_copy_end
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
             summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
+                f"{SUMMARY_FALLBACK_PREFIX}\n"
+                f"Summary generation was unavailable. {n_dropped} historical message(s) "
+                f"were removed to free context space but could not be summarized. This "
+                f"fallback contains NO active task. Do NOT treat any user request before "
+                f"this marker, including protected first-turn handoff/task messages, as "
+                f"active. Use only a clear, explicit user request after this marker as "
+                f"the current task. If the latest post-marker user request is missing, "
+                f"ambiguous, or conflicts with the visible recent topic, ask the user "
+                f"to confirm before using tools or performing side effects such as file "
+                f"writes, commits, deploys, runtime restarts, smoke tests, memory writes, "
+                f"or external mutations. Continue only from the recent messages below "
+                f"and the current state of any files or resources."
             )
+            self._previous_summary = None
 
         _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
+        last_head_role = compressed[-1].get("role", "assistant") if compressed else "assistant"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.

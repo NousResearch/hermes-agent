@@ -49,6 +49,56 @@ _interval_seconds: float = 300.0  # 5 minutes
 _lock = threading.Lock()
 
 
+def _handler_stream_is_closed(handler: logging.Handler) -> bool:
+    """True when a logging handler points at a closed stream.
+
+    Python's logging package catches ``ValueError: I/O operation on closed
+    file`` inside ``Handler.handleError()`` and prints a noisy
+    ``--- Logging error ---`` traceback to stderr instead of raising it back to
+    our ``try`` block. Long-running daemon monitor threads can outlive pytest
+    capture streams or process-wrapper streams, so prune already-closed stream
+    handlers before emitting the periodic memory line.
+    """
+    stream = getattr(handler, "stream", None)
+    try:
+        return bool(stream is not None and getattr(stream, "closed", False))
+    except Exception:
+        return False
+
+
+def _prune_closed_stream_handlers() -> None:
+    """Detach closed stream handlers from this logger and propagating parents."""
+    current: Optional[logging.Logger] = logger
+    seen: set[int] = set()
+    while current is not None:
+        for handler in list(current.handlers):
+            marker = id(handler)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            if _handler_stream_is_closed(handler):
+                try:
+                    current.removeHandler(handler)
+                except Exception:
+                    pass
+        if not current.propagate:
+            break
+        parent = current.parent
+        current = parent if isinstance(parent, logging.Logger) else None
+
+
+def _safe_memory_info(message: str, *args) -> None:
+    """Emit a memory-monitor INFO line without noisy closed-stream tracebacks."""
+    _prune_closed_stream_handlers()
+    try:
+        logger.info(message, *args)
+    except (ValueError, OSError):
+        # Some custom handlers do raise directly instead of delegating to
+        # logging.handleError(). Memory monitoring is diagnostic only and must
+        # never affect gateway shutdown or tests.
+        pass
+
+
 def _get_rss_mb() -> Optional[int]:
     """Return current process resident set size in MB, or None if unavailable.
 
@@ -108,7 +158,7 @@ def log_memory_usage(prefix: str = "") -> None:
 
     tag = f"{prefix} " if prefix else ""
     if rss is None:
-        logger.info(
+        _safe_memory_info(
             "[MEMORY] %srss=unavailable gc=%s threads=%d uptime=%ds",
             tag,
             gc_counts,
@@ -116,7 +166,7 @@ def log_memory_usage(prefix: str = "") -> None:
             uptime,
         )
     else:
-        logger.info(
+        _safe_memory_info(
             "[MEMORY] %srss=%dMB gc=%s threads=%d uptime=%ds",
             tag,
             rss,
@@ -186,7 +236,7 @@ def start_memory_monitoring(interval_seconds: float = 300.0) -> bool:
         )
         _monitor_thread.start()
 
-        logger.info(
+        _safe_memory_info(
             "[MEMORY] Periodic memory monitoring started (interval: %ds)",
             int(_interval_seconds),
         )
@@ -221,7 +271,7 @@ def stop_memory_monitoring(timeout: float = 2.0) -> None:
     except Exception:
         pass
 
-    logger.info("[MEMORY] Periodic memory monitoring stopped")
+    _safe_memory_info("[MEMORY] Periodic memory monitoring stopped")
 
 
 def is_running() -> bool:

@@ -7,6 +7,7 @@ leaks show up as a time series in agent.log / gateway.log.
 
 from __future__ import annotations
 
+import io
 import logging
 import time
 
@@ -90,18 +91,39 @@ def test_stop_without_start_is_noop():
 def test_periodic_timer_fires(caplog):
     caplog.set_level(logging.INFO, logger="gateway.memory_monitor")
     # Short interval so we can observe multiple ticks inside the test budget.
-    mm.start_memory_monitoring(interval_seconds=0.1)
-    time.sleep(0.45)
+    mm.start_memory_monitoring(interval_seconds=0.05)
+    deadline = time.time() + 1.5
+    periodic = []
+    while time.time() < deadline:
+        periodic = [
+            r for r in caplog.records
+            if r.getMessage().startswith("[MEMORY] rss=") or r.getMessage().startswith("[MEMORY] rss=unavailable")
+        ]
+        if len(periodic) >= 2:
+            break
+        time.sleep(0.02)
     mm.stop_memory_monitoring(timeout=1.0)
 
-    periodic = [
-        r for r in caplog.records
-        if r.getMessage().startswith("[MEMORY] rss=") or r.getMessage().startswith("[MEMORY] rss=unavailable")
-    ]
-    # baseline + at least 2 periodic + shutdown — but shutdown has the
-    # "shutdown " prefix so it won't match the strict "[MEMORY] rss=" start.
-    # We expect >= 3 bare "[MEMORY] rss=..." lines.
-    assert len(periodic) >= 3, [r.getMessage() for r in caplog.records]
+    # baseline + at least 2 periodic + shutdown — but baseline/shutdown have
+    # prefixes so they won't match the strict "[MEMORY] rss=" start.
+    # The timer contract is "periodic fires more than once"; poll instead of
+    # relying on one fixed sleep so this stays deterministic under xdist load.
+    assert len(periodic) >= 2, [r.getMessage() for r in caplog.records]
+
+
+def test_log_memory_usage_prunes_closed_stream_handlers(capsys):
+    root = logging.getLogger()
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    root.addHandler(handler)
+    stream.close()
+    try:
+        mm.log_memory_usage()
+    finally:
+        root.removeHandler(handler)
+
+    captured = capsys.readouterr()
+    assert "Logging error" not in captured.err
 
 
 def test_thread_is_daemon():

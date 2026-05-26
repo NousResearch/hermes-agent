@@ -124,6 +124,19 @@ class TestWriteAllowed:
     def test_project_file(self):
         assert _is_write_denied("/home/user/project/main.py") is False
 
-    def test_hermes_config_not_env(self):
-        path = os.path.join(str(Path.home()), ".hermes", "config.yaml")
-        assert _is_write_denied(path) is False
+    def test_hermes_config_yaml(self):
+        # ``config.yaml`` under active HERMES_HOME must be changed through
+        # `hermes config set`, not direct file writes/patches.
+        from hermes_constants import get_hermes_home
+        path = str(get_hermes_home() / "config.yaml")
+        assert _is_write_denied(path) is True
+
+    def test_default_hermes_root_in_profile_mode(self, monkeypatch, tmp_path):
+        root = tmp_path / "hermes-root"
+        profile_home = root / "profiles" / "ops" / "home"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "ops"))
+
+        for name in ("config.yaml", ".env"):
+            assert _is_write_denied(str(root / name)) is True

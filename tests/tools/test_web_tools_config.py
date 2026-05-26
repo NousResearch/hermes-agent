@@ -259,6 +259,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "PERPLEXITY_API_KEY",
     )
 
     def setup_method(self):
@@ -305,6 +306,12 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_perplexity(self):
+        """web.backend=perplexity in config → 'perplexity' regardless of other keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "perplexity"}):
+            assert _get_backend() == "perplexity"
+
     def test_config_tavily_overrides_env_keys(self):
         """web.backend=tavily in config → 'tavily' even if Firecrawl key set."""
         from tools.web_tools import _get_backend
@@ -339,6 +346,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "exa"
+
+    def test_fallback_perplexity_only_key(self):
+        """Only PERPLEXITY_API_KEY set → 'perplexity'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"PERPLEXITY_API_KEY": "pplx-test"}):
+            assert _get_backend() == "perplexity"
 
     def test_fallback_parallel_takes_priority_over_exa(self):
         """Exa should only win the fallback path when it is the only configured backend."""
@@ -386,7 +400,13 @@ class TestBackendSelection:
     def test_fallback_no_keys_defaults_to_firecrawl(self):
         """No keys, no config → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        # ddgs availability is driven by package presence, not env/config, so
+        # an installed ``ddgs`` in the test environment would otherwise win the
+        # key-based fallback. Force it unavailable to assert the firecrawl
+        # backward-compat default; ddgs fallback behavior is covered elsewhere.
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch.dict(os.environ, {}, clear=True):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
@@ -558,6 +578,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "PERPLEXITY_API_KEY",
     )
 
     def setup_method(self):
@@ -601,9 +622,20 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
+    def test_perplexity_key_only(self):
+        with patch.dict(os.environ, {"PERPLEXITY_API_KEY": "pplx-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+        # ddgs is importable in the test environment, which would make the
+        # no-key check report an available (free) backend. Force it
+        # unavailable so this asserts the genuine "nothing configured" path;
+        # ddgs availability is exercised in its own provider tests.
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch.dict(os.environ, {}, clear=True):
+            assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {
@@ -646,3 +678,9 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+def test_web_requires_env_includes_perplexity_key():
+    from tools.web_tools import _web_requires_env
+
+    assert "PERPLEXITY_API_KEY" in _web_requires_env()

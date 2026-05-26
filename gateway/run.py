@@ -8567,7 +8567,8 @@ class GatewayRunner:
                                     # fresh.
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
-                                        _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
+                                        from agent.context_compressor import _safe_user_warning_detail
+                                        _err = _safe_user_warning_detail(getattr(_comp, "_last_summary_error", None))
                                         _warn_msg = (
                                             "⚠️ Context compression aborted "
                                             f"({_err}). No messages were dropped — "
@@ -8593,7 +8594,8 @@ class GatewayRunner:
                                     # silent recovery would hide it.
                                     elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
                                         _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+                                        from agent.context_compressor import _safe_user_warning_detail
+                                        _aux_err = _safe_user_warning_detail(getattr(_comp, "_last_aux_model_failure_error", None))
                                         _aux_msg = (
                                             f"ℹ️ Configured compression model `{_aux_model}` "
                                             f"failed ({_aux_err}). Recovered using your main "
@@ -12253,12 +12255,13 @@ class GatewayRunner:
                 # unchanged (no drop, no placeholder).  force=True was
                 # passed above so any active cooldown is bypassed.
                 _summary_aborted = bool(getattr(compressor, "_last_compress_aborted", False))
-                _summary_err = getattr(compressor, "_last_summary_error", None)
+                from agent.context_compressor import _safe_user_warning_detail
+                _summary_err = _safe_user_warning_detail(getattr(compressor, "_last_summary_error", None))
                 # Separately: did the user's CONFIGURED aux model fail
                 # and we recovered via main?  Surface that as an info
                 # note so they can fix their config.
                 _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
-                _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
+                _aux_fail_err = _safe_user_warning_detail(getattr(compressor, "_last_aux_model_failure_error", None))
             finally:
                 # Evict cached agent so next turn rebuilds system prompt
                 # from current files (SOUL.md, memory, etc.).
@@ -14861,10 +14864,12 @@ class GatewayRunner:
                         _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
                     else:
                         _out = _raw
+                    from tools.process_registry import _redact_command_for_display
+                    _safe_command = _redact_command_for_display(session.command)
                     synth_text = (
                         f"[IMPORTANT: Background process {session_id} completed "
                         f"(exit code {session.exit_code}).\n"
-                        f"Command: {session.command}\n"
+                        f"Command: {_safe_command}\n"
                         f"Output:\n{_out}]"
                     )
                     source = self._build_process_event_source({

@@ -9,9 +9,11 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import fnmatch
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -248,8 +250,155 @@ HARDLINE_PATTERNS_COMPILED = [
 # reason for the agent to pipe passwords to sudo -S when no password
 # has been configured.
 _SUDO_STDIN_RE = re.compile(
-    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b',
+    # Command-position sudo invocation with any stdin-reading form:
+    #   sudo -S, sudo -nS, sudo -Sn, sudo --stdin
+    # Stop at shell separators so a quoted/later mention does not bleed into
+    # the current sudo command. The input is normalized/lowercased before use.
+    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\b[^;&|`\n]*?(?:--stdin\b|-[a-z]*s[a-z]*\b)',
     re.IGNORECASE)
+
+
+def _extract_static_shell_stdin_payloads(command: str) -> list[str]:
+    """Return statically visible payloads fed to shell/interpreter stdin.
+
+    Conservative parser for literal echo/printf pipelines plus here-strings and
+    heredocs.  It does not emulate shell expansion; it only unwraps payload text
+    that is already present in the command.
+    """
+    raw = _normalize_command_for_detection(command or "")
+    payloads: list[str] = []
+    stdin_consumers = r"(?:bash|sh|zsh|ksh|dash|python|python3|node|nodejs|ruby|perl)"
+
+    # Generic pipeline parser for: echo payload | sh, printf '%s\n' payload | python3.
+    # Split pipes with quote awareness first; regexes such as [^;&|] miss
+    # semicolons inside quoted interpreter payloads.
+    pipe_segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    escaped = False
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\" and quote != "'":
+            buf.append(ch)
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "|" and not raw.startswith("||", i) and (i == 0 or raw[i - 1] != ">"):
+            pipe_segments.append("".join(buf).strip())
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    pipe_segments.append("".join(buf).strip())
+
+    for left, right in zip(pipe_segments, pipe_segments[1:]):
+        right_words = _shlex_words(right)
+        if not right_words or not re.fullmatch(stdin_consumers, _command_basename(right_words[0]), _RE_FLAGS):
+            continue
+        words = _shlex_words(left)
+        if not words:
+            continue
+        cmd = _command_basename(words[0]).lower()
+        if cmd == "echo":
+            idx = 1
+            while idx < len(words) and re.fullmatch(r"-[A-Za-z]+", words[idx]):
+                idx += 1
+            if idx < len(words):
+                payloads.append(" ".join(words[idx:]))
+        elif cmd == "printf":
+            idx = 1
+            while idx < len(words) and words[idx].startswith("--"):
+                idx += 1
+            if idx >= len(words):
+                continue
+            fmt = words[idx]
+            args = words[idx + 1:]
+            if args:
+                # For guard purposes, the argument text is the dangerous part in
+                # common `printf '%s\n' payload | sh/python` forms.
+                payloads.append("\n".join(args) if "%" in fmt else " ".join(args))
+            else:
+                payloads.append(fmt)
+
+    for match in re.finditer(
+        rf"\b(?:\S*/)?{stdin_consumers}\b[^;&|`\n]*<<<\s*(?P<q>['\"])(?P<payload>.*?)(?P=q)",
+        raw,
+        _RE_FLAGS,
+    ):
+        payloads.append(match.group("payload"))
+    heredoc_re = re.compile(
+        rf"\b(?:\S*/)?{stdin_consumers}\b[^\n]*<<-?\s*['\"]?(?P<tag>[A-Za-z_][A-Za-z0-9_]*)['\"]?\n(?P<body>.*?)\n(?P=tag)(?:\n|$)",
+        _RE_FLAGS,
+    )
+    payloads.extend(match.group("body") for match in heredoc_re.finditer(raw))
+    return [payload for payload in payloads if payload.strip()]
+
+
+def _shell_c_payloads_from_command(command: str) -> list[str]:
+    """Return statically visible payloads passed to shell -c after wrappers."""
+    payloads: list[str] = []
+    normalized = _normalize_command_for_detection(command or "")
+    for segment in _split_command_segments(normalized):
+        words = _shlex_words(segment)
+        if not words:
+            continue
+        for idx in _command_word_indices(words):
+            if _command_basename(words[idx]).lower() in {"bash", "sh", "zsh", "ksh", "dash"}:
+                payload = _shell_c_payload_from_words(words, idx)
+                if payload:
+                    payloads.append(payload)
+    return payloads
+
+
+def _eval_payloads_from_command(command: str) -> list[str]:
+    """Return simple literal payloads passed to shell eval."""
+    payloads: list[str] = []
+    normalized = _normalize_command_for_detection(command or "")
+    for segment in _split_command_segments(normalized):
+        words = _shlex_words(segment)
+        if not words:
+            continue
+        for idx in _command_word_indices(words):
+            if _command_basename(words[idx]).lower() == "eval" and idx + 1 < len(words):
+                payloads.append(" ".join(words[idx + 1:]))
+    return [payload for payload in payloads if payload.strip()]
+
+
+def _env_split_string_payloads_from_command(command: str) -> list[str]:
+    """Return statically visible `/usr/bin/env -S/--split-string` payloads.
+
+    Keep the original option spelling while matching the `env` command word
+    case-insensitively. This prevents callers that need exact flag case (notably
+    the sudo-stdin guard) from losing `-S` by lowercasing the whole command.
+    """
+    payloads: list[str] = []
+    normalized = _normalize_command_for_detection(command or "")
+    for segment in _split_command_segments(normalized):
+        words = _shlex_words(segment)
+        if not words:
+            continue
+        for idx in _command_word_indices(words):
+            if _command_basename(words[idx]).lower() == "env":
+                payloads.extend(_env_split_string_payloads(words, idx))
+    return [payload for payload in payloads if payload.strip()]
 
 
 def _check_sudo_stdin_guard(command: str) -> tuple:
@@ -265,9 +414,19 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     """
     if "SUDO_PASSWORD" in os.environ:
         return (False, None)
-    normalized = _normalize_command_for_detection(command).lower()
+    normalized_preserving_case = _normalize_command_for_detection(command)
+    normalized = normalized_preserving_case.lower()
     if _SUDO_STDIN_RE.search(normalized):
         return (True, "sudo password guessing via stdin (sudo -S)")
+    for payload in (
+        _shell_c_payloads_from_command(normalized_preserving_case)
+        + _extract_static_shell_stdin_payloads(normalized_preserving_case)
+        + _eval_payloads_from_command(normalized_preserving_case)
+        + _env_split_string_payloads_from_command(normalized_preserving_case)
+    ):
+        is_blocked, desc = _check_sudo_stdin_guard(payload)
+        if is_blocked:
+            return (True, desc)
     return (False, None)
 
 
@@ -277,11 +436,61 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
+    normalized = _normalize_command_for_detection(command)
+    normalized_lower = normalized.lower()
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
+        if pattern_re.search(normalized_lower):
             return (True, description)
+    structural = _detect_hardline_structural(normalized)
+    if structural:
+        return (True, structural)
     return (False, None)
+
+
+
+
+def _detect_hardline_structural(normalized: str) -> Optional[str]:
+    """Detect hardline commands after simple wrapper/shell unwrapping.
+
+    Regexes above intentionally stay fast and broad; this structural pass closes
+    bypasses such as ``env -i reboot``, ``command reboot``, ``time -p reboot``,
+    and ``bash -c 'reboot'`` without trying to execute or expand the command.
+    """
+    shutdown_verbs = {"reboot", "shutdown", "halt", "poweroff", "kexec"}
+    for payload in _extract_static_shell_stdin_payloads(normalized) + _eval_payloads_from_command(normalized):
+        nested = _detect_hardline_structural(_normalize_command_for_detection(payload))
+        if nested:
+            return nested
+    for segment in _split_command_segments(normalized):
+        words = _shlex_words(segment)
+        if not words:
+            continue
+        for idx in _command_word_indices(words):
+            cmd_word = _command_basename(words[idx]).lower()
+            if cmd_word in shutdown_verbs:
+                return f"{cmd_word} command"
+            if cmd_word == "rm":
+                args = words[idx + 1:]
+                has_recursive = any(w.startswith("-") and "r" in w for w in args)
+                if has_recursive:
+                    for arg in args:
+                        if arg.startswith("-"):
+                            continue
+                        expanded = _expand_protected_path_token(arg).lower()
+                        if expanded in {"~", os.path.expanduser("~").lower()}:
+                            return "recursive delete of home directory"
+            if cmd_word in {"bash", "sh", "zsh", "ksh", "dash"}:
+                payload = _shell_c_payload_from_words(words, idx)
+                if payload:
+                    nested = _detect_hardline_structural(_normalize_command_for_detection(payload))
+                    if nested:
+                        return nested
+            if cmd_word == "env":
+                for payload in _env_split_string_payloads(words, idx):
+                    nested = _detect_hardline_structural(_normalize_command_for_detection(payload))
+                    if nested:
+                        return nested
+    return None
 
 
 def _hardline_block_result(description: str) -> dict:
@@ -315,9 +524,1123 @@ def _sudo_stdin_block_result(description: str) -> dict:
 
 
 # =========================================================================
+# Protected Hermes config guard — unbypassable direct-write block
+# =========================================================================
+# The supported mutation path for Hermes configuration is `hermes config set`.
+# Direct shell writes to ~/.hermes/.env or ~/.hermes/config.yaml are blocked
+# below yolo/approvals.mode=off so rules cannot be bypassed by a convenience
+# mode. This guard does not inspect or log secret values; it only detects the
+# command shape and protected path names.
+
+def _protected_hermes_path_pattern() -> str:
+    """Return a regex matching active/default Hermes .env and config.yaml paths."""
+    symbolic_roots = [
+        r'~\/\.hermes',
+        r'\$home\/\.hermes',
+        r'\$\{home\}\/\.hermes',
+        r'\$hermes_home',
+        r'\$\{hermes_home\}',
+    ]
+
+    literal_roots = {os.path.expanduser("~/.hermes")}
+    active_home = os.getenv("HERMES_HOME")
+    if active_home:
+        literal_roots.add(os.path.expanduser(active_home))
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        literal_roots.add(str(get_default_hermes_root()))
+    except Exception:
+        pass
+
+    literal_paths = []
+    for root in literal_roots:
+        root = os.path.realpath(root).lower()
+        literal_paths.extend([
+            re.escape(os.path.join(root, ".env")),
+            re.escape(os.path.join(root, "config.yaml")),
+        ])
+
+    symbolic = rf'(?:{"|".join(symbolic_roots)})\/(?:\.env|config\.yaml)'
+    literal = rf'(?:{"|".join(sorted(set(literal_paths)))})' if literal_paths else r'(?!)'
+    return rf'(?:{symbolic}|{literal})(?=$|[\s"\'`,;&|<>)])'
+
+
+def _normalize_protected_config_command(command: str) -> str:
+    """Normalize shell path variants before protected config matching."""
+    normalized = _normalize_command_for_detection(command).lower()
+    normalized = normalized.replace('"', "").replace("'", "")
+    # Shell backslashes can escape ordinary path characters
+    # (``~/\.hermes/con\fig.yaml`` resolves to ``~/.hermes/config.yaml``).
+    normalized = re.sub(r"\\([^\s])", r"\1", normalized)
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    while "/./" in normalized:
+        normalized = normalized.replace("/./", "/")
+    while re.search(r"/[^/\s;&|<>]+/\.\./", normalized):
+        normalized = re.sub(r"/[^/\s;&|<>]+/\.\./", "/", normalized)
+    return normalized
+
+
+def _protected_config_resolved_paths() -> set[str]:
+    """Return resolved protected Hermes config/env paths for path-token checks."""
+    roots = {os.path.expanduser("~/.hermes")}
+    active_home = os.getenv("HERMES_HOME")
+    if active_home:
+        roots.add(os.path.expanduser(active_home))
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        roots.add(str(get_default_hermes_root()))
+    except Exception:
+        pass
+    protected = set()
+    for root in roots:
+        root = os.path.realpath(root)
+        protected.add(os.path.realpath(os.path.join(root, ".env")).lower())
+        protected.add(os.path.realpath(os.path.join(root, "config.yaml")).lower())
+    return protected
+
+
+def _expand_protected_path_token(token: str) -> str:
+    """Expand shell-ish path tokens enough for protected-path comparison."""
+    token = (token or "").strip().strip("() ").strip('"\'')
+    # Bash ANSI-C quoted path fragments: ~/.hermes/$'config.yaml'
+    token = re.sub(r"\$'([^']*)'", r"\1", token)
+    token = token.replace("/$config.yaml", "/config.yaml").replace("/$.env", "/.env")
+    # Deterministic brace expansion used in write targets such as
+    # ``~/.hermes/{config.yaml}``.  Leave multi-value/glob braces unresolved
+    # so they fail closed through the wildcard guard below rather than being
+    # mistaken for a literal safe path.
+    token = re.sub(r"\{(config\.yaml|\.env)\}", r"\1", token, flags=re.IGNORECASE)
+    token = re.sub(r"\\([^\s])", r"\1", token)
+    home = os.path.expanduser("~")
+    hermes_home = os.path.expanduser(os.getenv("HERMES_HOME") or "~/.hermes")
+    replacements = (
+        (r"\$\{home\}|\$home", home),
+        (r"\$\{hermes_home\}|\$hermes_home", hermes_home),
+    )
+    for pattern, new in replacements:
+        token = re.sub(pattern, new, token, flags=re.IGNORECASE)
+    return os.path.expanduser(token)
+
+
+def _expand_known_shell_vars(token: str, shell_vars: dict[str, str]) -> str:
+    """Expand simple shell variables assigned earlier in the same command."""
+    if not shell_vars:
+        return token
+
+    def replace_braced(match: re.Match) -> str:
+        return shell_vars.get((match.group(1) or "").lower(), match.group(0) or "")
+
+    def replace_plain(match: re.Match) -> str:
+        return shell_vars.get((match.group(1) or "").lower(), match.group(0) or "")
+
+    token = re.sub(r"\$\{([A-Za-z_]\w*)\}", replace_braced, token)
+    token = re.sub(r"\$([A-Za-z_]\w*)", replace_plain, token)
+    return token
+
+
+def _resolve_protected_path_token(token: str, cwd: Optional[str] = None) -> Optional[str]:
+    """Resolve a candidate shell path token without reading the path."""
+    token = _expand_protected_path_token(token)
+    if not token or any(ch in token for ch in "*?[]{}"):
+        return None
+    if not os.path.isabs(token):
+        if not cwd:
+            return None
+        token = os.path.join(cwd, token)
+    return os.path.realpath(token).lower()
+
+
+def _token_glob_matches_protected_path(token: str, cwd: Optional[str]) -> bool:
+    """Return True when a shell glob token can match a protected config path."""
+    expanded = _expand_protected_path_token(token)
+    if not expanded or not any(ch in expanded for ch in "*?[]"):
+        return False
+    if "{" in expanded or "}" in expanded:
+        return False
+    if not os.path.isabs(expanded):
+        if not cwd:
+            return False
+        expanded = os.path.join(cwd, expanded)
+    pattern = os.path.realpath(expanded).lower()
+    return any(fnmatch.fnmatch(path, pattern) for path in _protected_config_resolved_paths())
+
+
+def _infer_cd_cwd(normalized_command: str) -> Optional[str]:
+    """Infer obvious shell cwd changes before relative write checks.
+
+    This intentionally covers only simple, deterministic forms; it is a
+    pre-exec guard, not a full shell interpreter.  Supported separators include
+    `&&`, `;`, and the common defensive `cd PATH || exit; ...` shape.
+    """
+    cwd = None
+    cd_pattern = r"(?:^|[;&|]\s*)cd\s+(?:--\s+)?([^\s;&|]+)\s*(?=&&|;|\|\|\s*exit\s*;)"
+    for match in re.finditer(cd_pattern, normalized_command):
+        cwd = _resolve_protected_path_token(match.group(1))
+    return cwd
+
+
+def _split_command_segments(normalized_command: str) -> list[str]:
+    """Split shell command separators while preserving quoted literals."""
+    segments = []
+    buf: list[str] = []
+    quote: str | None = None
+    escaped = False
+    i = 0
+    while i < len(normalized_command):
+        ch = normalized_command[i]
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\" and quote != "'":
+            buf.append(ch)
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if normalized_command.startswith(("&&", "||"), i):
+            cleaned = "".join(buf).strip()
+            if cleaned:
+                segments.append(cleaned)
+            buf = []
+            i += 2
+            continue
+        if ch == ";" or (ch == "|" and (i == 0 or normalized_command[i - 1] != ">")):
+            cleaned = "".join(buf).strip()
+            if cleaned:
+                segments.append(cleaned)
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    cleaned = "".join(buf).strip()
+    if cleaned:
+        segments.append(cleaned)
+    return segments
+
+
+def _shlex_words(segment: str) -> list[str]:
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        return segment.split()
+
+
+def _command_basename(word: str) -> str:
+    """Normalize a shell command word for guard verb comparisons."""
+    return os.path.basename((word or "").lstrip("({"))
+
+
+def _is_inline_script_interpreter(cmd_word: str) -> bool:
+    """Return True for interpreter command names that support inline code."""
+    cmd_word = _command_basename(cmd_word).lower()
+    return bool(
+        re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", cmd_word)
+        or re.fullmatch(r"perl(?:\d+(?:\.\d+)?)?", cmd_word)
+        or re.fullmatch(r"ruby(?:\d+(?:\.\d+)?)?", cmd_word)
+        or re.fullmatch(r"node(?:js)?(?:\d+(?:\.\d+)?)?", cmd_word)
+    )
+
+
+def _is_shell_assignment(word: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_]\w*=.*", word or ""))
+
+
+def _command_word_indices(words: list[str]) -> list[int]:
+    """Return word indexes that are actual command positions in a simple segment."""
+    indices: list[int] = []
+    idx = 0
+    while idx < len(words) and _is_shell_assignment(words[idx]):
+        idx += 1
+    while idx < len(words):
+        if idx not in indices:
+            indices.append(idx)
+        cmd_word = _command_basename(words[idx]).lower()
+        if cmd_word == "env":
+            j = idx + 1
+            while j < len(words):
+                word = words[j]
+                if word == "--":
+                    j += 1
+                    break
+                if _is_shell_assignment(word):
+                    j += 1
+                    continue
+                # Upstream `.lower()` collapses env's short flags (-S -> -s,
+                # -C -> -c). env defines no lowercase -s/-c of its own, so
+                # matching value-taking flags case-insensitively keeps the
+                # split-string / chdir argument from being mistaken for the
+                # wrapped command word.
+                lower = word.lower()
+                if lower in {"-i", "-0", "--ignore-environment", "--null"}:
+                    j += 1
+                    continue
+                if lower in {"-u", "--unset", "-c", "--chdir", "-s", "--split-string"} and j + 1 < len(words):
+                    j += 2
+                    continue
+                if any(lower.startswith(prefix) for prefix in ("--unset=", "--chdir=", "--split-string=")):
+                    j += 1
+                    continue
+                if word.startswith("-"):
+                    j += 1
+                    continue
+                break
+            if j < len(words):
+                idx = j
+                continue
+        if cmd_word == "sudo":
+            j = idx + 1
+            value_options = {"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-C", "--close-from", "-T", "--command-timeout"}
+            while j < len(words):
+                word = words[j]
+                if word == "--":
+                    j += 1
+                    break
+                if word in value_options and j + 1 < len(words):
+                    j += 2
+                    continue
+                if any(word.startswith(opt + "=") for opt in value_options if opt.startswith("--")):
+                    j += 1
+                    continue
+                if word.startswith("-"):
+                    j += 1
+                    continue
+                break
+            if j < len(words):
+                idx = j
+                continue
+        if cmd_word == "time":
+            j = idx + 1
+            while j < len(words) and words[j].startswith("-"):
+                j += 1
+            if j < len(words):
+                idx = j
+                continue
+        if cmd_word == "nice":
+            j = idx + 1
+            while j < len(words):
+                word = words[j]
+                if word in {"-n", "--adjustment"} and j + 1 < len(words):
+                    j += 2
+                    continue
+                if word.startswith("--adjustment=") or re.fullmatch(r"-\d+", word):
+                    j += 1
+                    continue
+                if word.startswith("-") and word != "-":
+                    j += 1
+                    continue
+                break
+            if j < len(words):
+                idx = j
+                continue
+        if cmd_word == "stdbuf":
+            j = idx + 1
+            while j < len(words):
+                word = words[j]
+                if word in {"-i", "-o", "-e"} and j + 1 < len(words):
+                    j += 2
+                    continue
+                if re.fullmatch(r"-[ioe].+", word) or any(word.startswith(prefix) for prefix in ("--input=", "--output=", "--error=")):
+                    j += 1
+                    continue
+                if word.startswith("-") and word != "-":
+                    j += 1
+                    continue
+                break
+            if j < len(words):
+                idx = j
+                continue
+        if cmd_word in {"command", "builtin", "exec", "nohup", "setsid"} and idx + 1 < len(words):
+            idx += 1
+            continue
+        break
+    return indices
+
+
+def _redirection_targets_from_words(words: list[str]) -> list[str]:
+    """Return shell redirection targets from shlex words without scanning quotes."""
+    targets: list[str] = []
+    redirect_ops = {">", ">>", ">|", "&>", "&>>"}
+    for idx, word in enumerate(words):
+        if word in redirect_ops or re.fullmatch(r"\d*(?:>>?|>\|)", word):
+            if idx + 1 < len(words):
+                targets.append(words[idx + 1])
+            continue
+        match = re.fullmatch(r"(?:\d*(?:>>?|>\|)|&>>?)(.+)", word)
+        if match:
+            targets.append(match.group(1))
+    return targets
+
+
+def _dd_of_targets_from_words(words: list[str]) -> list[str]:
+    """Return dd(1) output-file targets from shlex words."""
+    return [word.split("=", 1)[1] for word in words if word.startswith("of=") and len(word) > 3]
+
+
+def _token_is_protected_path(token: str, cwd: Optional[str]) -> bool:
+    resolved = _resolve_protected_path_token(token, cwd)
+    return bool((resolved and resolved in _protected_config_resolved_paths()) or _token_glob_matches_protected_path(token, cwd))
+
+
+def _token_or_alias_is_protected_path(token: str, cwd: Optional[str], aliases: set[str]) -> bool:
+    resolved = _resolve_protected_path_token(token, cwd)
+    return bool(
+        (resolved and (resolved in aliases or resolved in _protected_config_resolved_paths()))
+        or _token_glob_matches_protected_path(token, cwd)
+    )
+
+
+def _protected_config_root_paths() -> set[str]:
+    roots = {os.path.expanduser("~/.hermes")}
+    active_home = os.getenv("HERMES_HOME")
+    if active_home:
+        roots.add(os.path.expanduser(active_home))
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        roots.add(str(get_default_hermes_root()))
+    except Exception:
+        pass
+    return {os.path.realpath(root).lower() for root in roots}
+
+
+def _token_is_protected_config_root(token: str, cwd: Optional[str]) -> bool:
+    resolved = _resolve_protected_path_token(token, cwd)
+    return bool(resolved and resolved in _protected_config_root_paths())
+
+
+def _source_basename_is_protected_config(token: str) -> bool:
+    return os.path.basename((token or "").strip().strip("{}() ").strip('"\'')).lower() in {"config.yaml", ".env"}
+
+
+def _copy_like_operands(args: list[str]) -> tuple[list[str], Optional[str]]:
+    operands: list[str] = []
+    target_dir: Optional[str] = None
+    options_with_values = {
+        "-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group",
+        "-e", "--rsh", "--exclude", "--include", "--filter",
+    }
+    short_options_with_values = {"t", "m", "o", "g", "e"}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith("--target-directory="):
+            target_dir = arg.split("=", 1)[1]
+            i += 1
+            continue
+        if arg.startswith("--") and "=" in arg:
+            i += 1
+            continue
+        if arg.startswith("-t") and len(arg) > 2:
+            target_dir = arg[2:]
+            i += 1
+            continue
+        if arg in {"-t", "--target-directory"} and i + 1 < len(args):
+            target_dir = args[i + 1]
+            i += 2
+            continue
+        if arg.startswith("-") and not arg.startswith("--") and len(arg) > 2:
+            consumed_next = False
+            cluster = arg[1:]
+            for pos, opt in enumerate(cluster):
+                if opt not in short_options_with_values:
+                    continue
+                value = cluster[pos + 1:]
+                if opt == "t":
+                    if value:
+                        target_dir = value
+                    elif i + 1 < len(args):
+                        target_dir = args[i + 1]
+                        consumed_next = True
+                elif not value and i + 1 < len(args):
+                    consumed_next = True
+                break
+            i += 2 if consumed_next else 1
+            continue
+        if arg in options_with_values and i + 1 < len(args):
+            i += 2
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        operands.append(arg)
+        i += 1
+    return operands, target_dir
+
+
+def _copy_like_hits_protected_path(args: list[str], cwd: Optional[str], aliases: set[str] | None = None) -> bool:
+    aliases = aliases or set()
+    operands, target_dir = _copy_like_operands(args)
+    if target_dir:
+        return _token_is_protected_config_root(target_dir, cwd) and any(_source_basename_is_protected_config(src) for src in operands)
+    if not operands:
+        return False
+    dest = operands[-1]
+    sources = operands[:-1]
+    if _token_or_alias_is_protected_path(dest, cwd, aliases):
+        return True
+    return _token_is_protected_config_root(dest, cwd) and any(_source_basename_is_protected_config(src) for src in sources)
+
+
+def _shell_c_payload_from_words(words: list[str], start: int) -> Optional[str]:
+    """Return the payload passed to a shell ``-c`` option, if present."""
+    idx = start + 1
+    value_options = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
+    while idx < len(words):
+        word = words[idx]
+        if word in {"--"}:
+            return None
+        if word in value_options and idx + 1 < len(words):
+            idx += 2
+            continue
+        if word == "-c" and idx + 1 < len(words):
+            if words[idx + 1] == "--" and idx + 2 < len(words):
+                return words[idx + 2]
+            return words[idx + 1]
+        if any(word.startswith(prefix + "=") for prefix in value_options if prefix.startswith("--")):
+            idx += 1
+            continue
+        if word.startswith(("-", "+")) and not word.startswith(("--", "++")) and len(word) > 1:
+            consumed_next = False
+            cluster = word[1:]
+            for pos, opt in enumerate(cluster):
+                rest = cluster[pos + 1:]
+                if word[0] == "-" and opt == "c":
+                    if rest:
+                        return rest
+                    if idx + 1 < len(words) and words[idx + 1] == "--" and idx + 2 < len(words):
+                        return words[idx + 2]
+                    return words[idx + 1] if idx + 1 < len(words) else None
+                if opt in {"o", "O"}:
+                    if not rest and idx + 1 < len(words):
+                        consumed_next = True
+                    break
+            idx += 2 if consumed_next else 1
+            continue
+        if not word.startswith("-"):
+            return None
+        idx += 1
+    return None
+
+
+def _nested_shell_c_payloads_after_command(words: list[str], start: int) -> list[str]:
+    """Return shell ``-c`` payloads nested under xargs / find -exec invocations.
+
+    ``xargs -I{} sh -c '<payload>'`` and ``find ... -exec sh -c '<payload>' \\;``
+    run a fresh shell whose ``-c`` argument is opaque to the outer-command
+    guards (xargs/find are not command positions a shell payload is parsed
+    from). Pull those payloads out so the protected-config / write checks can
+    recurse into them. Read-only nested commands (no shell ``-c`` argument, or
+    no write primitive inside it) yield nothing and stay allowed — quoted
+    literals and read-only operands do not match.
+    """
+    payloads: list[str] = []
+    j = start + 1
+    while j < len(words):
+        if _command_basename(words[j]).lower() in {"bash", "sh", "zsh", "ksh", "dash"}:
+            payload = _shell_c_payload_from_words(words, j)
+            if payload:
+                payloads.append(payload)
+        j += 1
+    return payloads
+
+
+def _env_split_string_payloads(words: list[str], start: int) -> list[str]:
+    """Return `/usr/bin/env -S/--split-string` payloads for recursive inspection.
+
+    Callers should pass tokens with their original option spelling. The matcher
+    also accepts lowercase ``-s`` for older guard paths that normalized before
+    tokenizing; ``env`` has no lowercase ``-s`` split-string alternative in real
+    execution, so this is conservative only for static detection.
+    """
+    payloads: list[str] = []
+    idx = start + 1
+    while idx < len(words):
+        word = words[idx]
+        lower = word.lower()
+        if lower in {"-s", "--split-string"} and idx + 1 < len(words):
+            payloads.append(words[idx + 1])
+            idx += 2
+            continue
+        if lower.startswith("--split-string="):
+            payloads.append(word.split("=", 1)[1])
+            idx += 1
+            continue
+        if word == "--":
+            break
+        idx += 1
+    return payloads
+
+
+def _inline_payload_and_argv_from_words(words: list[str], start: int) -> tuple[Optional[str], list[str]]:
+    """Return inline code passed to interpreter -c/-e plus post-payload argv."""
+    idx = start + 1
+    while idx < len(words):
+        word = words[idx]
+        if word in {"-c", "-e"} and idx + 1 < len(words):
+            return words[idx + 1], words[idx + 2:]
+        if word.startswith(("-c", "-e")) and len(word) > 2:
+            return word[2:], words[idx + 1:]
+        idx += 1
+    return None, []
+
+
+def _inline_payload_from_words(words: list[str], start: int) -> Optional[str]:
+    """Return inline code passed to interpreter -c/-e, if present."""
+    payload, _argv = _inline_payload_and_argv_from_words(words, start)
+    return payload
+
+
+def _inline_payload_argv_writes_protected_path(payload: str, argv: list[str], cwd: Optional[str]) -> bool:
+    """Detect inline code writing to a protected path supplied as argv.
+
+    Read-only argv references such as ``python -c 'print(1)' ~/.hermes/config.yaml``
+    must remain allowed, but write primitives targeting ``sys.argv`` /
+    ``process.argv`` / ``ARGV`` are direct writes to the post-payload operand.
+    """
+    if not argv:
+        return False
+    normalized = payload.lower()
+    has_argv_reference = bool(re.search(r"\b(?:sys\.argv|process\.argv|argv)\b", normalized))
+    if not has_argv_reference:
+        return False
+    # Conservative: once inline code contains a write primitive and references
+    # argv, any protected argv operand is considered a protected write target.
+    for candidate in argv:
+        if _token_is_protected_path(candidate, cwd):
+            return True
+    return False
+
+
+def _inline_script_nested_payloads(payload: str) -> list[str]:
+    """Return literal code/shell strings nested inside inline-language payloads.
+
+    This catches guarded REPL/stdin cases such as ``os.system('echo x >
+    ~/.hermes/config.yaml')`` or ``eval("open(..., 'w')")``.  It is a
+    deliberately small static extractor: only literal quoted first arguments
+    are recursed into, so read-only mentions remain allowed while obvious
+    self-executing payloads cannot hide protected writes.
+    """
+    nested: list[str] = []
+    call_patterns = [
+        r"\b(?:os\.)?system\s*\(\s*(['\"])(?P<system>.*?)(?<!\\)(?:\1)",
+        r"\b(?:subprocess\s*\.\s*)?(?:run|call|check_call|check_output|popen|Popen)\s*\(\s*(['\"])(?P<subprocess>.*?)(?<!\\)(?:\1)",
+        r"\b(?:subprocess\s*\.\s*)?(?:run|call|check_call|check_output|popen|Popen)\s*\(\s*\[\s*['\"][^'\"]*(?:sh|bash|zsh|dash|ksh)['\"]\s*,\s*['\"]-[lc]+['\"]\s*,\s*(['\"])(?P<subprocess_shell_list>.*?)(?<!\\)(?:\1)",
+        r"\b(?:subprocess\s*\.\s*)?(?:run|call|check_call|check_output|popen|Popen)\s*\([^)]*\bargs\s*=\s*(['\"])(?P<subprocess_args>.*?)(?<!\\)(?:\1)[^)]*\bshell\s*=\s*True\b",
+        r"\b(?:subprocess\s*\.\s*)?(?:run|call|check_call|check_output|popen|Popen)\s*\([^)]*\bshell\s*=\s*True\b[^)]*\bargs\s*=\s*(['\"])(?P<subprocess_args_after_shell>.*?)(?<!\\)(?:\1)",
+        r"\b(?:eval|exec)\s*\(\s*(['\"])(?P<eval>.*?)(?<!\\)(?:\1)",
+        r"\b__import__\s*\(\s*(['\"])os(?:\1)\s*\)\s*\.\s*system\s*\(\s*(['\"])(?P<import_os>.*?)(?<!\\)(?:\2)",
+    ]
+    for pattern in call_patterns:
+        for match in re.finditer(pattern, payload, _RE_FLAGS):
+            for value in match.groupdict().values():
+                if value:
+                    nested.append(value)
+                    break
+    return nested
+
+
+def _inline_script_payload_writes_protected_path(payload: Optional[str], cwd: Optional[str],
+                                                 argv: Optional[list[str]] = None,
+                                                 _depth: int = 0) -> bool:
+    """Detect protected writes inside inline Python/Node/Ruby/Perl payloads."""
+    if not payload:
+        return False
+    normalized = payload.lower()
+    if _script_write_target_hits_protected_path(normalized, cwd):
+        return True
+    if _depth < 3:
+        for nested_payload in _inline_script_nested_payloads(payload):
+            nested_normalized = nested_payload.lower()
+            if (
+                _write_target_hits_protected_path_preserving_quotes(nested_payload, cwd)
+                or _relative_write_target_hits_protected_path(nested_normalized, cwd)
+                or _inline_script_payload_writes_protected_path(nested_payload, cwd, _depth=_depth + 1)
+            ):
+                return True
+    has_write_primitive = bool(re.search(
+        r"\b(?:open|write_text|write_bytes|writefilesync|appendfilesync|createwritestream|file\.write|file\.open)\b",
+        normalized,
+        _RE_FLAGS,
+    ))
+    if not has_write_primitive:
+        return False
+    if argv and _inline_payload_argv_writes_protected_path(payload, argv, cwd):
+        return True
+    for quoted in re.findall(r"['\"]([^'\"]+)['\"]", payload):
+        if _token_is_protected_path(quoted, cwd):
+            return True
+    path_pat = _protected_hermes_path_pattern()
+    return bool(re.search(path_pat, _normalize_protected_config_command(payload), _RE_FLAGS))
+
+
+def _strip_shell_quoted_content(command: str) -> str:
+    """Remove quoted literal contents before broad fallback regex checks."""
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for ch in command:
+        if escaped:
+            if quote is None:
+                out.append(ch)
+            escaped = False
+            continue
+        if ch == "\\" and quote != "'":
+            if quote is None:
+                out.append(ch)
+            escaped = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+                out.append(ch)
+            else:
+                out.append(" ")
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            out.append(ch)
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+def _write_target_hits_protected_path_preserving_quotes(command: str, cwd: Optional[str]) -> bool:
+    """Detect write targets while preserving quoted path tokens with spaces."""
+    raw = _normalize_command_for_detection(command).lower()
+    # Bash ANSI-C quoted fragments can appear in paths before shlex sees them:
+    # ~/.hermes/$'config.yaml' -> ~/.hermes/config.yaml
+    raw = re.sub(r"\$'([^']*)'", r"\1", raw)
+    raw = re.sub(r"\\([^\s])", r"\1", raw)
+    for payload in _extract_static_shell_stdin_payloads(raw) + _eval_payloads_from_command(raw):
+        if (
+            _inline_script_payload_writes_protected_path(payload, cwd)
+            or _write_target_hits_protected_path_preserving_quotes(payload, cwd)
+            or _relative_write_target_hits_protected_path(payload.lower(), cwd)
+        ):
+            return True
+    for segment in _split_command_segments(raw):
+        words = _shlex_words(segment)
+        if not words:
+            continue
+        for target in _redirection_targets_from_words(words):
+            if _token_is_protected_path(target, cwd):
+                return True
+        for idx in _command_word_indices(words):
+            word = words[idx]
+            cmd_word = _command_basename(word)
+            if cmd_word == "env":
+                for payload in _env_split_string_payloads(words, idx):
+                    if (
+                        _write_target_hits_protected_path_preserving_quotes(payload, cwd)
+                        or _relative_write_target_hits_protected_path(payload.lower(), cwd)
+                    ):
+                        return True
+            if cmd_word in {"xargs", "find"}:
+                for payload in _nested_shell_c_payloads_after_command(words, idx):
+                    if (
+                        _write_target_hits_protected_path_preserving_quotes(payload, cwd)
+                        or _relative_write_target_hits_protected_path(payload.lower(), cwd)
+                    ):
+                        return True
+            if _is_inline_script_interpreter(cmd_word):
+                payload, argv = _inline_payload_and_argv_from_words(words, idx)
+                if _inline_script_payload_writes_protected_path(payload, cwd, argv):
+                    return True
+            if cmd_word == "dd":
+                for target in _dd_of_targets_from_words(words[idx + 1:]):
+                    if _token_is_protected_path(target, cwd):
+                        return True
+            if cmd_word == "tee":
+                for candidate in [w for w in words[idx + 1:] if not w.startswith("-")]:
+                    if _token_is_protected_path(candidate, cwd):
+                        return True
+            if cmd_word in {"sed", "perl", "ruby"}:
+                has_in_place = any(w == "--in-place" or (w.startswith("-") and "i" in w) for w in words[idx + 1:])
+                if has_in_place:
+                    for candidate in [w for w in words[idx + 1:] if not w.startswith("-")]:
+                        if _token_is_protected_path(candidate, cwd):
+                            return True
+            if cmd_word in {"rm", "unlink", "truncate", "touch", "nano", "vim", "vi", "nvim", "emacs", "code"}:
+                for candidate in [w for w in words[idx + 1:] if not w.startswith("-")]:
+                    if _token_is_protected_path(candidate, cwd):
+                        return True
+            if cmd_word == "mv":
+                args = words[idx + 1:]
+                for candidate in [w for w in args if not w.startswith("-")]:
+                    if _token_is_protected_path(candidate, cwd):
+                        return True
+                if _copy_like_hits_protected_path(args, cwd):
+                    return True
+            if cmd_word in {"cp", "install", "ln", "rsync"}:
+                args = words[idx + 1:]
+                candidates = [w for w in args if not w.startswith("-")]
+                if candidates and _token_is_protected_path(candidates[-1], cwd):
+                    return True
+                # ln SOURCE... DIR/ with DIR == protected config root and a
+                # source basename of config.yaml/.env overwrites the protected
+                # file via the link created inside DIR (absolute-dest form of
+                # `ln -sf /tmp/config.yaml ~/.hermes/`).
+                if (
+                    cmd_word == "ln"
+                    and len(candidates) >= 2
+                    and _token_is_protected_config_root(candidates[-1], cwd)
+                    and any(_source_basename_is_protected_config(src) for src in candidates[:-1])
+                ):
+                    return True
+                if cmd_word in {"cp", "install", "rsync"} and _copy_like_hits_protected_path(args, cwd):
+                    return True
+            if cmd_word in {"bash", "sh", "zsh", "ksh", "dash"}:
+                payload = _shell_c_payload_from_words(words, idx)
+                if payload and (
+                    _write_target_hits_protected_path_preserving_quotes(payload, cwd)
+                    or _relative_write_target_hits_protected_path(payload.lower(), cwd)
+                ):
+                    return True
+    return False
+
+
+def _script_write_target_hits_protected_path(normalized: str, cwd: Optional[str]) -> bool:
+    """Detect simple inline-language writes to protected paths.
+
+    The command has already had shell quotes removed by
+    `_normalize_protected_config_command`, so match conservative token shapes
+    such as `open(config.yaml,w)` and `Path(config.yaml).write_text(...)`.
+    """
+    script_write_patterns = [
+        r"\bopen\(\s*([^,\s)]+)\s*,\s*['\"]?[r]?['\"]?\s*['\"]?[wxa+]",
+        r"\bpath\(\s*([^,\s)]+)\s*\)\s*\.\s*(?:write_text|write_bytes)",
+        r"\b(?:writefilesync|appendfilesync|createwritestream)\(\s*([^,\s)]+)",
+        r"\bfile\s*\.\s*write\(\s*([^,\s)]+)",
+        r"\bfile\s*\.\s*open\(\s*([^,\s)]+)\s*,\s*['\"]?[wa]",
+        r"\bopen\(\s*[^,]+,\s*['\"]?>{1,2}['\"]?\s*,\s*([^,\s)]+)",
+    ]
+    for pattern in script_write_patterns:
+        for target in re.findall(pattern, normalized, _RE_FLAGS):
+            if _token_is_protected_path(target, cwd):
+                return True
+    return False
+
+
+def _cd_target_from_words(words: list[str]) -> Optional[str]:
+    """Return the path argument from a simple ``cd`` command segment."""
+    if not words:
+        return None
+    command_word = words[0].lstrip("({")
+    args = words[1:]
+    if command_word != "cd" and words[0] in {"{", "("} and len(words) > 1:
+        command_word = words[1]
+        args = words[2:]
+    if command_word != "cd":
+        return None
+    if args and args[0] == "--":
+        args = args[1:]
+    return args[0] if args else "~"
+
+
+def _record_script_protected_vars(segment: str, cwd: Optional[str], vars_: set[str]) -> None:
+    """Remember simple script variables assigned to protected relative paths."""
+    for name, value in re.findall(r"\b([a-z_]\w*)\s*=\s*([^,;\s)]+)", segment, _RE_FLAGS):
+        if _token_is_protected_path(value, cwd):
+            vars_.add(name.lower())
+    for name, value in re.findall(r"\b([a-z_]\w*)\s*=\s*path\(\s*([^,\s)]+)\s*\)", segment, _RE_FLAGS):
+        if _token_is_protected_path(value, cwd):
+            vars_.add(name.lower())
+
+
+def _script_write_uses_protected_var(segment: str, vars_: set[str]) -> bool:
+    """Detect simple script writes whose target is a known protected variable."""
+    if not vars_:
+        return False
+    script_write_patterns = [
+        r"\bopen\(\s*([^,\s)]+)\s*,\s*['\"]?[r]?['\"]?\s*['\"]?[wxa+]",
+        r"\bpath\(\s*([^,\s)]+)\s*\)\s*\.\s*(?:write_text|write_bytes)",
+        r"\b([a-z_]\w*)\s*\.\s*(?:write_text|write_bytes)\s*\(",
+        r"\b(?:writefilesync|appendfilesync|createwritestream)\(\s*([a-z_]\w*)",
+        r"\bfile\s*\.\s*(?:write|open)\(\s*([a-z_]\w*)",
+        r"\bopen\(\s*[^,]+,\s*['\"]?>{1,2}['\"]?\s*,\s*([a-z_]\w*)",
+    ]
+    for pattern in script_write_patterns:
+        for target in re.findall(pattern, segment, _RE_FLAGS):
+            if target.lower() in vars_:
+                return True
+    return False
+
+
+def _relative_write_target_hits_protected_path(normalized: str, cwd: Optional[str]) -> bool:
+    """Resolve write-target tokens relative to shell cwd and compare protected paths.
+
+    This is intentionally a small pre-exec shell model, not a full interpreter:
+    it walks simple command segments left-to-right, carrying forward obvious
+    ``cd`` state so a later harmless ``cd`` cannot hide an earlier relative
+    write to ``config.yaml``/``.env`` under Hermes home.  Subshell ``cd`` state
+    is scoped to the parenthesized command and does not leak back to the parent.
+    """
+    current_cwd = cwd
+    subshell_cwd: Optional[str] = None
+    in_subshell = False
+    script_cwd = None
+    script_protected_vars: set[str] = set()
+    protected_aliases: set[str] = set()
+    shell_vars: dict[str, str] = {}
+    for segment in _split_command_segments(normalized):
+        stripped_segment = segment.strip()
+        starts_subshell = stripped_segment.startswith("(")
+        ends_subshell = stripped_segment.endswith(")")
+        if starts_subshell:
+            in_subshell = True
+            subshell_cwd = current_cwd
+            script_cwd = None
+            script_protected_vars.clear()
+        active_cwd = subshell_cwd if in_subshell else current_cwd
+        words = _shlex_words(segment)
+        if not words:
+            if ends_subshell:
+                in_subshell = False
+                subshell_cwd = None
+            continue
+        for word in words:
+            if not _is_shell_assignment(word):
+                break
+            name, value = word.split("=", 1)
+            shell_vars[name.lower()] = _expand_known_shell_vars(value, shell_vars)
+        words = [_expand_known_shell_vars(word, shell_vars) for word in words]
+
+        for idx in _command_word_indices(words):
+            if _command_basename(words[idx]).lower() not in {"export", "declare", "typeset", "readonly", "local"}:
+                continue
+            for assignment in words[idx + 1:]:
+                if not _is_shell_assignment(assignment):
+                    continue
+                name, value = assignment.split("=", 1)
+                expanded_value = _expand_known_shell_vars(value, shell_vars)
+                shell_vars[name.lower()] = expanded_value
+                resolved_alias = _resolve_protected_path_token(expanded_value, active_cwd)
+                if resolved_alias and resolved_alias in _protected_config_resolved_paths():
+                    protected_aliases.add(resolved_alias)
+
+        cd_target = _cd_target_from_words(words)
+        if cd_target is not None:
+            resolved_cd = _resolve_protected_path_token(cd_target, active_cwd)
+            if resolved_cd:
+                if in_subshell:
+                    subshell_cwd = resolved_cd
+                else:
+                    current_cwd = resolved_cd
+            script_cwd = None
+            script_protected_vars.clear()
+            if ends_subshell:
+                in_subshell = False
+                subshell_cwd = None
+            continue
+
+        if script_cwd is not None:
+            _record_script_protected_vars(segment, script_cwd, script_protected_vars)
+            if (
+                _script_write_target_hits_protected_path(segment, script_cwd)
+                or _script_write_uses_protected_var(segment, script_protected_vars)
+            ):
+                return True
+
+        for target in _redirection_targets_from_words(words):
+            if _token_or_alias_is_protected_path(target, active_cwd, protected_aliases):
+                return True
+
+        for idx in _command_word_indices(words):
+            word = words[idx]
+            cmd_word = _command_basename(word)
+            if cmd_word == "env":
+                for payload in _env_split_string_payloads(words, idx):
+                    if (
+                        _write_target_hits_protected_path_preserving_quotes(payload, active_cwd)
+                        or _relative_write_target_hits_protected_path(payload.lower(), active_cwd)
+                    ):
+                        return True
+            if cmd_word in {"xargs", "find"}:
+                for payload in _nested_shell_c_payloads_after_command(words, idx):
+                    if (
+                        _write_target_hits_protected_path_preserving_quotes(payload, active_cwd)
+                        or _relative_write_target_hits_protected_path(payload.lower(), active_cwd)
+                    ):
+                        return True
+            if _is_inline_script_interpreter(cmd_word):
+                payload, argv = _inline_payload_and_argv_from_words(words, idx)
+                if _inline_script_payload_writes_protected_path(payload, active_cwd, argv):
+                    return True
+            if cmd_word == "dd":
+                for target in _dd_of_targets_from_words(words[idx + 1:]):
+                    if _token_or_alias_is_protected_path(target, active_cwd, protected_aliases):
+                        return True
+            if cmd_word == "tee":
+                for candidate in [w for w in words[idx + 1:] if not w.startswith("-")]:
+                    if _token_or_alias_is_protected_path(candidate, active_cwd, protected_aliases):
+                        return True
+            if cmd_word in {"sed", "perl", "ruby"}:
+                has_in_place = any(w == "--in-place" or (w.startswith("-") and "i" in w) for w in words[idx + 1:])
+                if has_in_place:
+                    for candidate in [w for w in words[idx + 1:] if not w.startswith("-")]:
+                        if _token_or_alias_is_protected_path(candidate, active_cwd, protected_aliases):
+                            return True
+            if cmd_word in {"rm", "unlink"}:
+                for candidate in [w for w in words[idx + 1:] if not w.startswith("-")]:
+                    if _token_is_protected_path(candidate, active_cwd):
+                        return True
+            if cmd_word in {"truncate", "touch", "nano", "vim", "vi", "nvim", "emacs", "code"}:
+                for candidate in [w for w in words[idx + 1:] if not w.startswith("-")]:
+                    if _token_or_alias_is_protected_path(candidate, active_cwd, protected_aliases):
+                        return True
+            if cmd_word == "mv":
+                args = words[idx + 1:]
+                candidates = [w for w in args if not w.startswith("-")]
+                for candidate in candidates[:-1]:
+                    if _token_is_protected_path(candidate, active_cwd):
+                        return True
+                if candidates and _token_or_alias_is_protected_path(candidates[-1], active_cwd, protected_aliases):
+                    return True
+                if _copy_like_hits_protected_path(args, active_cwd, protected_aliases):
+                    return True
+            if cmd_word in {"cp", "install", "ln", "rsync"}:
+                candidates = [w for w in words[idx + 1:] if not w.startswith("-")]
+                if cmd_word == "ln":
+                    # Creating a link AT a protected config path overwrites it
+                    # (cd ~/.hermes && ln -sf /tmp/x config.yaml). The absolute
+                    # form is caught by the quote-preserving pass; this closes
+                    # the relative-cwd gap.
+                    if candidates and _token_or_alias_is_protected_path(candidates[-1], active_cwd, protected_aliases):
+                        return True
+                    # ln SOURCE... DIR/ creates the link inside DIR named after
+                    # the source basename. If DIR is the protected config root
+                    # and a source basename is config.yaml/.env, the resulting
+                    # link overwrites the protected file
+                    # (ln -sf /tmp/config.yaml ~/.hermes/ ;
+                    #  cd ~/.hermes && ln -sf /tmp/config.yaml .).
+                    if (
+                        len(candidates) >= 2
+                        and _token_is_protected_config_root(candidates[-1], active_cwd)
+                        and any(_source_basename_is_protected_config(src) for src in candidates[:-1])
+                    ):
+                        return True
+                    # ln SOURCE LINK where SOURCE is protected: the link name
+                    # becomes an alias for later writes through it.
+                    if len(candidates) >= 2 and _token_is_protected_path(candidates[-2], active_cwd):
+                        alias = _resolve_protected_path_token(candidates[-1], active_cwd)
+                        if alias:
+                            protected_aliases.add(alias)
+                elif _copy_like_hits_protected_path(words[idx + 1:], active_cwd, protected_aliases):
+                    return True
+            if cmd_word in {"bash", "sh", "zsh", "ksh", "dash"}:
+                payload = _shell_c_payload_from_words(words, idx)
+                if payload and (
+                    _write_target_hits_protected_path_preserving_quotes(payload, active_cwd)
+                    or _relative_write_target_hits_protected_path(payload.lower(), active_cwd)
+                ):
+                    return True
+            if cmd_word == "eval" and idx + 1 < len(words):
+                payload = " ".join(words[idx + 1:])
+                if (
+                    _write_target_hits_protected_path_preserving_quotes(payload, active_cwd)
+                    or _relative_write_target_hits_protected_path(payload.lower(), active_cwd)
+                ):
+                    return True
+            if _is_inline_script_interpreter(cmd_word):
+                _record_script_protected_vars(segment, active_cwd, script_protected_vars)
+                if (
+                    _script_write_target_hits_protected_path(segment, active_cwd)
+                    or _script_write_uses_protected_var(segment, script_protected_vars)
+                ):
+                    return True
+                if any(word in {"-c", "-e"} for word in words[idx + 1:]) or "<<" in segment:
+                    script_cwd = active_cwd
+        if _is_inline_script_interpreter(words[0]):
+            _record_script_protected_vars(segment, active_cwd, script_protected_vars)
+            if (
+                _script_write_target_hits_protected_path(segment, active_cwd)
+                or _script_write_uses_protected_var(segment, script_protected_vars)
+            ):
+                return True
+            if any(word in {"-c", "-e"} for word in words[1:]) or "<<" in segment:
+                script_cwd = active_cwd
+        if ends_subshell:
+            in_subshell = False
+            subshell_cwd = None
+            script_cwd = None
+            script_protected_vars.clear()
+    return False
+
+
+def _check_protected_config_write_guard(command: str, cwd: Optional[str] = None) -> tuple:
+    """Detect direct writes/edits to protected Hermes config files.
+
+    Returns:
+        (is_blocked: bool, description: str | None)
+    """
+    effective_cwd = _resolve_protected_path_token(cwd, os.getcwd()) if cwd else None
+    if _write_target_hits_protected_path_preserving_quotes(command, effective_cwd):
+        return (True, "direct write to protected Hermes config/env")
+    quote_preserving_command = _normalize_command_for_detection(command).lower()
+    if _relative_write_target_hits_protected_path(quote_preserving_command, effective_cwd):
+        return (True, "direct write to protected Hermes config/env")
+
+    return (False, None)
+
+
+def _protected_config_block_result(description: str) -> dict:
+    """Build the standard block result for protected config direct writes."""
+    return {
+        "approved": False,
+        "protected_config": True,
+        "message": (
+            f"BLOCKED: {description}. "
+            "Do not edit ~/.hermes/.env or ~/.hermes/config.yaml directly "
+            "from the agent. Use `hermes config set <key> <value>` for "
+            "configuration changes, and do not bypass this guard. Secret "
+            "values were not inspected or printed."
+        ),
+    }
+
+
+def check_unbypassable_command_guards(command: str, env_type: str,
+                                      cwd: Optional[str] = None) -> dict:
+    """Run command guards that must apply even under yolo/force/off modes."""
+    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        return {"approved": True, "message": None}
+
+    is_protected_config_write, protected_desc = _check_protected_config_write_guard(command, cwd=cwd)
+    if is_protected_config_write:
+        logger.warning("Protected config guard block: %s", protected_desc)
+        return _protected_config_block_result(protected_desc)
+
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s", hardline_desc)
+        return _hardline_block_result(hardline_desc)
+
+    is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
+    if is_sudo_guess:
+        logger.warning("Sudo stdin guard block: %s", sudo_guess_desc)
+        return _sudo_stdin_block_result(sudo_guess_desc)
+
+    return {"approved": True, "message": None}
+
+
+# =========================================================================
 # Dangerous command patterns
 # =========================================================================
-
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -916,7 +2239,8 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
 
 def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None) -> dict:
+                            approval_callback=None,
+                            cwd: Optional[str] = None) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -930,20 +2254,13 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
+    unbypassable = check_unbypassable_command_guards(command, env_type, cwd=cwd)
+    if not unbypassable["approved"]:
+        return unbypassable
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
 
-    # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
-    # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
-    # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
-    # trusting the agent with your files and services, not trusting it
-    # to wipe the disk or power the box off.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
-
-    # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
+    # --yolo: bypass regular approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
@@ -1051,7 +2368,8 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             cwd: Optional[str] = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -1060,30 +2378,13 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
+    unbypassable = check_unbypassable_command_guards(command, env_type, cwd=cwd)
+    if not unbypassable["approved"]:
+        return unbypassable
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
         return {"approved": True, "message": None}
 
-    # Hardline floor: unconditional block for catastrophic commands
-    # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
-    # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
-    # no session-level setting can bypass it.
-    is_hardline, hardline_desc = detect_hardline_command(command)
-    if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
-
-    # == Sudo stdin guard ==
-    # Like the hardline floor above, this is unconditional: there is never a
-    # legitimate reason for the agent to pipe passwords to sudo -S when no
-    # SUDO_PASSWORD has been configured.  This must fire BEFORE the yolo
-    # check so even yolo/smart approval/mode=off cannot bypass it.
-    is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
-    if is_sudo_guess:
-        logger.warning("Sudo stdin guard block: %s (command: %s)",
-                       sudo_guess_desc, command[:200])
-        return _sudo_stdin_block_result(sudo_guess_desc)
-
-    # --yolo or approvals.mode=off: bypass all approval prompts.
+    # --yolo or approvals.mode=off: bypass regular approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":

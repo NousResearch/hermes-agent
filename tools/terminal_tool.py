@@ -318,18 +318,37 @@ def _reset_cached_sudo_passwords() -> None:
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    check_unbypassable_command_guards as _check_unbypassable_guards_impl,
 )
 
 
-def _check_all_guards(command: str, env_type: str) -> dict:
+def _check_all_guards(command: str, env_type: str, cwd: Optional[str] = None) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
-                                  approval_callback=_get_approval_callback())
+                                  approval_callback=_get_approval_callback(),
+                                  cwd=cwd)
+
+
+def _check_unbypassable_guards(command: str, env_type: str,
+                               cwd: Optional[str] = None) -> dict:
+    """Delegate to guards that must still run when force=True."""
+    return _check_unbypassable_guards_impl(command, env_type, cwd=cwd)
+
+
+def _canonical_guard_cwd(raw_cwd: Optional[str], base_cwd: Optional[str] = None) -> Optional[str]:
+    """Canonicalize cwd/workdir for pre-exec path guards without reading files."""
+    if not raw_cwd:
+        return None
+    expanded = os.path.expanduser(raw_cwd)
+    if not os.path.isabs(expanded):
+        base = os.path.expanduser(base_cwd or os.getcwd())
+        expanded = os.path.join(base, expanded)
+    return os.path.realpath(expanded)
 
 
 # Allowlist: characters that can legitimately appear in directory paths.
-# Covers alphanumeric, path separators, Windows drive/UNC separators, tilde,
-# dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
+# This includes Unix paths, Windows drive/UNC paths, spaces, and common
+# punctuation used by temp dirs and project names. It intentionally excludes
 # else is rejected.
 _WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/\\:_\-.~ +@=,]+$')
 
@@ -901,6 +920,7 @@ Do NOT use grep/rg/find to search — use search_files instead.
 Do NOT use ls to list directories — use search_files(target='files') instead.
 Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
+Do NOT edit protected Hermes config directly (~/.hermes/.env or ~/.hermes/config.yaml) or bypass its guard — use `hermes config set <key> <value>`.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
 Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
@@ -1856,45 +1876,7 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
-        # Pre-exec security checks (tirith + dangerous command detection)
-        # Skip check if force=True (user has confirmed they want to run it)
-        approval_note = None
-        if not force:
-            approval = _check_all_guards(command, env_type)
-            if not approval["approved"]:
-                # Check if this is an approval_required (gateway ask mode)
-                if approval.get("status") == "pending_approval":
-                    return json.dumps({
-                        "output": "",
-                        "exit_code": -1,
-                        "error": "",
-                        "status": "pending_approval",
-                        "approval_pending": True,
-                        "command": approval.get("command", command),
-                        "description": approval.get("description", "command flagged"),
-                        "pattern_key": approval.get("pattern_key", ""),
-                    }, ensure_ascii=False)
-                # Command was blocked
-                desc = approval.get("description", "command flagged")
-                fallback_msg = (
-                    f"Command denied: {desc}. "
-                    "Use the approval prompt to allow it, or rephrase the command."
-                )
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": approval.get("message", fallback_msg),
-                    "status": "blocked"
-                }, ensure_ascii=False)
-            # Track whether approval was explicitly granted by the user
-            if approval.get("user_approved"):
-                desc = approval.get("description", "flagged as dangerous")
-                approval_note = f"Command required approval ({desc}) and was approved by the user."
-            elif approval.get("smart_approved"):
-                desc = approval.get("description", "flagged as dangerous")
-                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
-
-        # Validate workdir against shell injection
+        # Validate workdir against shell injection before using it for guards or execution.
         if workdir:
             workdir_error = _validate_workdir(workdir)
             if workdir_error:
@@ -1906,6 +1888,56 @@ def terminal_tool(
                     "error": workdir_error,
                     "status": "blocked"
                 }, ensure_ascii=False)
+
+        # Pre-exec security checks (tirith + dangerous command detection).
+        # `force=True` skips regular approval prompts after user confirmation,
+        # but never skips hardline/sudo/protected-config guards.
+        approval_note = None
+        # Resolve cwd exactly once and reuse it for both guard checks and
+        # execution.  BaseEnvironment resolves relative cwd/workdir from the
+        # session cwd, so guard resolution must use the same base; otherwise
+        # force=True could approve a relative workdir that executes elsewhere.
+        guard_base_cwd = getattr(locals().get("env"), "cwd", None) or cwd or os.getcwd()
+        guard_cwd = _canonical_guard_cwd(workdir or cwd, base_cwd=guard_base_cwd)
+        execution_cwd = guard_cwd or workdir or cwd
+        if force:
+            approval = _check_unbypassable_guards(command, env_type, cwd=guard_cwd)
+        else:
+            approval = _check_unbypassable_guards(command, env_type, cwd=guard_cwd)
+            if approval["approved"]:
+                approval = _check_all_guards(command, env_type, cwd=guard_cwd)
+        if not approval["approved"]:
+            # Check if this is an approval_required (gateway ask mode)
+            if approval.get("status") == "approval_required":
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": approval.get("message", "Waiting for user approval"),
+                    "status": "approval_required",
+                    "command": approval.get("command", command),
+                    "description": approval.get("description", "command flagged"),
+                    "pattern_key": approval.get("pattern_key", ""),
+                }, ensure_ascii=False)
+            # Command was blocked
+            desc = approval.get("description", "command flagged")
+            fallback_msg = (
+                f"Command denied: {desc}. "
+                "Use the approval prompt to allow it, or rephrase the command."
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": approval.get("message", fallback_msg),
+                "status": "blocked"
+            }, ensure_ascii=False)
+        if not force:
+            # Track whether approval was explicitly granted by the user
+            if approval.get("user_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command required approval ({desc}) and was approved by the user."
+            elif approval.get("smart_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
         # Prepare command for execution
         pty_disabled_reason = None
@@ -1927,7 +1959,7 @@ def terminal_tool(
             from tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
-            effective_cwd = workdir or cwd
+            effective_cwd = execution_cwd
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -2065,7 +2097,7 @@ def terminal_tool(
                 try:
                     execute_kwargs = {
                         "timeout": effective_timeout,
-                        "cwd": workdir or cwd,
+                        "cwd": execution_cwd,
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:

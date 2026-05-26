@@ -807,6 +807,9 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
+    if os.getenv("HERMES_DISABLE_MACOS_KEYCHAIN", "").strip().lower() in {"1", "true", "yes"}:
+        return None
+
     if platform.system() != "Darwin":
         return None
 

@@ -49,9 +49,67 @@ fi
 PYTHON="$VENV/bin/python"
 
 
+# ── Hermetic environment ────────────────────────────────────────────────────
+# Mirror what CI does in .github/workflows/tests.yml + what conftest.py does.
+# Unset every credential-shaped var currently in the environment.
+while IFS='=' read -r name _; do
+  case "$name" in
+    *_API_KEY|*_TOKEN|*_SECRET|*_PASSWORD|*_CREDENTIALS|*_ACCESS_KEY| \
+    *_SECRET_ACCESS_KEY|*_PRIVATE_KEY|*_OAUTH_TOKEN|*_WEBHOOK_SECRET| \
+    *_ENCRYPT_KEY|*_APP_SECRET|*_CLIENT_SECRET|*_CORP_SECRET|*_AES_KEY| \
+    AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|FAL_KEY| \
+    GH_TOKEN|GITHUB_TOKEN)
+      unset "$name"
+      ;;
+  esac
+done < <(env)
+
+# Unset HERMES_* behavioral vars too.
+unset HERMES_YOLO_MODE HERMES_INTERACTIVE HERMES_QUIET HERMES_TOOL_PROGRESS \
+      HERMES_TOOL_PROGRESS_MODE HERMES_MAX_ITERATIONS HERMES_SESSION_PLATFORM \
+      HERMES_SESSION_CHAT_ID HERMES_SESSION_CHAT_NAME HERMES_SESSION_THREAD_ID \
+      HERMES_SESSION_SOURCE HERMES_SESSION_KEY HERMES_GATEWAY_SESSION \
+      HERMES_CRON_SESSION \
+      HERMES_PLATFORM HERMES_INFERENCE_PROVIDER HERMES_MANAGED HERMES_DEV \
+      HERMES_CONTAINER HERMES_EPHEMERAL_SYSTEM_PROMPT HERMES_TIMEZONE \
+      HERMES_REDACT_SECRETS HERMES_BACKGROUND_NOTIFICATIONS HERMES_EXEC_ASK \
+      HERMES_HOME_MODE 2>/dev/null || true
+
+# Pin deterministic runtime.
+export TZ=UTC
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export PYTHONHASHSEED=0
+
+# ── File-descriptor budget ───────────────────────────────────────────────────
+# macOS login shells commonly default to 256 open files. The full pytest suite
+# uses subprocess/PTY/socket-heavy tests; at 256 it can cascade into unrelated
+# ``OSError: [Errno 24] Too many open files`` errors. Raising the soft limit is
+# process-local to this test runner and its children.
+_current_nofile="$(ulimit -n 2>/dev/null || echo 0)"
+case "$_current_nofile" in
+  ''|*[!0-9]*) _current_nofile=0 ;;
+esac
+if [ "$_current_nofile" -gt 0 ] && [ "$_current_nofile" -lt 4096 ]; then
+  ulimit -n 4096 2>/dev/null || {
+    _hard_nofile="$(ulimit -Hn 2>/dev/null || echo 0)"
+    case "$_hard_nofile" in
+      ''|*[!0-9]*|0) ;;
+      *) ulimit -n "$_hard_nofile" 2>/dev/null || true ;;
+    esac
+  }
+fi
+
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────
 EXTRA_PYTHONPATH=""
 EXTRA_PYTEST_PLUGINS=""
+
+# ── Live-gateway test guard (developer machines) ────────────────────────────
+# If a system-wide hermes pytest_live_guard plugin is installed at
+# $HOME/.hermes/pytest_live_guard.py, force-load it here so every test run
+# from this script gets the protection regardless of which worktree is
+# checked out (in-tree tests/conftest.py guard may be missing on stale
+# branches). Harmless on CI / fresh machines that don't have the file.
 if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
   EXTRA_PYTHONPATH="$HOME/.hermes"
   EXTRA_PYTEST_PLUGINS="pytest_live_guard"

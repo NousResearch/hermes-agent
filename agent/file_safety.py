@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -25,10 +26,33 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _hermes_config_roots() -> set[Path]:
+    """Return Hermes roots whose config/env files must be write-denied."""
+    roots = {_hermes_home_path(), Path(os.path.expanduser("~/.hermes"))}
+    try:
+        from hermes_constants import get_default_hermes_root  # local import to avoid cycles
+
+        roots.add(get_default_hermes_root())
+    except Exception:
+        pass
+    return roots
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
-    hermes_home = _hermes_home_path()
-    hermes_root = _hermes_root_path()
+    hermes_config_paths = []
+    for root in _hermes_config_roots():
+        hermes_config_paths.extend(
+            [
+                # Profile/root .env, config.yaml, and Anthropic PKCE credential
+                # store. Overwriting a top-level .env leaks credentials across
+                # every profile that inherits from root (#15981); the default
+                # credential store stays sensitive even when a profile is active.
+                str(root / ".env"),
+                str(root / "config.yaml"),
+                str(root / ".anthropic_oauth.json"),
+            ]
+        )
     return {
         os.path.realpath(p)
         for p in [
@@ -36,16 +60,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
-            # Active profile .env (or top-level .env when not in profile mode).
-            str(hermes_home / ".env"),
-            # Top-level .env, even when running under a profile — overwriting it
-            # leaks credentials across every profile that inherits from root (#15981).
-            str(hermes_root / ".env"),
-            # Active profile Anthropic PKCE credential store.
-            str(hermes_home / ".anthropic_oauth.json"),
-            # Top-level Anthropic PKCE credential store remains sensitive even
-            # when a profile is active; default/non-profile sessions still read it.
-            str(hermes_root / ".anthropic_oauth.json"),
+            *hermes_config_paths,
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),
@@ -95,12 +110,16 @@ def get_safe_write_root() -> Optional[str]:
 
 def is_write_denied(path: str) -> bool:
     """Return True if path is blocked by the write denylist or safe root."""
-    home = os.path.realpath(os.path.expanduser("~"))
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    def norm(p: str) -> str:
+        resolved_path = os.path.normcase(os.path.realpath(os.path.expanduser(str(p))))
+        return resolved_path.lower() if sys.platform == "darwin" else resolved_path
 
-    if resolved in build_write_denied_paths(home):
+    home = norm("~")
+    resolved = norm(path)
+
+    if resolved in {norm(p) for p in build_write_denied_paths(home)}:
         return True
-    for prefix in build_write_denied_prefixes(home):
+    for prefix in {norm(p) for p in build_write_denied_prefixes(home)}:
         if resolved.startswith(prefix):
             return True
 
@@ -142,6 +161,7 @@ def is_write_denied(path: str) -> bool:
             pass
 
     safe_root = get_safe_write_root()
+    safe_root = norm(safe_root) if safe_root else None
     if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
         return True
 

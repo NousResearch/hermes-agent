@@ -147,12 +147,16 @@ async def test_compress_command_appends_warning_when_compression_aborts():
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
     # Simulate compression aborting (force=True bypassed cooldown but the
-    # aux LLM is genuinely broken).
+    # aux LLM is genuinely broken). Also include provider details that must be
+    # sanitized before the warning is shown to the user.
     agent_instance.context_compressor._last_compress_aborted = True
     agent_instance.context_compressor._last_summary_fallback_used = False
     agent_instance.context_compressor._last_summary_dropped_count = 0
+    warning_secret = "sk-" + "warningdetail1234567890"
     agent_instance.context_compressor._last_summary_error = (
-        "404 model not found: gemini-3-flash-preview"
+        r"404 model not found: gemini-3-flash-preview at C:\Program Files\Hermes Agent\cache\x.txt "
+        r"and C:\Users\Jane Doe\.hermes\.env /Users/Jane Doe/.hermes/config.yaml "
+        f"Authorization: Bearer {warning_secret}"
     )
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
@@ -165,7 +169,7 @@ async def test_compress_command_appends_warning_when_compression_aborts():
         raise AssertionError(f"unexpected transcript: {messages!r}")
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
         patch("gateway.run._resolve_gateway_model", return_value="test-model"),
         patch("run_agent.AIAgent", return_value=agent_instance),
         patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
@@ -175,8 +179,15 @@ async def test_compress_command_appends_warning_when_compression_aborts():
     # A clearly-marked warning must be appended.
     assert "⚠️" in result
     assert "Compression aborted" in result
-    # Underlying error must surface so users can fix their config.
+    # Underlying error must surface so users can fix their config, but local
+    # paths and secrets from provider exceptions must not leak to the chat.
     assert "404 model not found" in result
+    assert "[local path]" in result
+    assert "Program Files" not in result
+    assert "Jane Doe" not in result
+    assert ".hermes" not in result
+    assert "sk-" not in result
+    assert "...7890" not in result
     # User must be told nothing was dropped — the whole point of the
     # new behavior is no silent data loss.
     assert "No messages were dropped" in result
@@ -213,8 +224,10 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     agent_instance.context_compressor._last_aux_model_failure_model = (
         "gemini-3-flash-preview"
     )
+    aux_secret = "sk-" + "auxwarning1234567890"
     agent_instance.context_compressor._last_aux_model_failure_error = (
-        "404 model not found: gemini-3-flash-preview"
+        r"404 model not found: gemini-3-flash-preview from C:\Users\Jane Doe\.hermes\config.yaml "
+        f"OPENAI_API_KEY={aux_secret}"
     )
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
@@ -242,6 +255,11 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     assert "ℹ️" in result
     assert "gemini-3-flash-preview" in result
     assert "404" in result
+    assert "[local path]" in result
+    assert "Jane Doe" not in result
+    assert ".hermes" not in result
+    assert "sk-" not in result
+    assert "...7890" not in result
     assert "auxiliary.compression.model" in result
     # The user's context is explicitly called out as intact
     assert "intact" in result

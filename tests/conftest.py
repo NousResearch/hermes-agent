@@ -372,6 +372,11 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # tests opt back in by patching the security config directly.
     monkeypatch.setenv("TIRITH_ENABLED", "false")
 
+    # macOS Keychain is outside HOME/HERMES_HOME and can contain real Claude
+    # Code OAuth credentials. Disable keychain probing so provider-auth tests
+    # stay hermetic on developer machines.
+    monkeypatch.setenv("HERMES_DISABLE_MACOS_KEYCHAIN", "1")
+
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the
     #    singleton might still be cached from a previous test).

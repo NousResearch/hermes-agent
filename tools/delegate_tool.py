@@ -2342,6 +2342,20 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
+def _validate_delegation_model(creds: dict) -> dict:
+    """Ensure delegation model meets Hermes minimum context at config time."""
+    model = creds.get("model")
+    if model:
+        from agent.model_metadata import assert_minimum_agent_context
+
+        assert_minimum_agent_context(
+            str(model),
+            provider=str(creds.get("provider") or ""),
+            base_url=str(creds.get("base_url") or ""),
+        )
+    return creds
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -2407,23 +2421,23 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             api_mode = configured_api_mode
 
-        return {
+        return _validate_delegation_model({
             "model": configured_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
-        }
+        })
 
     if not configured_provider:
         # No provider override — child inherits everything from parent
-        return {
+        return _validate_delegation_model({
             "model": configured_model,
             "provider": None,
             "base_url": None,
             "api_key": None,
             "api_mode": None,
-        }
+        })
 
     # Provider is configured — resolve full credentials
     try:
@@ -2445,7 +2459,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
-    return {
+    return _validate_delegation_model({
         "model": configured_model or runtime.get("model") or None,
         "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
         "base_url": runtime.get("base_url"),
@@ -2453,7 +2467,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
-    }
+    })
 
 
 def _load_config() -> dict:

@@ -1483,7 +1483,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        from cron.jobs import resolve_job_model_override
+
+        model, _job_provider_override = resolve_job_model_override(job)
+        if not model:
+            model = os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -1495,7 +1499,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
-                if not job.get("model"):
+                if not model:
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
@@ -1552,7 +1556,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                "requested": _job_provider_override or job.get("provider"),
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")

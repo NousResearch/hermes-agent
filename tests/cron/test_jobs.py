@@ -24,12 +24,59 @@ from cron.jobs import (
     advance_next_run,
     get_due_jobs,
     save_job_output,
+    resolve_job_model_override,
+    validate_cron_agent_model,
 )
 
 
 # =========================================================================
 # parse_duration
 # =========================================================================
+
+class TestResolveJobModelOverride:
+    def test_dict_model_override(self):
+        model, provider = resolve_job_model_override(
+            {"model": {"provider": "ollama", "model": "qwen2.5:72b"}}
+        )
+        assert model == "qwen2.5:72b"
+        assert provider == "ollama"
+
+    def test_string_model_with_top_level_provider(self):
+        model, provider = resolve_job_model_override(
+            {"model": "composer-2.5-fast", "provider": "copilot-acp"}
+        )
+        assert model == "composer-2.5-fast"
+        assert provider == "copilot-acp"
+
+
+class TestValidateCronAgentModel:
+    def test_rejects_low_context_model(self, tmp_cron_dir):
+        with patch("agent.model_metadata.get_model_context_length", return_value=32_768):
+            with pytest.raises(ValueError, match="below the minimum"):
+                create_job(
+                    prompt="test",
+                    schedule="every 1h",
+                    model="qwen2.5:72b",
+                    provider="ollama",
+                )
+
+    def test_skips_validation_for_no_agent_jobs(self, tmp_cron_dir):
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            script="watchdog.py",
+            no_agent=True,
+            model="qwen2.5:72b",
+            provider="ollama",
+        )
+        assert job["no_agent"] is True
+
+    def test_update_job_validates_model_override(self, tmp_cron_dir):
+        job = create_job(prompt="test", schedule="every 1h")
+        with patch("agent.model_metadata.get_model_context_length", return_value=32_768):
+            with pytest.raises(ValueError, match="below the minimum"):
+                update_job(job["id"], {"model": "qwen2.5:72b", "provider": "ollama"})
+
 
 class TestParseDuration:
     def test_minutes(self):

@@ -85,6 +85,79 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     return normalized
 
 
+def resolve_job_model_override(job: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(model_name, provider)`` from a cron job record.
+
+    Some jobs store ``model`` as a dict ``{"provider": "...", "model": "..."}``
+    (cronjob tool schema).  The scheduler and ``AIAgent`` require plain strings.
+    """
+    raw_model = job.get("model")
+    provider_raw = job.get("provider")
+    provider = str(provider_raw).strip() if provider_raw else None
+
+    if isinstance(raw_model, dict):
+        if not provider:
+            nested = raw_model.get("provider")
+            provider = str(nested).strip() if nested else None
+        nested_model = raw_model.get("model")
+        model = str(nested_model).strip() if nested_model else None
+    elif isinstance(raw_model, str):
+        model = raw_model.strip() or None
+    else:
+        model = None
+
+    return model, provider
+
+
+def _resolve_cron_model_fields(
+    model: Any = None,
+    provider: Any = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Normalize cron job model/provider inputs (string or dict)."""
+    if isinstance(model, dict):
+        resolved_model, resolved_provider = resolve_job_model_override(
+            {"model": model, "provider": provider}
+        )
+        return resolved_model, resolved_provider
+    model_text = str(model).strip() if isinstance(model, str) else None
+    provider_text = str(provider).strip() if isinstance(provider, str) else None
+    return model_text or None, provider_text or None
+
+
+def _resolve_provider_base_url(provider: Optional[str], base_url: Optional[str] = None) -> str:
+    """Best-effort base URL for model context probing."""
+    if base_url:
+        return str(base_url).strip().rstrip("/")
+    if not provider:
+        return ""
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=str(provider).strip())
+        return str(runtime.get("base_url") or "").strip().rstrip("/")
+    except Exception:
+        return ""
+
+
+def validate_cron_agent_model(
+    model: Optional[str],
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    *,
+    no_agent: bool = False,
+) -> None:
+    """Reject agent cron jobs whose model context is below Hermes minimum."""
+    if no_agent or not model:
+        return
+    from agent.model_metadata import assert_minimum_agent_context
+
+    assert_minimum_agent_context(
+        model,
+        provider=provider or "",
+        base_url=_resolve_provider_base_url(provider, base_url),
+    )
+
+
 def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
     normalized = dict(job)
@@ -617,11 +690,8 @@ def create_job(
     now = _hermes_now().isoformat()
 
     normalized_skills = _normalize_skill_list(skill, skills)
-    normalized_model = str(model).strip() if isinstance(model, str) else None
-    normalized_provider = str(provider).strip() if isinstance(provider, str) else None
+    normalized_model, normalized_provider = _resolve_cron_model_fields(model, provider)
     normalized_base_url = str(base_url).strip().rstrip("/") if isinstance(base_url, str) else None
-    normalized_model = normalized_model or None
-    normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
@@ -639,6 +709,13 @@ def create_job(
             "no_agent=True requires a script — with no agent and no script "
             "there is nothing for the job to run."
         )
+
+    validate_cron_agent_model(
+        normalized_model,
+        normalized_provider,
+        normalized_base_url,
+        no_agent=normalized_no_agent,
+    )
 
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
@@ -790,6 +867,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             updated["skills"] = normalized_skills
             updated["skill"] = normalized_skills[0] if normalized_skills else None
 
+        if "model" in updates or "provider" in updates:
+            resolved_model, resolved_provider = _resolve_cron_model_fields(
+                updated.get("model"),
+                updated.get("provider"),
+            )
+            if "model" in updates:
+                updated["model"] = resolved_model
+            if "provider" in updates:
+                updated["provider"] = resolved_provider
+
         if schedule_changed:
             updated_schedule = updated["schedule"]
             # The API may pass schedule as a raw string (e.g. "every 10m")
@@ -807,6 +894,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
             updated["next_run_at"] = compute_next_run(updated["schedule"])
+
+        post_model, post_provider = resolve_job_model_override(updated)
+        validate_cron_agent_model(
+            post_model,
+            post_provider,
+            updated.get("base_url"),
+            no_agent=bool(updated.get("no_agent")),
+        )
 
         jobs[i] = updated
         save_jobs(jobs)

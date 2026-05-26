@@ -132,6 +132,38 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+
+def assert_minimum_agent_context(
+    model: str,
+    *,
+    provider: str = "",
+    base_url: str = "",
+    config_context_length: int | None = None,
+) -> int:
+    """Validate that *model* meets Hermes' minimum context requirement.
+
+    Returns the resolved context length.  Raises ``ValueError`` with a
+    user-facing message when the model is below ``MINIMUM_CONTEXT_LENGTH``.
+    """
+    model_text = str(model or "").strip()
+    if not model_text:
+        return 0
+    ctx = get_model_context_length(
+        model_text,
+        base_url=base_url or "",
+        provider=provider or "",
+        config_context_length=config_context_length,
+    )
+    if ctx < MINIMUM_CONTEXT_LENGTH:
+        raise ValueError(
+            f"Model {model_text!r} has a context window of {ctx:,} tokens, "
+            f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+            f"by Hermes Agent. Choose a model with at least "
+            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context."
+        )
+    return ctx
+
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.

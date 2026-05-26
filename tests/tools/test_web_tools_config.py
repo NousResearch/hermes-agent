@@ -396,6 +396,15 @@ class TestBackendSelection:
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
 
+    def test_config_custom_registered_backend(self):
+        """web.backend=<plugin> → custom registry provider is accepted."""
+        from tools.web_tools import _get_backend
+
+        fake_provider = MagicMock()
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "kagi"}), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider):
+            assert _get_backend() == "kagi"
+
 
 class TestParallelClientConfig:
     """Test suite for Parallel client initialization."""
@@ -679,6 +688,43 @@ class TestCheckWebApiKey:
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
+
+    def test_registry_backend_satisfies_configured_availability(self):
+        """A configured third-party provider can expose web tools."""
+        from tools.web_tools import check_web_api_key
+
+        fake_provider = MagicMock()
+        fake_provider.is_available.return_value = True
+
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "kagi"}), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider):
+            assert check_web_api_key() is True
+
+        fake_provider.is_available.assert_called()
+
+    def test_configured_registry_backend_does_not_fallback_to_legacy(self):
+        """Explicit custom provider config must match an available provider."""
+        from tools.web_tools import check_web_api_key
+
+        fake_provider = MagicMock()
+        fake_provider.is_available.return_value = False
+
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "kagi"}), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            assert check_web_api_key() is False
+
+    def test_is_backend_available_delegates_unknown_names_to_registry(self):
+        """Unknown backend names are probed through the provider registry."""
+        from tools.web_tools import _is_backend_available
+
+        fake_provider = MagicMock()
+        fake_provider.is_available.return_value = True
+
+        with patch("agent.web_search_registry.get_provider", return_value=fake_provider):
+            assert _is_backend_available("kagi") is True
+
+        fake_provider.is_available.assert_called_once_with()
 
 
 def test_web_requires_env_includes_exa_key():

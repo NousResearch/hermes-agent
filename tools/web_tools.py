@@ -130,6 +130,29 @@ def _env_value(name: str) -> str:
     return (val or "").strip()
 
 
+_LEGACY_WEB_BACKENDS = {
+    "exa",
+    "parallel",
+    "firecrawl",
+    "tavily",
+    "searxng",
+    "brave-free",
+    "ddgs",
+    "xai",
+}
+
+_LEGACY_AUTO_DETECT_BACKENDS = (
+    "exa",
+    "parallel",
+    "firecrawl",
+    "tavily",
+    "searxng",
+    "brave-free",
+    "ddgs",
+    "xai",
+)
+
+
 def _has_env(name: str) -> bool:
     return bool(_env_value(name))
 
@@ -141,6 +164,32 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+
+def _get_registered_web_provider(backend: str):
+    """Return a plugin-registered web provider by name, or None."""
+    if not backend:
+        return None
+    try:
+        from agent.web_search_registry import get_provider
+
+        return get_provider(backend)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not consult web provider registry for %s: %s", backend, exc)
+        return None
+
+
+def _registered_web_provider_available(backend: str):
+    """Return provider availability when *backend* is registered, else None."""
+    provider = _get_registered_web_provider(backend)
+    if provider is None:
+        return None
+    try:
+        return bool(provider.is_available())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("web provider %s.is_available() raised %s", backend, exc)
+        return False
+
+
 def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
@@ -149,7 +198,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in _LEGACY_WEB_BACKENDS or _get_registered_web_provider(configured) is not None:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -213,6 +262,11 @@ def _get_capability_backend(capability: str) -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    backend = (backend or "").lower().strip()
+    if backend not in _LEGACY_WEB_BACKENDS:
+        registered_available = _registered_web_provider_available(backend)
+        if registered_available is not None:
+            return registered_available
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -1181,12 +1235,24 @@ async def web_extract_tool(
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
-        return _is_backend_available(configured)
+    cfg = _load_web_config()
+    configured_backends = [
+        str(cfg.get(key) or "").lower().strip()
+        for key in ("backend", "search_backend", "extract_backend")
+    ]
+    configured_backends = [backend for backend in configured_backends if backend]
+    if configured_backends:
+        recognized_configured = False
+        for backend in configured_backends:
+            if backend in _LEGACY_WEB_BACKENDS or _get_registered_web_provider(backend) is not None:
+                recognized_configured = True
+                if _is_backend_available(backend):
+                    return True
+        if recognized_configured:
+            return False
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in _LEGACY_AUTO_DETECT_BACKENDS
     )
 
 

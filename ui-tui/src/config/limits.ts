@@ -1,4 +1,4 @@
-export const LARGE_PASTE = { chars: 8000, lines: 80 }
+export const LARGE_PASTE = { lines: 5 }
 
 export const LIVE_RENDER_MAX_CHARS = 16_000
 export const LIVE_RENDER_MAX_LINES = 240

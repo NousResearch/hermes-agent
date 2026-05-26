@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
 import skills from "../../data/skills.json";
+import meta from "../../data/skills-meta.json";
 import styles from "./styles.module.css";
 
 interface Skill {
@@ -18,9 +19,38 @@ interface Skill {
   envVars?: string[];
   commands?: string[];
   docsPath?: string;
+  identifier?: string;
+  installCmd?: string;
 }
 
 const allSkills: Skill[] = skills as Skill[];
+
+interface IndexMeta {
+  extractedAt?: string;
+  indexGeneratedAt?: string;
+  totalSkills?: number;
+  externalSource?: string;
+  bySource?: Record<string, number>;
+}
+const indexMeta: IndexMeta = meta as IndexMeta;
+
+function formatRelativeTime(iso?: string): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return null;
+  const now = Date.now();
+  const diffMs = now - then;
+  if (diffMs < 0) return "just now";
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} month${months === 1 ? "" : "s"} ago`;
+}
 
 const CATEGORY_ICONS: Record<string, string> = {
   apple: "\u{f179}",
@@ -95,9 +125,96 @@ const SOURCE_CONFIG: Record<
     border: "rgba(167, 139, 250, 0.2)",
     icon: "\u{25A0}",
   },
+  "skills.sh": {
+    label: "skills.sh",
+    color: "#34d399",
+    bg: "rgba(52, 211, 153, 0.08)",
+    border: "rgba(52, 211, 153, 0.2)",
+    icon: "\u{2734}",
+  },
+  ClawHub: {
+    label: "ClawHub",
+    color: "#f472b6",
+    bg: "rgba(244, 114, 182, 0.08)",
+    border: "rgba(244, 114, 182, 0.2)",
+    icon: "\u{2726}",
+  },
+  "browse.sh": {
+    label: "browse.sh",
+    color: "#22d3ee",
+    bg: "rgba(34, 211, 238, 0.08)",
+    border: "rgba(34, 211, 238, 0.2)",
+    icon: "\u{29BF}",
+  },
+  OpenAI: {
+    label: "OpenAI",
+    color: "#10b981",
+    bg: "rgba(16, 185, 129, 0.08)",
+    border: "rgba(16, 185, 129, 0.2)",
+    icon: "\u{2737}",
+  },
+  HuggingFace: {
+    label: "HuggingFace",
+    color: "#fbbf24",
+    bg: "rgba(251, 191, 36, 0.08)",
+    border: "rgba(251, 191, 36, 0.2)",
+    icon: "\u{1F917}",
+  },
+  VoltAgent: {
+    label: "VoltAgent",
+    color: "#facc15",
+    bg: "rgba(250, 204, 21, 0.08)",
+    border: "rgba(250, 204, 21, 0.2)",
+    icon: "\u{26A1}",
+  },
+  GitHub: {
+    label: "GitHub",
+    color: "#94a3b8",
+    bg: "rgba(148, 163, 184, 0.08)",
+    border: "rgba(148, 163, 184, 0.2)",
+    icon: "\u{2756}",
+  },
+  "Well-Known": {
+    label: "Well-Known",
+    color: "#818cf8",
+    bg: "rgba(129, 140, 248, 0.08)",
+    border: "rgba(129, 140, 248, 0.2)",
+    icon: "\u{2756}",
+  },
+  gstack: {
+    label: "gstack",
+    color: "#fb923c",
+    bg: "rgba(251, 146, 60, 0.08)",
+    border: "rgba(251, 146, 60, 0.2)",
+    icon: "\u{2756}",
+  },
+  MiniMax: {
+    label: "MiniMax",
+    color: "#f87171",
+    bg: "rgba(248, 113, 113, 0.08)",
+    border: "rgba(248, 113, 113, 0.2)",
+    icon: "\u{2756}",
+  },
 };
 
-const SOURCE_ORDER = ["all", "built-in", "optional", "Anthropic", "LobeHub", "Claude Marketplace"];
+const SOURCE_ORDER = [
+  "all",
+  "built-in",
+  "optional",
+  "Anthropic",
+  "OpenAI",
+  "HuggingFace",
+  "skills.sh",
+  "ClawHub",
+  "browse.sh",
+  "LobeHub",
+  "Claude Marketplace",
+  "VoltAgent",
+  "Well-Known",
+  "GitHub",
+  "gstack",
+  "MiniMax",
+];
 
 function highlightMatch(text: string, query: string): React.ReactNode {
   if (!query || !text) return text;
@@ -250,7 +367,7 @@ function SkillCard({
               </div>
             )}
             <div className={styles.installHint}>
-              <code>hermes skills install {skill.name}</code>
+              <code>{skill.installCmd || `hermes skills install ${skill.name}`}</code>
             </div>
             {skill.docsPath && (
               <a
@@ -398,6 +515,17 @@ export default function SkillsDashboard() {
               <strong className={styles.heroAccent}>{allSkills.length}</strong> skills
               across {sources.length - 1} registries
             </p>
+            {(indexMeta?.indexGeneratedAt || indexMeta?.extractedAt) && (
+              <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
+                Catalog refreshed{" "}
+                <span title={indexMeta.indexGeneratedAt || indexMeta.extractedAt}>
+                  {formatRelativeTime(
+                    indexMeta.indexGeneratedAt || indexMeta.extractedAt,
+                  ) || "recently"}
+                </span>
+                {" "}· auto-rebuilt twice daily
+              </p>
+            )}
 
             <div className={styles.statsRow}>
               <StatCard

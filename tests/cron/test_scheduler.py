@@ -7,9 +7,67 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestPerJobToolsetMcpMerge:
+    """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
+
+    CFG = {
+        "mcp_servers": {
+            "finnhub": {"enabled": True},
+            "playwright": {"enabled": True},
+            "disabled_one": {"enabled": False},
+            "string_enabled": {"enabled": "true"},
+            "not_a_dict": "ignored",
+        }
+    }
+
+    def _enabled_names(self):
+        return {"finnhub", "playwright", "string_enabled"}
+
+    def test_native_only_list_gets_all_enabled_mcp_servers(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "terminal"], self.CFG)
+        assert result[:2] == ["web", "terminal"]
+        assert set(result) == {"web", "terminal"} | self._enabled_names()
+
+    def test_disabled_servers_are_not_added(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], self.CFG)
+        assert "disabled_one" not in result
+
+    def test_explicit_mcp_name_is_treated_as_allowlist(self):
+        # User named one server -> add nothing further.
+        result = _merge_mcp_into_per_job_toolsets(["web", "finnhub"], self.CFG)
+        assert result == ["web", "finnhub"]
+        assert "playwright" not in result
+
+    def test_no_mcp_sentinel_opts_out_and_is_stripped(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "no_mcp"], self.CFG)
+        assert result == ["web"]
+        assert not (set(result) & self._enabled_names())
+
+    def test_no_mcp_config_adds_nothing(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], {})
+        assert result == ["web"]
+
+    def test_no_duplicate_when_listed_name_also_globally_enabled(self):
+        result = _merge_mcp_into_per_job_toolsets(["finnhub", "finnhub"], self.CFG)
+        assert result.count("finnhub") == 2  # input dups preserved, none added
+
+    def test_resolver_uses_merge_for_per_job_lists(self):
+        job = {"enabled_toolsets": ["web", "terminal"]}
+        result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        assert set(result) == {"web", "terminal"} | self._enabled_names()
+
+    def test_resolver_empty_per_job_falls_through_to_platform(self):
+        # No per-job list -> delegates to _get_platform_tools (returns a set
+        # sorted into a list, or None on failure). Just assert it does not
+        # raise and is not the merged per-job shape.
+        job = {"enabled_toolsets": None}
+        result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        assert result is None or isinstance(result, list)
 
 
 class TestResolveOrigin:

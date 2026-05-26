@@ -80,12 +80,59 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     return disabled
 
 
+def _enabled_mcp_server_names(cfg: dict) -> set[str]:
+    """Names of MCP servers that are globally enabled in config.yaml.
+
+    Mirrors the ``enabled_mcp_servers`` computation in
+    ``hermes_cli.tools_config._get_platform_tools`` so cron resolves MCP
+    membership identically to the gateway / CLI platforms.
+    """
+    from utils import is_truthy_value
+
+    mcp_servers = (cfg or {}).get("mcp_servers") or {}
+    return {
+        str(name)
+        for name, server_cfg in mcp_servers.items()
+        if isinstance(server_cfg, dict)
+        and is_truthy_value(server_cfg.get("enabled", True), default=True)
+    }
+
+
+def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]:
+    """Layer enabled MCP servers onto a per-job ``enabled_toolsets`` allowlist.
+
+    A per-job list scopes the *native* toolsets, but on its own it silently
+    drops every MCP server: ``discover_mcp_tools()`` registers the tools into
+    the global registry, yet ``get_tool_definitions(enabled_toolsets=...)``
+    only keeps toolsets named in the list. The agent then rejects every
+    ``mcp_*`` call with "Unknown tool". This restores parity with
+    ``_get_platform_tools`` MCP semantics:
+
+      * ``no_mcp`` sentinel present  -> no MCP servers (sentinel stripped)
+      * one or more MCP server names already listed -> treat as an allowlist,
+        add nothing further (the user named exactly the servers they want)
+      * otherwise -> union in every globally-enabled MCP server
+    """
+    result = [t for t in per_job if t != "no_mcp"]
+    if "no_mcp" in per_job:
+        return result
+    enabled_mcp = _enabled_mcp_server_names(cfg)
+    if set(result) & enabled_mcp:
+        return result
+    for name in sorted(enabled_mcp):
+        if name not in result:
+            result.append(name)
+    return result
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
     Precedence:
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
-       Keeps the agent's job-scoped toolset override intact — #6130.
+       Keeps the agent's job-scoped toolset override intact — #6130. Enabled
+       MCP servers are layered on per ``_merge_mcp_into_per_job_toolsets`` so a
+       native-toolset allowlist does not silently strip MCP tools.
     2. Per-platform ``hermes tools`` config for the ``cron`` platform.
        Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
        so users can gate cron toolsets globally without recreating every job.
@@ -99,7 +146,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """
     per_job = job.get("enabled_toolsets")
     if per_job:
-        return per_job
+        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))

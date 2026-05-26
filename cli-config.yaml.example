@@ -1097,3 +1097,27 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+
+
+# =============================================================================
+# Web Dashboard
+# =============================================================================
+# OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
+# The bundled Nous Portal plugin reads these on startup; settings here are
+# the canonical surface. Each can be overridden by an environment variable:
+#
+#   dashboard.oauth.client_id   <-  HERMES_DASHBOARD_OAUTH_CLIENT_ID
+#   dashboard.oauth.portal_url  <-  HERMES_DASHBOARD_PORTAL_URL
+#
+# Env wins when set to a non-empty value. This is what Fly.io's platform-
+# secret injection uses to push per-deploy client_ids without needing to
+# bake a config.yaml into the image. Empty env values are treated as unset
+# so a provisioned-but-not-populated secret can't shadow a valid entry here.
+#
+# Local dev / on-prem deploys should typically set these via config.yaml
+# (the ~/.hermes/.env file is reserved for API keys and secrets).
+#
+# dashboard:
+#   oauth:
+#     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy
+#     portal_url: ""   # blank → default https://portal.nousresearch.com

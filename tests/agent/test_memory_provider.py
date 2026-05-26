@@ -923,6 +923,52 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("replace", "user", "updated pref")
         assert p.memory_writes == [("replace", "user", "updated pref")]
 
+    def test_holographic_provider_migrates_legacy_memory_files(self, tmp_path, monkeypatch):
+        """Holographic memory backfills current MEMORY.md / USER.md into facts."""
+        from plugins.memory.holographic import HolographicMemoryProvider
+        import hermes_constants
+
+        hermes_home = tmp_path / "home"
+        memory_dir = hermes_home / "memories"
+        memory_dir.mkdir(parents=True)
+        (memory_dir / "USER.md").write_text("User prefers concise updates.\n§\nUser likes Pincher-first work.", encoding="utf-8")
+        (memory_dir / "MEMORY.md").write_text("Project uses pytest.\n§\nTool quirk: ddgs is search-only.", encoding="utf-8")
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: hermes_home)
+
+        provider = HolographicMemoryProvider({"db_path": str(tmp_path / "memory_store.db")})
+        provider.initialize("session-1")
+        assert provider._store is not None
+
+        user_facts = provider._store.list_facts(category="user_pref", min_trust=0.0, limit=10)
+        general_facts = provider._store.list_facts(category="general", min_trust=0.0, limit=10)
+        assert {fact["content"] for fact in user_facts} == {
+            "User prefers concise updates.",
+            "User likes Pincher-first work.",
+        }
+        assert {fact["content"] for fact in general_facts} == {
+            "Project uses pytest.",
+            "Tool quirk: ddgs is search-only.",
+        }
+
+        # Re-initialization is idempotent via MemoryStore.add_fact's UNIQUE content constraint.
+        provider.initialize("session-2")
+        assert provider._store.list_facts(min_trust=0.0, limit=20)
+        assert len(provider._store.list_facts(min_trust=0.0, limit=20)) == 4
+
+    def test_holographic_on_memory_write_mirrors_replacements(self, tmp_path):
+        """The live write hook mirrors both add and replace into fact_store."""
+        from plugins.memory.holographic import HolographicMemoryProvider
+
+        provider = HolographicMemoryProvider({"db_path": str(tmp_path / "memory_store.db")})
+        provider.initialize("session-1")
+        assert provider._store is not None
+        provider.on_memory_write("replace", "user", "User now prefers default Codex over Qwen fallback.")
+
+        facts = provider._store.list_facts(category="user_pref", min_trust=0.0, limit=10)
+        assert [fact["content"] for fact in facts] == [
+            "User now prefers default Codex over Qwen fallback."
+        ]
+
     def test_on_memory_write_remove_not_bridged(self):
         """The bridge intentionally skips 'remove' — only add/replace notify."""
         # This tests the contract that run_agent.py checks:

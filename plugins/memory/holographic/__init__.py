@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -179,6 +180,8 @@ class HolographicMemoryProvider(MemoryProvider):
             hrr_dim=hrr_dim,
         )
         self._session_id = session_id
+        if self._config.get("migrate_legacy_files", True):
+            self._migrate_legacy_memory_files(Path(_hermes_home))
 
     def system_prompt_block(self) -> str:
         if not self._store:
@@ -243,12 +246,60 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
+        if action in {"add", "replace"} and self._store and content:
             try:
                 category = "user_pref" if target == "user" else "general"
-                self._store.add_fact(content, category=category)
+                self._store.add_fact(content, category=category, tags="legacy-memory-write")
             except Exception as e:
                 logger.debug("Holographic memory_write mirror failed: %s", e)
+
+    def _migrate_legacy_memory_files(self, hermes_home: Path) -> None:
+        """Backfill built-in MEMORY.md / USER.md entries into holographic facts.
+
+        The built-in memory files remain the always-on compact prompt source. This
+        migration makes those same entries available to fact_store's search/probe/
+        reason path and relies on MemoryStore.add_fact's content-level UNIQUE
+        constraint for idempotency.
+        """
+        if not self._store:
+            return
+        memory_dir = hermes_home / "memories"
+        sources = (
+            (memory_dir / "USER.md", "user_pref"),
+            (memory_dir / "MEMORY.md", "general"),
+        )
+        migrated = 0
+        for path, category in sources:
+            try:
+                text = path.read_text(encoding="utf-8-sig")
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                logger.debug("Could not read legacy memory file %s: %s", path, exc)
+                continue
+            for entry in self._iter_legacy_memory_entries(text):
+                try:
+                    self._store.add_fact(
+                        entry,
+                        category=category,
+                        tags="legacy-memory-migration",
+                    )
+                    migrated += 1
+                except Exception as exc:
+                    logger.debug("Legacy memory migration failed for %s: %s", path, exc)
+        if migrated:
+            logger.info("Migrated %d legacy memory entries into holographic memory", migrated)
+
+    @staticmethod
+    def _iter_legacy_memory_entries(text: str) -> list[str]:
+        """Return durable fact entries from a built-in memory markdown file."""
+        entries: list[str] = []
+        for raw in re.split(r"\n\s*§\s*\n", text):
+            entry = raw.strip()
+            if not entry:
+                continue
+            entries.append(entry)
+        return entries
 
     def shutdown(self) -> None:
         self._store = None

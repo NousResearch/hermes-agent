@@ -268,7 +268,12 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
     normalized: List[str] = []
     for item in raw_items:
-        text = str(item or "").strip()
+        if not isinstance(item, str):
+            raise TypeError(
+                f"skills items must be strings, got {type(item).__name__}: {item!r}. "
+                "Pass skill names as strings, e.g. skills=['my-skill']."
+            )
+        text = item.strip()
         if text and text not in normalized:
             normalized.append(text)
     return normalized
@@ -466,6 +471,29 @@ def cronjob(
                     )
             elif not prompt and not canonical_skills:
                 return tool_error("create requires either prompt or at least one skill", success=False)
+
+            # Validate repeat type early
+            if repeat is not None:
+                if isinstance(repeat, int):
+                    pass  # valid
+                elif isinstance(repeat, str) and repeat.isdigit():
+                    repeat = int(repeat)
+                else:
+                    return tool_error(
+                        f"repeat must be an integer, got {type(repeat).__name__}: {repeat!r}. "
+                        "Omit for default or pass an integer like 5.",
+                        success=False,
+                    )
+
+            # Validate skills list element types (defense-in-depth)
+            if skills is not None:
+                for i, item in enumerate(skills):
+                    if not isinstance(item, str):
+                        return tool_error(
+                            f"skills items must be strings, got {type(item).__name__}: {item!r}. "
+                            "Pass skill names as strings, e.g. skills=['my-skill'].",
+                            success=False,
+                        )
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:

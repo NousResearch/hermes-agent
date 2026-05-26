@@ -79,7 +79,12 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
 
     normalized: List[str] = []
     for item in raw_items:
-        text = str(item or "").strip()
+        if not isinstance(item, str):
+            raise TypeError(
+                f"skills items must be strings, got {type(item).__name__}: {item!r}. "
+                "Pass skill names as strings, e.g. skills=['my-skill']."
+            )
+        text = item.strip()
         if text and text not in normalized:
             normalized.append(text)
     return normalized
@@ -602,8 +607,18 @@ def create_job(
     parsed_schedule = parse_schedule(schedule)
 
     # Normalize repeat: treat 0 or negative values as None (infinite)
-    if repeat is not None and repeat <= 0:
-        repeat = None
+    if repeat is not None:
+        if isinstance(repeat, int):
+            pass  # valid
+        elif isinstance(repeat, str) and repeat.isdigit():
+            repeat = int(repeat)
+        else:
+            raise ValueError(
+                f"repeat must be an integer, got {type(repeat).__name__}: {repeat!r}. "
+                "Omit for default or pass an integer like 5."
+            )
+        if repeat <= 0:
+            repeat = None
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:

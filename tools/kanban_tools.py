@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
@@ -193,6 +194,449 @@ def _append_kanban_route_telemetry(
         append_event(event_type, surface="kanban_create", status=status, **fields)
     except Exception:
         logger.debug("kanban route telemetry failed", exc_info=True)
+
+
+def _append_kanban_complete_telemetry(
+    event_type: str,
+    *,
+    status: Optional[str] = None,
+    **fields: Any,
+) -> None:
+    """Best-effort metadata-only completion telemetry for Kanban workers."""
+    try:
+        from orchestration_telemetry import append_event
+
+        append_event(event_type, surface="kanban_complete", status=status, **fields)
+    except Exception:
+        logger.debug("kanban complete telemetry failed", exc_info=True)
+
+
+_SENSITIVE_DATA_MARKERS = {
+    "business",
+    "customer",
+    "credential",
+    "credential-adjacent",
+    "finance",
+    "financial",
+    "legal",
+    "pii",
+    "private",
+    "security",
+    "supplier",
+}
+_PUBLIC_OR_FREE_PROVIDERS = {"nous", "openrouter", "copilot"}
+_PREMIUM_QUOTA_PRESSURE_PCT = 85.0
+_DEFAULT_ROUTING_PRESET = "front_door_or_uncertain"
+
+
+def _builtin_model_routing_table() -> dict[str, Any]:
+    """Return fail-safe Kanban model-routing lanes.
+
+    A generated profile-local routing table is preferred when present. The
+    built-in table keeps model_routing deterministic on fresh profiles while
+    preserving the critical privacy/uncertainty default to GPT-5.5.
+    """
+    front = {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "reasoning_effort": "xhigh",
+        "route_key": "openai-codex/gpt-5.5",
+        "quota_mode": "always_premium",
+    }
+    cheap = {
+        "provider": "nous",
+        "model": "deepseek/deepseek-v4-flash:free",
+        "reasoning_effort": "low",
+        "route_key": "nous/deepseek/deepseek-v4-flash:free",
+        "data_classes_allowed": ["public", "trivial"],
+    }
+    pro = {
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro",
+        "reasoning_effort": "xhigh",
+        "route_key": "deepseek/deepseek-v4-pro",
+        "quota_mode": "budget_ok",
+        "budget_route": dict(cheap),
+        "fallback": [_DEFAULT_ROUTING_PRESET],
+    }
+    lanes = {
+        _DEFAULT_ROUTING_PRESET: dict(front),
+        "architecture_design": dict(front),
+        "sensitive_business": dict(front),
+        "synthesis_recommendation": dict(front),
+        "complex_debugging": dict(front),
+        "security_review": dict(front),
+        "bounded_low_risk_delegate": dict(cheap),
+        "verification_leaf": {**cheap, "min_scores": {"coding": 0.60, "data_scan": 0.50}, "fallback": [_DEFAULT_ROUTING_PRESET]},
+        "public_research": {**cheap, "reasoning_effort": "minimal", "fallback": [_DEFAULT_ROUTING_PRESET]},
+        "file_authoring_bounded": {**cheap, "fallback": [_DEFAULT_ROUTING_PRESET]},
+        "simple_config_patch": {**cheap, "fallback": [_DEFAULT_ROUTING_PRESET]},
+        "code_review_quality": {**pro, "reasoning_effort": "medium"},
+        "code_implementation": pro,
+        "vault_curation": {**pro, "reasoning_effort": "low"},
+    }
+    return {
+        "version": 1,
+        "policy": {
+            "uncertainty_bias": "over_resource",
+            "default_uncertain_route": front,
+            "privacy_rule": "sensitive work must not route to public/free providers",
+        },
+        "task_lanes": lanes,
+        "models": [
+            {
+                **front,
+                "benchmark_profile": {"reasoning": 0.90, "coding": 0.85, "data_scan": 0.80, "writing": 0.85},
+                "benchmark_metadata": {"composite_score": 0.90, "confidence": "fallback"},
+            },
+            {
+                **cheap,
+                "benchmark_profile": {"reasoning": 0.65, "coding": 0.68, "data_scan": 0.58, "writing": 0.80},
+                "benchmark_metadata": {"composite_score": 0.70, "confidence": "fallback"},
+            },
+            {
+                **pro,
+                "benchmark_profile": {"reasoning": 0.75, "coding": 0.80, "data_scan": 0.68, "writing": 0.76},
+                "benchmark_metadata": {"composite_score": 0.78, "confidence": "fallback"},
+            },
+        ],
+    }
+
+
+_MODEL_ROUTING_ALIASES = {
+    "architecture": "architecture_design",
+    "architecture/design": "architecture_design",
+    "config_patch": "simple_config_patch",
+    "debugging_complex": "complex_debugging",
+    "file_authoring": "file_authoring_bounded",
+    "implementation": "code_implementation",
+    "implementation_routine": "code_implementation",
+    "research_public": "public_research",
+    "review_security": "security_review",
+    "synthesis": "synthesis_recommendation",
+    "verification": "verification_leaf",
+}
+
+
+def _hermes_home_path() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home())
+    except Exception:
+        return Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+
+
+def _routing_table_path() -> Path:
+    override = os.environ.get("HERMES_MODEL_ROUTING_TABLE")
+    if override:
+        return Path(override).expanduser()
+    return _hermes_home_path() / "state" / "model-routing-table.json"
+
+
+def _route_key(route: dict[str, Any]) -> str:
+    provider = str(route.get("provider") or "").strip()
+    model = str(route.get("model") or "").strip()
+    if route.get("route_key"):
+        return str(route["route_key"])
+    return f"{provider}/{model}" if provider and model else model
+
+
+def _load_model_routing_table() -> tuple[dict[str, Any], str]:
+    table = _builtin_model_routing_table()
+    path = _routing_table_path()
+    source = "builtin"
+    try:
+        if path.exists():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                source = path.name
+                table["version"] = loaded.get("version", table.get("version"))
+                table["updated_at"] = loaded.get("updated_at")
+                if isinstance(loaded.get("policy"), dict):
+                    table["policy"] = {**table.get("policy", {}), **loaded["policy"]}
+                if isinstance(loaded.get("task_lanes"), dict):
+                    table["task_lanes"] = {**table.get("task_lanes", {}), **loaded["task_lanes"]}
+                loaded_models = loaded.get("models") if isinstance(loaded.get("models"), list) else []
+                by_key = {
+                    m.get("route_key") or _route_key(m): m
+                    for m in table.get("models", [])
+                    if isinstance(m, dict)
+                }
+                for model in loaded_models:
+                    if isinstance(model, dict):
+                        by_key[model.get("route_key") or _route_key(model)] = model
+                table["models"] = list(by_key.values())
+    except Exception:
+        logger.debug("failed to load model routing table; using built-in fallback", exc_info=True)
+        source = "builtin-load-error"
+    table["_source"] = source
+    return table, source
+
+
+def _model_for_route(table: dict[str, Any], route: dict[str, Any]) -> Optional[dict[str, Any]]:
+    key = _route_key(route)
+    for model in table.get("models", []):
+        if not isinstance(model, dict):
+            continue
+        if (model.get("route_key") or _route_key(model)) == key:
+            return model
+    return None
+
+
+def _normalize_routing_preset(value: Any, table: dict[str, Any]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return _DEFAULT_ROUTING_PRESET
+    key = text.lower().replace(" ", "_").replace("-", "_")
+    key = _MODEL_ROUTING_ALIASES.get(key, key)
+    lanes = table.get("task_lanes") if isinstance(table.get("task_lanes"), dict) else {}
+    if key in lanes:
+        return key
+    if key in {"verification_leaf", "public_research", "file_authoring_bounded", "simple_config_patch"} and "bounded_low_risk_delegate" in lanes:
+        return "bounded_low_risk_delegate"
+    return _DEFAULT_ROUTING_PRESET
+
+
+def _lane_route(table: dict[str, Any], preset: str) -> dict[str, Any]:
+    lanes = table.get("task_lanes") if isinstance(table.get("task_lanes"), dict) else {}
+    lane = lanes.get(preset)
+    if not isinstance(lane, dict):
+        lane = lanes.get(_DEFAULT_ROUTING_PRESET)
+    if not isinstance(lane, dict):
+        lane = table.get("policy", {}).get("default_uncertain_route")
+    return dict(lane or _builtin_model_routing_table()["task_lanes"][_DEFAULT_ROUTING_PRESET])
+
+
+def _is_sensitive_data(value: Any) -> bool:
+    text = str(value or "").casefold()
+    if not text:
+        return False
+    return any(marker in text for marker in _SENSITIVE_DATA_MARKERS)
+
+
+def _is_public_or_free_route(route: dict[str, Any], model_meta: Optional[dict[str, Any]] = None) -> bool:
+    provider = str(route.get("provider") or "").casefold()
+    model = str(route.get("model") or "").casefold()
+    route_key = str(route.get("route_key") or "").casefold()
+    cost_class = str((model_meta or {}).get("cost_class") or route.get("cost_class") or "").casefold()
+    allowed = (model_meta or route).get("data_classes_allowed")
+    public_only = isinstance(allowed, list) and allowed and {str(x).casefold() for x in allowed}.issubset({"public", "trivial"})
+    return (
+        provider in _PUBLIC_OR_FREE_PROVIDERS
+        or ":free" in model
+        or ":free" in route_key
+        or "free" in cost_class
+        or "public" in cost_class
+        or public_only
+    )
+
+
+def _extract_percentage(value: Any) -> Optional[float]:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pct <= 1.0:
+        pct *= 100.0
+    return max(0.0, min(100.0, round(pct, 2)))
+
+
+def _estimate_quota_usage() -> Optional[dict[str, Any]]:
+    """Return a best-effort premium quota usage estimate.
+
+    Future reset timestamps are metadata only; active routing pressure comes
+    from explicit usage percentages.
+    """
+    candidates: list[Path] = []
+    native_dir = os.environ.get("HERMES_NATIVE_QUOTA_STATE_DIR")
+    if native_dir:
+        root = Path(native_dir).expanduser()
+        if root.exists():
+            candidates.extend(sorted(root.glob("provider-native-quota*.json"), key=lambda p: p.stat().st_mtime, reverse=True))
+    fallback = _hermes_home_path() / "state" / "quota-usage.json"
+    if fallback.exists():
+        candidates.append(fallback)
+
+    def walk(obj: Any, source: str, window: Optional[str] = None) -> Optional[dict[str, Any]]:
+        if isinstance(obj, dict):
+            for key in ("usage_pct", "used_pct", "used_percentage", "usage_percentage", "percent_used"):
+                if key in obj:
+                    pct = _extract_percentage(obj.get(key))
+                    if pct is not None:
+                        return {
+                            "usage_pct": pct,
+                            "source": source,
+                            **({"window": window} if window else {}),
+                            **({"resets_at": obj.get("resets_at")} if obj.get("resets_at") else {}),
+                            **({"fetched_at": obj.get("fetched_at")} if obj.get("fetched_at") else {}),
+                        }
+            windows = obj.get("windows")
+            if isinstance(windows, dict):
+                best: Optional[dict[str, Any]] = None
+                for name, child in windows.items():
+                    found = walk(child, source, str(name))
+                    if found and (best is None or found["usage_pct"] > best["usage_pct"]):
+                        best = found
+                if best:
+                    return best
+            for child in obj.values():
+                found = walk(child, source, window)
+                if found:
+                    return found
+        elif isinstance(obj, list):
+            for child in obj:
+                found = walk(child, source, window)
+                if found:
+                    return found
+        return None
+
+    for path in candidates:
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+            found = walk(parsed, path.name)
+            if found:
+                return found
+        except Exception:
+            logger.debug("failed to read quota estimate %s", path, exc_info=True)
+    return None
+
+
+def _benchmark_metadata(table: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
+    model_meta = _model_for_route(table, route) or {}
+    bm = model_meta.get("benchmark_metadata") if isinstance(model_meta.get("benchmark_metadata"), dict) else {}
+    return {
+        "benchmark_source": table.get("_source", "unknown"),
+        "benchmark_composite": bm.get("composite_score", route.get("score")),
+        "benchmark_confidence": bm.get("confidence", route.get("confidence")),
+    }
+
+
+def _benchmark_gate_failure(table: dict[str, Any], route: dict[str, Any], lane: dict[str, Any]) -> Optional[str]:
+    min_scores = lane.get("min_scores")
+    if not isinstance(min_scores, dict) or not min_scores:
+        return None
+    model_meta = _model_for_route(table, route)
+    profile = model_meta.get("benchmark_profile") if isinstance(model_meta, dict) else None
+    if not isinstance(profile, dict):
+        return "benchmark_failed:missing_profile"
+    for dim, required in min_scores.items():
+        try:
+            required_f = float(required)
+            actual = profile.get(dim)
+            actual_f = float(actual) if actual is not None else None
+        except (TypeError, ValueError):
+            continue
+        if actual_f is None or actual_f < required_f:
+            return f"benchmark_failed:{dim}<{required_f:.2f}"
+    return None
+
+
+def _fallback_route(table: dict[str, Any], lane: dict[str, Any]) -> dict[str, Any]:
+    fallbacks = lane.get("fallback")
+    if isinstance(fallbacks, str):
+        fallbacks = [fallbacks]
+    if isinstance(fallbacks, list):
+        for item in fallbacks:
+            preset = _normalize_routing_preset(item, table)
+            route = _lane_route(table, preset)
+            if route:
+                return route
+    return _lane_route(table, _DEFAULT_ROUTING_PRESET)
+
+
+def _resolve_model_routing(args: dict[str, Any], explicit_model_override: Any) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    explicit = str(explicit_model_override).strip() if explicit_model_override is not None else ""
+    requested = args.get("model_routing")
+    if explicit and not requested:
+        return explicit, None
+    if not requested:
+        return explicit or None, None
+
+    table, source = _load_model_routing_table()
+    requested_text = str(requested).strip()
+    preset = _normalize_routing_preset(requested_text, table)
+    lane = _lane_route(table, preset)
+    route = dict(lane)
+    fallback_applied = False
+    fallback_reason: Optional[str] = None
+    privacy_escalated = False
+    quota_gate_triggered = False
+    quota_usage_pct: Optional[float] = None
+
+    if explicit:
+        route["model"] = explicit
+        route.setdefault("route_key", explicit)
+        fallback_reason = "explicit_model_override"
+    else:
+        model_meta = _model_for_route(table, route)
+        if _is_sensitive_data(args.get("data_sensitivity")) and _is_public_or_free_route(route, model_meta):
+            route = _lane_route(table, _DEFAULT_ROUTING_PRESET)
+            privacy_escalated = True
+            fallback_applied = True
+            fallback_reason = "privacy_sensitive_data"
+        else:
+            gate_failure = _benchmark_gate_failure(table, route, lane)
+            if gate_failure:
+                route = _fallback_route(table, lane)
+                fallback_applied = True
+                fallback_reason = gate_failure
+
+            quota = _estimate_quota_usage()
+            if quota:
+                quota_usage_pct = quota.get("usage_pct")
+            quota_policy = str(args.get("quota_policy") or "").casefold()
+            verifiability = str(args.get("verifiability") or "").casefold()
+            data_sensitive = _is_sensitive_data(args.get("data_sensitivity"))
+            if (
+                not fallback_applied
+                and quota_usage_pct is not None
+                and quota_usage_pct >= _PREMIUM_QUOTA_PRESSURE_PCT
+                and str(lane.get("quota_mode") or "").casefold() == "budget_ok"
+                and isinstance(lane.get("budget_route"), dict)
+                and quota_policy in {"downgrade_verifiable", "auto", "budget", "preserve_premium"}
+                and verifiability in {"high", "deterministic", "tests", "readback", "verified"}
+                and not data_sensitive
+            ):
+                route = dict(lane["budget_route"])
+                quota_gate_triggered = True
+                fallback_reason = "quota_budget_route"
+
+    model_override = str(route.get("model") or "").strip() or None
+    meta = _benchmark_metadata(table, route)
+    decision = {
+        "preset": requested_text or preset,
+        "resolved_preset": preset,
+        "provider": route.get("provider"),
+        "model": route.get("model"),
+        "reasoning_effort": route.get("reasoning_effort"),
+        "route_key": route.get("route_key") or _route_key(route),
+        "model_override": model_override,
+        "fallback_applied": fallback_applied,
+        "fallback_reason": fallback_reason,
+        "privacy_escalated": privacy_escalated,
+        "quota_gate_triggered": quota_gate_triggered,
+        "quota_usage_pct": quota_usage_pct,
+        "benchmark_source": source,
+        **meta,
+    }
+    return model_override, {k: v for k, v in decision.items() if v is not None}
+
+
+def _current_model_used() -> Optional[dict[str, str]]:
+    provider = os.environ.get("HERMES_PROVIDER") or os.environ.get("HERMES_MODEL_PROVIDER")
+    model = os.environ.get("HERMES_MODEL")
+    effort = os.environ.get("HERMES_REASONING_EFFORT")
+    result = {
+        k: v.strip()
+        for k, v in {
+            "provider": provider,
+            "model": model,
+            "reasoning_effort": effort,
+        }.items()
+        if isinstance(v, str) and v.strip()
+    }
+    return result or None
 
 
 def _normalize_profile(value: Any) -> Optional[str]:
@@ -479,6 +923,10 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    model_used = _current_model_used()
+    if model_used:
+        metadata = dict(metadata or {})
+        metadata.setdefault("model_used", model_used)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
@@ -516,6 +964,20 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
+            _append_kanban_complete_telemetry(
+                "route.completed",
+                status="completed",
+                route={
+                    "chosen_route": "kanban_complete",
+                    "provider": (model_used or {}).get("provider"),
+                    "model": (model_used or {}).get("model"),
+                    "reasoning_effort": (model_used or {}).get("reasoning_effort"),
+                },
+                tree={"task_id": tid, "run_id": run.id if run else None},
+                summary=summary or "",
+                result=result or "",
+                metadata=metadata or {},
+            )
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()
@@ -682,7 +1144,10 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
-    model_override = args.get("model_override")
+    model_override, model_routing_decision = _resolve_model_routing(
+        args,
+        args.get("model_override"),
+    )
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -735,8 +1200,14 @@ def _handle_create(args: dict, **kw) -> str:
                     "assignee_profile": str(assignee),
                     "initial_status": str(initial_status),
                     "workspace_kind": str(workspace_kind),
+                    "model_routing_preset": (model_routing_decision or {}).get("preset"),
+                    "provider": (model_routing_decision or {}).get("provider"),
+                    "model": (model_routing_decision or {}).get("model"),
+                    "reasoning_effort": (model_routing_decision or {}).get("reasoning_effort"),
+                    "model_override": model_override,
                     "explicit_override": bool(skill_list or max_runtime_seconds or workspace_path),
                 },
+                routing_decision=model_routing_decision,
                 tree={
                     "task_id": new_tid,
                     "parent_task_ids": list(parents),
@@ -761,6 +1232,8 @@ def _handle_create(args: dict, **kw) -> str:
             return _ok(
                 task_id=new_tid,
                 status=task_status,
+                model_override=model_override,
+                model_routing=model_routing_decision,
             )
         finally:
             conn.close()
@@ -1224,6 +1697,41 @@ KANBAN_CREATE_SCHEMA = {
                     "default model for this task. Examples: 'deepseek/deepseek-v4-flash:free', "
                     "'deepseek-v4-pro', 'gpt-5.5'. The dispatcher passes it to the worker "
                     "as the model argument. Leave empty to use the profile default."
+                ),
+            },
+            "model_routing": {
+                "type": "string",
+                "description": (
+                    "Optional routing preset to resolve model_override from the "
+                    "profile model-routing table, e.g. 'verification_leaf', "
+                    "'public_research', 'code_implementation', or "
+                    "'front_door_or_uncertain'. Explicit model_override wins."
+                ),
+            },
+            "task_category": {
+                "type": "string",
+                "description": "Optional route classification/category for telemetry and quota policy.",
+            },
+            "data_sensitivity": {
+                "type": "string",
+                "description": (
+                    "Data sensitivity classification such as public, private, "
+                    "business, PII, security, finance, legal, or credential-adjacent. "
+                    "Sensitive classes are never routed to public/free providers."
+                ),
+            },
+            "verifiability": {
+                "type": "string",
+                "description": (
+                    "How independently verifiable the task output is (high, low, "
+                    "tests, readback, deterministic). Used for quota-pressure downgrades."
+                ),
+            },
+            "quota_policy": {
+                "type": "string",
+                "description": (
+                    "Optional quota behavior hint, e.g. 'downgrade_verifiable' "
+                    "to allow cheap budget routes for high-verifiability public work."
                 ),
             },
             "board": _board_schema_prop(),

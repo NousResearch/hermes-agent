@@ -59,6 +59,7 @@ _CONTENT_KEYS = {
     "goal",
     "message",
     "messages",
+    "metadata",
     "output",
     "preview",
     "prompt",

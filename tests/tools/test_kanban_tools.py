@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -810,6 +812,254 @@ def test_create_blank_model_override_uses_profile_default(worker_env):
     assert task.model_override is None
 
 
+
+def _write_model_routing_table(home: str | os.PathLike[str], *, weak_flash: bool = False) -> Path:
+    state = Path(home) / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / "model-routing-table.json"
+    flash_coding = 0.58 if weak_flash else 0.68
+    payload = {
+        "version": 1,
+        "updated_at": "2026-05-26T00:00:00Z",
+        "policy": {
+            "uncertainty_bias": "over_resource",
+            "default_uncertain_route": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "xhigh",
+                "route_key": "openai-codex/gpt-5.5",
+            },
+            "privacy_rule": "sensitive work must not route to public/free providers",
+            "stale_after_days": 45,
+        },
+        "task_lanes": {
+            "front_door_or_uncertain": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "xhigh",
+                "route_key": "openai-codex/gpt-5.5",
+                "min_scores": {"reasoning": 0.85, "writing": 0.80},
+                "quota_mode": "always_premium",
+            },
+            "verification_leaf": {
+                "provider": "nous",
+                "model": "deepseek/deepseek-v4-flash:free",
+                "reasoning_effort": "low",
+                "route_key": "nous/deepseek/deepseek-v4-flash:free",
+                "min_scores": {"coding": 0.60, "data_scan": 0.50},
+                "quota_mode": "normal",
+                "fallback": ["front_door_or_uncertain"],
+                "data_classes_allowed": ["public", "trivial"],
+            },
+            "code_implementation": {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "reasoning_effort": "xhigh",
+                "route_key": "deepseek/deepseek-v4-pro",
+                "min_scores": {"coding": 0.75, "reasoning": 0.70},
+                "quota_mode": "budget_ok",
+                "budget_route": {
+                    "provider": "nous",
+                    "model": "deepseek/deepseek-v4-flash:free",
+                    "reasoning_effort": "low",
+                    "route_key": "nous/deepseek/deepseek-v4-flash:free",
+                },
+                "fallback": ["front_door_or_uncertain"],
+            },
+            "security_review": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "reasoning_effort": "xhigh",
+                "route_key": "openai-codex/gpt-5.5",
+                "min_scores": {"reasoning": 0.85, "coding": 0.75},
+                "quota_mode": "always_premium",
+            },
+        },
+        "models": [
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "route_key": "openai-codex/gpt-5.5",
+                "benchmark_profile": {"reasoning": 0.93, "coding": 0.86, "data_scan": 0.80, "writing": 0.89},
+                "benchmark_metadata": {"composite_score": 0.91, "confidence": "high"},
+            },
+            {
+                "provider": "nous",
+                "model": "deepseek/deepseek-v4-flash:free",
+                "route_key": "nous/deepseek/deepseek-v4-flash:free",
+                "benchmark_profile": {"reasoning": 0.61, "coding": flash_coding, "data_scan": 0.59, "writing": 0.82},
+                "benchmark_metadata": {"composite_score": 0.70, "confidence": "medium"},
+            },
+            {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "route_key": "deepseek/deepseek-v4-pro",
+                "benchmark_profile": {"reasoning": 0.72, "coding": 0.80, "data_scan": 0.67, "writing": 0.76},
+                "benchmark_metadata": {"composite_score": 0.78, "confidence": "medium"},
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _write_quota_usage(home: str | os.PathLike[str], *, pct: float) -> Path:
+    state = Path(home) / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    path = state / "quota-usage.json"
+    path.write_text(json.dumps({
+        "usage_pct": pct,
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "source": "test-estimate",
+    }), encoding="utf-8")
+    return path
+
+
+def _write_native_quota_snapshot(state_dir: str | os.PathLike[str], *, pct: float) -> Path:
+    path = Path(state_dir) / "provider-native-quota-openai-codex-test.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    reset = datetime.now(timezone.utc) + timedelta(hours=1)
+    fetched = datetime.now(timezone.utc)
+    path.write_text(json.dumps({
+        "provider": "openai-codex",
+        "fetched_at": fetched.isoformat().replace("+00:00", "Z"),
+        "windows": {
+            "five_hour": {
+                "used_percentage": pct,
+                "resets_at": reset.isoformat().replace("+00:00", "Z"),
+            }
+        },
+    }), encoding="utf-8")
+    return path
+
+
+def test_create_schema_exposes_model_routing_classification_fields():
+    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
+
+    props = KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert "model_routing" in props
+    assert props["model_routing"]["type"] == "string"
+    assert "task_category" in props
+    assert "data_sensitivity" in props
+    assert "verifiability" in props
+    assert "quota_policy" in props
+
+
+def test_create_model_routing_preset_persists_override_and_logs_decision(monkeypatch, worker_env):
+    home = os.environ["HERMES_HOME"]
+    _write_model_routing_table(home)
+    monkeypatch.setenv("HERMES_ORCHESTRATION_TELEMETRY", "1")
+
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "run tests",
+        "assignee": "qa",
+        "model_routing": "verification_leaf",
+        "data_sensitivity": "public",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["model_override"] == "deepseek/deepseek-v4-flash:free"
+    assert d["model_routing"]["preset"] == "verification_leaf"
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, d["task_id"])
+    assert task is not None
+    assert task.model_override == "deepseek/deepseek-v4-flash:free"
+
+    from orchestration_telemetry import read_events, telemetry_path
+    events = read_events(path=telemetry_path())
+    event = events[-1]
+    event_text = json.dumps(event, sort_keys=True)
+    assert event["event_type"] == "route.selected"
+    assert event["route"]["model_routing_preset"] == "verification_leaf"
+    assert event["route"]["provider"] == "nous"
+    assert event["route"]["model"] == "deepseek/deepseek-v4-flash:free"
+    assert event["route"]["model_override"] == "deepseek/deepseek-v4-flash:free"
+    assert event["routing_decision"]["benchmark_source"] == "model-routing-table.json"
+    assert event["routing_decision"]["benchmark_composite"] == 0.70
+    assert event["gates"]["privacy"] == "title/body/idempotency_key excluded from telemetry"
+    assert "run tests" not in event_text
+
+
+def test_create_model_routing_privacy_escalates_sensitive_public_lane(worker_env):
+    _write_model_routing_table(os.environ["HERMES_HOME"])
+
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "security review",
+        "assignee": "analyst",
+        "model_routing": "verification_leaf",
+        "data_sensitivity": "security",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["model_override"] == "gpt-5.5"
+    assert d["model_routing"]["privacy_escalated"] is True
+    assert d["model_routing"]["provider"] == "openai-codex"
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, d["task_id"])
+    assert task is not None
+    assert task.model_override == "gpt-5.5"
+
+
+def test_create_model_routing_quota_uses_budget_route_for_budget_ok_lane(monkeypatch, worker_env):
+    home = os.environ["HERMES_HOME"]
+    _write_model_routing_table(home)
+    _write_quota_usage(home, pct=91.0)
+    monkeypatch.setenv("HERMES_NATIVE_QUOTA_STATE_DIR", str(Path(home) / "state"))
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "straightforward implementation",
+        "assignee": "engineer",
+        "model_routing": "code_implementation",
+        "task_category": "implementation/routine",
+        "data_sensitivity": "public",
+        "verifiability": "high",
+        "quota_policy": "downgrade_verifiable",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["model_override"] == "deepseek/deepseek-v4-flash:free"
+    assert d["model_routing"]["quota_gate_triggered"] is True
+    assert d["model_routing"]["quota_usage_pct"] == 91.0
+    assert d["model_routing"]["provider"] == "nous"
+
+
+def test_create_model_routing_reads_native_quota_snapshot(monkeypatch, worker_env):
+    home = os.environ["HERMES_HOME"]
+    state = Path(home) / "state"
+    _write_native_quota_snapshot(state, pct=88.0)
+    monkeypatch.setenv("HERMES_NATIVE_QUOTA_STATE_DIR", str(state))
+
+    from tools.kanban_tools import _estimate_quota_usage
+    quota = _estimate_quota_usage()
+    assert quota is not None
+    assert quota["usage_pct"] == 88.0
+    assert quota["source"].startswith("provider-native-quota")
+
+
+def test_create_model_routing_benchmark_failure_escalates_to_front_door(worker_env):
+    _write_model_routing_table(os.environ["HERMES_HOME"], weak_flash=True)
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "run tests",
+        "assignee": "qa",
+        "model_routing": "verification_leaf",
+        "data_sensitivity": "public",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["model_override"] == "gpt-5.5"
+    assert d["model_routing"]["fallback_applied"] is True
+    assert d["model_routing"]["fallback_reason"].startswith("benchmark_failed")
+
+
 def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``
@@ -1119,6 +1369,57 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert len(hb) == 1
     finally:
         conn.close()
+
+
+
+def test_complete_stamps_model_used_on_run_and_completed_event(monkeypatch, worker_env):
+    monkeypatch.setenv("HERMES_PROVIDER", "openai-codex")
+    monkeypatch.setenv("HERMES_MODEL", "gpt-5.5")
+    monkeypatch.setenv("HERMES_REASONING_EFFORT", "xhigh")
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    comp = json.loads(kt._handle_complete({
+        "summary": "done with model metadata",
+        "metadata": {"tests_run": 1},
+    }))
+    assert comp["ok"]
+
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, worker_env)
+        completed = [e for e in kb.list_events(conn, worker_env) if e.kind == "completed"][-1]
+
+    assert run.metadata["tests_run"] == 1
+    assert run.metadata["model_used"] == {
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "reasoning_effort": "xhigh",
+    }
+    assert completed.payload["model_used"] == run.metadata["model_used"]
+
+
+def test_complete_logs_route_completed_telemetry_without_summary(monkeypatch, worker_env):
+    monkeypatch.setenv("HERMES_ORCHESTRATION_TELEMETRY", "1")
+    monkeypatch.setenv("HERMES_PROVIDER", "nous")
+    monkeypatch.setenv("HERMES_MODEL", "deepseek/deepseek-v4-flash:free")
+    monkeypatch.setenv("HERMES_REASONING_EFFORT", "low")
+    from tools import kanban_tools as kt
+
+    comp = json.loads(kt._handle_complete({
+        "summary": "secret-ish implementation details should not be logged",
+    }))
+    assert comp["ok"]
+
+    from orchestration_telemetry import read_events, telemetry_path
+    events = read_events(path=telemetry_path())
+    event = events[-1]
+    event_text = json.dumps(event, sort_keys=True)
+    assert event["event_type"] == "route.completed"
+    assert event["surface"] == "kanban_complete"
+    assert event["route"]["model"] == "deepseek/deepseek-v4-flash:free"
+    assert event["route"]["provider"] == "nous"
+    assert "secret-ish" not in event_text
+    assert event["privacy"]["content_fields_excluded"] == ["metadata", "result", "summary"]
 
 
 # ---------------------------------------------------------------------------

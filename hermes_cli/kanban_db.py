@@ -3270,6 +3270,15 @@ def complete_task(
         # ``metadata["artifacts"]`` — we promote it onto the event so
         # consumers don't have to fetch the run row to find it.
         if isinstance(metadata, dict):
+            md_model_used = metadata.get("model_used")
+            if isinstance(md_model_used, dict):
+                cleaned_model_used = {
+                    str(k): str(v)
+                    for k, v in md_model_used.items()
+                    if k in {"provider", "model", "reasoning_effort"} and v
+                }
+                if cleaned_model_used:
+                    completed_payload["model_used"] = cleaned_model_used
             md_artifacts = metadata.get("artifacts")
             if isinstance(md_artifacts, (list, tuple)):
                 cleaned_artifacts = [

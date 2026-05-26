@@ -21,7 +21,7 @@ try:
     import fcntl
 except ImportError:
     fcntl = None  # Windows — file locking skipped
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable
 
 from hermes_constants import get_hermes_home
@@ -102,6 +102,42 @@ def _sha256_file(path: str) -> str:
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+
+
+def _validate_sync_back_member(member: tarfile.TarInfo) -> None:
+    """Reject archive members that would be unsafe to extract without a filter."""
+    normalized_name = member.name.replace("\\", "/")
+    posix_path = PurePosixPath(normalized_name)
+    windows_path = PureWindowsPath(member.name)
+
+    if posix_path.is_absolute() or windows_path.is_absolute():
+        raise tarfile.TarError(f"unsafe sync_back tar member path: {member.name}")
+    if ".." in posix_path.parts:
+        raise tarfile.TarError(f"unsafe sync_back tar member path: {member.name}")
+    if not (member.isfile() or member.isdir()):
+        raise tarfile.TarError(
+            f"unsupported sync_back tar member type: {member.name}"
+        )
+
+
+def _extract_sync_back_tar(tar: tarfile.TarFile, dest: str) -> None:
+    """Extract a sync_back tar using ``filter='data'`` when available."""
+    try:
+        tar.extractall(dest, filter="data")  # type: ignore[call-arg]
+        return
+    except TypeError:
+        logger.debug(
+            "sync_back: tarfile filter='data' unavailable, using validated fallback"
+        )
+
+    for member in tar.getmembers():
+        _validate_sync_back_member(member)
+    tar.extractall(dest)
+
+
+def _normalize_remote_path(remote_path: str) -> PurePosixPath:
+    """Normalize remote container paths independently of host path rules."""
+    return PurePosixPath(remote_path.replace("\\", "/"))
 
 
 class FileSyncManager:
@@ -306,13 +342,15 @@ class FileSyncManager:
         except Exception:
             file_mapping = []
 
-        with tempfile.NamedTemporaryFile(suffix=".tar") as tf:
-            self._bulk_download_fn(Path(tf.name))
+        fd, temp_tar = tempfile.mkstemp(suffix=".tar")
+        os.close(fd)
+        try:
+            self._bulk_download_fn(Path(temp_tar))
 
             # Defensive size cap: a misbehaving sandbox could produce an
             # arbitrarily large tar. Refuse to extract if it exceeds the cap.
             try:
-                tar_size = os.path.getsize(tf.name)
+                tar_size = os.path.getsize(temp_tar)
             except OSError:
                 tar_size = 0
             if tar_size > _SYNC_BACK_MAX_BYTES:
@@ -323,14 +361,14 @@ class FileSyncManager:
                 return
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
-                with tarfile.open(tf.name) as tar:
-                    tar.extractall(staging, filter="data")
+                with tarfile.open(temp_tar) as tar:
+                    _extract_sync_back_tar(tar, staging)
 
                 applied = 0
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
-                        rel = os.path.relpath(staged_file, staging)
+                        rel = os.path.relpath(staged_file, staging).replace("\\", "/")
                         remote_path = "/" + rel
 
                         pushed_hash = self._pushed_hashes.get(remote_path)
@@ -372,13 +410,19 @@ class FileSyncManager:
                     logger.info("sync_back: applied %d changed file(s)", applied)
                 else:
                     logger.debug("sync_back: no remote changes detected")
+        finally:
+            try:
+                os.unlink(temp_tar)
+            except OSError:
+                pass
 
     def _resolve_host_path(self, remote_path: str,
                            file_mapping: list[tuple[str, str]] | None = None) -> str | None:
         """Find the host path for a known remote path from the file mapping."""
         mapping = file_mapping if file_mapping is not None else []
+        normalized_remote = _normalize_remote_path(remote_path)
         for host, remote in mapping:
-            if remote == remote_path:
+            if _normalize_remote_path(remote) == normalized_remote:
                 return host
         return None
 
@@ -393,10 +437,12 @@ class FileSyncManager:
         ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
         """
         mapping = file_mapping if file_mapping is not None else []
+        normalized_remote = _normalize_remote_path(remote_path)
         for host, remote in mapping:
-            remote_dir = str(Path(remote).parent)
-            if remote_path.startswith(remote_dir + "/"):
-                host_dir = str(Path(host).parent)
-                suffix = remote_path[len(remote_dir):]
-                return host_dir + suffix
+            remote_dir = _normalize_remote_path(remote).parent
+            try:
+                suffix = normalized_remote.relative_to(remote_dir)
+            except ValueError:
+                continue
+            return str(Path(host).parent.joinpath(*suffix.parts))
         return None

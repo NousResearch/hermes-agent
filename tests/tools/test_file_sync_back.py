@@ -6,12 +6,16 @@ import os
 import signal
 import tarfile
 import time
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-fcntl = pytest.importorskip("fcntl")
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from tools.environments.file_sync import (
     FileSyncManager,
@@ -52,6 +56,31 @@ def _write_file(path: Path, content: bytes) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return str(path)
+
+
+def _make_python311_extractall(original_extractall):
+    """Emulate Python 3.11 rejecting the ``filter=`` keyword."""
+    def python311_extractall(
+        self, path=".", members=None, *, numeric_owner=False, filter=None
+    ):
+        if filter is not None:
+            raise TypeError(
+                "TarFile.extractall() got an unexpected keyword argument 'filter'"
+            )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Python 3.14 will, by default, filter extracted tar archives",
+                category=DeprecationWarning,
+            )
+            return original_extractall(
+                self,
+                path=path,
+                members=members,
+                numeric_owner=numeric_owner,
+            )
+
+    return python311_extractall
 
 
 def _make_manager(
@@ -153,6 +182,34 @@ class TestSyncBackAppliesChanged:
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         assert host_file.read_bytes() == remote_content
+
+    @patch("tools.environments.file_sync._sleep")
+    def test_sync_back_applies_changed_file_with_python311_extractall(self, mock_sleep, tmp_path):
+        """Fallback extraction should preserve sync_back on Python 3.11."""
+        host_file = tmp_path / "host" / "skill.py"
+        original_content = b"print('v1')"
+        _write_file(host_file, original_content)
+
+        remote_path = "/root/.hermes/skill.py"
+        mapping = [(str(host_file), remote_path)]
+
+        remote_content = b"print('v2 - edited on remote')"
+        download_fn = _make_download_fn({
+            "root/.hermes/skill.py": remote_content,
+        })
+
+        mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
+        mgr._pushed_hashes[remote_path] = _sha256_bytes(original_content)
+
+        with patch.object(
+            tarfile.TarFile,
+            "extractall",
+            _make_python311_extractall(tarfile.TarFile.extractall),
+        ):
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        assert host_file.read_bytes() == remote_content
+        assert mock_sleep.call_count == 0
 
 
 class TestSyncBackNewRemoteFile:
@@ -256,6 +313,45 @@ class TestSyncBackRetries:
         assert any("all" in r.message.lower() and "failed" in r.message.lower() for r in caplog.records)
 
 
+class TestSyncBackTarSafety:
+    """Fallback extraction should still reject unsafe archive members."""
+
+    @patch("tools.environments.file_sync._sleep")
+    def test_sync_back_python311_fallback_rejects_unsafe_member(
+        self, mock_sleep, tmp_path, caplog
+    ):
+        host_file = _write_file(tmp_path / "host_skill.md", b"original")
+        remote_path = "/root/.hermes/skill.md"
+
+        def download(dest: Path):
+            with tarfile.open(dest, "w") as tar:
+                info = tarfile.TarInfo("../../escape.txt")
+                data = b"pwned"
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+
+        mgr = _make_manager(
+            tmp_path,
+            file_mapping=[(host_file, remote_path)],
+            bulk_download_fn=download,
+        )
+        mgr._pushed_hashes[remote_path] = _sha256_bytes(b"original")
+
+        escape_path = tmp_path / "escape.txt"
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            with patch.object(
+                tarfile.TarFile,
+                "extractall",
+                _make_python311_extractall(tarfile.TarFile.extractall),
+            ):
+                mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        assert mock_sleep.call_count == _SYNC_BACK_MAX_RETRIES - 1
+        assert Path(host_file).read_bytes() == b"original"
+        assert not escape_path.exists()
+        assert any("unsafe" in r.message.lower() for r in caplog.records)
+
+
 class TestPushedHashesPopulated:
     """_pushed_hashes is populated during sync() and cleared on delete."""
 
@@ -308,6 +404,7 @@ class TestPushedHashesPopulated:
 class TestSyncBackFileLock:
     """Verify that fcntl.flock is used during sync-back."""
 
+    @pytest.mark.skipif(fcntl is None, reason="fcntl unavailable on Windows")
     @patch("tools.environments.file_sync.fcntl.flock")
     def test_sync_back_file_lock(self, mock_flock, tmp_path):
         download_fn = _make_download_fn({})

@@ -108,3 +108,46 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     assert snapshot.windows[1].label == "Weekly"
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
     assert calls[0]["headers"]["Authorization"] == "Bearer pooled-token"
+
+
+def test_codex_usage_treats_wham_used_percent_as_used_not_remaining(monkeypatch):
+    """ChatGPT UI says "left"; /wham/usage.used_percent is already used."""
+    payload = {
+        "plan_type": "plus",
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 85,
+                "reset_at": 1779846359,
+            },
+            "secondary_window": {
+                "used_percent": 14,
+                "reset_at": 1780230796,
+            },
+        },
+        "credits": {"has_credits": False},
+    }
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, payload),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("explicit auth should be used")),
+    )
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="live-agent-token",
+    )
+
+    assert snapshot is not None
+    assert [window.used_percent for window in snapshot.windows] == [85, 14]
+    rendered = "\n".join(account_usage.render_account_usage_lines(snapshot, markdown=True))
+    assert "85% used" in rendered
+    assert "14% used" in rendered
+    assert "15% used" not in rendered
+    assert "86% used" not in rendered

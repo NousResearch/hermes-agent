@@ -7819,6 +7819,30 @@ class HermesCLI:
         except Exception:
             return False
 
+    def _should_handle_agents_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /agents (alias /tasks) should be dispatched inline while busy.
+
+        Same constraint as /steer: while the agent is running, ``process_loop`` is
+        blocked inside ``self.chat()`` and never drains ``_pending_input`` until
+        the run completes.  /agents is a read-only introspection command — the
+        whole point is to monitor in-flight delegations — so queueing makes the
+        command effectively silent during exactly the window it exists for.
+        ``_handle_agents_command`` only reads ``process_registry`` plus a couple
+        of CLI attributes and emits through ``_cprint`` (which routes through
+        ``run_in_terminal``), so it's safe to dispatch on the UI thread.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "agents")
+        except Exception:
+            return False
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -12700,6 +12724,17 @@ class HermesCLI:
                 # post-run next-turn message — defeating mid-run injection.
                 # agent.steer() is thread-safe (holds _pending_steer_lock).
                 if self._should_handle_steer_command_inline(text, has_images=has_images):
+                    self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
+                    return
+
+                # Handle /agents (alias /tasks) immediately when the agent is
+                # running — same deadlock as /steer above.  This command is the
+                # in-flight delegation monitor, so queueing it for after the run
+                # makes it useless: the user sees "nothing happens" until the
+                # whole delegation chain finishes.  See #32477.
+                if self._should_handle_agents_command_inline(text, has_images=has_images):
+                    _cprint(f"\n⚙️  {text}")
                     self.process_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return

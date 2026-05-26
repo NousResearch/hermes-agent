@@ -902,7 +902,11 @@ SKILL_MANAGE_SCHEMA = {
     "description": (
         "Manage skills (create, update, delete). Skills are your procedural "
         "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
+        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live. "
+        "This tool runs in the Hermes host process and is the only correct "
+        "way to create or modify Hermes skills; do not use terminal, write_file, "
+        "or patch for skill files because those tools may target an SSH, "
+        "container, or project filesystem instead of the host-side skills directory.\n\n"
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "

@@ -901,6 +901,8 @@ Do NOT use grep/rg/find to search — use search_files instead.
 Do NOT use ls to list directories — use search_files(target='files') instead.
 Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
+Do NOT create or edit Hermes skills with terminal — use skill_manage instead.
+Terminal may be connected to SSH/container backends, while skill_manage writes the host-side Hermes skills directory.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
 Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.

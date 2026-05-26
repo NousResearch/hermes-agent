@@ -232,3 +232,12 @@ class TestForegroundMaxTimeoutConstant:
         timeout_desc = TERMINAL_SCHEMA["parameters"]["properties"]["timeout"]["description"]
         assert str(FOREGROUND_MAX_TIMEOUT) in timeout_desc
         assert "background=true" in timeout_desc
+
+    def test_schema_defers_skill_files_to_skill_manage(self):
+        """Terminal guidance should not steer skill writes to remote backends."""
+        from tools.terminal_tool import TERMINAL_SCHEMA
+
+        description = TERMINAL_SCHEMA["description"]
+        assert "Do NOT create or edit Hermes skills with terminal" in description
+        assert "skill_manage" in description
+        assert "SSH/container backends" in description

@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -287,8 +288,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
 
         try:
             if secret:
-                import getpass
-                value = getpass.getpass(f"  {name}: ").strip()
+                value = masked_secret_prompt(f"  {name}: ").strip()
             else:
                 value = input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):

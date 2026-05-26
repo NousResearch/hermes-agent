@@ -42,13 +42,13 @@ Routing happens through OpenRouter under the hood, so model availability and fai
 
 ### The Nous Tool Gateway
 
-The same subscription unlocks the [Tool Gateway](/docs/user-guide/features/tool-gateway), which routes Hermes Agent's tool calls through Nous-managed infrastructure. Five backends, one login:
+The same subscription unlocks the [Tool Gateway](/user-guide/features/tool-gateway), which routes Hermes Agent's tool calls through Nous-managed infrastructure. Five backends, one login:
 
 | Tool | Partner | What it does |
 |------|---------|--------------|
 | **Web search & extract** | Firecrawl | Agent-grade search and full-page extraction. No Firecrawl API key, no rate limit babysitting. |
 | **Image generation** | FAL | Nine models under one endpoint: FLUX 2 Klein 9B, FLUX 2 Pro, Z-Image Turbo, Nano Banana Pro (Gemini 3 Pro Image), GPT Image 1.5, GPT Image 2, Ideogram V3, Recraft V4 Pro, Qwen Image. |
-| **Text-to-speech** | OpenAI TTS | High-quality TTS without a separate OpenAI key. Enables [voice mode](/docs/user-guide/features/voice-mode) across messaging platforms. |
+| **Text-to-speech** | OpenAI TTS | High-quality TTS without a separate OpenAI key. Enables [voice mode](/user-guide/features/voice-mode) across messaging platforms. |
 | **Cloud browser automation** | Browser Use | Headless Chromium sessions for `browser_navigate`, `browser_click`, `browser_type`, `browser_vision`. No Browserbase account needed. |
 | **Cloud terminal sandbox** | Modal | Serverless terminal sandboxes for code execution (optional add-on). |
 
@@ -66,13 +66,13 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 ### Cross-platform parity
 
-[Native Windows](/docs/user-guide/windows-native) is still early beta, and per-tool API key setup is its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
+[Native Windows](/user-guide/windows-native) is still early beta, and per-tool API key setup is its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
 
 ## A note on Hermes 4
 
 Nous Research's own **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is available through the Portal at heavily discounted rates. These are **frontier hybrid-reasoning chat models** — strong at math, science, instruction following, schema adherence, roleplay, and long-form writing.
 
-They are **not recommended for use inside Hermes Agent**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for [Nous Chat](https://chat.nousresearch.com), for research workflows, or via the [subscription proxy](/docs/user-guide/features/subscription-proxy) from other tooling — but for agent work, pick a frontier agentic model from the catalog instead:
+They are **not recommended for use inside Hermes Agent**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for [Nous Chat](https://chat.nousresearch.com), for research workflows, or via the [subscription proxy](/user-guide/features/subscription-proxy) from other tooling — but for agent work, pick a frontier agentic model from the catalog instead:
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # best general-purpose agentic model
@@ -115,11 +115,11 @@ Your existing providers stay configured. You can switch between them with `/mode
 
 ### Headless / SSH / remote setup
 
-OAuth needs a browser, but the loopback callback runs on the machine where Hermes is running. For remote hosts, see [OAuth over SSH / Remote Hosts](/docs/guides/oauth-over-ssh) — the same patterns work for the Portal as for any other OAuth-based provider (`ssh -L` port forwarding, `--manual-paste` for browser-only environments like Cloud Shell / Codespaces).
+OAuth needs a browser, but the loopback callback runs on the machine where Hermes is running. For remote hosts, see [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) — the same patterns work for the Portal as for any other OAuth-based provider (`ssh -L` port forwarding, `--manual-paste` for browser-only environments like Cloud Shell / Codespaces).
 
 ### Profile setup
 
-If you use [Hermes profiles](/docs/user-guide/profiles), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically — no need to repeat the OAuth flow per profile.
+If you use [Hermes profiles](/user-guide/profiles), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically — no need to repeat the OAuth flow per profile.
 
 ## Using the Portal day-to-day
 
@@ -184,7 +184,7 @@ hermes tools
 # → TTS              → "Nous Subscription"
 ```
 
-The Tool Gateway is opt-in per tool, not all-or-nothing. See the [Tool Gateway docs](/docs/user-guide/features/tool-gateway) for the full per-tool configuration matrix.
+The Tool Gateway is opt-in per tool, not all-or-nothing. See the [Tool Gateway docs](/user-guide/features/tool-gateway) for the full per-tool configuration matrix.
 
 ### Subscription management
 
@@ -260,9 +260,9 @@ Check `hermes portal status` first — if it shows you're using a different prov
 
 ## See also
 
-- **[Tool Gateway](/docs/user-guide/features/tool-gateway)** — Full details on every gateway tool, per-tool config, and pricing
-- **[Subscription proxy](/docs/user-guide/features/subscription-proxy)** — Use your Portal subscription from non-Hermes tools (other agents, scripts, third-party clients)
-- **[Voice mode](/docs/user-guide/features/voice-mode)** — Voice conversations using the Portal's OpenAI TTS
-- **[AI Providers](/docs/integrations/providers)** — Full provider catalog if you want to compare alternatives
-- **[OAuth over SSH](/docs/guides/oauth-over-ssh)** — Login from remote hosts or browser-only environments
-- **[Profiles](/docs/user-guide/profiles)** — Multiple Hermes configurations sharing one Portal login
+- **[Tool Gateway](/user-guide/features/tool-gateway)** — Full details on every gateway tool, per-tool config, and pricing
+- **[Subscription proxy](/user-guide/features/subscription-proxy)** — Use your Portal subscription from non-Hermes tools (other agents, scripts, third-party clients)
+- **[Voice mode](/user-guide/features/voice-mode)** — Voice conversations using the Portal's OpenAI TTS
+- **[AI Providers](/integrations/providers)** — Full provider catalog if you want to compare alternatives
+- **[OAuth over SSH](/guides/oauth-over-ssh)** — Login from remote hosts or browser-only environments
+- **[Profiles](/user-guide/profiles)** — Multiple Hermes configurations sharing one Portal login

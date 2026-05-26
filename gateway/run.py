@@ -932,6 +932,27 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+        # Gateway settings (media delivery allowlist + recency trust)
+        _gateway_cfg = _cfg.get("gateway", {})
+        if isinstance(_gateway_cfg, dict):
+            _allow_dirs = _gateway_cfg.get("media_delivery_allow_dirs")
+            if _allow_dirs:
+                if isinstance(_allow_dirs, str):
+                    _allow_dirs_str = _allow_dirs
+                elif isinstance(_allow_dirs, (list, tuple)):
+                    _allow_dirs_str = os.pathsep.join(str(p) for p in _allow_dirs if p)
+                else:
+                    _allow_dirs_str = ""
+                if _allow_dirs_str:
+                    os.environ["HERMES_MEDIA_ALLOW_DIRS"] = _allow_dirs_str
+            _trust_recent = _gateway_cfg.get("trust_recent_files")
+            if _trust_recent is not None:
+                os.environ["HERMES_MEDIA_TRUST_RECENT_FILES"] = (
+                    "1" if _trust_recent else "0"
+                )
+            _trust_recent_seconds = _gateway_cfg.get("trust_recent_files_seconds")
+            if _trust_recent_seconds is not None:
+                os.environ["HERMES_MEDIA_TRUST_RECENT_SECONDS"] = str(_trust_recent_seconds)
     except Exception as _bridge_err:
         # Previously this was silent (`except Exception: pass`), which
         # hid partial bridge failures and let .env defaults shadow
@@ -3013,6 +3034,44 @@ class GatewayRunner:
             if agent is not _AGENT_PENDING_SENTINEL
         }
 
+    @staticmethod
+    def _agent_has_active_subagents(running_agent: Any) -> bool:
+        """Return True when *running_agent* is currently driving subagents
+        via the ``delegate_task`` tool.
+
+        Background (#30170): ``AIAgent.interrupt()`` cascades through the
+        parent's ``_active_children`` list and calls ``interrupt()`` on
+        every child synchronously, which aborts in-flight subagent work
+        and produces a fallback cascade with no actionable signal.
+        Demoting ``busy_input_mode='interrupt'`` to ``queue`` semantics
+        whenever this helper returns True protects subagent work from
+        conversational follow-ups while leaving the explicit ``/stop``
+        path (which goes through ``_interrupt_and_clear_session``)
+        untouched. Safe-by-default: returns False on any attribute or
+        lock error so a missing/broken parent never blocks the existing
+        interrupt path.
+        """
+        if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
+            return False
+        children = getattr(running_agent, "_active_children", None)
+        # AIAgent always initialises this as a concrete list (see
+        # agent/agent_init.py). Reject anything that isn't a real
+        # collection — this guards against ``MagicMock()._active_children``
+        # auto-creating a truthy stub in tests and triggering the demotion
+        # against an agent that doesn't actually have subagents.
+        if not isinstance(children, (list, tuple, set)):
+            return False
+        if not children:
+            return False
+        lock = getattr(running_agent, "_active_children_lock", None)
+        try:
+            if lock is not None:
+                with lock:
+                    return bool(children)
+            return bool(children)
+        except Exception:
+            return False
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
@@ -3084,6 +3143,25 @@ class GatewayRunner:
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
+        # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
+        # to every entry in the parent's ``_active_children`` list and
+        # aborts in-flight ``delegate_task`` work. Demote ``interrupt``
+        # to ``queue`` when the parent is currently driving subagents so
+        # a conversational follow-up doesn't destroy minutes of subagent
+        # work. Explicit ``/stop`` and ``/new`` slash commands go through
+        # ``_interrupt_and_clear_session`` and are unaffected — the
+        # operator still has a way to force-cancel everything.
+        demoted_for_subagents = (
+            effective_mode == "interrupt"
+            and self._agent_has_active_subagents(running_agent)
+        )
+        if demoted_for_subagents:
+            logger.info(
+                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
+                "because the running agent has active subagents (#30170)",
+                session_key,
+            )
+            effective_mode = "queue"
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -3170,6 +3248,14 @@ class GatewayRunner:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
+            )
+        elif is_queue_mode and demoted_for_subagents:
+            # #30170 — explain the demotion so the user knows their
+            # follow-up didn't accidentally kill the subagent and
+            # discovers `/stop` as the explicit escape hatch.
+            message = (
+                f"⏳ Subagent working{status_detail} — your message is queued for "
+                f"when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
             message = (
@@ -6208,7 +6294,7 @@ class GatewayRunner:
                 check_wecom_callback_requirements,
             )
             if not check_wecom_callback_requirements():
-                logger.warning("WeComCallback: aiohttp/httpx not installed")
+                logger.warning("WeComCallback: aiohttp/httpx/defusedxml not installed")
                 return None
             return WecomCallbackAdapter(config)
 
@@ -7223,6 +7309,22 @@ class GatewayRunner:
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
+            # #30170 — Subagent protection (PRIORITY path). Same rationale
+            # as ``_handle_active_session_busy_message``: an interrupt
+            # cascades through ``_active_children`` and aborts in-flight
+            # delegate_task work. Demote to queue semantics when the
+            # parent is currently driving subagents so a conversational
+            # follow-up doesn't destroy minutes of subagent progress.
+            # /stop reaches its dedicated handler above, so the operator
+            # still has a clean escape hatch.
+            if self._agent_has_active_subagents(running_agent):
+                logger.info(
+                    "PRIORITY interrupt demoted to queue for session %s "
+                    "because the running agent has active subagents (#30170)",
+                    _quick_key,
+                )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
@@ -8692,6 +8794,7 @@ class GatewayRunner:
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
+                self.session_store._save()
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
@@ -10333,7 +10436,21 @@ class GatewayRunner:
                         cfg = yaml.safe_load(f) or {}
                 else:
                     cfg = {}
-                model_cfg = cfg.setdefault("model", {})
+                # Coerce scalar/None ``model:`` into a dict before mutation —
+                # otherwise ``cfg.setdefault("model", {})`` returns the existing
+                # scalar and the next assignment raises
+                # ``TypeError: 'str' object does not support item assignment``.
+                # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
+                # string) instead of the proper nested ``model: {default: ...}``.
+                raw_model = cfg.get("model")
+                if isinstance(raw_model, dict):
+                    model_cfg = raw_model
+                elif isinstance(raw_model, str) and raw_model.strip():
+                    model_cfg = {"default": raw_model.strip()}
+                    cfg["model"] = model_cfg
+                else:
+                    model_cfg = {}
+                    cfg["model"] = model_cfg
                 model_cfg["default"] = result.new_model
                 model_cfg["provider"] = result.target_provider
                 if result.base_url:
@@ -12743,6 +12860,16 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
+        # Strip common outer brackets/quotes users may type literally from the
+        # usage hint (e.g. ``/resume <abc123>``). Mirrors the CLI behavior.
+        if len(name) >= 2 and (
+            (name[0] == "<" and name[-1] == ">")
+            or (name[0] == "[" and name[-1] == "]")
+            or (name[0] == '"' and name[-1] == '"')
+            or (name[0] == "'" and name[-1] == "'")
+        ):
+            name = name[1:-1].strip()
+
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
             sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
@@ -12780,7 +12907,13 @@ class GatewayRunner:
             target_id = target.get("id")
             name = target.get("title") or name
         else:
-            target_id = self._session_db.resolve_session_by_title(name)
+            # Try direct session ID lookup first (so `/resume <session_id>`
+            # works in the gateway, not just `/resume <title>`).
+            session = self._session_db.get_session(name)
+            if session:
+                target_id = session["id"]
+            else:
+                target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.

@@ -170,6 +170,8 @@ def _dashboard_inline_script() -> str:
 (function(){
   var KEY='acta:read:v1';
   var COOKIE='acta_read_v1';
+  var ACTION_KEY='acta:actions:v1';
+  var ACTION_COOKIE='acta_actions_v1';
   function readFromCookie(){
     var parts=(document.cookie||'').split('; ');
     for(var i=0;i<parts.length;i++){
@@ -182,9 +184,24 @@ def _dashboard_inline_script() -> str:
   function writeToCookie(value){
     try{ document.cookie=COOKIE+'='+encodeURIComponent(JSON.stringify(value))+'; Max-Age=31536000; Path=/; SameSite=Lax; Secure'; }catch(e){}
   }
+  function readActionsFromCookie(){
+    var parts=(document.cookie||'').split('; ');
+    for(var i=0;i<parts.length;i++){
+      if(parts[i].indexOf(ACTION_COOKIE+'=')===0){
+        try{ return JSON.parse(decodeURIComponent(parts[i].slice(ACTION_COOKIE.length+1)))||{}; }catch(e){ return {}; }
+      }
+    }
+    return {};
+  }
+  function writeActionsToCookie(value){
+    try{ document.cookie=ACTION_COOKIE+'='+encodeURIComponent(JSON.stringify(value))+'; Max-Age=31536000; Path=/; SameSite=Lax; Secure'; }catch(e){}
+  }
   var state=readFromCookie();
   try{ state=JSON.parse(localStorage.getItem(KEY)||JSON.stringify(state)||'{}')||state||{}; }catch(e){ state=state||{}; }
   function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} writeToCookie(state); }
+  var actionState=readActionsFromCookie();
+  try{ actionState=JSON.parse(localStorage.getItem(ACTION_KEY)||JSON.stringify(actionState)||'{}')||actionState||{}; }catch(e){ actionState=actionState||{}; }
+  function saveActions(){ try{ localStorage.setItem(ACTION_KEY, JSON.stringify(actionState)); }catch(e){} writeActionsToCookie(actionState); }
   var pull=document.querySelector('.pull-refresh');
   var mobileBar=document.querySelector('.mobilebar');
   var topNav=document.querySelector('.date-nav');
@@ -252,6 +269,22 @@ def _dashboard_inline_script() -> str:
       button.setAttribute('aria-label', (isRead?'Mark briefing unread: ':'Mark briefing read: ')+title);
     }
   }
+  function applyActionState(el){
+    var k=el.dataset.readKey || '';
+    if(!k) return;
+    var record=actionState[k] || {};
+    el.classList.toggle('saved', !!record.saved);
+    el.classList.toggle('dismissed', !!record.dismissed);
+    el.classList.toggle('read-later', !!record.later);
+    var labels={save:{on:'Save',off:'Saved'},dismiss:{on:'Dismiss',off:'Dismissed'},later:{on:'Read later',off:'Later'}};
+    el.querySelectorAll('.state-toggle[data-state-action]').forEach(function(button){
+      var action=button.dataset.stateAction || '';
+      if(!labels[action]) return;
+      var active=(action==='save' && !!record.saved) || (action==='dismiss' && !!record.dismissed) || (action==='later' && !!record.later);
+      button.textContent=active?labels[action].off:labels[action].on;
+      button.setAttribute('aria-pressed', active?'true':'false');
+    });
+  }
   function updateUnreadCount(){
     var unread=0;
     document.querySelectorAll('.readable[data-read-key]').forEach(function(row){ if(!row.classList.contains('read')) unread++; });
@@ -272,6 +305,7 @@ def _dashboard_inline_script() -> str:
   }
   document.querySelectorAll('.readable').forEach(function(el){
     apply(el);
+    applyActionState(el);
     var sx=0, sy=0, dx=0, swiping=false, didSwipe=false, active=false;
     function openReadable(){
       setRead(el, true);
@@ -321,6 +355,22 @@ def _dashboard_inline_script() -> str:
         setRead(el, el.classList.contains('read') ? false : true);
       });
     }
+    el.querySelectorAll('.state-toggle[data-state-action]').forEach(function(button){
+      button.addEventListener('click', function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        var k=el.dataset.readKey || '';
+        if(!k) return;
+        var action=button.dataset.stateAction || '';
+        var record=actionState[k] || {};
+        if(action==='save') record.saved=!record.saved;
+        if(action==='dismiss') record.dismissed=!record.dismissed;
+        if(action==='later') record.later=!record.later;
+        actionState[k]=record;
+        saveActions();
+        applyActionState(el);
+      });
+    });
     el.querySelectorAll('.row-open-overlay').forEach(function(anchor){
       anchor.addEventListener('click', function(){
         setRead(el, true);
@@ -360,6 +410,7 @@ class ActaReleaseNote:
     date: str
     title: str
     shipped: list[str]
+    decisions: list[str]
     needs_input: list[str]
 
 
@@ -415,6 +466,15 @@ def _safe_text(value: object) -> str:
 def _read_key(item: CronSituationItem) -> str:
     latest = item.latest_time.isoformat() if item.latest_time else "never"
     return f"{item.job_id}:{latest}"
+
+
+def _render_action_state_buttons(title: str) -> str:
+    safe_title = html.escape(title, quote=True)
+    return (
+        f'<button class="state-toggle save-toggle" type="button" data-state-action="save" aria-label="Save briefing: {safe_title}">Save</button>'
+        f'<button class="state-toggle dismiss-toggle" type="button" data-state-action="dismiss" aria-label="Dismiss briefing: {safe_title}">Dismiss</button>'
+        f'<button class="state-toggle later-toggle" type="button" data-state-action="later" aria-label="Read later: {safe_title}">Read later</button>'
+    )
 
 
 _RELEASE_TRACE_RE = re.compile(
@@ -480,9 +540,10 @@ def load_release_log(path: Path) -> list[ActaReleaseNote]:
             title = "Acta production release"
         day = re.sub(r"[^0-9-]+", "", str(entry.get("date") or ""))[:10]
         shipped = _clean_release_lines(entry.get("shipped"), limit=4)
+        decisions = _clean_release_lines(entry.get("decisions"), limit=3)
         needs_input = _clean_release_lines(entry.get("needs_input") or entry.get("needsInput"), limit=3)
-        if title and (shipped or needs_input):
-            releases.append(ActaReleaseNote(date=day, title=title, shipped=shipped, needs_input=needs_input))
+        if title and (shipped or decisions or needs_input):
+            releases.append(ActaReleaseNote(date=day, title=title, shipped=shipped, decisions=decisions, needs_input=needs_input))
     releases.sort(key=lambda release: release.date or "", reverse=True)
     return releases[:8]
 
@@ -1171,6 +1232,7 @@ def render_dashboard(
             if href
             else ""
         )
+        action_toggles = _render_action_state_buttons(item.name) if href else ""
         if href:
             readable_feed_count += 1
         rows_by_lane[lane].append(
@@ -1186,7 +1248,7 @@ def render_dashboard(
       <div class="row-kicker"><span class="attention-chip">{_safe_text(attention)}</span><span class="lane-chip" title="{_safe_text(_feed_lane_label(lane))}">{_safe_text(topic)}</span>{read_state}<span class="trace-only confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(age)}</span><span class="trace-only">{_safe_text(status_label)}</span><span class="trace-only">{_safe_text(item.schedule or "manual")}</span></div>
       <div class="source-line trace-only">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}</div>
     </div>
-    <span class="card-actions">{read_toggle}{f'<span class="open-label">{open_label}</span>' if open_label else ''}{ask_link}</span>
+    <span class="card-actions">{read_toggle}{action_toggles}{f'<span class="open-label">{open_label}</span>' if open_label else ''}{ask_link}</span>
   </div>
 </section>"""
         )
@@ -1279,6 +1341,7 @@ def render_dashboard(
         if lead_href
         else ""
     )
+    lead_action_toggles = _render_action_state_buttons(lead_item.name) if lead_item and lead_href else ""
     lead_open_hint = "open" if lead_href else ""
     lead_row_meta = "signed" if lead_href else ""
     initial_unread_count = readable_feed_count + (1 if lead_href else 0)
@@ -1308,14 +1371,16 @@ def render_dashboard(
     release_html = ""
     if latest_release:
         shipped_html = "".join(f"<li>{html.escape(line)}</li>" for line in latest_release.shipped[:4])
+        decisions_html = "".join(f"<li>{html.escape(line)}</li>" for line in latest_release.decisions[:3])
         input_html = "".join(f"<li>{html.escape(line)}</li>" for line in latest_release.needs_input[:3])
         release_html = f"""
         <section class="release-digest">
           <div><h2>Release TLDR</h2><span>{html.escape(latest_release.date or 'latest')}</span></div>
           <b>{html.escape(latest_release.title)}</b>
           <ul>{shipped_html}</ul>
-        </section>
-        {f'<section class="release-digest input-digest"><div><h2>Needs your input</h2><span>{html.escape(latest_release.date or "latest")}</span></div><ul>{input_html}</ul></section>' if input_html else ''}"""
+          {f'<h3>Decisions locked</h3><ul>{decisions_html}</ul>' if decisions_html else ''}
+          {f'<h3>Needs your input</h3><ul>{input_html}</ul>' if input_html else ''}
+        </section>"""
     page_label = "ARCHIVE DAY" if archive_day else "TODAY"
     brief_heading = "Day Brief" if archive_day else "Today’s Brief"
     primary_href = f"/archive/{selected_date.isoformat()}" if archive_day and selected_date else "/"
@@ -1394,13 +1459,13 @@ a {{ color:inherit; }}
 .row-open-overlay {{ position:absolute; inset:0; z-index:1; border:0; text-decoration:none; }}
 .lead .ask-label, .brief-row .ask-label, .card-actions, .lead > :not(.row-open-overlay), .brief-row > .swipe-content {{ position:relative; z-index:2; }}
 .lead > :not(.row-open-overlay), .brief-row > .swipe-content {{ pointer-events:none; }}
-.lead .ask-label, .brief-row .ask-label, .card-actions, .read-toggle {{ pointer-events:auto; }}
+.lead .ask-label, .brief-row .ask-label, .card-actions, .read-toggle, .state-toggle {{ pointer-events:auto; }}
 .row-open-overlay:focus-visible {{ outline:2px solid var(--acta2); outline-offset:2px; box-shadow:0 0 0 4px rgba(35,167,255,.14),0 10px 32px rgba(0,0,0,.26); border-radius:inherit; }}
 .label {{ grid-column:1/-1; display:flex; align-items:center; flex-wrap:wrap; gap:6px; font:750 10px var(--mono); letter-spacing:.09em; color:var(--muted); text-transform:uppercase; }}
 h1 {{ grid-column:1; font:720 clamp(18px,2.3vw,24px)/1.08 var(--ui); letter-spacing:-.025em; margin:0; color:#fff; max-width:980px; }}
 .lead p {{ grid-column:1; font:13px/1.32 var(--ui); color:var(--body); max-width:940px; margin:0; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }}
 .meta {{ grid-column:1/-1; display:flex; flex-wrap:wrap; gap:6px; margin-top:0; color:var(--muted); font:10px var(--mono); text-transform:uppercase; }}
-.meta span, .meta .ask-label, .meta .read-toggle {{ border:1px solid var(--line-soft); border-radius:999px; padding:3px 6px; background:rgba(255,255,255,.026); }}
+.meta span, .meta .ask-label, .meta .read-toggle, .meta .state-toggle {{ border:1px solid var(--line-soft); border-radius:999px; padding:3px 6px; background:rgba(255,255,255,.026); }}
 .meta b {{ color:#fff; font-weight:700; }}
 .output-summary {{ grid-column:2; grid-row:2 / span 2; align-self:center; justify-self:end; display:grid; gap:2px; min-width:58px; text-align:right; font:10px var(--mono); color:var(--muted); text-transform:uppercase; }}
 .output-summary b {{ color:#fff; font:760 16px/1 var(--ui); }}
@@ -1444,10 +1509,15 @@ h2 {{ font:680 15px/1.12 var(--ui); margin:0 0 2px; color:#fff; letter-spacing:-
 .brief-copy p {{ font:13px/1.25 var(--ui); color:var(--body); margin:0; max-width:860px; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }}
 .source-line {{ display:block; font:9.5px var(--mono); color:var(--faint); margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .open-label {{ justify-self:end; align-self:center; border:1px solid var(--line-soft); border-radius:999px; color:#fff; padding:5px 7px; font:10px var(--mono); background:rgba(255,255,255,.035); }}
-.read-toggle {{ appearance:none; -webkit-appearance:none; border:1px solid rgba(35,167,255,.38); border-radius:999px; color:#fff; background:rgba(35,167,255,.13); padding:5px 7px; font:760 10px var(--mono); line-height:1; cursor:pointer; white-space:nowrap; text-transform:none; }}
-.read-toggle:focus-visible {{ outline:2px solid var(--acta2); outline-offset:2px; }}
+.read-toggle, .state-toggle {{ appearance:none; -webkit-appearance:none; border:1px solid rgba(35,167,255,.38); border-radius:999px; color:#fff; background:rgba(35,167,255,.13); padding:5px 7px; font:760 10px var(--mono); line-height:1; cursor:pointer; white-space:nowrap; text-transform:none; }}
+.read-toggle:focus-visible, .state-toggle:focus-visible {{ outline:2px solid var(--acta2); outline-offset:2px; }}
+.state-toggle {{ border-color:var(--line-soft); color:var(--muted); background:rgba(255,255,255,.026); }}
+.state-toggle[aria-pressed='true'], .readable.saved .save-toggle, .readable.dismissed .dismiss-toggle, .readable.read-later .later-toggle {{ color:#fff; border-color:rgba(117,108,255,.46); background:rgba(117,108,255,.20); }}
+.readable.dismissed {{ opacity:.54; }}
+.readable.read-later {{ box-shadow:inset 0 0 0 1px rgba(35,167,255,.22); }}
+.readable.saved {{ box-shadow:inset 0 0 0 1px rgba(117,108,255,.24); }}
 .readable.read .read-toggle {{ color:var(--muted); border-color:var(--line-soft); background:rgba(255,255,255,.026); }}
-.card-actions {{ justify-self:end; align-self:center; display:flex; gap:6px; align-items:center; }}
+.card-actions {{ justify-self:end; align-self:center; display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:flex-end; }}
 .ask-label {{ border:1px solid rgba(35,167,255,.38); border-radius:999px; color:#fff; background:rgba(117,108,255,.34); text-decoration:none; padding:5px 7px; font:760 10px var(--mono); }}
 .brief-row[data-open-url]:hover .open-label {{ border-color:var(--acta2); color:#fff; }}
 .jobs-panel {{ margin-top:22px; border-top:1px solid var(--line); scroll-margin-top:112px; }}
@@ -1541,7 +1611,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
           <div class="output-summary"><b>{visible}/{active}</b><span>visible</span><span class="trace-only">{missing} gaps</span></div>
-          <div class="meta"><span>{html.escape(day_label)}</span>{f'<span>{lead_row_meta}</span>' if lead_row_meta else ''}<span class="trace-only">{_safe_text(lead_confidence)}</span>{lead_read_toggle}{lead_ask_link}</div>
+          <div class="meta"><span>{html.escape(day_label)}</span>{f'<span>{lead_row_meta}</span>' if lead_row_meta else ''}<span class="trace-only">{_safe_text(lead_confidence)}</span>{lead_read_toggle}{lead_action_toggles}{lead_ask_link}</div>
         </article>
         <div class="panel-title"><b>Output Streams</b><span>Daily / Dev split</span></div>
         {daily_section}

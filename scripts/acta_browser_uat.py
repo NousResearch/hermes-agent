@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Mapping, cast
 from urllib.parse import urlparse
 
 
@@ -162,6 +163,7 @@ class BrowserResult:
     viewport_height: int = 844
     layout_metrics: dict[str, object] | None = None
     horizontal_overflow: bool = False
+    action_state_probe: dict[str, object] | None = None
 
 
 def _extract_text_by_class(dom: str, class_name: str) -> list[str]:
@@ -386,6 +388,47 @@ def _run_chrome(url: str, artifact_dir: Path, timeout: int, viewport_width: int 
         # Give any inline read-state script a browser turn before collecting DOM.
         _run_agent_browser(command, ["wait", "250"], timeout)
         dom_result = _checked_agent_browser(command, ["eval", "document.documentElement.outerHTML"], timeout, "DOM eval")
+        action_probe_expr = r"""
+JSON.stringify((function(){
+  var row=document.querySelector('.readable[data-read-key]');
+  if(!row) return {skipped:true, reason:'no-readable-row'};
+  var save=row.querySelector('.state-toggle[data-state-action="save"]');
+  var dismiss=row.querySelector('.state-toggle[data-state-action="dismiss"]');
+  var later=row.querySelector('.state-toggle[data-state-action="later"]');
+  var overlay=row.querySelector('.row-open-overlay');
+  var before=location.href;
+  if(!save || !dismiss || !later || !overlay) return {skipped:false, ok:false, reason:'missing-action-or-overlay'};
+  function ensurePressed(button){
+    var wasPressed=button.getAttribute('aria-pressed')==='true';
+    if(wasPressed) button.click();
+    button.click();
+    return wasPressed;
+  }
+  function restorePressed(button, wasPressed){
+    var isPressed=button.getAttribute('aria-pressed')==='true';
+    if(isPressed !== wasPressed) button.click();
+  }
+  var saveWasPressed=ensurePressed(save);
+  var saveOk=row.classList.contains('saved') && save.textContent.trim()==='Saved' && save.getAttribute('aria-pressed')==='true' && location.href===before;
+  var dismissWasPressed=ensurePressed(dismiss);
+  var dismissOk=row.classList.contains('dismissed') && dismiss.textContent.trim()==='Dismissed' && dismiss.getAttribute('aria-pressed')==='true' && location.href===before;
+  var laterWasPressed=ensurePressed(later);
+  var laterOk=row.classList.contains('read-later') && later.textContent.trim()==='Later' && later.getAttribute('aria-pressed')==='true' && location.href===before;
+  var wasRead=row.classList.contains('read');
+  var readToggle=row.querySelector('.read-toggle');
+  var overlayHref='';
+  overlay.addEventListener('click', function(ev){ ev.preventDefault(); overlayHref=overlay.href; }, {once:true});
+  overlay.click();
+  var overlayOk=!!overlayHref && row.classList.contains('read') && location.href===before;
+  if(row.classList.contains('read') !== wasRead && readToggle) readToggle.click();
+  restorePressed(later, laterWasPressed);
+  restorePressed(dismiss, dismissWasPressed);
+  restorePressed(save, saveWasPressed);
+  var unsafeHasActions=Array.prototype.some.call(document.querySelectorAll('.brief-row:not(.readable), .lead:not(.readable)'), function(el){ return !!el.querySelector('.state-toggle,[data-state-action]'); });
+  return {skipped:false, ok:saveOk && dismissOk && laterOk && overlayOk && !unsafeHasActions, saveOk:saveOk, dismissOk:dismissOk, laterOk:laterOk, overlayOk:overlayOk, unsafeHasActions:unsafeHasActions, hrefStayed:location.href===before};
+})())
+""".strip()
+        action_probe_result = _checked_agent_browser(command, ["eval", action_probe_expr], timeout, "action state probe eval")
         metrics_expr = (
             "JSON.stringify({"
             "innerWidth: window.innerWidth,"
@@ -405,11 +448,13 @@ def _run_chrome(url: str, artifact_dir: Path, timeout: int, viewport_width: int 
     parsed_dom = _parse_eval_json(dom_result.stdout)
     dom = parsed_dom if isinstance(parsed_dom, str) else dom_result.stdout.strip()
     parsed_metrics = _parse_eval_json(metrics_result.stdout)
-    layout_metrics = parsed_metrics if isinstance(parsed_metrics, dict) else {}
-    inner_width = layout_metrics.get("innerWidth", viewport_width)
-    scroll_width = layout_metrics.get("scrollWidth", inner_width)
+    parsed_action_probe = _parse_eval_json(action_probe_result.stdout)
+    layout_metrics = cast(dict[str, object], parsed_metrics) if isinstance(parsed_metrics, dict) else {}
+    action_state_probe = cast(dict[str, object], parsed_action_probe) if isinstance(parsed_action_probe, dict) else {}
+    inner_width_value = layout_metrics.get("innerWidth", viewport_width)
+    scroll_width_value = layout_metrics.get("scrollWidth", inner_width_value)
     try:
-        horizontal_overflow = float(scroll_width) > float(inner_width) + 1
+        horizontal_overflow = float(str(scroll_width_value)) > float(str(inner_width_value)) + 1
     except (TypeError, ValueError):
         horizontal_overflow = False
     if not screenshot.exists():
@@ -425,6 +470,7 @@ def _run_chrome(url: str, artifact_dir: Path, timeout: int, viewport_width: int 
         viewport_height=viewport_height,
         layout_metrics=layout_metrics,
         horizontal_overflow=horizontal_overflow,
+        action_state_probe=action_state_probe,
     )
 
 
@@ -469,6 +515,7 @@ def _validate_feed_contract(
     horizontal_overflow: bool = False,
     console_output: str = "",
     errors_output: str = "",
+    action_state_probe: Mapping[str, object] | None = None,
 ) -> list[str]:
     failures, auth_wall = _common_browser_failures(
         dom,
@@ -503,6 +550,9 @@ def _validate_feed_contract(
         failures.append("Development sprint feed has no recognized sprint/QA/security rows")
     if "lane-chip" not in dom:
         failures.append("Lane chips are missing from rendered rows")
+    if action_state_probe and not bool(action_state_probe.get("skipped")) and not bool(action_state_probe.get("ok")):
+        reason = str(action_state_probe.get("reason") or action_state_probe)
+        failures.append(f"Signed row action-state browser probe failed: {reason}")
     return failures
 
 
@@ -688,6 +738,7 @@ def run(args: argparse.Namespace) -> int:
             horizontal_overflow=result.horizontal_overflow,
             console_output=result.console_output,
             errors_output=result.errors_output,
+            **({"action_state_probe": result.action_state_probe or {}} if scenario == "feed" else {}),
         )
     except Exception as exc:  # noqa: BLE001 - CLI harness should print actionable failure text.
         print("FAIL Acta browser UAT")
@@ -705,6 +756,7 @@ def run(args: argparse.Namespace) -> int:
         "errors_output": result.errors_output,
         "layout_metrics": result.layout_metrics or {},
         "horizontal_overflow": result.horizontal_overflow,
+        "action_state_probe": result.action_state_probe or {},
         "failures": failures,
     }
     if scenario == "archive":

@@ -882,6 +882,9 @@ def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
     assert '<span class="read-state">UNREAD</span>' in html
     assert 'MARK READ' in html
     assert '<button class="read-toggle" type="button" aria-label="Mark briefing read: Lead Brief">Mark read</button>' in html
+    assert '<button class="state-toggle save-toggle" type="button" data-state-action="save" aria-label="Save briefing: Lead Brief">Save</button>' in html
+    assert '<button class="state-toggle dismiss-toggle" type="button" data-state-action="dismiss" aria-label="Dismiss briefing: Lead Brief">Dismiss</button>' in html
+    assert '<button class="state-toggle later-toggle" type="button" data-state-action="later" aria-label="Read later: Lead Brief">Read later</button>' in html
     assert '<div>UNREAD <b data-unread-count="1">1</b></div>' in html
     assert '<a href="/">TODAY <span class="nav-count" data-unread-count="1">1</span></a>' in html
     assert ".nav-count" in html
@@ -889,7 +892,7 @@ def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
     assert ".brief-row > .swipe-content" in html
     assert ".brief-row > :not(.row-open-overlay)" not in html
     assert ".lead > :not(.row-open-overlay), .brief-row > .swipe-content { pointer-events:none; }" in html
-    assert ".lead .ask-label, .brief-row .ask-label, .card-actions, .read-toggle { pointer-events:auto; }" in html
+    assert ".lead .ask-label, .brief-row .ask-label, .card-actions, .read-toggle, .state-toggle { pointer-events:auto; }" in html
     assert "el.querySelectorAll('.row-open-overlay')" in html
     assert "script-src 'sha256-" in html
     assert "style-src 'sha256-" in html
@@ -945,7 +948,7 @@ def test_feed_rows_are_keyboard_accessible_signed_links():
     assert '<button class="read-toggle" type="button" aria-label="Mark briefing read: Second Brief">Mark read</button>' in html
 
 
-def test_dashboard_read_toggle_script_updates_button_and_stays_in_row():
+def test_dashboard_read_toggle_script_updates_button_labels_and_counts():
     script = _dashboard_inline_script()
 
     assert "var button=el.querySelector('.read-toggle')" in script
@@ -962,7 +965,24 @@ def test_dashboard_read_toggle_script_updates_button_and_stays_in_row():
     assert "updateUnreadCount();" in script
 
 
-def test_today_dashboard_requires_signed_urls_and_unread_count_excludes_unsigned_rows():
+def test_dashboard_action_state_script_persists_save_dismiss_and_read_later():
+    script = _dashboard_inline_script()
+
+    assert "var ACTION_KEY='acta:actions:v1';" in script
+    assert "function applyActionState(el)" in script
+    assert "el.classList.toggle('saved', !!record.saved);" in script
+    assert "el.classList.toggle('dismissed', !!record.dismissed);" in script
+    assert "el.classList.toggle('read-later', !!record.later);" in script
+    assert "button.textContent=active?labels[action].off:labels[action].on;" in script
+    assert "button.setAttribute('aria-pressed', active?'true':'false');" in script
+    assert "if(action==='save') record.saved=!record.saved;" in script
+    assert "if(action==='dismiss') record.dismissed=!record.dismissed;" in script
+    assert "if(action==='later') record.later=!record.later;" in script
+    assert "button.addEventListener('click', function(ev){" in script
+    assert "saveActions();" in script
+
+
+def test_dashboard_action_buttons_are_signed_row_only():
     item_cls = collect_situation_items.__globals__["CronSituationItem"]
     signed = item_cls(
         job_id="signed",
@@ -1095,6 +1115,8 @@ def test_today_dashboard_requires_signed_urls_and_unread_count_excludes_unsigned
         assert "read-dot" not in disabled_row
         assert "read-state" not in disabled_row
         assert "read-toggle" not in disabled_row
+        assert "state-toggle" not in disabled_row
+        assert "data-state-action" not in disabled_row
         assert "MARK READ" not in disabled_row
 
 
@@ -1126,6 +1148,8 @@ def test_today_dashboard_gates_lead_read_state_to_signed_detail_links():
     assert "read-dot" not in lead_article.group(0)
     assert "read-state" not in lead_article.group(0)
     assert "read-toggle" not in lead_article.group(0)
+    assert "state-toggle" not in lead_article.group(0)
+    assert "data-state-action" not in lead_article.group(0)
     assert "no page" not in lead_article.group(0).lower()
     assert "https://acta.imperatr.com/r/lead/detail.html?exp=1" not in html
 
@@ -1372,6 +1396,9 @@ def test_archive_day_dashboard_has_read_and_action_parity_with_today():
     assert 'data-read-key="daily:2026-05-19T09:00:00+00:00"' in html
     assert '<span class="read-state">UNREAD</span>' in html
     assert '<button class="read-toggle" type="button" aria-label="Mark briefing read: Archived Morning Brief">Mark read</button>' in html
+    assert 'data-state-action="save" aria-label="Save briefing: Archived Morning Brief">Save</button>' in html
+    assert 'data-state-action="dismiss" aria-label="Dismiss briefing: Archived Morning Brief">Dismiss</button>' in html
+    assert 'data-state-action="later" aria-label="Read later: Archived Morning Brief">Read later</button>' in html
     assert 'class="row-open-overlay" href="https://acta.imperatr.com/r/daily/detail.html?exp=1&amp;sig=daily"' in html
     assert 'class="ask-label" href="https://t.me/imperatr/123"' in html
     assert '<a class="active" href="/archive">ARCHIVE' in html
@@ -1383,7 +1410,8 @@ def test_dashboard_surfaces_production_release_tldr_and_input_needed():
         date="2026-05-26",
         title="Acta operator feed cleanup",
         shipped=["Split daily feed from dev sprint cycles", "Added real browser UAT publish gate"],
-        needs_input=["Confirm whether ASK should become a larger primary action"],
+        decisions=["ASK remains secondary", "Today’s Brief becomes Hermes-agent updated"],
+        needs_input=["Choose first persistent action state"],
     )
 
     html = render_dashboard([], generated_at=datetime(2026, 5, 26, tzinfo=timezone.utc), release_notes=[release])
@@ -1392,8 +1420,11 @@ def test_dashboard_surfaces_production_release_tldr_and_input_needed():
     assert "Acta operator feed cleanup" in html
     assert "Split daily feed from dev sprint cycles" in html
     assert "Added real browser UAT publish gate" in html
+    assert "Decisions locked" in html
+    assert "ASK remains secondary" in html
+    assert "Today’s Brief becomes Hermes-agent updated" in html
     assert "Needs your input" in html
-    assert "Confirm whether ASK should become a larger primary action" in html
+    assert "Choose first persistent action state" in html
 
 
 def test_release_log_loader_sanitizes_and_limits_operator_notes(tmp_path: Path):
@@ -1405,6 +1436,7 @@ def test_release_log_loader_sanitizes_and_limits_operator_notes(tmp_path: Path):
                     "date": "2026-05-25",
                     "title": "Older Acta release",
                     "shipped": ["Old note should sort behind latest"],
+                    "decisions": [],
                     "needs_input": [],
                 },
                 {
@@ -1420,6 +1452,7 @@ def test_release_log_loader_sanitizes_and_limits_operator_notes(tmp_path: Path):
                         "Five",
                     ],
                     "needs_input": ["Pick primary action", "terminal command: cat secrets", "Third", "Fourth"],
+                    "decisions": ["ASK stays secondary", "Today brief uses Hermes agent", "Third", "Fourth"],
                 }
             ]
         ),
@@ -1438,6 +1471,7 @@ def test_release_log_loader_sanitizes_and_limits_operator_notes(tmp_path: Path):
         "Local file [local path removed] and [local path removed] with OPENAI_API_KEY=[redacted] AWS_SECRET_ACCESS_KEY=[redacted]",
     ]
     assert releases[0].needs_input == ["Pick primary action", "Third", "Fourth"]
+    assert releases[0].decisions == ["ASK stays secondary", "Today brief uses Hermes agent", "Third"]
 
     html = render_dashboard([], generated_at=datetime(2026, 5, 26, tzinfo=timezone.utc), release_notes=releases)
     assert "&lt;Acta release&gt;" in html
@@ -1450,6 +1484,7 @@ def test_release_log_loader_sanitizes_and_limits_operator_notes(tmp_path: Path):
     assert "Prompt leak" not in html
     assert "another trace" not in html
     assert "terminal command" not in html
+    assert "ASK stays secondary" in html
     assert "[redacted link]" in html
     assert "[local path removed]" in html
 

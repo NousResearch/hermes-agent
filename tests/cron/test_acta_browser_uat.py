@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cron.acta_dashboard import collect_situation_items, render_dashboard, render_jobs_page
+from cron.acta_dashboard import CronSituationItem, collect_situation_items, render_dashboard, render_jobs_page
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -197,6 +197,98 @@ def test_validate_feed_contract_counts_lane_tagged_lead_as_daily_row():
     """
 
     assert acta_browser_uat._validate_feed_contract(dom) == []
+
+
+def test_validate_feed_contract_flags_failed_signed_row_action_probe():
+    failures = acta_browser_uat._validate_feed_contract(
+        _valid_feed_dom(),
+        action_state_probe={"skipped": False, "ok": False, "reason": "missing-action-or-overlay"},
+    )
+
+    assert failures == ["Signed row action-state browser probe failed: missing-action-or-overlay"]
+
+
+def test_validate_feed_contract_allows_pages_without_signed_rows_to_skip_action_probe():
+    assert acta_browser_uat._validate_feed_contract(
+        _valid_feed_dom(),
+        action_state_probe={"skipped": True, "reason": "no-readable-row"},
+    ) == []
+
+
+def test_acta_browser_uat_exercises_signed_row_action_buttons_and_overlay(tmp_path: Path):
+    if not _browser_cli_available():
+        pytest.skip("agent-browser/npx unavailable; pure validation tests still cover action probe failures")
+
+    html_path = tmp_path / "acta-actions.html"
+    items = [
+        CronSituationItem(
+            job_id="daily",
+            name="Morning newsletter digest",
+            schedule="daily",
+            deliver="telegram",
+            enabled=True,
+            latest_md=Path("/tmp/daily.md"),
+            latest_html=None,
+            latest_time=None,
+            status="fresh",
+            excerpt="Daily signed packet with local triage actions.",
+            artifact_url="https://acta.imperatr.com/r/daily/detail.html?exp=1&sig=daily",
+        ),
+        CronSituationItem(
+            job_id="dev",
+            name="Vesta Startup Sprint CEO loop",
+            schedule="every 120m",
+            deliver="telegram",
+            enabled=True,
+            latest_md=Path("/tmp/dev.md"),
+            latest_html=None,
+            latest_time=None,
+            status="fresh",
+            excerpt="Development sprint stays in the background lane.",
+            artifact_url="https://acta.imperatr.com/r/dev/detail.html?exp=1&sig=dev",
+        ),
+        CronSituationItem(
+            job_id="unsigned",
+            name="Unsigned Draft",
+            schedule="manual",
+            deliver="local",
+            enabled=True,
+            latest_md=Path("/tmp/unsigned.md"),
+            latest_html=None,
+            latest_time=None,
+            status="fresh",
+            excerpt="Visible but no signed action controls.",
+            artifact_url="https://acta.imperatr.com/r/unsigned/detail.html?exp=1",
+        ),
+    ]
+    html_path.write_text(render_dashboard(items), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HARNESS),
+            "--html",
+            str(html_path),
+            "--artifact-dir",
+            str(tmp_path / "uat-actions"),
+            "--viewport-width",
+            "390",
+            "--viewport-height",
+            "844",
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=45,
+    )
+    report = json.loads((tmp_path / "uat-actions" / "acta-uat-report.json").read_text())
+
+    assert result.returncode == 0, result.stdout
+    assert report["action_state_probe"]["ok"] is True
+    assert report["action_state_probe"]["saveOk"] is True
+    assert report["action_state_probe"]["overlayOk"] is True
+    assert report["action_state_probe"]["unsafeHasActions"] is False
 
 
 def test_validate_jobs_contract_accepts_operator_useful_source_runs_dom():

@@ -999,6 +999,52 @@ class APIServerAdapter(BasePlatformAdapter):
     # HTTP Handlers
     # ------------------------------------------------------------------
 
+    async def _handle_root(self, request: "web.Request") -> "web.Response":
+        """GET / — browser-friendly landing page for the API server."""
+        html = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes API Gateway</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    body {
+      max-width: 760px;
+      margin: 48px auto;
+      padding: 0 24px;
+      background: Canvas;
+      color: CanvasText;
+    }
+    h1 { margin-bottom: 0.25rem; }
+    code {
+      padding: 0.125rem 0.25rem;
+      border-radius: 4px;
+      background: color-mix(in srgb, CanvasText 10%, Canvas);
+    }
+    a { color: LinkText; }
+    ul { padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+  <h1>Hermes API Gateway</h1>
+  <p>Status: <strong>running</strong></p>
+  <p>This port serves the OpenAI-compatible Hermes API. Use <code>/v1</code> as the API base URL.</p>
+  <ul>
+    <li><a href="/health">Health</a></li>
+    <li><a href="/health/detailed">Detailed health</a></li>
+    <li><a href="/v1/models">Models</a> (requires API key when configured)</li>
+    <li><a href="/v1/capabilities">Capabilities</a> (requires API key when configured)</li>
+  </ul>
+  <p>Dashboard UI: run <code>hermes dashboard</code>, then open <code>http://127.0.0.1:9119/</code>.</p>
+</body>
+</html>"""
+        return web.Response(text=html, content_type="text/html")
+
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
@@ -3487,6 +3533,7 @@ class APIServerAdapter(BasePlatformAdapter):
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             self._app["api_server_adapter"] = self
+            self._app.router.add_get("/", self._handle_root)
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)

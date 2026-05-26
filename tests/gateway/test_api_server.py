@@ -408,6 +408,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
+    app.router.add_get("/", adapter._handle_root)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
@@ -471,6 +472,19 @@ class TestAgentExecution:
 
 
 class TestHealthEndpoint:
+    @pytest.mark.asyncio
+    async def test_root_returns_browser_landing_page(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/")
+            assert resp.status == 200
+            assert resp.content_type == "text/html"
+            text = await resp.text()
+            assert "Hermes API Gateway" in text
+            assert "/health" in text
+            assert "/v1" in text
+            assert "{{" not in text
+
     @pytest.mark.asyncio
     async def test_security_headers_present(self, adapter):
         """Responses should include basic security headers."""

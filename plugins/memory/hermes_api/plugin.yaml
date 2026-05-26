@@ -1,0 +1,3 @@
+name: hermes_api
+version: "1.0"
+description: Contact-aware memory provider backed by a local Hermes API people graph

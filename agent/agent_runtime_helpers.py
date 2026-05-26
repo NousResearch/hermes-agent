@@ -1360,6 +1360,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    _saved_config_ctx = getattr(agent, "_config_context_length", None)
 
     # Clear the per-config context_length override so the new model's
     # actual context window is resolved via get_model_context_length()
@@ -1469,12 +1470,19 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # length normally resolves via config or static catalogs and
         # never hits a probe, but coerce to empty string defensively.
         _ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
+        # If the switched model is the same as the previous model,
+        # restore the user's explicit config override so the resolution
+        # chain doesn't fall through to DEFAULT_FALLBACK_CONTEXT (256K).
+        # See #32423.
+        _effective_config_ctx = getattr(agent, "_config_context_length", None)
+        if _saved_config_ctx and new_model == old_model:
+            _effective_config_ctx = _saved_config_ctx
         new_context_length = get_model_context_length(
             agent.model,
             base_url=agent.base_url,
             api_key=_ctx_api_key,
             provider=agent.provider,
-            config_context_length=getattr(agent, "_config_context_length", None),
+            config_context_length=_effective_config_ctx,
             custom_providers=_sm_custom_providers,
         )
         agent.context_compressor.update_model(

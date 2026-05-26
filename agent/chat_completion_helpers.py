@@ -1006,6 +1006,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        _saved_config_ctx = getattr(agent, "_config_context_length", None)
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1086,6 +1087,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # the fallback activation drops to 128K even when config says 204800.
         if hasattr(agent, 'context_compressor') and agent.context_compressor:
             from agent.model_metadata import get_model_context_length
+            # If the fallback model is the same as the primary, restore
+            # the user's explicit config override so the resolution chain
+            # doesn't fall through to DEFAULT_FALLBACK_CONTEXT (256K).
+            # See #32423.
+            _effective_config_ctx = getattr(agent, "_config_context_length", None)
+            if _saved_config_ctx and fb_model == old_model:
+                _effective_config_ctx = _saved_config_ctx
             # ``agent.api_key`` may be callable (Entra ID); the
             # context-length resolver expects a string for live
             # probes. Foundry typically resolves via config/static
@@ -1094,7 +1102,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_context_length = get_model_context_length(
                 agent.model, base_url=agent.base_url,
                 api_key=_fb_ctx_api_key, provider=agent.provider,
-                config_context_length=getattr(agent, "_config_context_length", None),
+                config_context_length=_effective_config_ctx,
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
             agent.context_compressor.update_model(

@@ -1527,6 +1527,48 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         except ImportError:
             pass
 
+        # API-key vs OAuth is a user-visible choice at `hermes setup` ("Claude
+        # Pro/Max subscription" vs "Anthropic API key").  The signal that the
+        # user picked the API-key path is: ANTHROPIC_API_KEY set in the env,
+        # AND no OAuth env vars set — `save_anthropic_api_key()` writes the
+        # API key and zeros ANTHROPIC_TOKEN; `save_anthropic_oauth_token()`
+        # does the inverse.  When that signal is present we MUST NOT seed
+        # autodiscovered OAuth tokens (~/.claude/.credentials.json from the
+        # Claude Code CLI, hermes_pkce creds from a previous OAuth login)
+        # into the anthropic pool — otherwise rotation on a 401/429 silently
+        # flips the session onto an OAuth credential, which forces the Claude
+        # Code identity injection, `mcp_` tool-name rewrite, and claude-cli
+        # User-Agent header (`agent/anthropic_adapter.py:2128`).  Users who
+        # explicitly opted into the API-key path are explicitly opting OUT of
+        # that masquerade.  Prefer ~/.hermes/.env over os.environ for the
+        # same reason `_seed_from_env` does — that's the authoritative file
+        # that `hermes setup` writes.
+        _env_file = load_env()
+
+        def _env_val(key: str) -> str:
+            return (_env_file.get(key) or os.environ.get(key) or "").strip()
+
+        anthropic_api_key = _env_val("ANTHROPIC_API_KEY")
+        anthropic_oauth_env = (
+            _env_val("ANTHROPIC_TOKEN") or _env_val("CLAUDE_CODE_OAUTH_TOKEN")
+        )
+        api_key_path_explicit = bool(anthropic_api_key and not anthropic_oauth_env)
+
+        if api_key_path_explicit:
+            # Prune any stale autodiscovered OAuth entries that may have been
+            # seeded into the on-disk pool during a previous OAuth session.
+            # Without this, switching OAuth -> API key at setup leaves the
+            # OAuth entries dormant in auth.json forever and rotation on a
+            # transient 401 could revive them.
+            retained = [
+                entry for entry in entries
+                if entry.source not in {"hermes_pkce", "claude_code"}
+            ]
+            if len(retained) != len(entries):
+                entries[:] = retained
+                changed = True
+            return changed, active_sources
+
         from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
 
         for source_name, creds in (

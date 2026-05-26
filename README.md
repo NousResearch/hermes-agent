@@ -18,14 +18,14 @@ Use any model — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](h
 
 <table>
 <tr><td><b>Cybersecurity toolkit</b></td><td>Native tools for CVE lookup (NVD), IOC reputation (VirusTotal, AbuseIPDB), MITRE ATT&CK TTP lookup, IOC extraction from logs/reports, CVSS+EPSS vulnerability triage, and an in-session incident response playbook. All in the <code>cyber</code> toolset — no wiring required.</td></tr>
-<tr><td><b>Live USB — plug in and act</b></td><td>Build a bootable Debian 12 ISO with hermes pre-installed. Boot any PC, complete a 60-second first-boot wizard, and the gateway starts automatically. Three modes: gateway (Telegram/Slack C2), interactive terminal, or headless network scan.</td></tr>
+<tr><td><b>Live USB — plug in and act</b></td><td>Build a bootable Debian 12 ISO for <b>x86-64</b> (BIOS + UEFI) or <b>ARM64</b> (Raspberry Pi 4/5). Boot any PC, complete a 60-second first-boot wizard, and the gateway starts. Add <code>--persistence 8G</code> to survive reboots; set <code>HERMES_AUTOUPDATE=true</code> to update hermes on each boot.</td></tr>
 <tr><td><b>SOC audit trail</b></td><td>Set <code>HERMES_CYBER_AUDIT=true</code> to get a tamper-evident NDJSON log of every tool call at <code>~/.hermes/logs/cyber_audit.jsonl</code>. Credentials redacted. File mode 0600.</td></tr>
 <tr><td><b>Protected subagent operations</b></td><td>In-flight subagents (parallel CVE triage, recon sweeps) are shielded from accidental interrupts — a follow-up message queues rather than killing running work. <code>/stop</code> still force-cancels everything.</td></tr>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
 <tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
 <tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams — run simultaneous CVE triage, network scans, and log analysis. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Or boot directly from the live USB on any x86-64 machine.</td></tr>
+<tr><td><b>Runs anywhere</b></td><td>Seven terminal backends — local, Docker, SSH, Singularity, Modal, Daytona, and Vercel Sandbox. Or boot directly from the live USB on any x86-64 or ARM64 machine.</td></tr>
 <tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
 </table>
 
@@ -98,77 +98,210 @@ NVD, EPSS (first.org), and MITRE ATT&CK TAXII are all free with no API key requi
 
 ## Live USB
 
-Build a bootable USB that turns any x86-64 PC into a Hermes cyber operations node.
+Build a bootable USB that turns any PC into a Hermes cyber operations node. Plug it in, pick a boot mode from the GRUB menu, and the agent starts — no install, no persistent traces on the host.
 
-### Build the ISO
+**Supported targets:** Any x86-64 PC (UEFI or legacy BIOS) and ARM64 boards (Raspberry Pi 4/5, ARM servers).
 
-Requires a Linux host with `debootstrap`, `squashfs-tools`, `xorriso`, `grub-efi-amd64-bin`:
+---
+
+### Step 1 — Install build dependencies
+
+**amd64 ISO (builds on any Debian/Ubuntu host):**
 
 ```bash
-# Install build deps (Debian/Ubuntu)
-sudo apt-get install -y debootstrap squashfs-tools xorriso \
+sudo apt-get install -y \
+  debootstrap squashfs-tools xorriso \
   grub-efi-amd64-bin grub-pc-bin mtools dosfstools
-
-# Build (bundles the current repo — no internet needed on the target PC)
-sudo live-usb/build_iso.sh
-
-# Write to USB (/dev/sdb — check with: sudo live-usb/write_usb.sh --list)
-sudo live-usb/write_usb.sh --device /dev/sdb --verify
 ```
 
-The ISO boots on both UEFI and legacy BIOS systems. Default size is ~2 GB.
-
-### Boot Modes (GRUB menu, 5 s timeout)
-
-| Mode | What happens |
-|---|---|
-| **Gateway** | First-boot wizard → configures Telegram token + API key → `hermes-gateway.service` starts → take commands from your phone |
-| **Terminal** | First-boot wizard → drops into interactive `hermes` agent shell |
-| **Headless scan** | Skips wizard, reads provisioned config → autonomous network discovery → CVE triage → IR report saved to `~/hermes-scan-<date>.md` |
-| **Forensic** | `noautomount noswap` — safe for evidence collection; no drives auto-mounted |
-| **Persistence** | Changes survive reboots via `casper-rw` partition |
-
-### Pre-provision (fleet / ops deployment)
-
-Skip the first-boot wizard entirely by injecting credentials before deployment:
+**arm64 ISO (cross-compiles from an x86-64 host):**
 
 ```bash
-# From config directory
+sudo apt-get install -y \
+  debootstrap squashfs-tools xorriso \
+  grub-efi-arm64-bin mtools dosfstools \
+  qemu-user-static binfmt-support
+```
+
+---
+
+### Step 2 — Build the ISO
+
+```bash
+# amd64 (default) — hybrid BIOS + UEFI boot
+sudo live-usb/build_iso.sh
+
+# arm64 — EFI-only (Raspberry Pi 4/5, ARM servers)
+sudo live-usb/build_iso.sh --arch arm64
+
+# Options
+sudo live-usb/build_iso.sh \
+  --arch amd64 \            # amd64 (default) or arm64
+  --suite bookworm \        # Debian suite (default: bookworm)
+  --output /tmp/hermes.iso \# output path
+  --headless-scan \         # enable auto-scan mode
+  --verbose                 # show full debootstrap output
+```
+
+The build bundles the current repo into the ISO so the target PC needs no internet connection on boot. Build time is typically 10–20 minutes depending on host speed. Output size is ~2 GB.
+
+---
+
+### Step 3 — Write to USB
+
+```bash
+# Find your USB drive
+sudo live-usb/write_usb.sh --list
+
+# Basic write (will prompt for confirmation)
+sudo live-usb/write_usb.sh --device /dev/sdb
+
+# Write + SHA-256 verify
+sudo live-usb/write_usb.sh --device /dev/sdb --verify
+
+# Write with a persistence partition (changes survive reboots)
+sudo live-usb/write_usb.sh --device /dev/sdb --persistence      # 4 GB (default)
+sudo live-usb/write_usb.sh --device /dev/sdb --persistence 8G   # custom size
+
+# Write + inject pre-configured credentials (skip first-boot wizard)
+sudo live-usb/write_usb.sh --device /dev/sdb --provision ~/.hermes
+
+# All at once
+sudo live-usb/write_usb.sh \
+  --iso live-usb/hermes-cyber-live.iso \
+  --device /dev/sdb \
+  --persistence 8G \
+  --provision ~/.hermes \
+  --verify \
+  --yes                     # skip confirmation prompt (non-interactive)
+```
+
+> **Warning:** `--device` is written with `dd`. Double-check the path — all data on the target drive will be erased.
+
+---
+
+### Step 4 — Boot and configure
+
+Plug the USB into the target PC. Select a boot mode from the GRUB menu (5-second timeout):
+
+| Boot entry | What happens |
+|---|---|
+| **Gateway Mode** | First-boot wizard (60 seconds) → enter Telegram token + API key → `hermes-gateway.service` starts → send commands from your phone |
+| **Terminal Mode** | First-boot wizard → interactive `hermes` shell on the console |
+| **Headless Scan** | Skips wizard, reads provisioned config → autonomous network scan → CVE triage → saves report to `~/hermes-scan-<date>.md` |
+| **Forensic — No Automount** | `noautomount noswap nopersistent` — safe for evidence collection; host drives are never touched |
+| **With Persistence** | Same as Gateway Mode but all changes (config, logs, memory) survive reboots. Requires the `--persistence` partition created in Step 3. |
+
+On **first boot**, the wizard runs once and creates `/home/hermes/.hermes/config.yaml`. All subsequent boots skip the wizard and start the gateway directly.
+
+---
+
+### Persistence partition
+
+When you write with `--persistence`, the script appends an ext4 partition (labeled `HERMESPST`) after the ISO data. Selecting **"Hermes AgentCyber (with persistence)"** from GRUB activates live-boot's union overlay — every write goes to `HERMESPST` instead of the read-only squashfs. Your credentials, memories, logs, and incidents survive across reboots.
+
+```
+Drive layout after write --persistence 8G:
+  p1+p2   ISO hybrid MBR/EFI data (from dd)
+  p3      FAT32 HERMESCFG  256 MB  (config, created with --provision)
+  p4      ext4  HERMESPST  8 GB    (persistence layer)
+```
+
+The persistence partition pre-creates `/home/hermes/.hermes/logs` so logs are immediately writable on first boot without needing root.
+
+---
+
+### Auto-update on boot
+
+To keep Hermes current without rebuilding the ISO:
+
+1. Enable auto-update in your config:
+
+```bash
+# On the running USB, edit the config file
+hermes-live config
+
+# Add or set this line:
+HERMES_AUTOUPDATE=true
+```
+
+Or add it directly:
+
+```bash
+echo "HERMES_AUTOUPDATE=true" >> ~/.hermes/config.env
+```
+
+2. On the **next boot**, `hermes-autoupdate.service` runs before the gateway:
+   - Checks for network connectivity
+   - If source is bundled: runs `git pull` then reinstalls
+   - If installed from PyPI: runs `uv pip install --upgrade hermes-agentcyber`
+   - Logs to `~/.hermes/logs/autoupdate.log`
+   - **Always exits 0** — a failed update never blocks the gateway from starting
+
+---
+
+### Pre-provision for fleet / ops deployment
+
+Skip the first-boot wizard entirely by injecting credentials before shipping the USB:
+
+```bash
+# From a ~/.hermes config directory
 sudo live-usb/provision.sh --usb /dev/sdb --config ~/.hermes
 
 # From individual flags
 sudo live-usb/provision.sh --usb /dev/sdb \
   --telegram-token "7xxx:AAA..." \
-  --allowed-users "123456789" \
+  --allowed-users "123456789,987654321" \
   --model-key "sk-ant-..." \
+  --model-provider anthropic \
   --audit
 ```
 
-The provisioned config is written to a small FAT32 partition after the ISO. On first boot, the wizard detects it and starts the gateway automatically.
+The provisioned config is written to the `HERMESCFG` FAT32 partition. On first boot, the wizard detects it and starts the gateway automatically — no keyboard input needed.
 
-### From Inside the Agent
+---
 
-The `live_usb` tool lets you orchestrate USB creation from a chat message:
+### Orchestrate from inside the agent
+
+The `live_usb` tool lets you build and write USBs from a chat message. Enable it first:
 
 ```bash
+# In config.yaml
+toolsets:
+  enabled: [live_usb, cyber, ...]
+
+# Or from the CLI
 hermes tools --enable live_usb
 ```
 
+Then ask the agent:
+
 ```
-"List my USB drives"         → live_usb(action="list_usb")
-"Check if I can build"       → live_usb(action="status")
-"Build a headless-scan ISO"  → live_usb(action="build", headless_scan=true)
-"Write it to /dev/sdb"       → live_usb(action="write", device="/dev/sdb")
-"Provision with my config"   → live_usb(action="provision", device="/dev/sdb", config="~/.hermes")
+"List my USB drives"              → live_usb(action="list_usb")
+"Check if I can build"            → live_usb(action="status")
+"Build an arm64 ISO"              → live_usb(action="build", arch="arm64")
+"Build a headless-scan ISO"       → live_usb(action="build", headless_scan=true)
+"Write it to /dev/sdb"            → live_usb(action="write", device="/dev/sdb")
+"Provision with my config"        → live_usb(action="provision", device="/dev/sdb",
+                                             config="~/.hermes")
 ```
 
-### On the Running USB
+The `list_usb` and `status` actions are safe and need no root. `build` and `write` require the agent session to run as root (or pass `sudo` separately).
+
+---
+
+### Commands on the running USB
 
 ```bash
-hermes-live start / stop / restart / status / logs
-hermes-live scan 192.168.1.0/24    # ad-hoc cyber sweep → markdown report
-hermes-live shell                   # drop into interactive agent
-hermes-live config                  # edit ~/.hermes/config.yaml
+hermes-live start          # start the gateway service
+hermes-live stop           # stop the gateway service
+hermes-live restart        # restart
+hermes-live status         # show service status + last 20 log lines
+hermes-live logs           # tail live logs (Ctrl+C to exit)
+hermes-live scan 192.168.1.0/24  # ad-hoc cyber sweep → markdown report
+hermes-live shell          # drop into interactive agent
+hermes-live config         # edit ~/.hermes/config.yaml in $EDITOR
+hermes-live version        # show installed version
 ```
 
 ---
@@ -210,16 +343,41 @@ hermes              # start chatting!
 
 ## Getting Started
 
+**1. Install**
+
 ```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+source ~/.bashrc
+```
+
+**2. Configure your model and (optionally) the cyber toolset**
+
+```bash
+hermes setup        # interactive wizard: model provider, API key, gateway
+```
+
+Or set each piece individually:
+
+```bash
+hermes model        # pick LLM provider + model
+hermes config set toolsets.enabled "[cyber, web, terminal, file, delegation]"
+```
+
+**3. Start chatting**
+
+```bash
+hermes              # interactive terminal UI
+hermes gateway      # start Telegram/Discord/Slack gateway (take commands from your phone)
+```
+
+**Other useful commands:**
+
+```bash
+hermes tools        # list and toggle tools
+hermes config set   # set any config value
+hermes update       # update to the latest version
+hermes doctor       # diagnose configuration issues
+hermes claw migrate # import settings from OpenClaw
 ```
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**

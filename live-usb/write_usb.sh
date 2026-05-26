@@ -12,12 +12,20 @@
 #   sudo ./write_usb.sh [OPTIONS]
 #
 # Options:
-#   --iso PATH        Path to the ISO file (default: ./hermes-cyber-live.iso)
-#   --device PATH     Target USB device e.g. /dev/sdb (prompts if omitted)
-#   --provision PATH  Path to a .hermes config dir or .tar.gz to inject
-#   --verify          Verify the write with SHA-256 after completion
-#   --list            List removable block devices and exit
-#   --yes             Skip confirmation prompt (non-interactive mode)
+#   --iso PATH           Path to the ISO file (default: ./hermes-cyber-live.iso)
+#   --device PATH        Target USB device e.g. /dev/sdb (prompts if omitted)
+#   --provision PATH     Path to a .hermes config dir or .tar.gz to inject
+#   --persistence [SIZE] Create a read-write persistence partition (default: 4G).
+#                        Changes made on the live system survive reboots.
+#                        Choose "Persistence" from the GRUB boot menu to use it.
+#   --verify             Verify the write with SHA-256 after completion
+#   --list               List removable block devices and exit
+#   --yes                Skip confirmation prompt (non-interactive mode)
+#
+# Partition layout after write:
+#   p1+p2  ISO hybrid MBR/EFI (written by dd from ISO)
+#   p3     FAT32 HERMESCFG  (256 MB, config — created when --provision is used)
+#   pN     ext4  HERMESPST  (SIZE,   persistence — created when --persistence is used)
 #
 # =============================================================================
 
@@ -29,6 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ISO="${SCRIPT_DIR}/hermes-cyber-live.iso"
 DEVICE=""
 PROVISION_PATH=""
+PERSISTENCE_SIZE=""   # empty = no persistence partition
 VERIFY=false
 LIST_ONLY=false
 AUTO_YES=false
@@ -36,12 +45,20 @@ AUTO_YES=false
 # ---- Argument parsing -------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --iso)       ISO="$2";            shift 2 ;;
-    --device)    DEVICE="$2";         shift 2 ;;
-    --provision) PROVISION_PATH="$2"; shift 2 ;;
-    --verify)    VERIFY=true;         shift   ;;
-    --list)      LIST_ONLY=true;      shift   ;;
-    --yes)       AUTO_YES=true;       shift   ;;
+    --iso)         ISO="$2";              shift 2 ;;
+    --device)      DEVICE="$2";           shift 2 ;;
+    --provision)   PROVISION_PATH="$2";   shift 2 ;;
+    --persistence)
+      # Optional size argument: --persistence 8G or just --persistence
+      if [[ $# -gt 1 && "$2" =~ ^[0-9]+[GMgm]?$ ]]; then
+        PERSISTENCE_SIZE="$2"; shift 2
+      else
+        PERSISTENCE_SIZE="4G"; shift
+      fi
+      ;;
+    --verify)      VERIFY=true;           shift ;;
+    --list)        LIST_ONLY=true;        shift ;;
+    --yes)         AUTO_YES=true;         shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -76,6 +93,7 @@ if [[ ! -f "$ISO" ]]; then
   exit 1
 fi
 ISO_SIZE=$(du -sh "$ISO" | cut -f1)
+ISO_BYTES=$(stat -c%s "$ISO")
 
 # ---- Device selection -------------------------------------------------------
 if [[ -z "$DEVICE" ]]; then
@@ -86,19 +104,16 @@ if [[ -z "$DEVICE" ]]; then
   read -r DEVICE
 fi
 
-# Sanity checks
 if [[ ! -b "$DEVICE" ]]; then
   echo "❌  Not a block device: $DEVICE"
   exit 1
 fi
 
-# Refuse to write to a mounted system partition
 if mount | grep -q "^${DEVICE} "; then
   echo "❌  Device ${DEVICE} appears to be mounted as a system device. Refusing."
   exit 1
 fi
 
-# Check removable flag (advisory — not a hard block since some USB docks report 0)
 REMOVABLE=$(cat /sys/block/$(basename "$DEVICE")/removable 2>/dev/null || echo "?")
 if [[ "$REMOVABLE" == "0" ]]; then
   echo "⚠  WARNING: /sys/block/$(basename "$DEVICE")/removable = 0"
@@ -108,16 +123,36 @@ fi
 DRIVE_SIZE=$(lsblk -d -n -o SIZE "$DEVICE" 2>/dev/null || echo "unknown")
 DRIVE_MODEL=$(lsblk -d -n -o MODEL "$DEVICE" 2>/dev/null | xargs || echo "unknown")
 
+# ---- Capacity check for persistence -----------------------------------------
+if [[ -n "$PERSISTENCE_SIZE" ]]; then
+  DRIVE_BYTES=$(blockdev --getsize64 "$DEVICE" 2>/dev/null || echo 0)
+  # Parse persistence size to bytes for comparison
+  PSZ="${PERSISTENCE_SIZE^^}"
+  if [[ "$PSZ" == *G ]]; then
+    PERSIST_BYTES=$(( ${PSZ%G} * 1024 * 1024 * 1024 ))
+  elif [[ "$PSZ" == *M ]]; then
+    PERSIST_BYTES=$(( ${PSZ%M} * 1024 * 1024 ))
+  else
+    PERSIST_BYTES=$(( PSZ ))
+  fi
+  CONFIG_BYTES=$(( 256 * 1024 * 1024 ))  # 256 MB for config partition
+  NEEDED=$(( ISO_BYTES + CONFIG_BYTES + PERSIST_BYTES + 64 * 1024 * 1024 ))
+  if [[ $DRIVE_BYTES -lt $NEEDED ]]; then
+    echo "❌  Drive too small for ISO + config + ${PERSISTENCE_SIZE} persistence."
+    echo "    Drive: $(( DRIVE_BYTES / 1024 / 1024 / 1024 ))GB  Needed: $(( NEEDED / 1024 / 1024 / 1024 ))GB"
+    exit 1
+  fi
+fi
+
 # ---- Final confirmation -----------------------------------------------------
 echo ""
 echo "══════════════════════════════════════════════"
 echo "  ⚠  ABOUT TO OVERWRITE A DRIVE"
 echo "══════════════════════════════════════════════"
-echo "  Source ISO : ${ISO} (${ISO_SIZE})"
-echo "  Target     : ${DEVICE}  (${DRIVE_SIZE}, ${DRIVE_MODEL})"
-if [[ -n "$PROVISION_PATH" ]]; then
-  echo "  Provision  : ${PROVISION_PATH}"
-fi
+echo "  Source ISO    : ${ISO} (${ISO_SIZE})"
+echo "  Target        : ${DEVICE}  (${DRIVE_SIZE}, ${DRIVE_MODEL})"
+[[ -n "$PROVISION_PATH" ]]  && echo "  Config        : ${PROVISION_PATH} → p3 FAT32 HERMESCFG"
+[[ -n "$PERSISTENCE_SIZE" ]] && echo "  Persistence   : ${PERSISTENCE_SIZE} → ext4 HERMESPST (select in GRUB)"
 echo "══════════════════════════════════════════════"
 echo ""
 
@@ -137,53 +172,95 @@ done
 echo ""
 echo "▶ Writing ISO to ${DEVICE}..."
 echo "  (This may take several minutes depending on USB speed)"
-ISO_BYTES=$(stat -c%s "$ISO")
 pv -s "$ISO_BYTES" "$ISO" 2>/dev/null | dd of="$DEVICE" bs=4M conv=fsync,noerror status=none \
   || dd if="$ISO" of="$DEVICE" bs=4M conv=fsync,noerror status=progress
 sync
 echo "  ✓ ISO written"
 
-# ---- Optional provision step ------------------------------------------------
+# Re-read partition table before adding new partitions
+partprobe "$DEVICE" 2>/dev/null || true
+sleep 2
+
+# ---- Config partition (p3) --------------------------------------------------
+_create_config_part() {
+  local iso_end_sectors=$(( (ISO_BYTES + 511) / 512 ))
+  local start_sector=$(( iso_end_sectors + 2048 ))  # align
+
+  echo "  Creating config partition (256 MB, FAT32, HERMESCFG)..."
+  parted -s "$DEVICE" mkpart primary fat32 \
+    "${start_sector}s" "$(( start_sector + 524288 ))s" 2>/dev/null || return 1
+  partprobe "$DEVICE" 2>/dev/null || true
+  sleep 1
+
+  local cfg_part
+  cfg_part=$(lsblk -ln -o NAME "$DEVICE" | grep -v "^$(basename "$DEVICE")$" | tail -1)
+  cfg_part="/dev/${cfg_part}"
+
+  mkfs.fat -F32 -n HERMESCFG "${cfg_part}" 2>/dev/null
+  echo "${cfg_part}"
+}
+
 if [[ -n "$PROVISION_PATH" ]]; then
   echo ""
-  echo "▶ Provisioning config..."
-  # Re-read partition table
-  partprobe "$DEVICE" 2>/dev/null || true
-  sleep 2
+  echo "▶ Creating config partition and provisioning..."
+  CFG_PART=$(_create_config_part) || {
+    echo "  ⚠  Could not create config partition. Skipping provisioning."
+    CFG_PART=""
+  }
 
-  # Find the data partition (last partition on the device, or a FAT partition)
-  # The ISO leaves space for a casper-rw or config partition after partition 2
-  # For simplicity we write config to a file on the ISO's root filesystem
-  # by mounting the squashfs overlay — but squashfs is read-only.
-  # Instead, we write a config tarball to a small extra FAT32 partition
-  # at the end of the USB.
-  PROVISION_PART="${DEVICE}3"
-  USB_SIZE_SECTORS=$(blockdev --getsz "$DEVICE")
-  ISO_SIZE_SECTORS=$(( (ISO_BYTES + 511) / 512 ))
-  FREE_SECTORS=$(( USB_SIZE_SECTORS - ISO_SIZE_SECTORS - 2048 ))
-
-  if [[ $FREE_SECTORS -gt 65536 ]]; then
-    echo "  Creating config partition on free space..."
-    parted -s "$DEVICE" mkpart primary fat32 \
-      "${ISO_SIZE_SECTORS}s" "100%" 2>/dev/null || true
-    partprobe "$DEVICE" 2>/dev/null || true
-    sleep 1
-    mkfs.fat -F32 -n HERMESCFG "${PROVISION_PART}" 2>/dev/null || true
-
+  if [[ -n "$CFG_PART" ]]; then
     MNT_TMP=$(mktemp -d)
-    mount "${PROVISION_PART}" "${MNT_TMP}"
+    mount "${CFG_PART}" "${MNT_TMP}"
     if [[ -d "$PROVISION_PATH" ]]; then
-      tar czf "${MNT_TMP}/hermes-config.tar.gz" -C "$(dirname "$PROVISION_PATH")" "$(basename "$PROVISION_PATH")"
+      tar czf "${MNT_TMP}/hermes-config.tar.gz" \
+        -C "$(dirname "$PROVISION_PATH")" "$(basename "$PROVISION_PATH")"
     elif [[ -f "$PROVISION_PATH" ]]; then
       cp "$PROVISION_PATH" "${MNT_TMP}/hermes-config.tar.gz"
     fi
     sync
     umount "${MNT_TMP}"
     rm -rf "${MNT_TMP}"
-    echo "  ✓ Config provisioned to ${PROVISION_PART}"
-  else
-    echo "  ⚠  Not enough free space on USB for config partition (need ≥32 MB free after ISO)"
+    echo "  ✓ Config provisioned to ${CFG_PART} (HERMESCFG)"
   fi
+fi
+
+# ---- Persistence partition ---------------------------------------------------
+if [[ -n "$PERSISTENCE_SIZE" ]]; then
+  echo ""
+  echo "▶ Creating persistence partition (${PERSISTENCE_SIZE}, ext4, HERMESPST)..."
+
+  partprobe "$DEVICE" 2>/dev/null || true
+  sleep 1
+
+  # Start after whatever's already on the drive, end at 100% minus alignment
+  parted -s "$DEVICE" mkpart primary ext4 \
+    "-$(( $(numfmt --from=iec "${PERSISTENCE_SIZE}" 2>/dev/null || echo $PERSIST_BYTES) / 512 + 2048 ))s" \
+    "100%" 2>/dev/null || \
+  parted -s "$DEVICE" mkpart primary ext4 \
+    "$(parted -s "$DEVICE" unit s print | awk '/^ [0-9]/{last=$3} END{gsub(/s/,"",last); print last+1}')s" \
+    "100%" 2>/dev/null
+
+  partprobe "$DEVICE" 2>/dev/null || true
+  sleep 2
+
+  PERSIST_PART=$(lsblk -ln -o NAME "$DEVICE" | grep -v "^$(basename "$DEVICE")$" | tail -1)
+  PERSIST_PART="/dev/${PERSIST_PART}"
+
+  mkfs.ext4 -L HERMESPST -E lazy_itable_init=0 "${PERSIST_PART}" 2>&1 | tail -3
+
+  # Populate persistence.conf — "/" union means the entire root is overlaid
+  MNT_TMP=$(mktemp -d)
+  mount "${PERSIST_PART}" "${MNT_TMP}"
+  echo "/ union" > "${MNT_TMP}/persistence.conf"
+  # Pre-create the hermes home structure so it's immediately writable on boot
+  mkdir -p "${MNT_TMP}/home/hermes/.hermes/logs"
+  chown -R 1000:1000 "${MNT_TMP}/home" 2>/dev/null || true
+  sync
+  umount "${MNT_TMP}"
+  rm -rf "${MNT_TMP}"
+
+  echo "  ✓ Persistence partition ready (${PERSIST_PART}, label=HERMESPST)"
+  echo "  ℹ  Select 'Persistence' in the GRUB boot menu to use it."
 fi
 
 # ---- Verify -----------------------------------------------------------------
@@ -191,7 +268,8 @@ if [[ "$VERIFY" == "true" ]]; then
   echo ""
   echo "▶ Verifying write (SHA-256)..."
   ISO_SUM=$(sha256sum "$ISO" | cut -d' ' -f1)
-  USB_SUM=$(dd if="$DEVICE" bs=4M count=$(( (ISO_BYTES + 4194303) / 4194304 )) 2>/dev/null | sha256sum | cut -d' ' -f1)
+  USB_SUM=$(dd if="$DEVICE" bs=4M count=$(( (ISO_BYTES + 4194303) / 4194304 )) 2>/dev/null \
+    | sha256sum | cut -d' ' -f1)
   if [[ "$ISO_SUM" == "$USB_SUM" ]]; then
     echo "  ✓ Verify passed — USB matches ISO"
   else
@@ -208,4 +286,6 @@ echo "════════════════════════�
 echo "  ✅  USB ready. Eject and plug into target PC."
 echo "  🔑  Default login: hermes / hermes"
 echo "  🤖  Gateway starts automatically after setup."
+[[ -n "$PERSISTENCE_SIZE" ]] && \
+echo "  💾  Persistence: select it in the GRUB menu."
 echo "═══════════════════════════════════════════════"

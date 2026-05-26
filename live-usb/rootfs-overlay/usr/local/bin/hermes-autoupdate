@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Hermes AgentCyber — boot-time auto-update
+#
+# Runs as a oneshot systemd service before hermes-gateway.service.
+# Set HERMES_AUTOUPDATE=true in /home/hermes/.hermes/config.env to enable.
+# Always exits 0 so a failed update never blocks the gateway from starting.
+
+set -euo pipefail
+
+LOG_DIR="/home/hermes/.hermes/logs"
+LOG="${LOG_DIR}/autoupdate.log"
+VENV="/opt/hermes-venv"
+HERMES_PYTHON="${VENV}/bin/python"
+SRC_PATH_FILE="/opt/hermes-source-path"
+
+mkdir -p "${LOG_DIR}"
+
+_log() {
+  printf "[%s] %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "${LOG}"
+}
+
+# ---- Check if enabled --------------------------------------------------------
+if [[ "${HERMES_AUTOUPDATE:-false}" != "true" ]]; then
+  _log "Auto-update disabled (HERMES_AUTOUPDATE != true). Skipping."
+  exit 0
+fi
+
+_log "Hermes AgentCyber auto-update starting..."
+
+# ---- Network check -----------------------------------------------------------
+if ! ping -c1 -W5 8.8.8.8 &>/dev/null && ! ping -c1 -W5 1.1.1.1 &>/dev/null; then
+  _log "No network connectivity detected. Skipping update."
+  exit 0
+fi
+
+# ---- Update from source or PyPI ----------------------------------------------
+if [[ -f "${SRC_PATH_FILE}" ]]; then
+  SRC_DIR=$(cat "${SRC_PATH_FILE}")
+  if [[ -d "${SRC_DIR}/.git" ]]; then
+    _log "Pulling latest from git: ${SRC_DIR}"
+    git -C "${SRC_DIR}" fetch --quiet origin 2>>"${LOG}" || true
+    git -C "${SRC_DIR}" pull --ff-only --quiet 2>>"${LOG}" || \
+      _log "git pull failed — running with existing version"
+  fi
+  _log "Reinstalling package from source..."
+  uv pip install --python "${HERMES_PYTHON}" --no-cache-dir -e "${SRC_DIR}" \
+    >>"${LOG}" 2>&1 || _log "pip install failed — running with existing version"
+else
+  _log "Upgrading hermes-agentcyber from PyPI..."
+  uv pip install --python "${HERMES_PYTHON}" --no-cache-dir --upgrade hermes-agentcyber \
+    >>"${LOG}" 2>&1 || _log "pip upgrade failed — running with existing version"
+fi
+
+_log "Auto-update complete."
+exit 0

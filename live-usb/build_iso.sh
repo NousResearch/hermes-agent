@@ -6,21 +6,27 @@
 # Builds a bootable Debian 12 (bookworm) ISO with Hermes AgentCyber
 # pre-installed and configured to auto-start on boot.
 #
-# The resulting ISO boots on both UEFI and legacy BIOS systems. When the
-# system starts it either:
-#   1. Runs the first-boot wizard (interactive, on first boot)
-#   2. Starts hermes-gateway as a systemd service (subsequent boots)
-#   3. Optionally runs an automated cyber sweep (headless mode)
+# Supported architectures:
+#   amd64 — hybrid BIOS + UEFI boot (write with dd to any USB)
+#   arm64 — EFI-only boot (Raspberry Pi 4/5, Apple Silicon VMs, ARM servers)
+#           Requires qemu-user-static + binfmt-support on the build host.
 #
-# Requirements (install on the BUILD host):
+# The resulting ISO boots straight into Hermes. On first boot it runs the
+# setup wizard; subsequent boots start hermes-gateway automatically.
+# Set HERMES_AUTOUPDATE=true in config.env to update hermes on every boot.
+#
+# Requirements — amd64 build host:
 #   apt-get install -y debootstrap squashfs-tools xorriso grub-efi-amd64-bin \
-#                      grub-pc-bin mtools dosfstools isolinux
+#                      grub-pc-bin mtools dosfstools
+#
+# Additional requirements — ARM64 cross-compilation:
+#   apt-get install -y qemu-user-static binfmt-support grub-efi-arm64-bin
 #
 # Usage:
 #   sudo ./build_iso.sh [OPTIONS]
 #
 # Options:
-#   --arch ARCH           Target architecture (default: amd64)
+#   --arch ARCH           Target architecture: amd64 (default) or arm64
 #   --suite SUITE         Debian suite (default: bookworm)
 #   --mirror URL          Debian mirror (default: http://deb.debian.org/debian)
 #   --output PATH         Output ISO path (default: ./hermes-cyber-live.iso)
@@ -63,6 +69,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ---- Architecture setup -----------------------------------------------------
+case "$ARCH" in
+  amd64)
+    GRUB_EFI_PKG="grub-efi-amd64-bin"
+    EFI_NAME="bootx64.efi"
+    EFI_GRUB_FORMAT="x86_64-efi"
+    SQUASHFS_BCJ="x86"
+    CROSS_COMPILE=false
+    ;;
+  arm64)
+    GRUB_EFI_PKG="grub-efi-arm64-bin"
+    EFI_NAME="bootaa64.efi"
+    EFI_GRUB_FORMAT="arm64-efi"
+    SQUASHFS_BCJ="arm"
+    CROSS_COMPILE=true
+    ;;
+  *)
+    echo "❌  Unsupported architecture: ${ARCH}  (supported: amd64, arm64)"
+    exit 1
+    ;;
+esac
+
 # ---- Privilege check --------------------------------------------------------
 if [[ $EUID -ne 0 ]]; then
   echo "❌  This script must run as root (required for debootstrap + mount)."
@@ -71,7 +99,8 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # ---- Dependency check -------------------------------------------------------
-REQUIRED_CMDS=(debootstrap mksquashfs xorriso grub-mkrescue mformat)
+REQUIRED_CMDS=(debootstrap mksquashfs xorriso mformat mkdosfs)
+[[ "$CROSS_COMPILE" == "true" ]] && REQUIRED_CMDS+=(qemu-aarch64-static)
 MISSING=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
   command -v "$cmd" &>/dev/null || MISSING+=("$cmd")
@@ -79,8 +108,19 @@ done
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "❌  Missing build dependencies: ${MISSING[*]}"
   echo "    Install with:"
-  echo "    apt-get install -y debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-pc-bin mtools dosfstools"
+  if [[ "$CROSS_COMPILE" == "true" ]]; then
+    echo "    apt-get install -y debootstrap squashfs-tools xorriso ${GRUB_EFI_PKG} mtools dosfstools qemu-user-static binfmt-support"
+  else
+    echo "    apt-get install -y debootstrap squashfs-tools xorriso grub-efi-amd64-bin grub-pc-bin mtools dosfstools"
+  fi
   exit 1
+fi
+
+# For ARM64 cross-compilation, ensure binfmt is registered
+if [[ "$CROSS_COMPILE" == "true" ]]; then
+  if ! update-binfmts --display qemu-aarch64 2>/dev/null | grep -q "enabled"; then
+    update-binfmts --enable qemu-aarch64 2>/dev/null || true
+  fi
 fi
 
 # ---- Working directory ------------------------------------------------------
@@ -103,17 +143,33 @@ echo "════════════════════════�
 echo "  Hermes AgentCyber — Live USB Builder"
 echo "  Suite: ${SUITE}  Arch: ${ARCH}  Mirror: ${MIRROR}"
 echo "  Output: ${OUTPUT}"
+[[ "$CROSS_COMPILE" == "true" ]] && echo "  Mode: ARM64 cross-compilation (via qemu-user-static)"
 echo "═══════════════════════════════════════════════════════════"
 
 # ---- Step 1: debootstrap base system ----------------------------------------
 echo ""
 echo "▶ [1/7] Bootstrapping Debian ${SUITE} (${ARCH})..."
 mkdir -p "${ROOTFS}"
-DEBOOT_FLAGS="--arch=${ARCH} --include=systemd,systemd-sysv,dbus,locales,ca-certificates,curl,wget,iproute2,iputils-ping,net-tools,nmap,tcpdump,openssh-client,git,sudo,python3,python3-pip,python3-venv,less,vim,tmux,parted,usbutils,pciutils,lsof,strace,file,binutils,ncat"
-if [[ "$VERBOSE" == "true" ]]; then
-  debootstrap $DEBOOT_FLAGS "${SUITE}" "${ROOTFS}" "${MIRROR}"
+DEBOOT_INCLUDES="systemd,systemd-sysv,dbus,locales,ca-certificates,curl,wget,iproute2,iputils-ping,net-tools,nmap,tcpdump,openssh-client,git,sudo,python3,python3-pip,python3-venv,less,vim,tmux,parted,usbutils,pciutils,lsof,strace,file,binutils,ncat,live-boot,live-config,live-config-systemd"
+DEBOOT_FLAGS="--arch=${ARCH} --include=${DEBOOT_INCLUDES}"
+
+if [[ "$CROSS_COMPILE" == "true" ]]; then
+  # Two-stage bootstrap for cross-architecture builds
+  if [[ "$VERBOSE" == "true" ]]; then
+    debootstrap $DEBOOT_FLAGS --foreign "${SUITE}" "${ROOTFS}" "${MIRROR}"
+  else
+    debootstrap $DEBOOT_FLAGS --foreign "${SUITE}" "${ROOTFS}" "${MIRROR}" 2>&1 | grep -E "^I:|^E:|^W:" || true
+  fi
+  # Inject qemu binary so chroot can execute arm64 binaries
+  cp /usr/bin/qemu-aarch64-static "${ROOTFS}/usr/bin/"
+  echo "  Running debootstrap second stage (in qemu-aarch64 chroot)..."
+  chroot "${ROOTFS}" /debootstrap/debootstrap --second-stage 2>&1 | grep -E "^I:|^E:|^W:" || true
 else
-  debootstrap $DEBOOT_FLAGS "${SUITE}" "${ROOTFS}" "${MIRROR}" 2>&1 | grep -E "^I:|^E:|^W:" || true
+  if [[ "$VERBOSE" == "true" ]]; then
+    debootstrap $DEBOOT_FLAGS "${SUITE}" "${ROOTFS}" "${MIRROR}"
+  else
+    debootstrap $DEBOOT_FLAGS "${SUITE}" "${ROOTFS}" "${MIRROR}" 2>&1 | grep -E "^I:|^E:|^W:" || true
+  fi
 fi
 echo "  ✓ Base system bootstrapped"
 
@@ -243,9 +299,11 @@ cp -a "${OVERLAY}/." "${ROOTFS}/"
 # Fix permissions on executables
 chmod 755 "${ROOTFS}/usr/local/bin/hermes-live"
 chmod 755 "${ROOTFS}/usr/local/bin/hermes-firstboot"
+chmod 755 "${ROOTFS}/usr/local/bin/hermes-autoupdate"
 
 # Enable systemd services
 chroot "${ROOTFS}" systemctl enable hermes-firstboot.service
+chroot "${ROOTFS}" systemctl enable hermes-autoupdate.service
 chroot "${ROOTFS}" systemctl enable hermes-gateway.service
 
 # Set hostname
@@ -265,9 +323,9 @@ echo "  ✓ Overlay files installed"
 # ---- Step 6: Build squashfs + ISO -------------------------------------------
 echo ""
 echo "▶ [6/7] Building squashfs filesystem..."
-mkdir -p "${SQUASHFS_DIR}" "${ISO_STAGING}/boot/grub" "${ISO_STAGING}/EFI/boot"
+mkdir -p "${SQUASHFS_DIR}" "${ISO_STAGING}/boot/grub" "${ISO_STAGING}/EFI/BOOT"
 mksquashfs "${ROOTFS}" "${SQUASHFS_DIR}/filesystem.squashfs" \
-  -comp xz -b 1M -Xbcj x86 \
+  -comp xz -b 1M -Xbcj "${SQUASHFS_BCJ}" \
   -e "${ROOTFS}/proc/*" "${ROOTFS}/sys/*" "${ROOTFS}/dev/*" \
   -noappend 2>&1 | tail -3
 echo "  ✓ Squashfs built ($(du -sh "${SQUASHFS_DIR}/filesystem.squashfs" | cut -f1))"
@@ -282,31 +340,79 @@ cp "${INITRD}" "${ISO_STAGING}/boot/initrd.img"
 cp "${SCRIPT_DIR}/grub/grub.cfg" "${ISO_STAGING}/boot/grub/grub.cfg"
 echo "  ✓ Boot files copied"
 
+# ---- Build EFI bootloader ---------------------------------------------------
+echo "  Building GRUB EFI image (${EFI_GRUB_FORMAT})..."
+grub-mkstandalone \
+  --format="${EFI_GRUB_FORMAT}" \
+  --output="${WORK_DIR}/${EFI_NAME}" \
+  --locales="" \
+  --fonts="" \
+  "boot/grub/grub.cfg=${ISO_STAGING}/boot/grub/grub.cfg"
+cp "${WORK_DIR}/${EFI_NAME}" "${ISO_STAGING}/EFI/BOOT/"
+
+# FAT ESP image (El Torito EFI entry)
+EFIIMG="${WORK_DIR}/efi.img"
+dd if=/dev/zero of="${EFIIMG}" bs=1M count=4 2>/dev/null
+mkdosfs -F 32 "${EFIIMG}" 2>/dev/null
+mmd  -i "${EFIIMG}" ::/EFI ::/EFI/BOOT
+mcopy -i "${EFIIMG}" "${WORK_DIR}/${EFI_NAME}" "::/EFI/BOOT/${EFI_NAME^^}"
+cp "${EFIIMG}" "${ISO_STAGING}/efi.img"
+echo "  ✓ EFI bootloader ready"
+
 echo ""
 echo "▶ [7/7] Building bootable ISO with xorriso..."
-xorriso -as mkisofs \
-  -iso-level 3 \
-  -full-iso9660-filenames \
-  -volid "HERMES-CYBER" \
-  -appid "Hermes AgentCyber Live" \
-  --grub2-mbr /usr/lib/grub/i386-pc/boot_hybrid.img \
-  -partition_offset 16 \
-  --mbr-force-bootable \
-  -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b /usr/lib/grub/i386-pc/cdboot.img \
-  -appended_part_as_gpt \
-  -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
-  -c "/boot/grub/boot.cat" \
-  -b "/boot/grub/i386-pc/eltorito.img" \
-  -no-emul-boot \
-  -boot-load-size 4 \
-  -boot-info-table \
-  --grub2-boot-info \
-  -eltorito-alt-boot \
-  -e "--interval:appended_partition_2_start_2548s_size_16s:all::" \
-  -no-emul-boot \
-  -boot-load-size 16 \
-  -o "${OUTPUT}" \
-  "${ISO_STAGING}" 2>&1 | tail -5
+if [[ "$ARCH" == "amd64" ]]; then
+  # Hybrid MBR + EFI (works on legacy BIOS and UEFI)
+  # Requires grub-pc-bin for the i386-pc stages
+  mkdir -p "${ISO_STAGING}/boot/grub/i386-pc"
+  if [[ -d /usr/lib/grub/i386-pc ]]; then
+    grub-mkstandalone \
+      --format=i386-pc \
+      --output="${WORK_DIR}/core.img" \
+      --locales="" \
+      "boot/grub/grub.cfg=${ISO_STAGING}/boot/grub/grub.cfg" 2>/dev/null || true
+    cat /usr/lib/grub/i386-pc/cdboot.img "${WORK_DIR}/core.img" \
+      > "${ISO_STAGING}/boot/grub/i386-pc/eltorito.img" 2>/dev/null || true
+  fi
+
+  MBR_HYBRID_IMG="/usr/lib/grub/i386-pc/boot_hybrid.img"
+  MBR_FLAGS=()
+  if [[ -f "${MBR_HYBRID_IMG}" ]]; then
+    MBR_FLAGS+=(--grub2-mbr "${MBR_HYBRID_IMG}" -partition_offset 16 --mbr-force-bootable)
+  fi
+
+  xorriso -as mkisofs \
+    -iso-level 3 \
+    -full-iso9660-filenames \
+    -volid "HERMES-CYBER" \
+    -appid "Hermes AgentCyber Live" \
+    "${MBR_FLAGS[@]+"${MBR_FLAGS[@]}"}" \
+    -c "/boot/grub/boot.cat" \
+    -b "/boot/grub/i386-pc/eltorito.img" \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    --grub2-boot-info \
+    -eltorito-alt-boot \
+    -e "efi.img" \
+    -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    -o "${OUTPUT}" \
+    "${ISO_STAGING}" 2>&1 | tail -5
+else
+  # ARM64 — EFI only (no MBR/legacy BIOS support)
+  xorriso -as mkisofs \
+    -iso-level 3 \
+    -full-iso9660-filenames \
+    -volid "HERMES-CYBER" \
+    -appid "Hermes AgentCyber Live" \
+    -eltorito-alt-boot \
+    -e "efi.img" \
+    -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    -o "${OUTPUT}" \
+    "${ISO_STAGING}" 2>&1 | tail -5
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"

@@ -182,6 +182,133 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
     return False
 
 
+
+_STATE_FTS_TABLES = ("messages_fts", "messages_fts_trigram")
+_STATE_FTS_TRIGGERS = (
+    "messages_fts_insert",
+    "messages_fts_delete",
+    "messages_fts_update",
+    "messages_fts_trigram_insert",
+    "messages_fts_trigram_delete",
+    "messages_fts_trigram_update",
+)
+
+
+def _check_state_db_fts_integrity(conn) -> tuple[bool, str, bool]:
+    """Return (ok, detail, repairable) for state.db FTS health.
+
+    The canonical transcript data lives in ``messages``. The two FTS5 tables are
+    derived indexes used by session search. SQLite can report malformed FTS5
+    inverted indexes while ordinary ``SELECT COUNT(*) FROM sessions`` still
+    succeeds, so doctor must probe the FTS layer explicitly.
+    """
+    try:
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+    except Exception as exc:
+        return False, f"integrity_check failed: {exc}", False
+
+    problems = [
+        str(row[0]) for row in rows
+        if row and str(row[0]).lower() != "ok"
+    ]
+    if problems:
+        joined = "; ".join(problems[:3])
+        repairable = any(
+            "messages_fts" in item or "fts5" in item.lower()
+            for item in problems
+        )
+        return False, joined, repairable
+
+    try:
+        message_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    except Exception as exc:
+        return False, f"messages table check failed: {exc}", False
+
+    mismatches: list[str] = []
+    for table in _STATE_FTS_TABLES:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if not exists:
+            mismatches.append(f"{table} missing")
+            continue
+        try:
+            fts_count = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        except Exception as exc:
+            return False, f"{table} count failed: {exc}", True
+        if fts_count != message_count:
+            mismatches.append(f"{table} has {fts_count} rows; messages has {message_count}")
+        try:
+            # Force traversal of the FTS5 inverted index. A plain rowid scan can
+            # succeed even when the MATCH index is malformed.
+            conn.execute(
+                f'SELECT rowid FROM "{table}" WHERE "{table}" MATCH ? LIMIT 1',
+                ("the",),
+            ).fetchone()
+        except Exception as exc:
+            return False, f"{table} MATCH probe failed: {exc}", True
+
+    if mismatches:
+        return False, "; ".join(mismatches), True
+    return True, "FTS indexes healthy", False
+
+
+def _backup_state_db_for_doctor(db_path: Path) -> Path:
+    """Create a consistent sqlite backup before mutating state.db."""
+    import datetime
+    import sqlite3
+
+    backup_path = db_path.with_name(
+        f"{db_path.name}.doctor-backup-"
+        f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    src = sqlite3.connect(str(db_path))
+    try:
+        dst = sqlite3.connect(str(backup_path))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    return backup_path
+
+
+def _rebuild_state_db_fts_indexes(db_path: Path) -> None:
+    """Rebuild derived state.db FTS5 indexes from the canonical messages table."""
+    import sqlite3
+    from hermes_state import FTS_SQL, FTS_TRIGRAM_SQL
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for trigger in _STATE_FTS_TRIGGERS:
+            conn.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
+        for table in _STATE_FTS_TABLES:
+            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+        conn.executescript(FTS_SQL)
+        conn.executescript(FTS_TRIGRAM_SQL)
+        backfill_sql = (
+            "SELECT id, "
+            "COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') "
+            "FROM messages"
+        )
+        conn.execute(f"INSERT INTO messages_fts(rowid, content) {backfill_sql}")
+        conn.execute(f"INSERT INTO messages_fts_trigram(rowid, content) {backfill_sql}")
+        conn.commit()
+    except BaseException:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 def check_ok(text: str, detail: str = ""):
     print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
 
@@ -1030,8 +1157,47 @@ def run_doctor(args):
             conn = sqlite3.connect(str(state_db_path))
             cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             count = cursor.fetchone()[0]
+            fts_ok, fts_detail, fts_repairable = _check_state_db_fts_integrity(conn)
             conn.close()
-            check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+            if fts_ok:
+                check_ok(f"{_DHH}/state.db exists ({count} sessions)", f"({fts_detail})")
+            else:
+                check_warn(
+                    f"{_DHH}/state.db exists ({count} sessions) "
+                    "but FTS indexes have issues",
+                    f"({fts_detail})",
+                )
+                if fts_repairable:
+                    if should_fix:
+                        backup_path = _backup_state_db_for_doctor(state_db_path)
+                        _rebuild_state_db_fts_indexes(state_db_path)
+                        conn = sqlite3.connect(str(state_db_path))
+                        try:
+                            repaired_ok, repaired_detail, _ = _check_state_db_fts_integrity(conn)
+                        finally:
+                            conn.close()
+                        if repaired_ok:
+                            check_ok(
+                                "Rebuilt state.db FTS indexes",
+                                f"(backup: {backup_path.name}; {repaired_detail})",
+                            )
+                            fixed_count += 1
+                        else:
+                            check_warn(
+                                "Rebuilt state.db FTS indexes but verification still reports issues",
+                                f"({repaired_detail}; backup: {backup_path.name})",
+                            )
+                            issues.append(
+                                "state.db FTS rebuild did not verify cleanly — "
+                                "inspect the backup and database manually"
+                            )
+                    else:
+                        issues.append("state.db FTS indexes need rebuild — run 'hermes doctor --fix'")
+                else:
+                    issues.append(
+                        "state.db integrity issue is not an FTS-only problem — "
+                        "inspect or restore from backup"
+                    )
         except Exception as e:
             check_warn(f"{_DHH}/state.db exists but has issues: {e}")
     else:

@@ -5906,11 +5906,11 @@ def claim_unseen_mvp_events(
             "AND e.kind IN (" + ",".join("?" * len(kind_list)) + ") "
             "AND e.task_id NOT IN ("
             "  SELECT DISTINCT s.task_id FROM kanban_notify_subs s "
-            "  WHERE s.task_id != ?"
+            "  WHERE s.task_id != ? AND s.platform = ?"
             ") "
             "ORDER BY e.id ASC"
         )
-        params: list[Any] = [old_cursor] + kind_list + [MVP_FALLBACK_TASK_ID]
+        params: list[Any] = [old_cursor] + kind_list + [MVP_FALLBACK_TASK_ID, platform]
         rows = conn.execute(q, params).fetchall()
         out: list[Event] = []
         max_id = old_cursor

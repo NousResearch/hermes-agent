@@ -4601,10 +4601,23 @@ class GatewayRunner:
                                     "kanban notifier: dropping subscription "
                                     "%s on %s after %d consecutive send failures",
                                     sub["task_id"], platform_str, fails,
+                                    MAX_SEND_FAILURES,
                                 )
-                                await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
-                                sub_fail_counts.pop(sub_key, None)
+                                mvp_task_id = getattr(_kb, "MVP_FALLBACK_TASK_ID", "__mvp_fallback__")
+                                if sub.get("task_id") == mvp_task_id:
+                                    # The MVP fallback row is re-ensured every tick. Deleting it
+                                    # would recreate it with cursor 0 and replay old verifier /
+                                    # closeout events. Keep the already-advanced cursor and drop
+                                    # only the failed batch.
+                                    sub_fail_counts.pop(sub_key, None)
+                                else:
+                                    await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                    sub_fail_counts.pop(sub_key, None)
                             else:
+                                # Rewind the pre-send claim on transient failure so a later
+                                # tick can retry. After too many failures, dropping the
+                                # subscription is the terminal action for explicit subs; the
+                                # MVP fallback keeps its cursor to avoid replay-from-zero loops.
                                 await asyncio.to_thread(
                                     self._kanban_rewind,
                                     sub,
@@ -4612,9 +4625,6 @@ class GatewayRunner:
                                     d.get("old_cursor", 0),
                                     board_slug,
                                 )
-                            # Rewind the pre-send claim on transient failure so
-                            # a later tick can retry. After too many failures,
-                            # dropping the subscription is the terminal action.
                             break
                     else:
                         # All events delivered; advance cursor. The cursor

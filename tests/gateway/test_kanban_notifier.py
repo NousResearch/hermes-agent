@@ -446,6 +446,63 @@ def test_kanban_notifier_mvp_does_not_duplicate_per_task_sub(tmp_path, monkeypat
     assert tid2 in mvp[0]["text"]
 
 
+def test_kanban_notifier_mvp_fallback_delivers_when_only_non_discord_sub_exists(tmp_path, monkeypatch):
+    """Non-Discord subscriptions must not suppress the MVP Discord fallback."""
+    db_path = tmp_path / "mvp-non-discord-sub.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="telegram-only", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="telegram-chat")
+        kb._append_event(
+            conn,
+            tid,
+            kind="verifier_result",
+            payload={"verdict": "PASS"},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner_with_discord(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["chat_id"] == "1500713192765132912"
+    assert tid in adapter.sent[0]["text"]
+
+
+def test_kanban_notifier_mvp_drop_does_not_replay_old_event_after_send_failures(tmp_path, monkeypatch):
+    """After repeated MVP send failures, old events must not replay from cursor 0."""
+    db_path = tmp_path / "mvp-failure-no-replay.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="orphan", assignee="worker")
+        kb._append_event(conn, tid, kind="verifier_result", payload={"verdict": "PASS"})
+    finally:
+        conn.close()
+
+    failing = FailingAdapter()
+    runner = _make_runner_with_discord(failing)
+    for _ in range(3):
+        runner._running = True
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert failing.attempts == 3
+
+    recovered = RecordingAdapter()
+    runner.adapters = {Platform.DISCORD: recovered}
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert recovered.sent == []
+
+
 def test_kanban_notifier_mvp_does_not_activate_without_discord_adapter(tmp_path, monkeypatch):
     """MVP fallback must stay silent when Discord adapter is not connected."""
     db_path = tmp_path / "mvp-no-discord.db"

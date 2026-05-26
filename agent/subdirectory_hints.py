@@ -16,6 +16,7 @@ Inspired by Block/goose's SubdirectoryHintTracker.
 import logging
 import os
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
@@ -45,14 +46,28 @@ _COMMAND_TOOLS = {"terminal"}
 # Prevents scanning all the way to / for deeply nested paths.
 _MAX_ANCESTOR_WALK = 5
 
-
-def _is_ancestor_or_same(a: Path, b: Path) -> bool:
-    """Check if *a* is the same as or an ancestor of *b* (parent directory check)."""
+def _find_git_root(start: Path) -> Optional[Path]:
+    """Return the git repository root containing *start*, or None."""
     try:
-        b.relative_to(a)
-        return True
-    except ValueError:
-        return False
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(start) if start.is_dir() else str(start.parent),
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return Path(result.stdout.strip()).resolve()
+    except Exception:
+        pass
+    return None
+
+
+def _is_within_workspace(path: Path, workspace_root: Path) -> bool:
+    """Check if *path* is inside *workspace_root* (symlink-safe)."""
+    resolved = path.resolve()
+    resolved_root = workspace_root.resolve()
+    # Use trailing sep to prevent /foo/bar matching /foo/barbaz
+    return resolved == resolved_root or str(resolved).startswith(str(resolved_root) + os.sep)
+
 
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
@@ -72,6 +87,9 @@ class SubdirectoryHintTracker:
         self._loaded_dirs: Set[Path] = set()
         # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
+        # Workspace boundary: git root if available, otherwise working_dir
+        git_root = _find_git_root(self.working_dir)
+        self._workspace_root = git_root if git_root else self.working_dir
 
     def check_tool_call(
         self,
@@ -120,11 +138,13 @@ class SubdirectoryHintTracker:
     def _add_path_candidate(self, raw_path: str, candidates: Set[Path]):
         """Resolve a raw path and add its directory + ancestors to candidates.
 
-        Walks up from the resolved directory toward the filesystem root,
-        stopping at the first directory already in ``_loaded_dirs`` (or after
-        ``_MAX_ANCESTOR_WALK`` levels).  This ensures that reading
-        ``project/src/main.py`` discovers ``project/AGENTS.md`` even when
-        ``project/src/`` has no hint files of its own.
+        Walks up from the resolved directory toward the workspace root,
+        stopping at the first directory already in ``_loaded_dirs``, at the
+        workspace boundary, or after ``_MAX_ANCESTOR_WALK`` levels.
+
+        Paths outside the workspace boundary are silently skipped to prevent
+        unrelated AGENTS.md / CLAUDE.md / .cursorrules files from being
+        injected into the agent context.
         """
         try:
             p = Path(raw_path).expanduser()
@@ -134,9 +154,14 @@ class SubdirectoryHintTracker:
             # Use parent if it's a file path (has extension or doesn't exist as dir)
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
-            # Walk up ancestors — stop at already-loaded or root
+            # Skip paths outside the workspace boundary entirely
+            if not _is_within_workspace(p, self._workspace_root):
+                return
+            # Walk up ancestors — stop at already-loaded, workspace root, or fs root
             for _ in range(_MAX_ANCESTOR_WALK):
                 if p in self._loaded_dirs:
+                    break
+                if not _is_within_workspace(p, self._workspace_root):
                     break
                 if self._is_valid_subdir(p):
                     candidates.add(p)
@@ -167,13 +192,7 @@ class SubdirectoryHintTracker:
             self._add_path_candidate(token, candidates)
 
     def _is_valid_subdir(self, path: Path) -> bool:
-        """Check if path is a valid directory to scan for hints.
-
-        Only allow subdirectories within the working directory tree.
-        This prevents loading AGENTS.md from outside the active workspace
-        (e.g. ~/.codex/AGENTS.md, ~/.claude/CLAUDE.md), which causes
-        cross-agent context contamination and instruction mixup.
-        """
+        """Check if path is a valid directory to scan for hints."""
         try:
             if not path.is_dir():
                 return False
@@ -181,42 +200,11 @@ class SubdirectoryHintTracker:
             return False
         if path in self._loaded_dirs:
             return False
-        # Reject paths outside the working directory tree.
-        # path.resolve() may differ from working_dir.resolve() due to symlinks,
-        # but path.is_relative_to(working_dir) handles both absolute and
-        # symlinked paths correctly on Python 3.9+.
-        try:
-            if not path.is_relative_to(self.working_dir):
-                return False
-        except (OSError, ValueError):
-            # Older Python or path resolution error — fall back to parent
-            # check as a best-effort safeguard.
-            if not _is_ancestor_or_same(self.working_dir, path):
-                return False
         return True
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
-        """Load hint files from a directory. Returns formatted text or None.
-
-        Only loads hints from directories within the working directory tree.
-        """
+        """Load hint files from a directory. Returns formatted text or None."""
         self._loaded_dirs.add(directory)
-
-        # Reject paths outside the working directory tree.
-        try:
-            if not directory.is_relative_to(self.working_dir):
-                logger.debug(
-                    "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
-                )
-                return None
-        except (OSError, ValueError):
-            if not _is_ancestor_or_same(self.working_dir, directory):
-                logger.debug(
-                    "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
-                )
-                return None
 
         found_hints = []
         for filename in _HINT_FILENAMES:

@@ -142,6 +142,38 @@ async def test_start_incoming_returns_protocol_failure_for_invalid_response_shap
     assert raw_fragment not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_start_incoming_returns_protocol_failure_for_invalid_utf8_response(
+    tmp_path,
+    caplog,
+):
+    port = SidecarMediaPort(
+        command=_write_child(
+            tmp_path,
+            """
+            import sys
+
+            sys.stdout.buffer.write(b"sidecar-secret\\xff\\n")
+            sys.stdout.flush()
+            """,
+        )
+    )
+
+    caplog.set_level("WARNING", logger="gateway.calls.native.sidecar")
+    result = await port.start_incoming(_request())
+
+    assert result.ok is False
+    assert result.code == "call_sidecar_protocol_failed"
+    assert result.message
+    assert any(
+        record.reason == "invalid_response_encoding"
+        for record in caplog.records
+        if record.message == "SimpleX native call sidecar protocol failure"
+    )
+    assert "sidecar-secret" not in caplog.text
+    assert "0xff" not in caplog.text
+
+
 @pytest.mark.parametrize(
     "offer",
     [

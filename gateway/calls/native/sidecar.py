@@ -81,6 +81,8 @@ class SidecarMediaPort:
             try:
                 response = json.loads(line.decode("utf-8"))
                 return self._result_from_response(response)
+            except UnicodeDecodeError:
+                return self._protocol_failure("invalid_response_encoding")
             except json.JSONDecodeError:
                 return self._protocol_failure("invalid_response")
             except _SidecarProtocolError as exc:

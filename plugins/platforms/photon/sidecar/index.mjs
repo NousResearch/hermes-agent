@@ -111,10 +111,13 @@ function badRequest(res, msg) {
   res.end(JSON.stringify({ ok: false, error: msg }));
 }
 
-function serverError(res, msg) {
+function serverError(res) {
   res.statusCode = 500;
   res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify({ ok: false, error: msg }));
+  // Don't leak stack traces or raw exception text to the caller — even
+  // though we listen on loopback, the supervisor logs the real error
+  // and the client only needs a generic failure signal.
+  res.end(JSON.stringify({ ok: false, error: "internal sidecar error" }));
 }
 
 function ok(res, data) {
@@ -195,7 +198,9 @@ const server = http.createServer(async (req, res) => {
       "photon-sidecar: handler error: " +
         (e && e.stack ? e.stack : String(e))
     );
-    return serverError(res, String((e && e.message) || e));
+    // serverError() intentionally returns a generic message — see its
+    // body for the rationale.
+    return serverError(res);
   }
 });
 

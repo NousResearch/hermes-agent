@@ -543,7 +543,7 @@ class PhotonAdapter(BasePlatformAdapter):
             except subprocess.TimeoutExpired:
                 if sys.platform != "win32":
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)  # windows-footgun: ok
                     except (ProcessLookupError, PermissionError):
                         proc.terminate()
                 else:

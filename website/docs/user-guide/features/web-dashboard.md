@@ -323,26 +323,45 @@ If the gate would engage but **no** `DashboardAuthProvider` is registered (no No
 
 ### Default provider: Nous Research
 
-The bundled `plugins/dashboard_auth/nous` plugin is **always installed** and auto-loaded. It auto-registers a `DashboardAuthProvider` named `nous` when the per-instance client ID is set:
+The bundled `plugins/dashboard_auth/nous` plugin is **always installed** and auto-loaded. It auto-registers a `DashboardAuthProvider` named `nous` when a client ID is configured.
 
-| Env var | Required? | Format | Provisioned by |
+#### Configuration
+
+The plugin reads from two surfaces, with the environment variable winning when set non-empty:
+
+**`config.yaml`** — the canonical surface:
+
+```yaml
+dashboard:
+  oauth:
+    client_id: agent:01HXYZ…             # required to engage the gate
+    portal_url: https://portal.nousresearch.com  # optional; defaults to production
+```
+
+**Environment variables** — operator overrides:
+
+| Env var | Overrides | Format | Provisioned by |
 |---------|-----------|--------|----------------|
-| `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | **yes** | `agent:{instance_id}` | Nous Portal at Fly.io provisioning time |
-| `HERMES_DASHBOARD_PORTAL_URL` | no | `https://portal.nousresearch.com` (default) | Portal — override only for staging or a custom deployment |
+| `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | `dashboard.oauth.client_id` | `agent:{instance_id}` | Nous Portal at Fly.io provisioning time |
+| `HERMES_DASHBOARD_PORTAL_URL` | `dashboard.oauth.portal_url` | URL (default: `https://portal.nousresearch.com`) | Portal — override only for staging or a custom deployment |
 
-`HERMES_DASHBOARD_OAUTH_CLIENT_ID` is the only required variable; it's injected automatically when you deploy through the Nous Portal. The portal URL defaults to production, so the typical operator never touches it — set it explicitly only if you're pointing at staging (`portal.rewbs.uk`) or a custom Portal deployment.
+Per the Hermes Agent convention (`~/.hermes/.env` is for API keys / secrets only), **`config.yaml` is the recommended place to set these values** for local dev, on-prem, and any deployment you control directly. The environment-variable path exists so Fly.io's platform-secret injection can push per-deploy `client_id`s without anyone having to edit `config.yaml` inside the image — that's its primary purpose.
 
-If `HERMES_DASHBOARD_OAUTH_CLIENT_ID` is absent or malformed, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
+Empty environment values are treated as unset, so a provisioned-but-not-populated Fly secret can't accidentally shadow a valid `config.yaml` entry.
+
+If neither source provides a client_id, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
 
 ```
 Refusing to bind dashboard to 0.0.0.0 — the OAuth auth gate engages on
 non-loopback binds, but no auth providers are registered.
 
 Bundled providers reported these issues:
-  • nous: HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set. The Nous Portal
+  • nous: HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set (and
+    dashboard.oauth.client_id in config.yaml is empty). The Nous Portal
     provisions this env var (shape 'agent:{instance_id}') when it
     deploys a Hermes Agent instance — set it to your provisioned
-    client id, or pass --insecure to skip the OAuth gate entirely.
+    client id (either as an env var or under dashboard.oauth.client_id
+    in config.yaml), or pass --insecure to skip the OAuth gate entirely.
 
 Or pass --insecure to skip the auth gate (NOT recommended on untrusted
 networks).
@@ -406,10 +425,19 @@ The login page lists all registered providers; multiple providers can be stacked
 ### Verifying the gate is on
 
 ```bash
-# Run the dashboard with the gate engaged (Fly.io shape).
-# HERMES_DASHBOARD_PORTAL_URL is optional — defaults to production.
+# Quick env-var path (Fly.io shape). HERMES_DASHBOARD_PORTAL_URL is
+# optional — defaults to production.
 HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test \
   hermes dashboard --host 0.0.0.0
+
+# Or the equivalent via config.yaml (recommended for local dev / on-prem):
+#
+#   dashboard:
+#     oauth:
+#       client_id: agent:test
+#
+# then just:
+hermes dashboard --host 0.0.0.0
 
 # Hit /api/status to see the gate state:
 curl -s http://127.0.0.1:9119/api/status | jq '.auth_required, .auth_providers'

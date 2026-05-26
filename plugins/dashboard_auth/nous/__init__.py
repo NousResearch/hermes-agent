@@ -2,20 +2,31 @@
 
 Implements ``nous-account-service/docs/agent-dashboard-oauth-contract.md``
 (PR #180). The plugin auto-loads (bundled, kind=backend) but only registers
-its provider when the Portal-injected env var is present, so loopback /
-``--insecure`` operators are unaffected.
+its provider when a client_id is configured — either via ``config.yaml`` or
+via the Portal-injected env var — so loopback / ``--insecure`` operators
+are unaffected.
 
-Required env var (Portal injects at Fly.io provisioning):
+Configuration surfaces (env wins over config.yaml when set non-empty):
 
-  HERMES_DASHBOARD_OAUTH_CLIENT_ID  — shape ``agent:{agent_instance_id}``
+  ``config.yaml`` — canonical surface::
 
-Optional env var:
+      dashboard:
+        oauth:
+          client_id: agent:{agent_instance_id}   # required
+          portal_url: https://portal.example     # optional
 
-  HERMES_DASHBOARD_PORTAL_URL       — defaults to
-                                      ``https://portal.nousresearch.com``
-                                      (production Portal). Override only
-                                      for staging (``portal.rewbs.uk``)
-                                      or a custom deployment.
+  Environment overrides — used by Fly.io's platform-secret injection so
+  per-deploy values don't need to bake into ``config.yaml``:
+
+      HERMES_DASHBOARD_OAUTH_CLIENT_ID  — shape ``agent:{agent_instance_id}``
+      HERMES_DASHBOARD_PORTAL_URL       — defaults to
+                                          ``https://portal.nousresearch.com``
+                                          (production Portal). Override only
+                                          for staging (``portal.rewbs.uk``)
+                                          or a custom deployment.
+
+Empty env var values are treated as unset so a provisioned-but-not-populated
+Fly secret can't shadow a valid config.yaml entry.
 
 Key contract points encoded here:
 
@@ -442,40 +453,104 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
 # ---------------------------------------------------------------------------
 
 
+def _load_config_oauth_section() -> dict:
+    """Return the ``dashboard.oauth`` block from ``config.yaml`` if it
+    exists and is a dict; otherwise an empty dict.
+
+    Robust to (a) load_config() raising (malformed YAML, IO error,
+    config.yaml absent — common in fresh installs), (b) the
+    ``dashboard`` key being absent or non-dict, and (c) the ``oauth``
+    sub-key being present but not a dict (user typo). Each shape falls
+    through to ``{}`` so register() can rely on `.get(...)` access.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+    except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+        logger.debug(
+            "dashboard-auth-nous: load_config() raised %s; "
+            "falling back to env-only configuration",
+            exc,
+        )
+        return {}
+    section = cfg_get(cfg, "dashboard", "oauth", default=None)
+    return section if isinstance(section, dict) else {}
+
+
+def _resolve_client_id() -> str:
+    """Resolve the OAuth client_id with env-overrides-config precedence.
+
+    Order:
+      1. ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` env var (when non-empty
+         after strip — empty values are treated as unset so a
+         provisioned-but-not-populated Fly secret can't shadow a valid
+         config.yaml entry).
+      2. ``dashboard.oauth.client_id`` in ``config.yaml``.
+      3. Empty string — signals "no client_id configured" to the caller.
+    """
+    env = os.environ.get("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "").strip()
+    if env:
+        return env
+    cfg_value = _load_config_oauth_section().get("client_id", "")
+    return str(cfg_value).strip()
+
+
+def _resolve_portal_url() -> str:
+    """Resolve the Portal URL with env-overrides-config precedence.
+
+    Order:
+      1. ``HERMES_DASHBOARD_PORTAL_URL`` env var (non-empty after strip).
+      2. ``dashboard.oauth.portal_url`` in ``config.yaml``.
+      3. :data:`_DEFAULT_PORTAL_URL` (production Portal).
+    """
+    env = os.environ.get("HERMES_DASHBOARD_PORTAL_URL", "").strip()
+    if env:
+        return env
+    cfg_value = str(
+        _load_config_oauth_section().get("portal_url", "")
+    ).strip()
+    return cfg_value or _DEFAULT_PORTAL_URL
+
+
 def register(ctx) -> None:
     """Plugin entry — called by the plugin loader at startup.
 
-    Registers ``NousDashboardAuthProvider`` only when
-    ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` is set (the Portal injects this
-    at Fly.io provisioning). ``HERMES_DASHBOARD_PORTAL_URL`` defaults to
-    production; override only for staging or custom deployments.
+    Registers ``NousDashboardAuthProvider`` only when a client_id is
+    configured (either via ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` env var
+    or via ``dashboard.oauth.client_id`` in ``config.yaml``). The env
+    var wins when set non-empty — Fly.io's platform-secret injection
+    pushes the per-deploy value through this path.
 
     When skipping, writes a short human-readable reason to the module-
     level :data:`LAST_SKIP_REASON` so the dashboard's fail-closed branch
     can surface "Set HERMES_DASHBOARD_OAUTH_CLIENT_ID …" instead of the
-    bare "no providers registered" the gate would otherwise emit.
+    bare "no providers registered" the gate would otherwise emit. The
+    reason mentions BOTH configuration surfaces so operators don't
+    guess wrong about which one to populate.
 
-    Operator-owned dashboards (loopback / ``--insecure``) leave the env
-    var unset, so this plugin is a no-op for them. The gate-engagement
-    layer (``hermes_cli.web_server.should_require_auth`` + the fail-
-    closed check in ``start_server``) handles the "public bind with zero
-    providers" case independently.
+    Operator-owned dashboards (loopback / ``--insecure``) leave both
+    surfaces unset, so this plugin is a no-op for them. The gate-
+    engagement layer (``hermes_cli.web_server.should_require_auth`` +
+    the fail-closed check in ``start_server``) handles the "public bind
+    with zero providers" case independently.
     """
     global LAST_SKIP_REASON
     LAST_SKIP_REASON = ""
 
-    client_id = os.environ.get("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "").strip()
-    portal_url = (
-        os.environ.get("HERMES_DASHBOARD_PORTAL_URL", "").strip()
-        or _DEFAULT_PORTAL_URL
-    )
+    client_id = _resolve_client_id()
+    portal_url = _resolve_portal_url()
 
     if not client_id:
         LAST_SKIP_REASON = (
-            "HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set. The Nous Portal "
-            "provisions this env var (shape 'agent:{instance_id}') when it "
-            "deploys a Hermes Agent instance — set it to your provisioned "
-            "client id, or pass --insecure to skip the OAuth gate entirely."
+            "HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set (and "
+            "dashboard.oauth.client_id in config.yaml is empty). The "
+            "Nous Portal provisions this env var (shape "
+            "'agent:{instance_id}') when it deploys a Hermes Agent "
+            "instance — set it to your provisioned client id (either "
+            "as an env var or under dashboard.oauth.client_id in "
+            "config.yaml), or pass --insecure to skip the OAuth gate "
+            "entirely."
         )
         logger.debug("dashboard-auth-nous: %s", LAST_SKIP_REASON)
         return

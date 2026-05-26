@@ -420,6 +420,37 @@ class WhatsAppAdapter(BasePlatformAdapter):
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns)
 
+    def _message_mentions_non_bot(self, data: Dict[str, Any]) -> bool:
+        """Return true when the WhatsApp payload mentions participants other than the bot."""
+        bot_ids = self._bot_ids_from_message(data)
+        mentioned_ids = {
+            nid
+            for candidate in (data.get("mentionedIds") or [])
+            if (nid := self._normalize_whatsapp_id(candidate))
+        }
+        return bool(mentioned_ids - bot_ids)
+
+    def _message_starts_with_mention_token(self, data: Dict[str, Any]) -> bool:
+        """Detect messages visibly addressed with a leading @mention token."""
+        body = str(data.get("body") or "")
+        return bool(re.match(r"^\s*@\S+", body))
+
+    def _message_is_addressed_to_other_participant(self, data: Dict[str, Any]) -> bool:
+        """
+        In free-response WhatsApp groups, do not treat a message that starts by
+        tagging another participant as addressed to Hermes unless the bot is also
+        directly mentioned or a configured wake-word pattern matches.
+        """
+        if not self._message_starts_with_mention_token(data):
+            return False
+        if not self._message_mentions_non_bot(data):
+            return False
+        if self._message_mentions_bot(data):
+            return False
+        if self._message_matches_mention_patterns(data):
+            return False
+        return True
+
     def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
         if not text:
             return text
@@ -443,6 +474,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 return False
             # DMs that pass the policy gate are always processed
             return True
+        # Group messages: check whether the message is explicitly addressed to
+        # someone else before applying free-response / mention bypasses.
+        if self._message_is_addressed_to_other_participant(data):
+            return False
         # Group messages: check mention / free-response settings
         chat_id = str(data.get("chatId") or "")
         if chat_id in self._whatsapp_free_response_chats():

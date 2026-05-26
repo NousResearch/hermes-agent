@@ -138,6 +138,45 @@ def test_free_response_chats_bypass_mention_gating():
     assert adapter._should_process_message(_group_message("hello everyone")) is True
 
 
+def test_group_message_addressed_to_other_participant_is_ignored_even_in_free_response_chat():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["120363001234567890@g.us"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "@159420612870255 masuk pakai google account admin@amrta-spa.com",
+            mentionedIds=["159420612870255@s.whatsapp.net"],
+        )
+    ) is False
+
+
+def test_group_message_addressed_to_other_participant_allows_bot_when_bot_also_mentioned():
+    adapter = _make_adapter(require_mention=False)
+
+    assert adapter._should_process_message(
+        _group_message(
+            "@159420612870255 @15551230000 please help",
+            mentionedIds=["159420612870255@s.whatsapp.net", "15551230000@s.whatsapp.net"],
+        )
+    ) is True
+
+
+def test_group_message_addressed_to_other_participant_allows_wake_word():
+    adapter = _make_adapter(
+        require_mention=False,
+        mention_patterns=[r"\bfrodo\b"],
+    )
+
+    assert adapter._should_process_message(
+        _group_message(
+            "@159420612870255 ini untuk frodo juga",
+            mentionedIds=["159420612870255@s.whatsapp.net"],
+        )
+    ) is True
+
+
 def test_free_response_chats_does_not_bypass_other_groups():
     adapter = _make_adapter(
         require_mention=True,

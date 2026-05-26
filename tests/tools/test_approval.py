@@ -1329,6 +1329,155 @@ class TestEtcPatternsUnaffectedByRefactor:
 # =========================================================================
 
 
+class TestSafeLocalInspectionAutoAllow:
+    """Routine read-only local inspections should not require Cal approval."""
+
+    SESSION_KEY = "test-safe-local-inspection"
+
+    def setup_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        mod._session_approved.clear()
+        mod._permanent_approved.clear()
+        mod._pending.clear()
+        self._saved_env = {
+            k: os.environ.get(k)
+            for k in ("HERMES_GATEWAY_SESSION", "HERMES_SESSION_KEY", "HERMES_INTERACTIVE")
+        }
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
+
+    def teardown_method(self):
+        from tools import approval as mod
+        mod._gateway_queues.clear()
+        mod._gateway_notify_cbs.clear()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_python_c_sqlite_schema_only_readonly_is_auto_allowed(self):
+        from tools import approval as mod
+
+        command = """python3 -c '\nimport os, sqlite3\ndb_path = "/home/v0iidbox/.hermes/state.db"\nconn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)\nconn.execute("PRAGMA query_only = ON")\nrows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type=\\\"table\\\" ORDER BY name").fetchall()\nconn.close()\n'"""
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards(command, "local")
+
+        assert result["approved"] is True
+        assert result.get("auto_allowed") is True
+        assert result.get("auto_allow_class") == "sqlite_schema_inspection"
+        assert notified == []
+        assert not mod._gateway_queues.get(self.SESSION_KEY)
+
+    def test_python_heredoc_sqlite_schema_only_readonly_is_auto_allowed(self):
+        from tools import approval as mod
+
+        command = """python3 << 'EOF'
+import os
+import sqlite3
+
+db_path = '/home/v0iidbox/.hermes/state.db'
+conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+conn.execute("PRAGMA query_only = ON")
+conn.execute("PRAGMA schema_version")
+conn.execute("SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name")
+conn.close()
+EOF"""
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards(command, "local")
+
+        assert result["approved"] is True
+        assert result.get("auto_allow_class") == "sqlite_schema_inspection"
+        assert notified == []
+
+    def test_user_reported_heredoc_schema_dump_with_cursor_is_auto_allowed(self):
+        from tools import approval as mod
+
+        command = """python3 << 'EOF'
+import os
+import sqlite3
+
+db_path = '/home/v0iidbox/.hermes/state.db'
+
+if not os.path.exists(db_path):
+    raise FileNotFoundError(f"DB not found: {db_path}")
+
+conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+conn.row_factory = sqlite3.Row
+cursor = conn.cursor()
+conn.execute("PRAGMA query_only = ON")
+
+cursor.execute("SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name")
+tables = cursor.fetchall()
+
+print("=== DATABASE SCHEMA ONLY ===")
+for table in tables:
+    print(f"-- {table['name']} --")
+    print(table['sql'])
+
+conn.close()
+EOF"""
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards(command, "local")
+
+        assert result["approved"] is True
+        assert result.get("auto_allow_class") == "sqlite_schema_inspection"
+        assert notified == []
+
+    def test_python_c_sqlite_table_row_read_still_requires_approval(self):
+        from tools import approval as mod
+
+        command = """python3 -c 'import sqlite3; conn = sqlite3.connect("file:/tmp/x.db?mode=ro", uri=True); conn.execute("PRAGMA query_only = ON"); conn.execute("SELECT content FROM messages LIMIT 1")'"""
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result_holder = {}
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards(command, "local")
+        t = threading.Thread(target=_check)
+        t.start()
+
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+        assert notified, "unsafe sqlite row read should still ask for approval"
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        t.join(timeout=5)
+        assert result_holder["r"]["approved"] is False
+
+    def test_python_c_sqlite_write_still_requires_approval(self):
+        from tools import approval as mod
+
+        command = """python3 -c 'import sqlite3; conn = sqlite3.connect("file:/tmp/x.db?mode=ro", uri=True); conn.execute("PRAGMA query_only = ON"); conn.execute("DROP TABLE messages")'"""
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result_holder = {}
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards(command, "local")
+        t = threading.Thread(target=_check)
+        t.start()
+
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+        assert notified, "sqlite writes should still ask for approval"
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        t.join(timeout=5)
+        assert result_holder["r"]["approved"] is False
+
+
 class TestApprovalTimeoutIsNotConsent:
     """The gateway approval contract: silence is not consent (#24912)."""
 

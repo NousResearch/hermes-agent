@@ -8,14 +8,17 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import ast
 import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
 import unicodedata
+from pathlib import PurePath
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -1050,6 +1053,158 @@ def _format_tirith_description(tirith_result: dict) -> str:
     return "Security scan — " + "; ".join(parts)
 
 
+def _string_static_value(node: ast.AST) -> str | None:
+    """Return static string content for literals/f-strings, ignoring dynamic slots."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                parts.append("{}")
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def _normalize_sql(sql: str) -> str:
+    return " ".join(sql.strip().rstrip(";").split()).upper()
+
+
+def _is_schema_metadata_sql(sql: str) -> bool:
+    """Allow only SQLite schema metadata reads, never table-row reads/writes."""
+    normalized = _normalize_sql(sql)
+    if normalized == "PRAGMA QUERY_ONLY = ON":
+        return True
+    if normalized == "PRAGMA SCHEMA_VERSION":
+        return True
+    if normalized.startswith("PRAGMA TABLE_INFO(") and normalized.endswith(")"):
+        return True
+    dangerous_sql = re.search(
+        r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|VACUUM|ATTACH|DETACH|REINDEX|REPLACE)\b",
+        normalized,
+    )
+    if dangerous_sql:
+        return False
+    if normalized.startswith("SELECT "):
+        from_targets = re.findall(r"\bFROM\s+([A-Z_][A-Z0-9_]*)", normalized)
+        return bool(from_targets) and set(from_targets) <= {"SQLITE_MASTER"}
+    return False
+
+
+def _extract_python_inspection_script(command: str) -> str | None:
+    """Extract a python -c / simple heredoc script for static inspection."""
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError:
+        parts = []
+    if parts:
+        exe = PurePath(parts[0]).name.lower()
+        if exe in {"python", "python3"} or re.fullmatch(r"python3?\.\d+", exe):
+            if "-c" in parts:
+                idx = parts.index("-c")
+                if idx + 1 < len(parts):
+                    return parts[idx + 1]
+    heredoc = re.search(
+        r"(?:^|[;&|\n]\s*)(?:python|python3|python3?\.\d+)\s+<<\s*['\"]?(\w+)['\"]?\s*\n(?P<body>.*?)(?:\n\1\s*$)",
+        command,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if heredoc:
+        return heredoc.group("body")
+    return None
+
+
+def _python_script_is_sqlite_schema_inspection(script: str) -> bool:
+    """Static allowlist for read-only SQLite schema-inspection snippets."""
+    try:
+        tree = ast.parse(script)
+    except SyntaxError:
+        return False
+
+    allowed_import_roots = {"sqlite3", "os", "pathlib"}
+    forbidden_import_roots = {
+        "subprocess", "socket", "requests", "urllib", "http", "ftplib",
+        "paramiko", "asyncio", "shutil",
+    }
+    forbidden_call_names = {
+        "eval", "exec", "compile", "input", "open", "printenv",
+    }
+    forbidden_attrs = {
+        "executescript", "commit", "rollback", "backup",
+        "enable_load_extension", "load_extension", "remove", "unlink",
+        "rmdir", "removedirs", "rename", "replace", "renames", "system",
+        "popen", "spawn", "fork", "chmod", "chown", "truncate", "write_text",
+        "write_bytes", "touch", "mkdir",
+    }
+
+    saw_sqlite_connect = False
+    saw_query_only = False
+    saw_schema_query = False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                if root in forbidden_import_roots or root not in allowed_import_roots:
+                    return False
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".", 1)[0]
+            if root in forbidden_import_roots or root not in allowed_import_roots:
+                return False
+        elif isinstance(node, ast.Attribute):
+            if node.attr in {"environ", "getenv"}:
+                return False
+        elif isinstance(node, ast.Call):
+            func = node.func
+            func_name = func.id if isinstance(func, ast.Name) else ""
+            attr_name = func.attr if isinstance(func, ast.Attribute) else ""
+            if func_name in forbidden_call_names or attr_name in forbidden_attrs:
+                return False
+            if func_name == "open":
+                return False
+            if attr_name == "connect":
+                target = _string_static_value(node.args[0]) if node.args else None
+                uri_kw = next((kw for kw in node.keywords if kw.arg == "uri"), None)
+                uri_true = isinstance(uri_kw, ast.keyword) and isinstance(uri_kw.value, ast.Constant) and uri_kw.value.value is True
+                if not target or not uri_true:
+                    return False
+                target_lower = target.lower()
+                if not target_lower.startswith("file:"):
+                    return False
+                if "mode=ro" not in target_lower and "immutable=1" not in target_lower:
+                    return False
+                saw_sqlite_connect = True
+            if attr_name == "execute":
+                sql = _string_static_value(node.args[0]) if node.args else None
+                if not sql or not _is_schema_metadata_sql(sql):
+                    return False
+                sql_norm = _normalize_sql(sql)
+                if sql_norm == "PRAGMA QUERY_ONLY = ON":
+                    saw_query_only = True
+                else:
+                    saw_schema_query = True
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            lowered = node.value.lower()
+            if ".env" in lowered or "api_key" in lowered or "token" in lowered or "secret" in lowered:
+                return False
+
+    return saw_sqlite_connect and saw_query_only and saw_schema_query
+
+
+def _known_safe_local_inspection(command: str, env_type: str) -> str | None:
+    """Return an auto-allow class for deterministic, read-only local checks."""
+    if env_type != "local":
+        return None
+    script = _extract_python_inspection_script(command)
+    if script and _python_script_is_sqlite_schema_inspection(script):
+        return "sqlite_schema_inspection"
+    return None
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
@@ -1082,6 +1237,20 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # Deterministic safe-inspection allowlist: these commands are read-only by
+    # construction and should not ask the human to act as a technical safety
+    # reviewer.  Keep this after hardline/sudo guards so catastrophic patterns
+    # remain blocked, and before Tirith/dangerous-pattern prompts so benign
+    # python -c schema probes don't stall gateway sessions.
+    safe_inspection_class = _known_safe_local_inspection(command, env_type)
+    if safe_inspection_class:
+        return {
+            "approved": True,
+            "message": None,
+            "auto_allowed": True,
+            "auto_allow_class": safe_inspection_class,
+        }
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

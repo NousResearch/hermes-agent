@@ -459,6 +459,12 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
 
+    # Transient: when the prior session was closed by the auto-reset branch in
+    # ``get_or_create_session``, this holds its ``session_id`` so the next
+    # caller (``_handle_message_with_agent``) can emit a ``session:end`` hook
+    # event for it.  Not persisted — consumed once and cleared.  See #28746.
+    auto_reset_prior_session_id: Optional[str] = None
+
     # Set by reset_session() when the user explicitly sends /new or /reset.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
     # skill re-injection on the first message of the new session.  We can't
@@ -929,6 +935,9 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                auto_reset_prior_session_id=(
+                    db_end_session_id if was_auto_reset else None
+                ),
             )
 
             self._entries[session_key] = entry

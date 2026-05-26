@@ -280,3 +280,69 @@ class TestSessionEntryAutoResetRoundtrip:
         assert reloaded.was_auto_reset is False
         assert reloaded.auto_reset_reason is None
         assert reloaded.reset_had_activity is False
+
+
+# ---------------------------------------------------------------------------
+# Auto-reset plumbs prior session_id for session:end emission (#28746)
+# ---------------------------------------------------------------------------
+
+class TestAutoResetPriorSessionId:
+    def test_prior_session_id_captured_on_auto_reset(self, tmp_path):
+        """When the auto-reset branch closes a stale session and creates a
+        new one for the same session_key, the new entry must carry the OLD
+        session_id in ``auto_reset_prior_session_id`` so the message handler
+        can emit ``session:end`` for it."""
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry1 = store.get_or_create_session(source)
+        old_sid = entry1.session_id
+        assert entry1.auto_reset_prior_session_id is None
+
+        # Age past idle threshold so the next call triggers auto-reset
+        entry1.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        entry2 = store.get_or_create_session(source)
+        assert entry2.was_auto_reset is True
+        assert entry2.session_id != old_sid
+        assert entry2.auto_reset_prior_session_id == old_sid
+
+    def test_prior_session_id_none_on_fresh_session(self, tmp_path):
+        """A first-time-created session (no prior entry) must have
+        ``auto_reset_prior_session_id is None``."""
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=30),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry = store.get_or_create_session(source)
+        assert entry.was_auto_reset is False
+        assert entry.auto_reset_prior_session_id is None
+
+    def test_prior_session_id_not_persisted(self, tmp_path):
+        """The transient field must not survive a reload of sessions.json."""
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path,
+        )
+        source = _make_source()
+
+        entry1 = store.get_or_create_session(source)
+        entry1.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+        entry2 = store.get_or_create_session(source)
+        assert entry2.auto_reset_prior_session_id is not None
+
+        # Reload from disk — transient field should not persist
+        store._loaded = False
+        store._entries.clear()
+        store._ensure_loaded()
+        reloaded = store._entries.get(entry2.session_key)
+        assert reloaded is not None
+        assert reloaded.session_id == entry2.session_id
+        assert reloaded.auto_reset_prior_session_id is None

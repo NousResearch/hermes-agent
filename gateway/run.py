@@ -4683,6 +4683,26 @@ class GatewayRunner:
                         with self.session_store._lock:
                             entry.expiry_finalized = True
                             self.session_store._save()
+                        # Emit gateway-level session:end hook so external
+                        # observers see idle-expiry closes (symmetric with
+                        # session:start).  Wrapped in try/except so a
+                        # misbehaving subscriber can't break the watcher.
+                        # See #28746.
+                        try:
+                            _parts2 = key.split(":")
+                            _platform2 = _parts2[2] if len(_parts2) > 2 else ""
+                            await self.hooks.emit("session:end", {
+                                "platform": _platform2,
+                                "user_id": getattr(entry.origin, "user_id", "") if entry.origin else "",
+                                "session_id": entry.session_id,
+                                "session_key": key,
+                                "reason": "idle_expiry",
+                            })
+                        except Exception:
+                            logger.debug(
+                                "session:end emit failed on idle expiry for %s",
+                                entry.session_id, exc_info=True,
+                            )
                         logger.debug(
                             "Session expiry finalized for %s",
                             entry.session_id,
@@ -8180,6 +8200,26 @@ class GatewayRunner:
         if getattr(session_entry, "is_fresh_reset", False):
             session_entry.is_fresh_reset = False
         if _is_new_session:
+            # If this new session replaced a prior one via auto-reset, emit
+            # session:end for the OLD session_id first so subscribers see a
+            # symmetric close before the new session:start.  See #28746.
+            _prior_sid = getattr(session_entry, "auto_reset_prior_session_id", None)
+            if _prior_sid:
+                try:
+                    await self.hooks.emit("session:end", {
+                        "platform": source.platform.value if source.platform else "",
+                        "user_id": source.user_id,
+                        "session_id": _prior_sid,
+                        "session_key": session_key,
+                        "reason": "auto_reset",
+                    })
+                except Exception:
+                    logger.debug(
+                        "session:end emit failed on auto_reset for %s",
+                        _prior_sid, exc_info=True,
+                    )
+                # Clear so a retry of the same turn won't re-emit.
+                session_entry.auto_reset_prior_session_id = None
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
@@ -9340,7 +9380,9 @@ class GatewayRunner:
         await self.hooks.emit("session:end", {
             "platform": source.platform.value if source.platform else "",
             "user_id": source.user_id,
+            "session_id": old_entry.session_id if old_entry else None,
             "session_key": session_key,
+            "reason": "manual_reset",
         })
 
         # Emit session:reset hook

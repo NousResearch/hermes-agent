@@ -23,6 +23,7 @@ import json
 import os
 import sys
 from collections import Counter
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -46,10 +47,8 @@ def _normalize_ruff(entries: list[dict]) -> list[dict]:
         code = e.get("code") or "unknown"
         # ruff emits absolute paths; relativize to repo root if possible
         filename = e.get("filename", "")
-        try:
+        with suppress(ValueError):
             filename = os.path.relpath(filename)
-        except ValueError:
-            pass
         line = (e.get("location") or {}).get("row", 0)
         out.append(
             {
@@ -141,7 +140,7 @@ def _tool_report(
     new, fixed, unchanged = _diff(base, head)
     delta = len(head) - len(base)
     delta_str = f"+{delta}" if delta > 0 else str(delta)
-    emoji = "🆕" if delta > 0 else ("✅" if delta < 0 else "➖")
+    emoji = "🆕" if delta > 0 else ("✅" if delta < 0 else "—")
 
     lines = [f"## {tool_name}\n"]
     if not base_available:

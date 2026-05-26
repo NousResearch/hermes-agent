@@ -113,3 +113,40 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+class TestScriptsLintDiff:
+    """scripts/lint_diff.py must have zero SIM105 and RUF001 violations."""
+
+    TARGET = REPO_ROOT / "scripts" / "lint_diff.py"
+
+    def test_lint_diff_has_zero_sim105(self):
+        """scripts/lint_diff.py must have zero SIM105 (try-except-pass -> contextlib.suppress) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM105",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/lint_diff.py has SIM105 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+    def test_lint_diff_has_zero_ruf001(self):
+        """scripts/lint_diff.py must have zero RUF001 (ambiguous unicode character) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=RUF001",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/lint_diff.py has RUF001 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )

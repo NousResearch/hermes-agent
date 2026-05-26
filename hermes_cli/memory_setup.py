@@ -41,7 +41,7 @@ def _curses_select(
 
     # Format (label, desc) tuples into display strings
     display_items = [
-        f"{label}  {desc}" if desc else label
+        f"{label} - {desc}" if desc else label
         for label, desc in items
     ]
     return curses_radiolist(title, display_items, selected=default, cancel_returns=cancel_returns)

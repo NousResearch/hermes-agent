@@ -24,7 +24,7 @@ def test_curses_select_cancel_defaults_to_selected(monkeypatch):
     assert result == 1
     assert captured == {
         "title": "Pick one",
-        "items": ["first  desc", "second"],
+        "items": ["first - desc", "second"],
         "selected": 1,
         "cancel_returns": 1,
     }

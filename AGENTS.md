@@ -781,6 +781,16 @@ Key config knobs (under `delegation:` in `config.yaml`):
 `orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
 `max_iterations`.
 
+**MCP toolset resolution for named profiles:** When `_build_child_agent()`
+is called with `profile_name` set (i.e. the delegation originated from a
+named `agent_profiles` entry), MCP toolsets in the requested list bypass
+the parent-intersection check and are resolved directly from the global
+`mcp_servers` config.  This prevents a silent failure mode where an
+orchestrator that restricts its own MCP context (via `no_mcp` in
+`platform_toolsets`) inadvertently starves child agents of domain MCP tools
+they explicitly need.  Non-MCP toolsets still go through parent intersection
+— the security boundary for ad-hoc delegation is preserved.  See #32668.
+
 Synchronicity rule: delegate_task is **not** durable. For long-running
 work that must outlive the current turn, use `cronjob` or
 `terminal(background=True, notify_on_complete=True)` instead.

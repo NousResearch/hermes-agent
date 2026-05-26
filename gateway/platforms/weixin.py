@@ -65,6 +65,8 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    normalize_msys_path,
+    strip_file_url_prefix,
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -1780,7 +1782,14 @@ class WeixinAdapter(BasePlatformAdapter):
             file_path = await self._download_remote_media(image_url)
             cleanup = True
         else:
-            file_path = image_url.replace("file://", "")
+            # ``image_url`` may arrive as ``file:///C:/Users/...`` (canonical),
+            # ``file:///c/Users/...`` (MSYS / Git-Bash quirk #31457), or a
+            # bare path emitted by the agent.  ``strip_file_url_prefix``
+            # handles all three: it removes any ``file://`` prefix and, on
+            # Windows, rewrites MSYS drive paths to ``C:\Users\...`` so the
+            # downstream ``Path(...).read_bytes()`` actually finds the file
+            # rather than failing with ``[Errno 2]``.
+            file_path = strip_file_url_prefix(image_url)
             if not os.path.isabs(file_path):
                 file_path = os.path.abspath(file_path)
             cleanup = False
@@ -1901,6 +1910,11 @@ class WeixinAdapter(BasePlatformAdapter):
         force_file_attachment: bool = False,
     ) -> str:
         assert self._send_session is not None and self._token is not None
+        # Defense in depth — even when an upstream caller forgot to run
+        # the path through validate_media_delivery_path / strip_file_url_prefix,
+        # rewrite Git-Bash drive paths here so the read survives on
+        # Windows.  See #31457.
+        path = normalize_msys_path(path)
         plaintext = Path(path).read_bytes()
         media_type, item_builder = self._outbound_media_builder(path, force_file_attachment=force_file_attachment)
         filekey = secrets.token_hex(16)

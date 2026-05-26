@@ -969,6 +969,100 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+# MSYS / Git Bash path detector — leading slash, single-letter drive, then
+# ``/`` and the rest of the path: ``/c/Users/foo`` ↔ ``C:\Users\foo``.
+# Anchored so we don't mis-fire on legitimate POSIX paths like ``/c`` (a
+# directory named ``c`` at the filesystem root) — the trailing ``/...`` is
+# required.  Issue #31457.
+_MSYS_PATH_RE = re.compile(r"^/([A-Za-z])(/.*)$")
+# ``file:///c/Users/...`` (note: 3 slashes + lowercase drive letter, no
+# colon) is the MSYS / Git-Bash mistake; the canonical Windows file URL
+# is ``file:///C:/Users/...``.  Strip exactly the two-slash scheme
+# delimiter so the third slash — the actual path's leading ``/`` —
+# survives for the downstream MSYS rewrite to find.
+_FILE_URL_PREFIX_RE = re.compile(r"^file://")
+
+
+def normalize_msys_path(path: str) -> str:
+    """Convert a Git-Bash / MSYS path to its native Windows equivalent.
+
+    On Windows the agent's terminal often runs under Git Bash, which
+    surfaces drive letters as ``/c/Users/...`` (and equivalents
+    ``/cygdrive/c/...``).  Native Windows Python's ``pathlib.Path`` does
+    not understand that shape — it treats ``/c/Users/foo`` as
+    "directory ``c`` at the root of the current drive", which doesn't
+    exist, so ``Path.resolve(strict=True)`` raises ``FileNotFoundError``
+    and ``Path.read_bytes()`` reports ``[Errno 2] No such file or
+    directory``.  See #31457.
+
+    Behaviour:
+      * On non-Windows hosts the input is returned unchanged — POSIX
+        paths like ``/c`` are legitimate filesystem paths and we must
+        not silently corrupt them.
+      * On Windows, ``/<drive>/...`` and ``/cygdrive/<drive>/...`` are
+        rewritten to ``<DRIVE>:\\...``.  Forward slashes are kept (Path
+        on Windows accepts them) so the result reads naturally in
+        log messages.
+      * Anything else — including already-native ``C:\\foo``, drive-
+        relative ``foo\\bar``, or pure POSIX-only paths — is returned
+        unchanged.
+    """
+    if not path or sys.platform != "win32":
+        return path
+
+    candidate = str(path)
+
+    # ``/cygdrive/c/...`` — emitted by Cygwin and very-old Git Bash.
+    if candidate.startswith("/cygdrive/") and len(candidate) >= 12 and candidate[11] == "/":
+        drive = candidate[10]
+        if drive.isalpha():
+            return f"{drive.upper()}:{candidate[11:]}"
+
+    match = _MSYS_PATH_RE.match(candidate)
+    if match:
+        drive, rest = match.groups()
+        return f"{drive.upper()}:{rest}"
+
+    return candidate
+
+
+def strip_file_url_prefix(url_or_path: str) -> str:
+    """Strip a ``file://`` / ``file:///`` prefix and return the local path.
+
+    Handles the documented two-slash-plus-host (``file://host/path``,
+    rare in our codebase) and the canonical three-slash-no-host
+    (``file:///path``) forms uniformly.  Returns the input unchanged
+    when no ``file://`` prefix is present so callers can chain the
+    helper around already-bare paths safely.
+
+    On Windows, applies :func:`normalize_msys_path` to the result so
+    ``file:///c/Users/...`` (the MSYS-produced URL the agent sometimes
+    emits — note the lowercase drive letter and missing ``:``)
+    survives the round-trip back to ``C:\\Users\\...``.  Issue #31457.
+    """
+    if not url_or_path:
+        return url_or_path
+    stripped = _FILE_URL_PREFIX_RE.sub("", str(url_or_path), count=1)
+    if stripped == url_or_path:
+        return url_or_path
+    # After ``^file://`` strips two slashes:
+    #   ``file:///c/Users/foo`` (MSYS)        → ``/c/Users/foo``
+    #   ``file:///C:/Users/foo`` (Windows)    → ``/C:/Users/foo``
+    # The leading ``/`` before a ``<drive>:`` segment is an artefact of
+    # the URL's third slash, not part of any real path on Windows; trim
+    # it so Path('/C:/...') doesn't surprise callers and so Path eats
+    # ``C:/...`` directly.  POSIX file URLs (``/srv/...``) are kept
+    # exactly as-is.
+    if (
+        len(stripped) >= 3
+        and stripped[0] == "/"
+        and stripped[1].isalpha()
+        and stripped[2] == ":"
+    ):
+        stripped = stripped[1:]
+    return normalize_msys_path(stripped)
+
+
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
@@ -976,6 +1070,11 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     existing regular files under Hermes-managed media caches, or roots the
     operator explicitly allowlists, may be uploaded as native attachments.
     Symlinks are resolved before the containment check.
+
+    On Windows, MSYS / Git-Bash style paths (``/c/Users/...``,
+    ``/cygdrive/c/...``) are normalized to native ``C:\\Users\\...``
+    before validation so MEDIA directives emitted by an agent running
+    under Git Bash actually resolve.  Issue #31457.
     """
     if not path:
         return None
@@ -987,6 +1086,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not candidate:
         return None
 
+    candidate = normalize_msys_path(candidate)
     expanded = Path(os.path.expanduser(candidate))
     if not expanded.is_absolute():
         return None
@@ -2498,7 +2598,13 @@ class BasePlatformAdapter(ABC):
             if _in_code(match.start()):
                 continue
             raw = match.group(0)
-            expanded = os.path.expanduser(raw)
+            # Normalize MSYS/Git-Bash drive paths so ``/c/Users/...``
+            # emitted by an agent running under Git Bash on Windows gets
+            # rewritten to ``C:\Users\...`` before the existence check —
+            # otherwise ``os.path.isfile`` consults the literal path
+            # ``C:\c\Users\...``, finds nothing, and the bare-path
+            # delivery silently degrades to text-only.  Issue #31457.
+            expanded = os.path.expanduser(normalize_msys_path(raw))
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
 

@@ -391,12 +391,15 @@ class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
     DEFAULT_TAPS = [
-        {"repo": "openai/skills", "path": "skills/"},
+        # NOTE: openai/skills moved its content into skills/.curated/ (and
+        # skills/.system/ for system-level skills). _list_skills_in_repo
+        # skips directories starting with "." or "_", so we point both
+        # entries at the inner paths directly.
+        {"repo": "openai/skills", "path": "skills/.curated/"},
+        {"repo": "openai/skills", "path": "skills/.system/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "huggingface/skills", "path": "skills/"},
-        {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
-        {"repo": "MiniMax-AI/cli", "path": "skill/"},
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):

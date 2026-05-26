@@ -248,6 +248,10 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    # Optional opt-in: route inference to any ACP-compliant agent via
+    # JSON-RPC over stdio. Gated behind api_mode == "acp_client" AND
+    # provider == "acp-client" (or explicit api_mode config). Default unchanged.
+    "acp_client",
 }
 
 

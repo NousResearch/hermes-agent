@@ -66,3 +66,10 @@ def _discover_transports() -> None:
         import agent.transports.bedrock  # noqa: F401
     except ImportError:
         pass
+    try:
+        # acp_client is not a ProviderTransport subclass (does not plug into
+        # the transport registry). Imported here so that module-level errors
+        # surface at startup rather than mid-turn.
+        import agent.transports.acp_client  # noqa: F401
+    except ImportError:
+        pass

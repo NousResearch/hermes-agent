@@ -793,6 +793,22 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Optional opt-in runtime: if api_mode == acp_client, hand the turn to
+    # an ACP-compliant agent subprocess via JSON-RPC over stdio. The entire
+    # Hermes tool dispatch path is bypassed — the ACP agent handles its own
+    # tools internally. Streaming deltas are forwarded via _fire_stream_delta.
+    # See agent/acp_runtime.py and agent/transports/acp_client_session.py.
+    # NOTE: this early return is BEFORE the streaming exclusion block at
+    # ~line 1126 and the Responses-API path, so neither applies here.
+    if agent.api_mode == "acp_client":
+        return agent._run_acp_client_turn(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=_should_review_memory,
+        )
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()

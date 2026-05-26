@@ -259,6 +259,70 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
 
 
+def test_rollback_rejects_symlink_member(backup_env, monkeypatch, tmp_path):
+    """Tarballs with symlink/hardlink/device members must be refused at the
+    pre-check stage, not relying on ``filter='data'`` which is unavailable on
+    Python 3.11.0–3.11.3 (PEP 706 was only backported in 3.11.4).
+
+    Without a pre-check on the member type, the fallback
+    ``tf.extractall(str(skills))`` call materialises an attacker-supplied
+    symlink via ``os.symlink(linkname, targetpath)``.  A snapshot tarball
+    placed in ``.curator_backups/`` (e.g. by a malicious skill, a
+    co-tenant with write access, or a user tricked into importing a
+    third-party 'snapshot') can then plant ``skills/leak → /etc/passwd``,
+    leaking the target's content to the agent on the next skill_view.
+    """
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    # Plant a victim file outside the skills tree.  After a successful
+    # exploit, this file's contents become readable from inside skills/.
+    victim = tmp_path / "secret"
+    victim.write_text("CONFIDENTIAL", encoding="utf-8")
+
+    # Replace the legit snapshot tarball with one whose only member is a
+    # symlink pointing at the victim.  The member name itself is safe
+    # ("leak", no "/" prefix, no ".."), so only a type-aware pre-check
+    # can stop it.
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        info = tarfile.TarInfo(name="leak")
+        info.type = tarfile.SYMTYPE
+        info.linkname = str(victim)
+        tf.addfile(info)
+
+    # Force the legacy fallback branch (``filter`` kwarg unavailable) so we
+    # exercise the same code path Python 3.11.0–3.11.3 hits unconditionally.
+    real_extractall = tarfile.TarFile.extractall
+
+    def no_filter_extractall(self, *args, **kwargs):
+        if "filter" in kwargs:
+            raise TypeError(
+                "extractall() got an unexpected keyword argument 'filter'"
+            )
+        return real_extractall(self, *args, **kwargs)
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", no_filter_extractall)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok, f"rollback should refuse a symlink member, got msg={msg!r}"
+
+    # The symlink must never have materialised under skills/, and the
+    # victim's contents must not be reachable from inside skills/.
+    leak = skills / "leak"
+    assert not leak.is_symlink(), (
+        f"symlink should be rejected before extract; resolved to "
+        f"{leak.resolve() if leak.exists() else '<missing>'}"
+    )
+    if leak.exists():
+        assert leak.read_text(encoding="utf-8") != "CONFIDENTIAL"
+
+
 # ---------------------------------------------------------------------------
 # Integration with run_curator_review
 # ---------------------------------------------------------------------------

@@ -605,12 +605,20 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
         with tarfile.open(archive, "r:gz") as tf:
             # Python 3.12+ supports filter='data' for safer extraction.
             # Fall back to the unfiltered call for older interpreters but
-            # still reject absolute paths and .. components defensively.
+            # still reject unsafe members defensively.  filter='data' is only
+            # available on 3.12+ and on 3.11.4+ (PEP 706 backport) — earlier
+            # 3.11 patch releases hit the fallback unconditionally, so the
+            # pre-check has to refuse anything that isn't a plain file or
+            # directory.  Mirrors hermes_cli/profiles._safe_extract_profile_archive.
             for member in tf.getmembers():
                 name = member.name
                 if name.startswith("/") or ".." in Path(name).parts:
                     raise tarfile.TarError(
                         f"refusing to extract unsafe path: {name!r}"
+                    )
+                if not (member.isfile() or member.isdir()):
+                    raise tarfile.TarError(
+                        f"refusing to extract unsupported tar member type: {name!r}"
                     )
             try:
                 tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]

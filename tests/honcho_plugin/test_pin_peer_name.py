@@ -789,6 +789,34 @@ class TestPinTransition:
 
         assert sig_no_prefix["honcho.runtime_peer_prefix"] != sig_with_prefix["honcho.runtime_peer_prefix"]
 
+    def test_cache_busting_signature_reflects_ai_peer(self, tmp_path, monkeypatch):
+        """Editing ``aiPeer`` mid-flight must invalidate the cached agent.
+
+        ``HonchoSessionManager`` freezes ``cfg.ai_peer`` at construction —
+        without busting here, assistant writes keep landing on the old
+        peer until an unrelated cache eviction.
+        """
+        from gateway.run import GatewayRunner
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg_path.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "Igor",
+            "aiPeer": "hermes",
+        }))
+        sig_before = GatewayRunner._extract_cache_busting_config({})
+
+        cfg_path.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "Igor",
+            "aiPeer": "hermetika",
+        }))
+        sig_after = GatewayRunner._extract_cache_busting_config({})
+
+        assert sig_before["honcho.ai_peer"] != sig_after["honcho.ai_peer"]
+
 
 class TestProfilePeerUniqueness:
     """Each Hermes profile can pin to its own unique peerName.

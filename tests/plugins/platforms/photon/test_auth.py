@@ -215,27 +215,52 @@ def test_persist_webhook_signing_secret_writes_env(
     tmp_hermes_home: Path,
 ) -> None:
     """The helper hands the secret to save_env_value, never returns it."""
+    summary: list = []
     response = {
         "id": "wh-uuid",
         "webhookUrl": "https://x.example.com/hook",
         "signingSecret": "ABCDEF1234567890" * 4,
     }
-    path, redacted = photon_auth.persist_webhook_signing_secret(response)
+    ok = photon_auth.persist_webhook_signing_secret(
+        response, on_summary=summary.append,
+    )
 
-    assert path is not None
-    assert path.exists()
-    env_text = path.read_text()
+    assert ok is True
+    env_path = tmp_hermes_home / ".env"
+    assert env_path.exists()
+    env_text = env_path.read_text()
     assert "PHOTON_WEBHOOK_SECRET=ABCDEF1234567890" in env_text
-    # The returned redacted copy must not leak the secret.
-    assert redacted["signingSecret"] == "<redacted>"
-    assert redacted["webhookUrl"] == "https://x.example.com/hook"
+    # The on_summary callback gets the redacted response + a saved-to path;
+    # none of those strings should leak the raw secret.
+    joined = "\n".join(summary)
+    assert "<redacted>" in joined
+    assert "ABCDEF1234567890" not in joined
 
 
 def test_persist_webhook_signing_secret_no_secret_no_write(
     tmp_hermes_home: Path,
 ) -> None:
-    path, redacted = photon_auth.persist_webhook_signing_secret(
-        {"id": "wh-uuid", "webhookUrl": "https://x"}
+    summary: list = []
+    ok = photon_auth.persist_webhook_signing_secret(
+        {"id": "wh-uuid", "webhookUrl": "https://x"},
+        on_summary=summary.append,
     )
-    assert path is None
-    assert "<redacted>" not in redacted.values()
+    assert ok is False
+    # No env file written; summary callback still received the redacted
+    # response (without a signingSecret key, nothing to redact).
+    assert not (tmp_hermes_home / ".env").exists()
+
+
+def test_credential_summary_returns_only_display_strings(
+    tmp_hermes_home: Path,
+) -> None:
+    """credential_summary must not leak raw token/secret material."""
+    photon_auth.store_photon_token("token-aaaaaaaaaaaaaaaa")
+    photon_auth.store_project_credentials("proj-uuid", "secret-bbbbbbbbbbb")
+    summary = photon_auth.credential_summary()
+    blob = "\n".join(summary.values())
+    assert "token-aaaa" not in blob
+    assert "secret-bbbb" not in blob
+    assert summary["device_token"].startswith("✓")
+    assert summary["project_key"].startswith("✓")
+    assert summary["project_id"] == "proj-uuid"

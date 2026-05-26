@@ -107,6 +107,25 @@ class TestInitialReplyToId:
         call_kwargs = adapter.send.call_args[1]
         assert call_kwargs["metadata"] == metadata
 
+    @pytest.mark.asyncio
+    async def test_live_streaming_adapter_gets_metadata_marker(self):
+        """Adapters such as SimpleX can opt into live-message first sends."""
+        adapter = _make_adapter()
+        adapter.STREAMS_WITH_LIVE_MESSAGES = True
+        metadata = {"thread_id": "simplex-thread"}
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            metadata=metadata,
+            initial_reply_to_id="user_msg_1",
+        )
+
+        await consumer._send_or_edit("streaming preview")
+
+        call_kwargs = adapter.send.call_args[1]
+        assert call_kwargs["metadata"]["thread_id"] == "simplex-thread"
+        assert call_kwargs["metadata"]["_hermes_live_stream"] is True
+
 
 class TestOverflowFirstMessage:
     """Verify thread routing is preserved when the first message overflows."""

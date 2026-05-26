@@ -25,10 +25,10 @@ Optional environment variables:
     SIMPLEX_HOME_CHANNEL       Default contact/group ID for cron delivery
     SIMPLEX_HOME_CHANNEL_NAME  Human label for the home channel
 
-The ``websockets`` Python package is imported lazily — the plugin is
-discoverable and `hermes setup` can describe it even when websockets is
-not installed. ``check_requirements()`` returns False until the package
-is present, so the gateway will not attempt to instantiate the adapter.
+The ``websockets`` Python package is imported lazily. The plugin remains
+discoverable and `hermes setup` can describe it even when the dependency
+is missing; a configured gateway instance then fails loudly from
+``connect()`` instead of disappearing during platform discovery.
 """
 
 import asyncio
@@ -36,8 +36,11 @@ import json
 import logging
 import os
 import random
+import re
+import tempfile
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Lazy import: BasePlatformAdapter and friends live in the main repo.
@@ -77,6 +80,149 @@ _CORR_PREFIX = "hermes-"
 def _parse_comma_list(value: str) -> List[str]:
     """Split a comma-separated string into a stripped list."""
     return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def _chat_ref_for_chat_id(chat_id: str) -> str:
+    """Return SimpleX API chat reference syntax for a Hermes chat id."""
+    if chat_id.startswith("group:"):
+        return f"#{chat_id[6:]}"
+    return f"@{chat_id}"
+
+
+def _text_message_payload(content: str) -> List[dict]:
+    return [
+        {
+            "msgContent": {
+                "type": "text",
+                "text": content,
+            },
+            "mentions": {},
+        }
+    ]
+
+
+def _updated_text_payload(content: str) -> dict:
+    return {
+        "msgContent": {
+            "type": "text",
+            "text": content,
+        },
+        "mentions": {},
+    }
+
+
+def _text_send_command(chat_id: str, content: str, *, live: bool = False) -> str:
+    """Build a SimpleX API text-send command for the WebSocket daemon."""
+    payload = json.dumps(_text_message_payload(content), separators=(",", ":"))
+    live_flag = " live=on" if live else ""
+    return f"/_send {_chat_ref_for_chat_id(chat_id)}{live_flag} json {payload}"
+
+
+def _text_update_command(chat_id: str, item_id: str, content: str, *, live: bool = False) -> str:
+    """Build a SimpleX API message-update command."""
+    payload = json.dumps(_updated_text_payload(content), separators=(",", ":"))
+    live_flag = " live=on" if live else ""
+    return f"/_update item {_chat_ref_for_chat_id(chat_id)} {item_id}{live_flag} json {payload}"
+
+
+def _voice_send_command(
+    chat_id: str,
+    audio_path: str,
+    *,
+    duration: int,
+    caption: str = "",
+) -> str:
+    composed_messages = [
+        {
+            "fileSource": {"filePath": audio_path},
+            "msgContent": {
+                "type": "voice",
+                "text": caption or "",
+                "duration": max(1, int(duration or 1)),
+            },
+            "mentions": {},
+        }
+    ]
+    payload = json.dumps(composed_messages, separators=(",", ":"))
+    return f"/_send {_chat_ref_for_chat_id(chat_id)} json {payload}"
+
+
+def _extract_chat_item_id(resp: dict) -> Optional[str]:
+    """Extract SimpleX chatItem.meta.itemId from command response shapes."""
+    if not isinstance(resp, dict):
+        return None
+    items = resp.get("chatItems") or []
+    if not items and resp.get("chatItem"):
+        items = [resp.get("chatItem")]
+    for wrapper in items:
+        if not isinstance(wrapper, dict):
+            continue
+        chat_item = wrapper.get("chatItem") or wrapper
+        meta = chat_item.get("meta") or {}
+        item_id = meta.get("itemId")
+        if item_id is not None:
+            return str(item_id)
+    return None
+
+
+def _chat_error_text(resp: dict) -> str:
+    err = resp.get("chatError") if isinstance(resp, dict) else None
+    if isinstance(err, dict):
+        return err.get("message") or err.get("type") or json.dumps(err, separators=(",", ":"))
+    return str(err or resp.get("type") or "unknown SimpleX command error")
+
+
+def _markdown_to_simplex(text: str) -> str:
+    """Convert common Markdown into SimpleX's formatting dialect."""
+    if not text:
+        return text
+
+    lines = text.split("\n")
+    result: List[str] = []
+    in_fence = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            result.append(line)
+            continue
+        if in_fence:
+            result.append(line)
+            continue
+
+        heading_match = re.match(r"^(#{1,6})\s+(.*)", stripped)
+        if heading_match:
+            heading_text = heading_match.group(2).strip()
+            heading_text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", heading_text)
+            heading_text = re.sub(r"__([^_]+)__", r"\1", heading_text)
+            result.append(f"*{heading_text}*")
+            continue
+
+        if re.match(r"^[-*_]{3,}\s*$", stripped):
+            result.append("--------")
+            continue
+
+        code_spans: List[str] = []
+
+        def _save_code(match):
+            code_spans.append(match.group(0))
+            return f"\x00CODE{len(code_spans) - 1}\x00"
+
+        converted = re.sub(r"`[^`]+`", _save_code, line)
+        converted = re.sub(r"\*{3}([^*]+)\*{3}", r"*_\1_*", converted)
+        converted = re.sub(r"_{3}([^_]+)_{3}", r"*_\1_*", converted)
+        converted = re.sub(r"\*{2}([^*]+)\*{2}", r"*\1*", converted)
+        converted = re.sub(r"__([^_]+)__", r"*\1*", converted)
+        converted = re.sub(r"~~([^~]+)~~", r"~\1~", converted)
+        converted = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"[image: \1]", converted)
+        converted = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", converted)
+
+        for i, code in enumerate(code_spans):
+            converted = converted.replace(f"\x00CODE{i}\x00", code)
+        result.append(converted)
+
+    return "\n".join(result)
 
 
 def _guess_extension(data: bytes) -> str:
@@ -119,24 +265,36 @@ class SimplexAdapter(BasePlatformAdapter):
     ``ctx.register_platform()`` in :func:`register`.
     """
 
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    SUPPORTS_MESSAGE_EDITING = True
+    REQUIRES_EDIT_FINALIZE = True
+    STREAMS_WITH_LIVE_MESSAGES = True
+
     def __init__(self, config: PlatformConfig, **kwargs):
         platform = Platform("simplex")
         super().__init__(config=config, platform=platform)
 
         extra = getattr(config, "extra", {}) or {}
         self.ws_url = extra.get("ws_url", "ws://127.0.0.1:5225").rstrip("/")
+        self.files_folder = (
+            extra.get("files_folder")
+            or os.getenv("SIMPLEX_FILES_FOLDER", "").strip()
+        )
+        self.command_timeout = float(extra.get("command_timeout", 10.0) or 10.0)
 
         # Running state
         self._ws = None  # websockets connection
         self._ws_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._event_tasks: set[asyncio.Task] = set()
         self._running = False
         self._last_ws_activity = 0.0
 
         # Track sent correlation IDs to filter echoes
         self._pending_corr_ids: set = set()
         self._max_pending_corr = 200
+        self._pending_responses: Dict[str, asyncio.Future] = {}
 
         logger.info("SimpleX adapter initialized: url=%s", self.ws_url)
 
@@ -197,6 +355,13 @@ class SimplexAdapter(BasePlatformAdapter):
         for task in self._typing_tasks.values():
             task.cancel()
         self._typing_tasks.clear()
+        for task in list(self._event_tasks):
+            task.cancel()
+        self._event_tasks.clear()
+        for corr_id, future in list(self._pending_responses.items()):
+            if not future.done():
+                future.set_exception(ConnectionError("SimpleX WebSocket disconnected"))
+            self._pending_responses.pop(corr_id, None)
 
         if self._ws:
             try:
@@ -231,13 +396,18 @@ class SimplexAdapter(BasePlatformAdapter):
                     self._last_ws_activity = time.time()
                     logger.info("SimpleX WS: connected")
 
+                    try:
+                        await self._replay_unread_chats(ws)
+                    except Exception:
+                        logger.exception("SimpleX WS: failed to replay unread chats")
+
                     async for raw in ws:
                         if not self._running:
                             break
                         self._last_ws_activity = time.time()
                         try:
                             msg = json.loads(raw)
-                            await self._handle_event(msg)
+                            self._spawn_event_task(msg)
                         except json.JSONDecodeError:
                             logger.debug("SimpleX WS: invalid JSON: %.100s", raw)
                         except Exception:
@@ -291,22 +461,119 @@ class SimplexAdapter(BasePlatformAdapter):
     # Inbound event handling
     # ------------------------------------------------------------------
 
+    def _spawn_event_task(self, msg: dict) -> None:
+        task = asyncio.create_task(self._handle_event(msg))
+        self._event_tasks.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            self._event_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("SimpleX WS: error handling event")
+
+        task.add_done_callback(_done)
+
+    async def _ws_request(self, ws: Any, cmd: str, timeout: float = 8.0) -> dict:
+        """Send a daemon command on an existing socket and wait for its response."""
+        corr_id = self._make_corr_id()
+        await ws.send(json.dumps({"corrId": corr_id, "cmd": cmd}))
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+            msg = json.loads(raw)
+            if msg.get("corrId") == corr_id:
+                self._pending_corr_ids.discard(corr_id)
+                return msg.get("resp") or msg
+            self._spawn_event_task(msg)
+
+    def _chat_ref_from_info(self, chat_info: dict) -> Optional[str]:
+        chat_type = chat_info.get("type", "")
+        if chat_type in {"group", "groupInfo"}:
+            group_info = chat_info.get("groupInfo") or chat_info.get("group") or {}
+            group_id = group_info.get("groupId") or group_info.get("id")
+            return f"#{group_id}" if group_id else None
+        contact = chat_info.get("contact") or {}
+        contact_id = contact.get("contactId") or contact.get("id")
+        return f"@{contact_id}" if contact_id else None
+
+    def _is_received_unread_item(self, item: dict) -> bool:
+        meta = item.get("meta") or {}
+        status = meta.get("itemStatus") or {}
+        status_type = status.get("type") if isinstance(status, dict) else str(status)
+        content = item.get("content") or {}
+        return status_type == "rcvNew" and content.get("type") == "rcvMsgContent"
+
+    async def _replay_unread_chats(self, ws: Any) -> None:
+        """Fetch unread messages missed while the persistent socket was down."""
+        list_resp = await self._ws_request(
+            ws,
+            '/_get chats 1 pcc=on count=50 {"type":"filters","favorite":false,"unread":true}',
+        )
+        if list_resp.get("type") != "apiChats":
+            return
+
+        for chat in list_resp.get("chats") or []:
+            chat_info = chat.get("chatInfo") or {}
+            unread_count = int((chat.get("chatStats") or {}).get("unreadCount") or 0)
+            if unread_count <= 0:
+                continue
+            chat_ref = self._chat_ref_from_info(chat_info)
+            if not chat_ref:
+                continue
+            count = min(max(unread_count + 5, 6), 50)
+            chat_resp = await self._ws_request(ws, f"/_get chat {chat_ref} count={count}")
+            if chat_resp.get("type") != "apiChat":
+                continue
+            full_chat = chat_resp.get("chat") or {}
+            full_chat_info = full_chat.get("chatInfo") or chat_info
+            for item in full_chat.get("chatItems") or []:
+                if self._is_received_unread_item(item):
+                    await self._handle_new_chat_item(
+                        {"chatInfo": full_chat_info, "chatItem": item}
+                    )
+
+    async def _mark_chat_items_read(self, chat_id: str, item_ids: List[Any]) -> None:
+        ids = ",".join(str(item_id) for item_id in item_ids if item_id is not None)
+        if not ids:
+            return
+        await self._send_ws(
+            {
+                "corrId": self._make_corr_id(),
+                "cmd": f"/_read chat items {_chat_ref_for_chat_id(chat_id)} {ids}",
+            }
+        )
+
     async def _handle_event(self, event: dict) -> None:
         """Dispatch a daemon event to the appropriate handler."""
-        resp_type = event.get("type") or event.get("resp", {}).get("type", "")
+        payload = event.get("resp") if isinstance(event.get("resp"), dict) else event
+        resp_type = payload.get("type", "")
 
         # Filter responses to our own commands (echoes)
         corr_id = event.get("corrId", "")
+        if corr_id:
+            future = self._pending_responses.pop(corr_id, None)
+            if future is not None:
+                self._pending_corr_ids.discard(corr_id)
+                if not future.done():
+                    future.set_result(payload)
+                return
         if corr_id and corr_id.startswith(_CORR_PREFIX):
             self._pending_corr_ids.discard(corr_id)
             return
 
         if resp_type == "newChatItem":
-            await self._handle_new_chat_item(event)
+            await self._handle_new_chat_item(payload)
         elif resp_type == "newChatItems":
             # Batch variant — process each item
-            items = event.get("chatItems") or []
+            chat_info = payload.get("chatInfo") or payload.get("chat") or {}
+            items = payload.get("chatItems") or []
             for item_wrapper in items:
+                if chat_info and not (
+                    item_wrapper.get("chatInfo") or item_wrapper.get("chat")
+                ):
+                    item_wrapper = {"chatInfo": chat_info, "chatItem": item_wrapper}
                 await self._handle_new_chat_item(item_wrapper)
         # Ignore all other event types (delivery receipts, contact updates, etc.)
 
@@ -316,6 +583,10 @@ class SimplexAdapter(BasePlatformAdapter):
         # normalise both layouts.
         chat_info = wrapper.get("chatInfo") or wrapper.get("chat") or {}
         chat_item = wrapper.get("chatItem") or wrapper.get("item") or {}
+        if not chat_item and (
+            "content" in wrapper or "meta" in wrapper or "chatDir" in wrapper
+        ):
+            chat_item = wrapper
 
         # Only process messages (not calls, deleted items, etc.)
         item_content = chat_item.get("content") or {}
@@ -374,7 +645,11 @@ class SimplexAdapter(BasePlatformAdapter):
         media_urls: List[str] = []
         media_types: List[str] = []
         file_info = chat_item.get("file") or {}
-        if file_info and file_info.get("fileStatus") not in {"cancelled", "error"}:
+        file_status = file_info.get("fileStatus") if file_info else None
+        file_status_type = (
+            file_status.get("type") if isinstance(file_status, dict) else file_status
+        )
+        if file_info and file_status_type not in {"cancelled", "error"}:
             file_id = file_info.get("fileId")
             file_name = file_info.get("fileName", "file")
             if file_id:
@@ -410,9 +685,12 @@ class SimplexAdapter(BasePlatformAdapter):
 
         # Message type
         msg_type = MessageType.TEXT
+        simplex_msg_type = msg_content.get("type", "")
         if media_types:
-            if any(mt.startswith("audio/") for mt in media_types):
+            if simplex_msg_type == "voice" and any(mt.startswith("audio/") for mt in media_types):
                 msg_type = MessageType.VOICE
+            elif any(mt.startswith("audio/") for mt in media_types):
+                msg_type = MessageType.AUDIO
             elif any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
 
@@ -427,6 +705,9 @@ class SimplexAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(event_obj)
+        item_id = meta.get("itemId")
+        if item_id is not None:
+            await self._mark_chat_items_read(chat_id, [item_id])
 
     async def _fetch_file(self, file_id: Any, file_name: str) -> Optional[str]:
         """Ask the daemon to receive and return a file attachment."""
@@ -435,35 +716,42 @@ class SimplexAdapter(BasePlatformAdapter):
         # does not have a direct binary download command; files are stored on
         # the local filesystem after the daemon accepts them.
         #
-        # We request acceptance first, then read from the daemon's local path.
-        corr_id = self._make_corr_id()
-        cmd = {
-            "corrId": corr_id,
-            "cmd": f"/freceive {file_id}",
-        }
-        await self._send_ws(cmd)
-        # The daemon will emit a chatItemUpdated event when the file lands;
-        # for simplicity we just wait briefly and rely on the daemon's default path.
-        await asyncio.sleep(2)
+        # We request acceptance into an explicit local path, then cache from
+        # that path only. This avoids broad folder scans and path traversal via
+        # remote-supplied file names.
+        safe_name = os.path.basename(str(file_name or "file")) or "file"
+        hermes_home = os.getenv("HERMES_HOME", "").strip()
+        receive_dir = (
+            self.files_folder
+            or os.getenv("SIMPLEX_FILES_FOLDER", "").strip()
+            or (os.path.join(hermes_home, "simplex-bot", "files") if hermes_home else "")
+            or os.path.join(tempfile.gettempdir(), "hermes-simplex-files")
+        )
+        receive_path = Path(receive_dir).expanduser() / safe_name
+        receive_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # simplex-chat stores received files in ~/Downloads or a configured path.
-        # We try common locations.
-        for search_dir in (
-            os.path.expanduser("~/Downloads"),
-            os.path.expanduser("~/.simplex/files"),
-            "/tmp/simplex_files",
-        ):
-            candidate = os.path.join(search_dir, file_name)
-            if os.path.exists(candidate):
-                with open(candidate, "rb") as f:
-                    data = f.read()
+        await self._send_command(
+            f"/freceive {file_id} approved_relays=on inline=on {receive_path}"
+        )
+
+        # The daemon can create a zero-byte placeholder before XFTP completes.
+        for _ in range(20):
+            if receive_path.exists() and receive_path.stat().st_size > 0:
+                data = receive_path.read_bytes()
                 ext = _guess_extension(data)
+                original_ext = os.path.splitext(safe_name)[1]
                 if _is_image_ext(ext):
                     return cache_image_from_bytes(data, ext)
-                elif _is_audio_ext(ext):
-                    return cache_audio_from_bytes(data, ext)
-                else:
-                    return cache_document_from_bytes(data, file_name)
+                if _is_audio_ext(ext) or _is_audio_ext(original_ext):
+                    return cache_audio_from_bytes(
+                        data, ext if _is_audio_ext(ext) else original_ext
+                    )
+                return cache_document_from_bytes(data, safe_name)
+            await asyncio.sleep(0.5)
+        logger.error(
+            "SimpleX: received file %s was not available at %s after waiting",
+            file_id, receive_path,
+        )
         return None
 
     # ------------------------------------------------------------------
@@ -480,19 +768,55 @@ class SimplexAdapter(BasePlatformAdapter):
             self._pending_corr_ids -= set(to_remove)
         return corr_id
 
-    async def _send_ws(self, payload: dict) -> None:
-        """Send a JSON payload over the WebSocket, queuing if not yet connected."""
-        import websockets as _wsexc
+    async def _send_ws(self, payload: dict) -> bool:
+        """Send a JSON payload over the WebSocket."""
         ws = self._ws
         if not ws:
-            logger.debug("SimpleX: WS not connected, dropping outbound command")
-            return
+            logger.error("SimpleX: WebSocket not connected; outbound command failed")
+            return False
+        import websockets as _wsexc
         try:
             await ws.send(json.dumps(payload))
+            return True
         except _wsexc.ConnectionClosed:
-            logger.warning("SimpleX: WS closed while sending")
+            logger.error("SimpleX: WebSocket closed while sending outbound command")
+            return False
         except Exception as e:
-            logger.warning("SimpleX: WS send error: %s", e)
+            logger.error("SimpleX: WebSocket send error: %s", e, exc_info=True)
+            return False
+
+    async def _send_command(self, cmd: str, *, timeout: Optional[float] = None) -> dict:
+        """Send a correlated SimpleX command and wait for its response."""
+        if not self._ws:
+            logger.error("SimpleX: WebSocket not connected; cannot run command: %s", cmd)
+            raise ConnectionError("SimpleX WebSocket not connected")
+
+        corr_id = self._make_corr_id()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending_responses[corr_id] = future
+        ok = await self._send_ws({"corrId": corr_id, "cmd": cmd})
+        if not ok:
+            self._pending_responses.pop(corr_id, None)
+            self._pending_corr_ids.discard(corr_id)
+            raise ConnectionError("SimpleX WebSocket send failed")
+
+        try:
+            resp = await asyncio.wait_for(
+                future,
+                timeout=self.command_timeout if timeout is None else timeout,
+            )
+        except asyncio.TimeoutError:
+            self._pending_responses.pop(corr_id, None)
+            self._pending_corr_ids.discard(corr_id)
+            logger.error("SimpleX: command timed out: %s", cmd)
+            raise
+
+        if isinstance(resp, dict) and resp.get("type") == "chatCmdError":
+            error = _chat_error_text(resp)
+            logger.error("SimpleX: command failed: %s (%s)", cmd, error)
+            raise RuntimeError(error)
+        return resp
 
     async def send(
         self,
@@ -502,21 +826,55 @@ class SimplexAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a text message to a contact or group."""
-        corr_id = self._make_corr_id()
+        live = bool((metadata or {}).get("_hermes_live_stream"))
+        formatted = self.format_message(content)
+        cmd = _text_send_command(chat_id, formatted, live=live)
+        try:
+            resp = await self._send_command(cmd)
+        except (ConnectionError, asyncio.TimeoutError) as e:
+            return SendResult(success=False, error=str(e), retryable=True)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
 
-        if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"#[{group_id}] {content}"
-        else:
-            cmd_str = f"@[{chat_id}] {content}"
+        message_id = _extract_chat_item_id(resp)
+        if live and not message_id:
+            logger.error("SimpleX: live send did not return chat item id: %s", resp)
+            return SendResult(
+                success=False,
+                error="SimpleX live send did not return chat item id",
+                raw_response=resp,
+                retryable=True,
+            )
+        return SendResult(success=True, message_id=message_id, raw_response=resp)
 
-        payload = {
-            "corrId": corr_id,
-            "cmd": cmd_str,
-        }
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Update a SimpleX live message, finalizing it on the last edit."""
+        formatted = self.format_message(content)
+        cmd = _text_update_command(
+            chat_id,
+            str(message_id),
+            formatted,
+            live=not finalize,
+        )
+        try:
+            resp = await self._send_command(cmd)
+        except (ConnectionError, asyncio.TimeoutError) as e:
+            return SendResult(success=False, error=str(e), retryable=True)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
 
-        await self._send_ws(payload)
-        return SendResult(success=True)
+        resp_type = resp.get("type") if isinstance(resp, dict) else ""
+        if resp_type in {"chatItemUpdated", "chatItemNotChanged", "newChatItems"}:
+            return SendResult(success=True, message_id=str(message_id), raw_response=resp)
+        logger.error("SimpleX: unexpected edit response for %s: %s", message_id, resp)
+        return SendResult(success=False, error=f"Unexpected SimpleX edit response: {resp_type}", raw_response=resp)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """SimpleX does not expose a typing indicator API — no-op."""
@@ -540,6 +898,52 @@ class SimplexAdapter(BasePlatformAdapter):
         text = f"{caption}\n{image_url}".strip() if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a native SimpleX voice message from a local audio file."""
+        if not os.path.isfile(audio_path):
+            error = f"SimpleX voice file does not exist: {audio_path}"
+            logger.error(error)
+            return SendResult(success=False, error=error)
+        duration = kwargs.get("duration") or self._estimate_audio_duration(audio_path)
+        cmd = _voice_send_command(
+            chat_id,
+            audio_path,
+            duration=duration,
+            caption=caption or "",
+        )
+        try:
+            resp = await self._send_command(cmd)
+        except (ConnectionError, asyncio.TimeoutError) as e:
+            return SendResult(success=False, error=str(e), retryable=True)
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(
+            success=True,
+            message_id=_extract_chat_item_id(resp),
+            raw_response=resp,
+        )
+
+    @staticmethod
+    def _estimate_audio_duration(audio_path: str) -> int:
+        try:
+            size = os.path.getsize(audio_path)
+        except OSError:
+            return 1
+        # Rough MP3/Opus estimate at 128kbps; enough for SimpleX display.
+        return max(1, int(round(size / 16000)))
+
+    def format_message(self, content: str) -> str:
+        """Convert Markdown to SimpleX's native rendering dialect."""
+        return _markdown_to_simplex(content)
+
     async def get_chat_info(self, chat_id: str) -> dict:
         """Return basic chat info."""
         if chat_id.startswith("group:"):
@@ -552,18 +956,13 @@ class SimplexAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 
 def check_requirements() -> bool:
-    """Plugin gate: require SIMPLEX_WS_URL AND the websockets package.
+    """Plugin gate: keep SimpleX visible so config validation can run.
 
-    Returning False keeps the platform out of ``get_connected_platforms()``
-    so the gateway never instantiates the adapter when the dependency is
-    missing or no daemon URL is configured.
+    The WebSocket URL may come from environment variables or config.yaml,
+    and dependency failures belong in ``connect()`` so configured SimpleX
+    platforms fail loudly in gateway logs instead of disappearing during
+    platform discovery.
     """
-    if not os.getenv("SIMPLEX_WS_URL"):
-        return False
-    try:
-        import websockets  # noqa: F401
-    except ImportError:
-        return False
     return True
 
 
@@ -639,23 +1038,28 @@ async def _standalone_send(
         return {"error": "SimpleX standalone send: SIMPLEX_WS_URL is required"}
 
     try:
-        if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            cmd_str = f"#[{group_id}] {message}"
-        else:
-            cmd_str = f"@[{chat_id}] {message}"
-
         payload = {
             "corrId": f"hermes-snd-{int(time.time() * 1000)}",
-            "cmd": cmd_str,
+            "cmd": _text_send_command(chat_id, message),
         }
 
         async with _wsclient.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
             await ws.send(json.dumps(payload))
-            # Give the daemon a moment to process the command before closing.
-            await asyncio.sleep(0.5)
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                msg = json.loads(raw)
+                if msg.get("corrId") != payload["corrId"]:
+                    continue
+                resp = msg.get("resp") if isinstance(msg.get("resp"), dict) else msg
+                break
+            if isinstance(resp, dict) and resp.get("type") == "chatCmdError":
+                return {"error": f"SimpleX send failed: {_chat_error_text(resp)}"}
 
-        return {"success": True, "platform": "simplex", "chat_id": chat_id}
+        result = {"success": True, "platform": "simplex", "chat_id": chat_id}
+        message_id = _extract_chat_item_id(resp if isinstance(resp, dict) else {})
+        if message_id:
+            result["message_id"] = message_id
+        return result
     except Exception as e:
         return {"error": f"SimpleX send failed: {e}"}
 

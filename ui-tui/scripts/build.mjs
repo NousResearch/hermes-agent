@@ -54,8 +54,19 @@ await build({
 // always invokes this file as `node dist/entry.js` anyway, so the shebang is
 // redundant — strip it.
 const body = readFileSync(out, 'utf8')
-if (body.startsWith('#!')) {
-  writeFileSync(out, body.slice(body.indexOf('\n') + 1))
+const bundled = body.startsWith('#!') ? body.slice(body.indexOf('\n') + 1) : body
+
+// Guard release bundles against reintroducing OpenTUI's native extractor,
+// which leaked hidden libopentui.so copies into /tmp on Linux (#32283).
+const forbiddenNativeMarkers = ['@opentui/', 'libopentui', 'opentui']
+for (const marker of forbiddenNativeMarkers) {
+  if (bundled.toLowerCase().includes(marker)) {
+    throw new Error(`TUI bundle contains forbidden native runtime marker ${JSON.stringify(marker)}`)
+  }
+}
+
+if (bundled !== body) {
+  writeFileSync(out, bundled)
 }
 
 console.log(`built ${out}`)

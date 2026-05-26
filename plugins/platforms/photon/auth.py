@@ -426,6 +426,38 @@ def register_webhook(
     return data.get("data") or {}
 
 
+def print_credential_summary(emit: Any = print) -> None:
+    """Pretty-print the credential status table via the *emit* callback.
+
+    Same isolation rationale as :func:`persist_webhook_signing_secret`:
+    all secret-bearing reads happen inside this function; the *emit*
+    callback only ever receives display literals like ``"✓ stored"``
+    or a project UUID. No tainted variable ever escapes into the
+    caller's scope. Default ``emit=print`` so the function is usable
+    directly from a CLI handler with zero plumbing.
+    """
+    def _present_token() -> str:
+        return "✓ stored" if load_photon_token() else "✗ missing (run `hermes photon login`)"
+
+    def _present_project_id() -> str:
+        pid, _sec = load_project_credentials()
+        return pid or "✗ missing"
+
+    def _present_project_secret() -> str:
+        _pid, sec = load_project_credentials()
+        return "✓ stored" if sec else "✗ missing"
+
+    def _present_webhook_secret() -> str:
+        return "✓ set" if os.getenv("PHOTON_WEBHOOK_SECRET") else "⚠ unset — verification disabled"
+
+    emit("Photon iMessage status")
+    emit("──────────────────────")
+    emit(f"  device token        : {_present_token()}")
+    emit(f"  project id          : {_present_project_id()}")
+    emit(f"  project key         : {_present_project_secret()}")
+    emit(f"  webhook key         : {_present_webhook_secret()}")
+
+
 def credential_summary() -> Dict[str, str]:
     """Return a fully pre-formatted credential status dict.
 

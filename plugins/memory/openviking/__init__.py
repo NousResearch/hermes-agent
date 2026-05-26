@@ -79,6 +79,8 @@ _MEMORY_WRITE_TARGET_SUBDIR_MAP = {
     "user": "preferences",
     "memory": "patterns",
 }
+_LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_SETUP_CANCELLED = object()
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +453,16 @@ def _connection_values_from_ovcli(data: dict) -> dict:
     }
 
 
+def _is_local_openviking_url(value: str) -> bool:
+    candidate = _clean_config_value(value)
+    if not candidate:
+        return False
+    if "://" not in candidate:
+        candidate = f"//{candidate}"
+    parsed = urlparse(candidate)
+    return (parsed.hostname or "").lower() in _LOCAL_OPENVIKING_HOSTS
+
+
 def _load_hermes_openviking_config() -> dict:
     try:
         from hermes_cli.config import load_config
@@ -552,11 +564,17 @@ def _remember_ovcli_path(provider_config: dict, ovcli_path: Path) -> None:
 def _ovcli_data_from_connection_values(values: dict) -> dict:
     data = {"url": _clean_config_value(values.get("endpoint")) or _DEFAULT_ENDPOINT}
     api_key = _clean_config_value(values.get("api_key"))
+    api_key_type = _clean_config_value(values.get("api_key_type"))
+    root_api_key = _clean_config_value(values.get("root_api_key"))
     account = _clean_config_value(values.get("account"))
     user = _clean_config_value(values.get("user"))
     agent = _clean_config_value(values.get("agent")) or _DEFAULT_AGENT
     if api_key:
         data["api_key"] = api_key
+    if root_api_key:
+        data["root_api_key"] = root_api_key
+    elif api_key and api_key_type == "root":
+        data["root_api_key"] = api_key
     if account:
         data["account"] = account
     if user:
@@ -570,6 +588,58 @@ def _write_ovcli_config(path: Path, values: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_ovcli_data_from_connection_values(values), indent=2) + "\n", encoding="utf-8")
     _restrict_secret_file_permissions(path)
+
+
+def _prompt_manual_connection_values(prompt, select, cancelled):
+    endpoint = _clean_config_value(
+        prompt("OpenViking server URL", default=_DEFAULT_ENDPOINT)
+    ) or _DEFAULT_ENDPOINT
+    is_local = _is_local_openviking_url(endpoint)
+    api_key_label = (
+        "OpenViking API key (optional for local)"
+        if is_local
+        else "OpenViking API key"
+    )
+    api_key = _clean_config_value(prompt(api_key_label, secret=True))
+    if not api_key and not is_local:
+        print("\n  Remote OpenViking servers require an API key.")
+        print("  No changes saved.\n")
+        return None
+
+    values = {
+        "endpoint": endpoint,
+        "api_key": api_key,
+        "account": "",
+        "user": "",
+        "agent": "",
+    }
+    if api_key:
+        key_type = select(
+            "  OpenViking API key type",
+            [
+                ("User API key", "server derives account/user automatically"),
+                ("Root API key", "requires account and user IDs"),
+            ],
+            default=0,
+            cancel_returns=cancelled,
+        )
+        if key_type == cancelled:
+            return _SETUP_CANCELLED
+        if key_type == 1:
+            values["api_key_type"] = "root"
+            values["account"] = _clean_config_value(prompt("OpenViking account"))
+            values["user"] = _clean_config_value(prompt("OpenViking user"))
+            if not values["account"] or not values["user"]:
+                print("\n  Root API keys require both OpenViking account and user.")
+                print("  No changes saved.\n")
+                return None
+        else:
+            values["api_key_type"] = "user"
+
+    values["agent"] = _clean_config_value(
+        prompt("OpenViking agent", default=_DEFAULT_AGENT)
+    ) or _DEFAULT_AGENT
+    return values
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +738,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             setup_options = [
                 ("Link to ovcli.conf", "Hermes follows the active OpenViking CLI config"),
                 ("Copy once", "Hermes won't follow future ovcli.conf changes"),
+                ("Manual Setup", "Enter a new URL/API key"),
             ]
             choice = _curses_select(
                 "  OpenViking config source",
@@ -691,18 +762,64 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 print("  Start a new session to activate.\n")
                 return
 
-            provider_config["use_ovcli_config"] = False
-            provider_config.pop("ovcli_config_path", None)
-            config["memory"]["provider"] = "openviking"
-            config["memory"]["openviking"] = provider_config
-            save_config(config)
-            _write_env_vars(
-                env_path,
-                _env_writes_from_connection_values(ovcli_values),
-                remove_keys=_OPENVIKING_ENV_KEYS,
+            if choice == 1:
+                provider_config["use_ovcli_config"] = False
+                provider_config.pop("ovcli_config_path", None)
+                config["memory"]["provider"] = "openviking"
+                config["memory"]["openviking"] = provider_config
+                save_config(config)
+                _write_env_vars(
+                    env_path,
+                    _env_writes_from_connection_values(ovcli_values),
+                    remove_keys=_OPENVIKING_ENV_KEYS,
+                )
+                print(f"\n  Memory provider: openviking")
+                print("  Connection saved to .env")
+                print("  Start a new session to activate.\n")
+                return
+
+            values = _prompt_manual_connection_values(_prompt, _curses_select, _CANCELLED)
+            if values is _SETUP_CANCELLED:
+                _print_cancelled_setup()
+                return
+            if values is None:
+                return
+
+            save_choice = _curses_select(
+                "  Save OpenViking config",
+                [
+                    ("Write ovcli.conf and link", "Hermes and ov use this config"),
+                    ("Keep within Hermes", "Write values only to Hermes .env"),
+                ],
+                default=1,
+                cancel_returns=_CANCELLED,
             )
-            print(f"\n  Memory provider: openviking")
-            print("  Connection saved to .env")
+            if save_choice == _CANCELLED:
+                _print_cancelled_setup()
+                return
+
+            config["memory"]["provider"] = "openviking"
+            if save_choice == 0:
+                _write_ovcli_config(ovcli_path, values)
+                provider_config["use_ovcli_config"] = True
+                _remember_ovcli_path(provider_config, ovcli_path)
+                config["memory"]["openviking"] = provider_config
+                save_config(config)
+                _write_env_vars(env_path, {}, remove_keys=_OPENVIKING_ENV_KEYS)
+                print(f"\n  Memory provider: openviking")
+                print(f"  Updated config: {ovcli_path}")
+            else:
+                provider_config["use_ovcli_config"] = False
+                provider_config.pop("ovcli_config_path", None)
+                config["memory"]["openviking"] = provider_config
+                save_config(config)
+                _write_env_vars(
+                    env_path,
+                    _env_writes_from_connection_values(values),
+                    remove_keys=_OPENVIKING_ENV_KEYS,
+                )
+                print(f"\n  Memory provider: openviking")
+                print("  Connection saved to .env")
             print("  Start a new session to activate.\n")
             return
 

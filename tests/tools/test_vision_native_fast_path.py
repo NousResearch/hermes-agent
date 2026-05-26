@@ -52,8 +52,18 @@ class TestSupportsMediaInToolResults:
     def test_gemini_3_yes(self):
         assert _supports_media_in_tool_results("google", "gemini-3-flash-preview") is True
 
-    def test_gemini_2_no(self):
-        assert _supports_media_in_tool_results("google", "gemini-2.5-pro") is False
+    def test_gemini_25_yes(self):
+        # Gemini 2.5 supports multimodal functionResponse (#30704)
+        assert _supports_media_in_tool_results("google", "gemini-2.5-pro") is True
+        assert _supports_media_in_tool_results("google", "gemini-2.5-flash") is True
+
+    def test_gemini_20_yes(self):
+        # Gemini 2.0 supports multimodal functionResponse (#30704)
+        assert _supports_media_in_tool_results("google", "gemini-2.0-flash") is True
+
+    def test_gemini_1x_no(self):
+        # Gemini 1.x did not support multimodal functionResponse
+        assert _supports_media_in_tool_results("google", "gemini-1.5-pro") is False
 
     def test_unknown_provider_conservative_no(self):
         assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False

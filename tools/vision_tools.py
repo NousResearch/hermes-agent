@@ -461,12 +461,14 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return True
 
     # Gemini — gate on model name; older Gemini variants did not support
-    # multimodal functionResponse. Gemini 3.x does.
+    # multimodal functionResponse. Gemini 2.0+/2.5+/3.x do.
     if p in {"google", "gemini", "google-gemini", "google-vertex-gemini"}:
         if not isinstance(model, str):
             return False
         m = model.strip().lower()
         if "gemini-3" in m or "gemini-pro-3" in m or "gemini-flash-3" in m:
+            return True
+        if "gemini-2.5" in m or "gemini-2.0" in m:
             return True
         return False
 

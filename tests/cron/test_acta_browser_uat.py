@@ -49,7 +49,8 @@ def _valid_jobs_dom() -> str:
           <span class="confidence-chip">CONF HIGH</span>
           <span>LAST RUN 2026-05-25 09:00 UTC</span>
           <span>SCHEDULE daily</span>
-          <a>OPEN</a>
+          <a class="row-open-overlay job-open-overlay" href="https://acta.imperatr.com/r/daily/detail.html?exp=1&amp;sig=daily"></a>
+          <span>OPEN/SIGNED</span>
           <small>SOURCE cron/output/daily job_id=daily</small>
         </article>
         <article class="job-row">
@@ -440,6 +441,261 @@ def test_validate_jobs_contract_accepts_real_render_jobs_page_dom(tmp_path: Path
     dom = render_jobs_page(collect_situation_items(tmp_path))
 
     assert acta_browser_uat._validate_jobs_contract(dom) == []
+
+
+def test_validate_jobs_contract_fails_fake_open_signed_without_clickable_artifact():
+    dom = """
+    <html><body>
+      <h1>Acta Jobs</h1>
+      <p>Source Runs</p>
+      <article class="job-row">
+        <h2>Morning newsletter digest</h2>
+        <span class="confidence-chip">CONF HIGH</span>
+        <span>LAST RUN 2026-05-25 09:00 UTC</span>
+        <span>SCHEDULE daily</span>
+        <span>OPEN/SIGNED</span>
+        <small>SOURCE cron/output/daily job_id=daily</small>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_jobs_contract(dom)
+
+    assert "Job row 1 promises OPEN/SIGNED but is missing clickable artifact-open affordance (data-open-url or job-open-overlay/row-open-overlay href)" in failures
+
+
+def test_validate_jobs_contract_fails_unsafe_signed_artifact_target():
+    dom = """
+    <html><body>
+      <h1>Acta Jobs</h1>
+      <p>Source Runs</p>
+      <article class="job-row" data-open-url="//evil.example/r/daily/detail.html?exp=1&amp;sig=daily">
+        <a class="row-open-overlay job-open-overlay" href="//evil.example/r/daily/detail.html?exp=1&amp;sig=daily"></a>
+        <h2>Morning newsletter digest</h2>
+        <span class="confidence-chip">CONF HIGH</span>
+        <span>LAST RUN 2026-05-25 09:00 UTC</span>
+        <span>SCHEDULE daily</span>
+        <span>OPEN/SIGNED</span>
+        <small>SOURCE cron/output/daily job_id=daily</small>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_jobs_contract(dom)
+
+    assert "Job row 1 promises OPEN/SIGNED but is missing clickable artifact-open affordance (data-open-url or job-open-overlay/row-open-overlay href)" in failures
+
+
+def test_validate_jobs_contract_fails_malformed_signed_artifact_targets_without_crashing():
+    for target in (
+        "https:/r/daily/detail.html?exp=1&amp;sig=daily",
+        "https:///r/daily/detail.html?exp=1&amp;sig=daily",
+        "https://acta.imperatr.com:bad/r/daily/detail.html?exp=1&amp;sig=daily",
+        "https://acta.imperatr.com:/r/daily/detail.html?exp=1&amp;sig=daily",
+        "https://evil@acta.imperatr.com/r/daily/detail.html?exp=1&amp;sig=daily",
+        "/r/daily/detail.html?exp=1&amp;sig=daily\x7f",
+    ):
+        dom = f"""
+        <html><body>
+          <h1>Acta Jobs</h1>
+          <p>Source Runs</p>
+          <article class="job-row" data-open-url="{target}">
+            <a class="row-open-overlay job-open-overlay" href="{target}"></a>
+            <h2>Morning newsletter digest</h2>
+            <span class="confidence-chip">CONF HIGH</span>
+            <span>LAST RUN 2026-05-25 09:00 UTC</span>
+            <span>SCHEDULE daily</span>
+            <span>OPEN/SIGNED</span>
+            <small>SOURCE cron/output/daily job_id=daily</small>
+          </article>
+        </body></html>
+        """
+
+        failures = acta_browser_uat._validate_jobs_contract(dom)
+
+        assert "Job row 1 promises OPEN/SIGNED but is missing clickable artifact-open affordance (data-open-url or job-open-overlay/row-open-overlay href)" in failures
+
+
+def test_validate_jobs_contract_accepts_safe_thread_only_no_page_fallback():
+    dom = """
+    <html><body>
+      <h1>Acta Jobs</h1>
+      <p>Source Runs</p>
+      <article class="job-row" data-open-state="no-page">
+        <h2>Telegram-only source run</h2>
+        <span class="confidence-chip">CONF LOW/GAP</span>
+        <span>LAST RUN 2026-05-25 09:00 UTC</span>
+        <span>SCHEDULE daily</span>
+        <span>NO PAGE</span>
+        <small>SOURCE cron/output/daily job_id=daily <a class="thread-link" href="https://t.me/imperatr/123">THREAD</a></small>
+      </article>
+    </body></html>
+    """
+
+    assert acta_browser_uat._validate_jobs_contract(dom) == []
+
+
+def test_validate_jobs_contract_fails_unsafe_thread_only_no_page_fallback():
+    dom = """
+    <html><body>
+      <h1>Acta Jobs</h1>
+      <p>Source Runs</p>
+      <article class="job-row" data-open-state="no-page">
+        <h2>Telegram-only source run</h2>
+        <span class="confidence-chip">CONF LOW/GAP</span>
+        <span>LAST RUN 2026-05-25 09:00 UTC</span>
+        <span>SCHEDULE daily</span>
+        <span>NO PAGE</span>
+        <small>SOURCE cron/output/daily job_id=daily <a class="thread-link" href="https://evil.t.me/imperatr/123">THREAD</a></small>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_jobs_contract(dom)
+
+    assert "Job row 1 NO PAGE THREAD fallback is missing a safe thread href" in failures
+
+
+def test_validate_jobs_contract_fails_malformed_thread_targets_without_crashing():
+    for target in (
+        "https:/imperatr/123",
+        "https://t.me:bad/imperatr/123",
+        "https://t.me:99999/imperatr/123",
+        "https://t.me:/imperatr/123",
+        "https://evil@t.me/imperatr/123",
+        "https://t.me/imperatr/123\x7f",
+    ):
+        dom = f"""
+        <html><body>
+          <h1>Acta Jobs</h1>
+          <p>Source Runs</p>
+          <article class="job-row" data-open-state="no-page">
+            <h2>Telegram-only source run</h2>
+            <span class="confidence-chip">CONF LOW/GAP</span>
+            <span>LAST RUN 2026-05-25 09:00 UTC</span>
+            <span>SCHEDULE daily</span>
+            <span>NO PAGE</span>
+            <small>SOURCE cron/output/daily job_id=daily <a class="thread-link" href="{target}">THREAD</a></small>
+          </article>
+        </body></html>
+        """
+
+        failures = acta_browser_uat._validate_jobs_contract(dom)
+
+        assert "Job row 1 NO PAGE THREAD fallback is missing a safe thread href" in failures
+
+
+def test_validate_jobs_contract_fails_disabled_thread_only_no_page_fallback():
+    dom = """
+    <html><body>
+      <h1>Acta Jobs</h1>
+      <p>Source Runs</p>
+      <article class="job-row" aria-disabled="true">
+        <h2>Telegram-only source run</h2>
+        <span class="confidence-chip">CONF LOW/GAP</span>
+        <span>LAST RUN 2026-05-25 09:00 UTC</span>
+        <span>SCHEDULE daily</span>
+        <span>NO PAGE</span>
+        <small>SOURCE cron/output/daily job_id=daily <a class="thread-link" href="https://t.me/imperatr/123">THREAD</a></small>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_jobs_contract(dom)
+
+    assert "Job row 1 NO PAGE THREAD fallback must not be aria-disabled" in failures
+
+
+def test_validate_jobs_contract_fails_thread_only_no_page_with_artifact_overlay():
+    dom = """
+    <html><body>
+      <h1>Acta Jobs</h1>
+      <p>Source Runs</p>
+      <article class="job-row" data-open-state="no-page">
+        <a class="row-open-overlay job-open-overlay" href="https://acta.imperatr.com/r/daily/detail.html?exp=1&amp;sig=daily"></a>
+        <h2>Telegram-only source run</h2>
+        <span class="confidence-chip">CONF LOW/GAP</span>
+        <span>LAST RUN 2026-05-25 09:00 UTC</span>
+        <span>SCHEDULE daily</span>
+        <span>NO PAGE</span>
+        <small>SOURCE cron/output/daily job_id=daily <a class="thread-link" href="https://t.me/imperatr/123">THREAD</a></small>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_jobs_contract(dom)
+
+    assert "Job row 1 NO PAGE THREAD fallback must not expose artifact open overlays" in failures
+
+
+def test_acta_browser_uat_generated_jobs_page_at_mobile_width(tmp_path: Path):
+    if not _browser_cli_available():
+        pytest.skip("agent-browser/npx unavailable; pure validation tests still cover jobs clickable contract")
+
+    html_path = tmp_path / "jobs.html"
+    html_path.write_text(
+        render_jobs_page(
+            [
+                CronSituationItem(
+                    job_id="daily",
+                    name="Morning newsletter digest",
+                    schedule="daily",
+                    deliver="telegram",
+                    enabled=True,
+                    latest_md=Path("/tmp/daily.md"),
+                    latest_html=None,
+                    latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+                    status="fresh",
+                    excerpt="Signed packet ready for review.",
+                    artifact_url="https://acta.imperatr.com/r/daily/detail.html?exp=1&sig=daily",
+                ),
+                CronSituationItem(
+                    job_id="thread-only",
+                    name="Telegram-only source run",
+                    schedule="manual",
+                    deliver="telegram",
+                    enabled=True,
+                    latest_md=Path("/tmp/thread.md"),
+                    latest_html=None,
+                    latest_time=datetime(2026, 5, 19, 8, tzinfo=timezone.utc),
+                    status="fresh",
+                    excerpt="Thread fallback without signed page.",
+                    artifact_url=None,
+                    telegram_url="https://t.me/imperatr/123",
+                ),
+            ],
+            generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc),
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HARNESS),
+            "--html",
+            str(html_path),
+            "--artifact-dir",
+            str(tmp_path / "uat-jobs"),
+            "--viewport-width",
+            "390",
+            "--viewport-height",
+            "844",
+            "--scenario",
+            "jobs",
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=45,
+    )
+
+    assert result.returncode == 0, result.stdout
+    report = json.loads((tmp_path / "uat-jobs" / "acta-uat-report.json").read_text())
+    assert report["scenario_key"] == "jobs"
+    assert report["viewport"]["width"] == 390
+    assert report["failures"] == []
 
 
 def test_validate_jobs_contract_fails_when_confidence_and_action_markers_missing():

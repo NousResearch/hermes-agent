@@ -20,7 +20,7 @@ from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Mapping, cast
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 
 DEV_ROW_RE = re.compile(r"<(?:section|article)\b(?=[^>]*\bclass=\"[^\"]*(?:brief-row|lead)\b)(?=[^>]*\bdata-feed-lane=\"dev\")[\s\S]*?</(?:section|article)>", re.I)
@@ -232,6 +232,96 @@ def _has_clickable_open_affordance(row_html: str) -> bool:
     parser.feed(row_html)
     parser.close()
     return parser.has_affordance
+
+
+def _has_url_control_chars(value: str) -> bool:
+    return any(ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in value)
+
+
+def _is_safe_thread_href(value: str | None) -> bool:
+    if value is None or value != value.strip() or "\\" in value or _has_url_control_chars(value):
+        return False
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == "t.me"
+        and parsed.hostname == "t.me"
+        and port is None
+        and parsed.username is None
+        and parsed.password is None
+        and bool(parsed.path.strip("/"))
+    )
+
+
+_SIGNED_ACTA_ARTIFACT_SEGMENT_RE = r"(?=[A-Za-z0-9._-]*[A-Za-z0-9])[A-Za-z0-9._-]+"
+_SIGNED_ACTA_ARTIFACT_PATH_RE = re.compile(
+    rf"^/r/{_SIGNED_ACTA_ARTIFACT_SEGMENT_RE}/{_SIGNED_ACTA_ARTIFACT_SEGMENT_RE}\.html$"
+)
+
+
+def _is_safe_job_artifact_href(value: str | None) -> bool:
+    if value is None or value != value.strip() or "\\" in value or _has_url_control_chars(value):
+        return False
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.username is not None or parsed.password is not None or port is not None:
+        return False
+    if parsed.scheme:
+        if parsed.scheme != "https" or parsed.netloc != "acta.imperatr.com" or parsed.hostname != "acta.imperatr.com":
+            return False
+    else:
+        if parsed.netloc or not value.startswith("/") or value.startswith("//"):
+            return False
+    if not _SIGNED_ACTA_ARTIFACT_PATH_RE.fullmatch(parsed.path):
+        return False
+    query = parse_qs(parsed.query)
+    return bool(query.get("exp") and query.get("sig"))
+
+
+class _JobRowAffordanceParser(HTMLParser):
+    """Extract clickable artifact and THREAD fallback affordances from a job row."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.has_artifact_open = False
+        self.has_artifact_overlay = False
+        self.has_safe_thread = False
+        self.aria_disabled = False
+        self._seen_root = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        attr_map = {key.lower(): value for key, value in attrs}
+        if not self._seen_root:
+            self._seen_root = True
+            self.aria_disabled = (attr_map.get("aria-disabled") or "").lower() == "true"
+            if _is_safe_job_artifact_href(attr_map.get("data-open-url")):
+                self.has_artifact_open = True
+
+        if tag != "a":
+            return
+        classes = set((attr_map.get("class") or "").lower().split())
+        href = attr_map.get("href")
+        if classes & {"job-open-overlay", "row-open-overlay"}:
+            self.has_artifact_overlay = True
+            if _is_safe_job_artifact_href(href):
+                self.has_artifact_open = True
+        if "thread-link" in classes and _is_safe_thread_href(href):
+            self.has_safe_thread = True
+
+
+def _job_row_affordances(row_html: str) -> _JobRowAffordanceParser:
+    parser = _JobRowAffordanceParser()
+    parser.feed(row_html)
+    parser.close()
+    return parser
 
 
 class _FirstOutputArtifactTargetParser(HTMLParser):
@@ -675,11 +765,14 @@ def _validate_jobs_contract(
         failures.append("Jobs/source-runs identity is missing")
 
     job_rows = _extract_text_by_class(dom, "job-row")
+    job_row_html = _extract_html_by_class(dom, "job-row")
     if not job_rows:
         failures.append("No browser-rendered job rows found")
         return failures
 
     for index, row_text in enumerate(job_rows, start=1):
+        row_html = job_row_html[index - 1] if index <= len(job_row_html) else ""
+        affordances = _job_row_affordances(row_html)
         if not CONFIDENCE_CHIP_RE.search(row_text):
             failures.append(f"Job row {index} is missing visible confidence chips (CONF HIGH/MED/LOW-GAP)")
         if not re.search(r"\bLAST\s+RUN\b", row_text, re.I):
@@ -690,6 +783,25 @@ def _validate_jobs_contract(
             failures.append(f"Job row {index} is missing action/status copy (OPEN/SIGNED or NO PAGE)")
         if not re.search(r"\bSOURCE\b|\bjob_id\b", row_text, re.I):
             failures.append(f"Job row {index} is missing source/provenance copy (SOURCE/job_id)")
+
+        promises_artifact = bool(re.search(r"\b(?:OPEN|SIGNED)\b", row_text, re.I)) and not re.search(
+            r"\bNO\s+PAGE\b", row_text, re.I
+        )
+        if promises_artifact and not affordances.has_artifact_open:
+            failures.append(
+                f"Job row {index} promises OPEN/SIGNED but is missing clickable artifact-open affordance (data-open-url or job-open-overlay/row-open-overlay href)"
+            )
+
+        thread_fallback = bool(re.search(r"\bNO\s+PAGE\b", row_text, re.I)) and (
+            bool(re.search(r"\bTHREAD\b", row_text, re.I)) or "thread-link" in row_html
+        )
+        if thread_fallback:
+            if not affordances.has_safe_thread:
+                failures.append(f"Job row {index} NO PAGE THREAD fallback is missing a safe thread href")
+            if affordances.aria_disabled:
+                failures.append(f"Job row {index} NO PAGE THREAD fallback must not be aria-disabled")
+            if affordances.has_artifact_overlay:
+                failures.append(f"Job row {index} NO PAGE THREAD fallback must not expose artifact open overlays")
     return failures
 
 

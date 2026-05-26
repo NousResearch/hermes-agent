@@ -817,7 +817,78 @@ def _validate_archive_contract(
     return failures
 
 
+def _validate_archive_day_contract(
+    dom: str,
+    *,
+    horizontal_overflow: bool = False,
+    console_output: str = "",
+    errors_output: str = "",
+    action_state_probe: Mapping[str, object] | None = None,
+) -> list[str]:
+    failures, auth_wall = _common_browser_failures(
+        dom,
+        horizontal_overflow=horizontal_overflow,
+        console_output=console_output,
+        errors_output=errors_output,
+    )
+    if auth_wall:
+        return failures
+
+    if not re.search(r"ACTA</em>\s*/\s*ARCHIVE\s+DAY|\bArchive\s+day\b", dom, re.I):
+        failures.append("Archive-day identity is missing")
+    if not re.search(r"\bDay\s+Brief\b", dom, re.I):
+        failures.append("Archive-day brief heading is missing")
+    if not re.search(r'<a[^>]+class="active"[^>]+href="/archive"[^>]*>\s*ARCHIVE', dom, re.I):
+        failures.append("Archive-day mobile Archive nav is not active")
+
+    readable_rows = re.findall(
+        r"<(?:article|section)\b(?=[^>]*\b(?:lead|brief-row)\b)(?=[^>]*\bdata-read-key=)[\s\S]*?</(?:article|section)>",
+        dom,
+        re.I,
+    )
+    if not readable_rows:
+        failures.append("Archive-day has no signed readable briefing rows")
+        return failures
+
+    for index, row_html in enumerate(readable_rows, start=1):
+        row_text = re.sub(r"<[^>]+>", " ", row_html)
+        row_text = " ".join(row_text.split())
+        if "row-open-overlay" not in row_html or not re.search(
+            r'href="https://acta\.imperatr\.com/r/[^"<>?]+\.html\?[^"<>]*\bexp=[^"<>]*\bsig=', row_html
+        ):
+            failures.append(f"Archive-day readable row {index} is missing a safe signed Acta open overlay")
+        if not re.search(r"\b(?:READ|UNREAD)\b", re.sub(r"\bMark\s+(?:read|unread)\b", " ", row_text), re.I):
+            failures.append(f"Archive-day readable row {index} is missing read/unread state")
+        if not re.search(r"\bMark\s+(?:read|unread)\b", row_text, re.I):
+            failures.append(f"Archive-day readable row {index} is missing Mark read/Mark unread toggle")
+        for action, label in (("save", "Save"), ("dismiss", "Dismiss"), ("later", "Read later")):
+            if not re.search(rf'data-state-action="{re.escape(action)}"[^>]*>\s*{re.escape(label)}\s*</button>', row_html, re.I):
+                failures.append(f"Archive-day readable row {index} is missing {label} action")
+        if not re.search(r"\bCONF\s+(?:HIGH|MED|LOW[-/]GAP)\b", row_text, re.I):
+            failures.append(f"Archive-day readable row {index} is missing visible confidence")
+        if not re.search(r"\b(?:SOURCE|telegram|local|signed|\d{4}-\d{2}-\d{2}|\d+h\s+ago|\d+\s+days?\s+ago|just\s+now)\b", row_text, re.I):
+            failures.append(f"Archive-day readable row {index} is missing freshness/provenance copy")
+
+    if action_state_probe:
+        if bool(action_state_probe.get("skipped")):
+            failures.append("Archive-day signed row action-state browser probe was skipped")
+        elif not bool(action_state_probe.get("ok")):
+            reason = str(action_state_probe.get("reason") or action_state_probe)
+            failures.append(f"Archive-day signed row action-state browser probe failed: {reason}")
+    else:
+        failures.append("Archive-day signed row action-state browser probe did not run")
+
+    if re.search(r"aria-disabled=\"true\"[\s\S]{0,500}\b(?:data-state-action|read-toggle|data-read-key)\b", dom, re.I):
+        failures.append("Archive-day disabled rows expose read/action affordances")
+    return failures
+
+
 def _scenario_metadata(scenario: str) -> dict[str, str]:
+    if scenario == "archive-day":
+        return {
+            "persona": "mobile Acta operator reviewing a previous-day briefing",
+            "scenario": "Validate an Acta archive-day dashboard with read/action controls at mobile width",
+        }
     if scenario == "archive":
         return {
             "persona": "mobile Acta operator reviewing previous days",
@@ -848,7 +919,9 @@ def run(args: argparse.Namespace) -> int:
     output_artifact_failures: list[str] = []
     try:
         result = _run_chrome(url, artifact_dir, args.timeout, args.viewport_width, args.viewport_height)
-        if scenario == "archive":
+        if scenario == "archive-day":
+            validate = _validate_archive_day_contract
+        elif scenario == "archive":
             validate = _validate_archive_contract
         elif scenario == "outputs":
             validate = _validate_outputs_contract
@@ -861,7 +934,7 @@ def run(args: argparse.Namespace) -> int:
             horizontal_overflow=result.horizontal_overflow,
             console_output=result.console_output,
             errors_output=result.errors_output,
-            **({"action_state_probe": result.action_state_probe or {}} if scenario == "feed" else {}),
+            **({"action_state_probe": result.action_state_probe or {}} if scenario in {"feed", "archive-day"} else {}),
         )
         if scenario == "outputs":
             output_artifact_url = _first_output_artifact_url(result.dom, result.url)
@@ -898,10 +971,14 @@ def run(args: argparse.Namespace) -> int:
         "errors_output": result.errors_output,
         "layout_metrics": result.layout_metrics or {},
         "horizontal_overflow": result.horizontal_overflow,
-        "action_state_probe": (result.action_state_probe or {}) if scenario == "feed" else {},
+        "action_state_probe": (result.action_state_probe or {}) if scenario in {"feed", "archive-day"} else {},
         "failures": failures,
     }
-    if scenario == "archive":
+    if scenario == "archive-day":
+        report["readable_rows"] = len(
+            re.findall(r"<(?:article|section)\b(?=[^>]*\b(?:lead|brief-row)\b)(?=[^>]*\bdata-read-key=)", result.dom, re.I)
+        )
+    elif scenario == "archive":
         report["archive_cards"] = len(_extract_text_by_class(result.dom, "archive-card"))
     elif scenario == "outputs":
         report["output_rows"] = len(_extract_text_by_class(result.dom, "output-row"))
@@ -928,7 +1005,9 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     print("PASS Acta browser UAT")
-    if scenario == "archive":
+    if scenario == "archive-day":
+        print(f"Readable archive-day rows: {report['readable_rows']}")
+    elif scenario == "archive":
         print(f"Archive cards: {report['archive_cards']}")
     elif scenario == "outputs":
         print(f"Output rows: {report['output_rows']}")
@@ -953,7 +1032,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=30, help="Chrome render timeout in seconds")
     parser.add_argument("--viewport-width", type=int, default=390, help="Browser viewport width for mobile UAT")
     parser.add_argument("--viewport-height", type=int, default=844, help="Browser viewport height for mobile UAT")
-    parser.add_argument("--scenario", choices=("feed", "jobs", "outputs", "archive"), default="feed", help="Acta UAT scenario to validate")
+    parser.add_argument("--scenario", choices=("feed", "jobs", "outputs", "archive", "archive-day"), default="feed", help="Acta UAT scenario to validate")
     return run(parser.parse_args(argv))
 
 

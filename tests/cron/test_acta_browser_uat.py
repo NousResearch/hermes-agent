@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,61 @@ def _valid_archive_dom() -> str:
       </main>
     </body></html>
     """
+
+
+def _archive_day_items() -> list[CronSituationItem]:
+    return [
+        CronSituationItem(
+            job_id="daily",
+            name="Archived Morning Brief",
+            schedule="daily",
+            deliver="telegram",
+            enabled=True,
+            latest_md=Path("/tmp/daily.md"),
+            latest_html=None,
+            latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+            status="fresh",
+            excerpt="Archived source-backed briefing with decisions ready for review.",
+            artifact_url="https://acta.imperatr.com/r/daily/detail.html?exp=1&sig=daily",
+            telegram_url="https://t.me/imperatr/123",
+        ),
+        CronSituationItem(
+            job_id="acta-startup-sprint",
+            name="Acta Startup Sprint CEO loop",
+            schedule="every 30m",
+            deliver="telegram",
+            enabled=True,
+            latest_md=Path("/tmp/dev.md"),
+            latest_html=None,
+            latest_time=datetime(2026, 5, 19, 9, 15, tzinfo=timezone.utc),
+            status="fresh",
+            excerpt="Development sprint remains in the background lane.",
+            artifact_url="https://acta.imperatr.com/r/dev/detail.html?exp=1&sig=dev",
+        ),
+        CronSituationItem(
+            job_id="unsafe",
+            name="Unsigned Archive Draft",
+            schedule="manual",
+            deliver="local",
+            enabled=True,
+            latest_md=Path("/tmp/unsafe.md"),
+            latest_html=None,
+            latest_time=datetime(2026, 5, 19, 8, tzinfo=timezone.utc),
+            status="fresh",
+            excerpt="Visible archive source row without a signed page.",
+            artifact_url="https://acta.imperatr.com/r/unsafe/detail.html?exp=1",
+        ),
+    ]
+
+
+def _valid_archive_day_dom() -> str:
+    return render_dashboard(
+        _archive_day_items(),
+        generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc),
+        selected_date=date(2026, 5, 19),
+        archive_dates=[date(2026, 5, 19)],
+        archive_day=True,
+    )
 
 
 def test_acta_browser_uat_harness_validates_feed_lane_contract(tmp_path: Path):
@@ -215,6 +271,34 @@ def test_validate_feed_contract_allows_pages_without_signed_rows_to_skip_action_
     ) == []
 
 
+def test_validate_archive_day_contract_requires_browser_action_probe():
+    failures = acta_browser_uat._validate_archive_day_contract(
+        _valid_archive_day_dom(),
+        action_state_probe={"skipped": True, "reason": "no-readable-row"},
+    )
+
+    assert "Archive-day signed row action-state browser probe was skipped" in failures
+
+
+def test_validate_archive_day_contract_accepts_signed_rows_with_actions():
+    assert acta_browser_uat._validate_archive_day_contract(
+        _valid_archive_day_dom(),
+        action_state_probe={"skipped": False, "ok": True, "saveOk": True, "dismissOk": True, "laterOk": True, "overlayOk": True},
+    ) == []
+
+
+def test_validate_archive_day_contract_fails_when_actions_are_missing():
+    dom = _valid_archive_day_dom().replace("data-state-action=\"save\"", "data-state-missing=\"save\"")
+
+    failures = acta_browser_uat._validate_archive_day_contract(
+        dom,
+        action_state_probe={"skipped": False, "ok": False, "reason": "missing-action-or-overlay"},
+    )
+
+    assert "Archive-day signed row action-state browser probe failed: missing-action-or-overlay" in failures
+    assert any("missing Save action" in failure for failure in failures)
+
+
 def test_acta_browser_uat_exercises_signed_row_action_buttons_and_overlay(tmp_path: Path):
     if not _browser_cli_available():
         pytest.skip("agent-browser/npx unavailable; pure validation tests still cover action probe failures")
@@ -287,6 +371,50 @@ def test_acta_browser_uat_exercises_signed_row_action_buttons_and_overlay(tmp_pa
     assert result.returncode == 0, result.stdout
     assert report["action_state_probe"]["ok"] is True
     assert report["action_state_probe"]["saveOk"] is True
+    assert report["action_state_probe"]["overlayOk"] is True
+    assert report["action_state_probe"]["unsafeHasActions"] is False
+
+
+def test_acta_browser_uat_archive_day_exercises_signed_row_actions_at_mobile_width(tmp_path: Path):
+    if not _browser_cli_available():
+        pytest.skip("agent-browser/npx unavailable; pure validation tests still cover archive-day action probe failures")
+
+    html_path = tmp_path / "archive-day.html"
+    html_path.write_text(_valid_archive_day_dom(), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HARNESS),
+            "--html",
+            str(html_path),
+            "--artifact-dir",
+            str(tmp_path / "uat-archive-day"),
+            "--viewport-width",
+            "390",
+            "--viewport-height",
+            "844",
+            "--scenario",
+            "archive-day",
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=45,
+    )
+
+    assert result.returncode == 0, result.stdout
+    report = json.loads((tmp_path / "uat-archive-day" / "acta-uat-report.json").read_text())
+
+    assert report["scenario_key"] == "archive-day"
+    assert report["persona"] == "mobile Acta operator reviewing a previous-day briefing"
+    assert report["viewport"]["width"] == 390
+    assert report["readable_rows"] >= 1
+    assert report["action_state_probe"]["ok"] is True
+    assert report["action_state_probe"]["saveOk"] is True
+    assert report["action_state_probe"]["dismissOk"] is True
+    assert report["action_state_probe"]["laterOk"] is True
     assert report["action_state_probe"]["overlayOk"] is True
     assert report["action_state_probe"]["unsafeHasActions"] is False
 

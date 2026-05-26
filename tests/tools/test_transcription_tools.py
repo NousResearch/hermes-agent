@@ -100,7 +100,7 @@ class TestGetProviderGroq:
             assert _get_provider({"provider": "groq"}) == "none"
 
 
-class TestGetProviderDeepgram:
+class TestGetProviderDeepgramExtended:
     def test_explicit_deepgram_when_key_set(self, monkeypatch):
         monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-test")
         from tools.transcription_tools import _get_provider
@@ -341,7 +341,7 @@ class TestTranscribeGroq:
         assert "Permission denied" in result["error"]
 
 
-class TestTranscribeDeepgram:
+class TestTranscribeDeepgramExtended:
     def test_no_key(self, monkeypatch):
         monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
         from tools.transcription_tools import _transcribe_deepgram
@@ -380,6 +380,9 @@ class TestTranscribeDeepgram:
             "model": "nova-3",
             "smart_format": "true",
             "punctuate": "true",
+            "paragraphs": "false",
+            "utterances": "false",
+            "numerals": "false",
         }
         assert call.kwargs["timeout"] == 120
 

@@ -18,6 +18,12 @@ from .production_order_db import (
     ARCHITECT_HANDOFF_TEMPLATE,
     CHILD_CARD_DEFS,
     ProductionOrder,
+    create_auditos_handoff,
+    create_architect_reconcile_handoff,
+    create_architect_rework_handoff,
+    create_default_final_review_handoff,
+    create_devos_rework_handoff,
+    create_devos_handoff,
     REQUIRED_ARCHITECT_RECONCILE_PACKET_FIELDS,
     REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS,
     REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS,
@@ -27,12 +33,16 @@ from .production_order_db import (
     StageEntry,
     WORKFLOW_SPEC_SOURCE,
     _parse_source_brief,
+    freeze_handoff_on_card,
     freeze_result_on_card,
     get_brief_value,
     list_production_orders,
     log_workflow_event,
+    transition_state,
+    validate_auditos_review_packet,
     validate_architect_reconcile_packet,
     validate_architect_spec_packet,
+    validate_default_final_review_packet,
     validate_devos_build_packet,
 )
 
@@ -165,6 +175,44 @@ class ResultPacketIngestion:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class DispatchExecutionResult:
+    executed: bool
+    fallback_required: bool
+    production_order_id: str
+    dispatch_attempt: int
+    idempotency_key: str
+    source_state: str
+    target_profile: str
+    target_child_card_id: str
+    task_type: str
+    result_packet: dict[str, Any] | None
+    artifact_reference: str | None
+    manual_fallback: dict[str, Any] | None
+    error: str | None
+    next_action: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReworkRouteDecision:
+    production_order_id: str
+    source_state: str
+    route_decision: str
+    target_profile: str
+    target_child_card_id: str | None
+    task_type: str
+    explanation: str
+    stop_condition: str | None
+    idempotency_key: str
+    applied: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 _ENVELOPE_RESULT_FIELD_MAP: dict[str, tuple[str, ...]] = {
     "architect_handoff_packet": tuple(
         sorted({"production_order_id", *ARCHITECT_HANDOFF_TEMPLATE.keys()})
@@ -180,10 +228,12 @@ _ENVELOPE_RESULT_FIELD_MAP: dict[str, tuple[str, ...]] = {
 _MANUAL_FALLBACK_RESULT_ACTIONS: dict[str, tuple[str, str]] = {
     "run_architect_spec_bridge": ("architect_packet", "architect_spec_packet"),
     "run_devos_complete_bridge": ("devos_packet", "devos_build_packet"),
+    "run_auditos_review_complete_bridge": ("review_packet", "auditos_review_packet"),
     "run_architect_reconcile_bridge": (
         "reconcile_packet",
         "architect_reconcile_packet",
     ),
+    "run_default_final_review_bridge": ("final_packet", "default_final_review_packet"),
 }
 
 
@@ -193,8 +243,12 @@ _SUPPORTED_ENVELOPE_ROUTES: dict[tuple[str, str], str] = {
     ("ARCHITECT_SPEC", "architect_spec"): "ARCHITECT_READY_FOR_DEV",
     ("ARCHITECT_READY_FOR_DEV", "dev_build"): "DEV_COMPLETE",
     ("DEV_IMPLEMENTING", "dev_build"): "DEV_COMPLETE",
+    ("DEV_COMPLETE", "audit_review"): "AUDIT_PASSED",
+    ("AUDIT_REVIEW", "audit_review"): "AUDIT_PASSED",
     ("AUDIT_PASSED", "architect_reconcile"): "ARCHITECT_ACCEPTED",
     ("ARCHITECT_RECONCILE", "architect_reconcile"): "ARCHITECT_ACCEPTED",
+    ("ARCHITECT_ACCEPTED", "default_final_review"): "DONE",
+    ("DEFAULT_FINAL_REVIEW", "default_final_review"): "DONE",
 }
 
 
@@ -407,6 +461,64 @@ def _ensure_dispatch_handoff_event(
     return created
 
 
+def _ensure_dispatch_started_event(
+    conn: sqlite3.Connection,
+    envelope: ProfileTaskEnvelope,
+    *,
+    result: str,
+    next_action: str,
+) -> dict[str, Any]:
+    payload_hash = _payload_hash(
+        {
+            "idempotency_key": envelope.idempotency_key,
+            "result": result,
+            "next_action": next_action,
+        }
+    )
+    existing = _find_dispatch_event(
+        conn,
+        production_order_id=envelope.production_order_id,
+        event_type="dispatch_started",
+        from_state=envelope.source_state,
+        target_profile=envelope.target_profile,
+        kanban_card_id=envelope.child_kanban_card_id,
+        packet_id=envelope.idempotency_key,
+    )
+    if existing is not None:
+        existing_hash = _event_payload_hash(existing.get("result"))
+        if existing_hash and existing_hash != payload_hash:
+            raise DispatchManifestError(
+                "Conflicting duplicate dispatch_started attempt for "
+                f"{envelope.idempotency_key!r}: payload hash mismatch"
+            )
+        return existing
+
+    log_dispatch_event(
+        conn,
+        production_order_id=envelope.production_order_id,
+        event_type="dispatch_started",
+        from_state=envelope.source_state,
+        to_state=envelope.expected_next_state,
+        owner_profile=envelope.target_profile,
+        target_profile=envelope.target_profile,
+        kanban_card_id=envelope.child_kanban_card_id,
+        packet_id=envelope.idempotency_key,
+        result=f"{result} payload_hash={payload_hash}",
+        next_action=next_action,
+    )
+    created = _find_dispatch_event(
+        conn,
+        production_order_id=envelope.production_order_id,
+        event_type="dispatch_started",
+        from_state=envelope.source_state,
+        target_profile=envelope.target_profile,
+        kanban_card_id=envelope.child_kanban_card_id,
+        packet_id=envelope.idempotency_key,
+    )
+    assert created is not None
+    return created
+
+
 def _accepted_result_conflict(
     conn: sqlite3.Connection,
     envelope: ProfileTaskEnvelope,
@@ -470,6 +582,59 @@ def build_manual_fallback_handoff(
     handoff = manual_fallback_handoff_for_envelope(envelope)
     _ensure_dispatch_handoff_event(conn, handoff)
     return handoff
+
+
+def execute_profile_dispatch(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+    *,
+    source_state: str | None = None,
+    target_profile: str | None = None,
+    target_child_card_id: str | None = None,
+    task_type: str | None = None,
+    dispatch_attempt: int | None = None,
+) -> dict[str, Any]:
+    """Run one bounded dispatch attempt for the active task envelope.
+
+    This entrypoint deliberately does not start the Kanban daemon or spawn a
+    background worker. The current production workflow has no synchronous,
+    result-returning profile invocation primitive, so the safe executor mode is
+    to validate the dispatch identity, log that execution began, and return the
+    typed manual fallback handoff for the same envelope.
+    """
+    envelope = build_profile_task_envelope(conn, production_order_id)
+    _assert_executor_identity(
+        envelope,
+        source_state=source_state,
+        target_profile=target_profile,
+        target_child_card_id=target_child_card_id,
+        task_type=task_type,
+        dispatch_attempt=dispatch_attempt,
+    )
+    handoff = manual_fallback_handoff_for_envelope(envelope)
+    _ensure_dispatch_started_event(
+        conn,
+        envelope,
+        result="manual_fallback_required",
+        next_action="copy_prompt_to_profile",
+    )
+    _ensure_dispatch_handoff_event(conn, handoff)
+    return DispatchExecutionResult(
+        executed=False,
+        fallback_required=True,
+        production_order_id=production_order_id,
+        dispatch_attempt=envelope.dispatch_attempt,
+        idempotency_key=envelope.idempotency_key,
+        source_state=envelope.source_state,
+        target_profile=envelope.target_profile,
+        target_child_card_id=envelope.child_kanban_card_id,
+        task_type=task_type or _task_type_from_idempotency_key(envelope.idempotency_key),
+        result_packet=None,
+        artifact_reference=None,
+        manual_fallback=handoff.to_dict(),
+        error="No safe synchronous profile invocation mechanism is available for production-order dispatch.",
+        next_action="manual_fallback_required",
+    ).to_dict()
 
 
 def ingest_profile_result_packet(
@@ -598,8 +763,20 @@ def validate_profile_result_packet(
             expected_source_state=envelope.source_state,
             expected_next_handoff_target="audit_os",
         )
+    elif bridge_function == "run_auditos_review_complete_bridge":
+        validate_auditos_review_packet(
+            result_packet,
+            expected_production_order_id=envelope.production_order_id,
+            expected_source_state=envelope.source_state,
+        )
     elif bridge_function == "run_architect_reconcile_bridge":
         validate_architect_reconcile_packet(
+            result_packet,
+            expected_production_order_id=envelope.production_order_id,
+            expected_source_state=envelope.source_state,
+        )
+    elif bridge_function == "run_default_final_review_bridge":
+        validate_default_final_review_packet(
             result_packet,
             expected_production_order_id=envelope.production_order_id,
             expected_source_state=envelope.source_state,
@@ -610,6 +787,230 @@ def validate_profile_result_packet(
         )
 
     return dict(result_packet)
+
+
+def apply_accepted_result_action(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+    *,
+    result_packet: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply the runtime action for an already accepted result packet."""
+    po = _load_production_order(conn, production_order_id)
+    if result_packet is not None and result_packet.get("source_state") != po.current_state:
+        return _already_applied_or_conflicting_supplied_packet(conn, po, result_packet)
+    envelope = build_profile_task_envelope(conn, production_order_id)
+    packet = result_packet or _latest_validated_packet(conn, envelope)
+    if packet is None:
+        raise DispatchManifestError(
+            "Cannot apply result action before a result packet has been accepted"
+        )
+    packet = validate_profile_result_packet(envelope, packet)
+    _require_packet_validated_event(conn, envelope, packet)
+    bridge_function, runtime_action = _resolve_ingestion_runtime_action(envelope)
+
+    current = _load_production_order(conn, production_order_id)
+    if current.current_state != envelope.source_state:
+        return _already_applied_result(current, envelope, packet, runtime_action)
+
+    if bridge_function == "run_architect_spec_bridge":
+        applied = _apply_architect_spec_action(conn, current, packet)
+    elif bridge_function == "run_devos_complete_bridge":
+        applied = _apply_devos_complete_action(conn, current, packet)
+    elif bridge_function == "run_auditos_review_complete_bridge":
+        applied = _apply_audit_pass_action(conn, current, packet)
+    elif bridge_function == "run_architect_reconcile_bridge":
+        applied = _apply_architect_reconcile_action(conn, current, packet)
+    elif bridge_function == "run_default_final_review_bridge":
+        applied = _apply_default_final_review_action(conn, current, packet)
+    else:  # pragma: no cover - guarded by _resolve_ingestion_runtime_action
+        raise DispatchManifestError(
+            f"Result action application is not implemented for {bridge_function!r}"
+        )
+
+    log_dispatch_event(
+        conn,
+        production_order_id=production_order_id,
+        event_type="dispatch_completed",
+        from_state=envelope.source_state,
+        to_state=applied.current_state,
+        owner_profile=envelope.target_profile,
+        target_profile=envelope.target_profile,
+        kanban_card_id=envelope.child_kanban_card_id,
+        packet_id=_packet_id(packet),
+        result="result_action_applied",
+        next_action=runtime_action,
+    )
+    return {
+        "applied": True,
+        "production_order_id": production_order_id,
+        "from_state": envelope.source_state,
+        "to_state": applied.current_state,
+        "bridge_function": bridge_function,
+        "runtime_action": runtime_action,
+        "next_action": _next_dispatch_action_for_state(applied.current_state),
+    }
+
+
+def route_production_order_rework(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+    *,
+    rejection_source: str,
+    rejection_packet: dict[str, Any],
+    affected_child_card_id: str | None = None,
+    reason_category: str | None = None,
+) -> dict[str, Any]:
+    """Classify and apply a bounded OrchestratorOS rework route."""
+    po = _load_production_order(conn, production_order_id)
+    source_state = str(rejection_source or po.current_state).strip()
+    if source_state not in {"AUDIT_REJECTED", "DEFAULT_REJECTED"}:
+        raise DispatchManifestError(
+            "Rework routing only supports AUDIT_REJECTED or DEFAULT_REJECTED sources"
+        )
+    if po.current_state != source_state:
+        prior = _find_rework_route_event(conn, production_order_id, source_state)
+        if prior is not None:
+            requested_route, _ = _classify_rework_route(
+                source_state,
+                rejection_packet,
+                reason_category=reason_category,
+            )
+            existing_route = _event_route_decision(prior)
+            if requested_route != existing_route:
+                raise DispatchManifestError(
+                    f"Requested rework route {requested_route!r} conflicts with existing route {existing_route!r}"
+                )
+            return _rework_decision_from_event(prior, po, applied=False)
+        raise DispatchManifestError(
+            f"Rework source {source_state!r} conflicts with current state {po.current_state!r}"
+        )
+
+    route, explanation = _classify_rework_route(
+        source_state,
+        rejection_packet,
+        reason_category=reason_category,
+    )
+    idempotency_key = _rework_route_key(
+        production_order_id=production_order_id,
+        source_state=source_state,
+        route_decision=route,
+        rejection_packet=rejection_packet,
+    )
+    existing = _find_rework_route_event(conn, production_order_id, source_state)
+    if existing is not None:
+        existing_route = _event_route_decision(existing)
+        if existing_route != route:
+            raise DispatchManifestError(
+                f"Conflicting rework route {route!r}; existing route is {existing_route!r}"
+            )
+        return _rework_decision_from_event(existing, po, applied=False)
+
+    if route == "BLOCKED_NEEDS_JARREN":
+        transition_state(
+            conn,
+            po,
+            "BLOCKED_NEEDS_JARREN",
+            "orchestrator_os" if source_state == "DEFAULT_REJECTED" else "orchestrator_os",
+            result=explanation,
+            next_action="ask_jarren_for_approval_or_clarification",
+            card_id=po.parent_kanban_card_id,
+            event_type="blocked",
+        )
+        _sync_child_current_state(conn, po)
+        event_type = "dispatch_blocked"
+        target_profile = "default"
+        target_card_id = po.parent_kanban_card_id
+        task_type = "blocked_needs_jarren"
+        stop_condition = explanation
+    elif route == "DEV_REWORK":
+        target_profile = "dev_os"
+        target_card_id = po.child_kanban_card_ids[2]
+        task_type = "dev_rework"
+        freeze_handoff_on_card(
+            conn,
+            target_card_id,
+            create_devos_rework_handoff(
+                po,
+                rejection_packet,
+                source_state=source_state,
+                route_reason=explanation,
+                route_target="DEV_REWORK",
+                next_handoff_target="dev_os",
+            ),
+        )
+        transition_state(
+            conn,
+            po,
+            "DEV_REWORK",
+            "orchestrator_os",
+            result=explanation,
+            next_action="dispatch_dev_rework",
+            card_id=po.parent_kanban_card_id,
+            event_type="retry_started",
+        )
+        _sync_child_current_state(conn, po)
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (target_card_id,))
+        event_type = "dispatch_completed"
+        stop_condition = None
+    elif route == "SPEC_REWORK":
+        target_profile = "architect_os"
+        target_card_id = po.child_kanban_card_ids[1]
+        task_type = "spec_rework"
+        classification_packet = _classification_packet_for_rework(
+            production_order_id,
+            source_state,
+            rejection_packet,
+            route,
+            explanation,
+        )
+        freeze_handoff_on_card(
+            conn,
+            target_card_id,
+            create_architect_rework_handoff(po, classification_packet),
+        )
+        transition_state(
+            conn,
+            po,
+            "SPEC_REWORK",
+            "orchestrator_os",
+            result=explanation,
+            next_action="dispatch_spec_rework",
+            card_id=po.parent_kanban_card_id,
+            event_type="retry_started",
+        )
+        _sync_child_current_state(conn, po)
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (target_card_id,))
+        event_type = "dispatch_completed"
+        stop_condition = None
+    else:
+        raise DispatchManifestError(f"Unsupported rework route {route!r}")
+
+    log_dispatch_event(
+        conn,
+        production_order_id=production_order_id,
+        event_type=event_type,
+        from_state=source_state,
+        to_state=route,
+        owner_profile="orchestrator_os",
+        target_profile=target_profile,
+        kanban_card_id=target_card_id,
+        packet_id=idempotency_key,
+        result=f"rework_route={route}; {explanation}",
+        next_action=task_type,
+    )
+    return ReworkRouteDecision(
+        production_order_id=production_order_id,
+        source_state=source_state,
+        route_decision=route,
+        target_profile=target_profile,
+        target_child_card_id=target_card_id,
+        task_type=task_type,
+        explanation=explanation,
+        stop_condition=stop_condition,
+        idempotency_key=idempotency_key,
+        applied=True,
+    ).to_dict()
 
 
 def _resolve_ingestion_runtime_action(
@@ -655,7 +1056,9 @@ def _validate_expected_result_packet_type(
     compatibility = {
         "architect_spec_packet": {"packet_type": "architect_spec_packet", "stage": "architect_spec"},
         "devos_build_packet": {"packet_type": "devos_build_packet", "result_type": "build_complete"},
+        "auditos_review_packet": {"packet_type": "auditos_review_packet", "verdict": "PASS"},
         "architect_reconcile_packet": {"packet_type": "architect_reconcile_packet", "result_type": "accepted", "reconcile_result": "accepted"},
+        "default_final_review_packet": {"packet_type": "default_final_review_packet", "final_status": "DONE"},
     }
     expected = compatibility.get(expected_packet_type)
     if expected is None:
@@ -666,11 +1069,25 @@ def _validate_expected_result_packet_type(
         raise ValueError("result packet stage is not compatible with expected architect_spec_packet")
     if expected_packet_type == "devos_build_packet" and "build" not in result_type:
         raise ValueError("result packet result_type is not compatible with expected devos_build_packet")
+    if expected_packet_type == "auditos_review_packet":
+        verdict = str(result_packet.get("verdict", "")).strip().upper()
+        review_result = str(result_packet.get("review_result", "")).strip().lower()
+        if verdict != "PASS" or not any(token in review_result for token in ("pass", "passed")):
+            raise ValueError(
+                "result packet verdict/review_result is not compatible with expected auditos_review_packet"
+            )
     if expected_packet_type == "architect_reconcile_packet":
         reconcile_result = str(result_packet.get("reconcile_result", "")).strip().lower()
         if reconcile_result not in {"accept", "accepted", "aligned", "passed", "pass"}:
             raise ValueError(
                 "result packet reconcile_result is not compatible with expected architect_reconcile_packet"
+            )
+    if expected_packet_type == "default_final_review_packet":
+        final_status = str(result_packet.get("final_status", "")).strip().upper()
+        final_review_result = str(result_packet.get("final_review_result", "")).strip().lower()
+        if final_status != "DONE" or not any(token in final_review_result for token in ("accept", "accepted")):
+            raise ValueError(
+                "result packet final_status/final_review_result is not compatible with expected default_final_review_packet"
             )
 
 
@@ -718,6 +1135,551 @@ def _packet_id(result_packet: Any) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
+
+
+def _task_type_from_idempotency_key(idempotency_key: str) -> str:
+    parts = idempotency_key.split(":")
+    return parts[4] if len(parts) >= 6 else ""
+
+
+def _assert_executor_identity(
+    envelope: ProfileTaskEnvelope,
+    *,
+    source_state: str | None,
+    target_profile: str | None,
+    target_child_card_id: str | None,
+    task_type: str | None,
+    dispatch_attempt: int | None,
+) -> None:
+    expected = {
+        "source_state": envelope.source_state,
+        "target_profile": envelope.target_profile,
+        "target_child_card_id": envelope.child_kanban_card_id,
+        "task_type": _task_type_from_idempotency_key(envelope.idempotency_key),
+        "dispatch_attempt": envelope.dispatch_attempt,
+    }
+    provided = {
+        "source_state": source_state,
+        "target_profile": target_profile,
+        "target_child_card_id": target_child_card_id,
+        "task_type": task_type,
+        "dispatch_attempt": dispatch_attempt,
+    }
+    for key, value in provided.items():
+        if value is None:
+            continue
+        if value != expected[key]:
+            raise DispatchManifestError(
+                f"Dispatch executor {key} {value!r} does not match active envelope {expected[key]!r}"
+            )
+
+
+def _latest_validated_packet(
+    conn: sqlite3.Connection,
+    envelope: ProfileTaskEnvelope,
+) -> dict[str, Any] | None:
+    packet_id = None
+    found_event = False
+    for event in reversed(list_dispatch_events(conn, envelope.production_order_id)):
+        if event["event_type"] != "packet_validated":
+            continue
+        if event["from_state"] != envelope.source_state:
+            continue
+        if event["target_profile"] != envelope.target_profile:
+            continue
+        if event["kanban_card_id"] != envelope.child_kanban_card_id:
+            continue
+        packet_id = event["packet_id"]
+        found_event = True
+        break
+    if not found_event:
+        return None
+    for packet in reversed(_frozen_result_packets(conn, envelope.child_kanban_card_id)):
+        if packet_id is not None and _packet_id(packet) == packet_id:
+            return packet
+        if packet_id is None and (
+            packet.get("production_order_id") == envelope.production_order_id
+            and packet.get("owner_profile") == envelope.target_profile
+            and packet.get("source_state") == envelope.source_state
+        ):
+            return packet
+    return None
+
+
+def _require_packet_validated_event(
+    conn: sqlite3.Connection,
+    envelope: ProfileTaskEnvelope,
+    packet: dict[str, Any],
+) -> None:
+    packet_id = _packet_id(packet)
+    event = _find_dispatch_event(
+        conn,
+        production_order_id=envelope.production_order_id,
+        event_type="packet_validated",
+        from_state=envelope.source_state,
+        target_profile=envelope.target_profile,
+        kanban_card_id=envelope.child_kanban_card_id,
+        packet_id=packet_id,
+    )
+    if event is None:
+        raise DispatchManifestError(
+            "Cannot apply result action before the result packet is accepted"
+        )
+
+
+def _already_applied_result(
+    po: ProductionOrder,
+    envelope: ProfileTaskEnvelope,
+    packet: dict[str, Any],
+    runtime_action: str,
+) -> dict[str, Any]:
+    if po.current_state == envelope.expected_next_state or _state_has_passed(
+        po, envelope.source_state, envelope.expected_next_state
+    ):
+        return {
+            "applied": False,
+            "production_order_id": envelope.production_order_id,
+            "from_state": envelope.source_state,
+            "to_state": po.current_state,
+            "bridge_function": envelope.expected_output_packet["bridge_function"],
+            "runtime_action": runtime_action,
+            "packet_id": _packet_id(packet),
+            "next_action": "already_applied",
+        }
+    raise DispatchManifestError(
+        f"Accepted result packet for {envelope.source_state!r} cannot be applied while "
+        f"production order is in conflicting state {po.current_state!r}"
+    )
+
+
+def _already_applied_or_conflicting_supplied_packet(
+    conn: sqlite3.Connection,
+    po: ProductionOrder,
+    packet: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(packet, dict):
+        raise DispatchManifestError("result_packet must be a JSON object")
+    packet_source_state = str(packet.get("source_state", "")).strip()
+    packet_owner = str(packet.get("owner_profile", "")).strip()
+    packet_id = _packet_id(packet)
+    for event in list_dispatch_events(conn, po.production_order_id):
+        if event["event_type"] != "packet_validated":
+            continue
+        if event["from_state"] != packet_source_state:
+            continue
+        if event["target_profile"] != packet_owner:
+            continue
+        if packet_id is not None and event["packet_id"] != packet_id:
+            continue
+        if packet_id is None and event["packet_id"] is not None:
+            continue
+        expected_next_state = event["to_state"]
+        if expected_next_state and (
+            po.current_state == expected_next_state
+            or _state_has_passed(po, packet_source_state, expected_next_state)
+        ):
+            return {
+                "applied": False,
+                "production_order_id": po.production_order_id,
+                "from_state": packet_source_state,
+                "to_state": po.current_state,
+                "bridge_function": "",
+                "runtime_action": "",
+                "packet_id": packet_id,
+                "next_action": "already_applied",
+            }
+    raise DispatchManifestError(
+        f"Accepted result packet source_state {packet_source_state!r} conflicts with "
+        f"current production order state {po.current_state!r}"
+    )
+
+
+def _state_has_passed(po: ProductionOrder, from_state: str, expected_next_state: str) -> bool:
+    seen_from = False
+    for entry in po.stage_history:
+        if entry.from_state == from_state:
+            seen_from = True
+        if seen_from and entry.to_state == expected_next_state:
+            return True
+    return False
+
+
+def _sync_child_current_state(conn: sqlite3.Connection, po: ProductionOrder) -> None:
+    for cid in po.child_kanban_card_ids:
+        conn.execute(
+            "UPDATE tasks SET current_state = ? WHERE id = ?",
+            (po.current_state, cid),
+        )
+
+
+def _apply_architect_spec_action(
+    conn: sqlite3.Connection,
+    po: ProductionOrder,
+    packet: dict[str, Any],
+) -> ProductionOrder:
+    devos_card_id = po.child_kanban_card_ids[2]
+    freeze_handoff_on_card(conn, devos_card_id, create_devos_handoff(po, packet))
+    transition_state(
+        conn,
+        po,
+        "ARCHITECT_READY_FOR_DEV",
+        "architect_os",
+        result="accepted ArchitectOS result applied; DevOS handoff attached",
+        next_action="dispatch_dev_os",
+        card_id=po.parent_kanban_card_id,
+        event_type="architect_spec_completed",
+    )
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="ARCHITECT_SPEC",
+        to_state="ARCHITECT_READY_FOR_DEV",
+        owner_profile="architect_os",
+        kanban_card_id=devos_card_id,
+        result="DevOS handoff packet attached",
+        next_action="dispatch_dev_os",
+    )
+    _sync_child_current_state(conn, po)
+    conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (devos_card_id,))
+    return po
+
+
+def _apply_devos_complete_action(
+    conn: sqlite3.Connection,
+    po: ProductionOrder,
+    packet: dict[str, Any],
+) -> ProductionOrder:
+    auditos_card_id = po.child_kanban_card_ids[3]
+    from_state = po.current_state
+    audit_handoff = create_auditos_handoff(
+        po,
+        packet,
+        from_state=from_state if from_state == "DEV_REWORK" else "DEV_IMPLEMENTING",
+        to_state="DEV_COMPLETE",
+    )
+    if po.current_state == "ARCHITECT_READY_FOR_DEV":
+        transition_state(
+            conn,
+            po,
+            "DEV_IMPLEMENTING",
+            "dev_os",
+            result="dev implementation started",
+            next_action="complete_dev_build",
+            card_id=po.parent_kanban_card_id,
+            event_type="dev_build_started",
+        )
+    transition_state(
+        conn,
+        po,
+        "DEV_COMPLETE",
+        "dev_os",
+        result="accepted DevOS result applied; AuditOS handoff attached",
+        next_action="dispatch_audit_os",
+        card_id=po.parent_kanban_card_id,
+        event_type="dev_build_completed",
+    )
+    freeze_handoff_on_card(conn, auditos_card_id, audit_handoff)
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state=from_state,
+        to_state="DEV_COMPLETE",
+        owner_profile="dev_os",
+        kanban_card_id=auditos_card_id,
+        result="AuditOS handoff packet attached",
+        next_action="dispatch_audit_os",
+    )
+    _sync_child_current_state(conn, po)
+    conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (auditos_card_id,))
+    return po
+
+
+def _apply_audit_pass_action(
+    conn: sqlite3.Connection,
+    po: ProductionOrder,
+    packet: dict[str, Any],
+) -> ProductionOrder:
+    reconcile_card_id = po.child_kanban_card_ids[4]
+    reconcile_handoff = create_architect_reconcile_handoff(po, packet)
+    if po.current_state == "DEV_COMPLETE":
+        transition_state(
+            conn,
+            po,
+            "AUDIT_REVIEW",
+            "audit_os",
+            result="audit review started",
+            next_action="complete_audit_review",
+            card_id=po.parent_kanban_card_id,
+            event_type="audit_review_started",
+        )
+    transition_state(
+        conn,
+        po,
+        "AUDIT_PASSED",
+        "audit_os",
+        result="accepted AuditOS result applied; ArchitectOS reconcile handoff attached",
+        next_action="dispatch_architect_reconcile",
+        card_id=po.parent_kanban_card_id,
+        event_type="audit_review_completed",
+    )
+    freeze_handoff_on_card(conn, reconcile_card_id, reconcile_handoff)
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="AUDIT_REVIEW",
+        to_state="AUDIT_PASSED",
+        owner_profile="audit_os",
+        kanban_card_id=reconcile_card_id,
+        result="ArchitectOS reconcile handoff packet attached",
+        next_action="dispatch_architect_reconcile",
+    )
+    _sync_child_current_state(conn, po)
+    conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (reconcile_card_id,))
+    return po
+
+
+def _apply_architect_reconcile_action(
+    conn: sqlite3.Connection,
+    po: ProductionOrder,
+    packet: dict[str, Any],
+) -> ProductionOrder:
+    final_card_id = po.child_kanban_card_ids[5]
+    final_handoff = create_default_final_review_handoff(po, packet)
+    if po.current_state == "AUDIT_PASSED":
+        transition_state(
+            conn,
+            po,
+            "ARCHITECT_RECONCILE",
+            "architect_os",
+            result="architect reconciliation started",
+            next_action="complete_architect_reconcile",
+            card_id=po.parent_kanban_card_id,
+            event_type="architect_reconcile_started",
+        )
+    transition_state(
+        conn,
+        po,
+        "ARCHITECT_ACCEPTED",
+        "architect_os",
+        result="accepted ArchitectOS reconcile result applied; final review handoff attached",
+        next_action="dispatch_default_final_review",
+        card_id=po.parent_kanban_card_id,
+        event_type="architect_reconcile_completed",
+    )
+    freeze_handoff_on_card(conn, final_card_id, final_handoff)
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="ARCHITECT_RECONCILE",
+        to_state="ARCHITECT_ACCEPTED",
+        owner_profile="architect_os",
+        kanban_card_id=final_card_id,
+        result="Default final review handoff packet attached",
+        next_action="dispatch_default_final_review",
+    )
+    _sync_child_current_state(conn, po)
+    conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (final_card_id,))
+    return po
+
+
+def _apply_default_final_review_action(
+    conn: sqlite3.Connection,
+    po: ProductionOrder,
+    packet: dict[str, Any],
+) -> ProductionOrder:
+    if po.current_state == "ARCHITECT_ACCEPTED":
+        transition_state(
+            conn,
+            po,
+            "DEFAULT_FINAL_REVIEW",
+            "default",
+            result="default final review started",
+            next_action="complete_default_final_review",
+            card_id=po.parent_kanban_card_id,
+            event_type="default_final_review_started",
+        )
+    transition_state(
+        conn,
+        po,
+        "DONE",
+        "default",
+        result="accepted Default final review result applied",
+        next_action=packet["next_action"],
+        card_id=po.parent_kanban_card_id,
+        event_type="default_final_review_completed",
+    )
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "workflow_completed",
+        owner_profile="default",
+        kanban_card_id=po.parent_kanban_card_id,
+        result=str(packet["final_status"]),
+        next_action=packet["next_action"],
+    )
+    po.final_status = str(packet["final_status"])
+    _sync_child_current_state(conn, po)
+    conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (po.child_kanban_card_ids[5],))
+    return po
+
+
+def _next_dispatch_action_for_state(state: str) -> str:
+    return {
+        "ARCHITECT_READY_FOR_DEV": "prepare_dev_dispatch",
+        "DEV_COMPLETE": "prepare_audit_dispatch",
+        "AUDIT_PASSED": "prepare_architect_reconcile_dispatch",
+        "ARCHITECT_ACCEPTED": "prepare_default_final_review_dispatch",
+        "DONE": "report_done_to_jarren",
+    }.get(state, "inspect_production_order")
+
+
+def _classify_rework_route(
+    source_state: str,
+    packet: dict[str, Any],
+    *,
+    reason_category: str | None,
+) -> tuple[str, str]:
+    text_fields = [
+        reason_category,
+        packet.get("classification"),
+        packet.get("rework_owner"),
+        packet.get("rejection_category"),
+        packet.get("failure_type"),
+        packet.get("recommended_route"),
+        packet.get("route_target"),
+        packet.get("summary"),
+        packet.get("rejection_reason"),
+        packet.get("original_brief_mismatch"),
+        packet.get("correction_request"),
+        packet.get("risks_or_notes"),
+    ]
+    text = json.dumps(text_fields, sort_keys=True, default=str).lower()
+    approval_tokens = (
+        "approval",
+        "needs_approval",
+        "scope change",
+        "scope_change",
+        "destructive",
+        "spending",
+        "publish",
+        "permission",
+        "secret",
+        "credential",
+        "new repo",
+        "external",
+    )
+    spec_tokens = (
+        "spec",
+        "design",
+        "architecture",
+        "architect",
+        "brief mismatch",
+        "brief/spec",
+        "requirement ambiguity",
+        "ambiguous requirement",
+    )
+    dev_tokens = (
+        "implementation",
+        "test failure",
+        "tests failed",
+        "bug",
+        "regression",
+        "output mismatch",
+        "final output mismatch",
+        "implemented behavior",
+        "dev",
+    )
+    audit_tokens = ("audit miss", "audit_miss", "audit gap")
+    if any(token in text for token in approval_tokens):
+        return "BLOCKED_NEEDS_JARREN", "Rejection crosses an approval boundary or requires Jarren input."
+    if any(token in text for token in spec_tokens):
+        return "SPEC_REWORK", "Rejection is classified as a spec/design mismatch for ArchitectOS."
+    if any(token in text for token in dev_tokens):
+        return "DEV_REWORK", "Rejection is classified as an implementation/test mismatch for DevOS."
+    if source_state == "DEFAULT_REJECTED" and any(token in text for token in audit_tokens):
+        return "BLOCKED_NEEDS_JARREN", "Default rejection points at an audit gap, but this slice does not add an AuditOS re-route."
+    return "BLOCKED_NEEDS_JARREN", "Rework route is ambiguous and must not be guessed."
+
+
+def _rework_route_key(
+    *,
+    production_order_id: str,
+    source_state: str,
+    route_decision: str,
+    rejection_packet: dict[str, Any],
+) -> str:
+    return (
+        f"rework:{production_order_id}:{source_state}:{route_decision}:"
+        f"{_payload_hash(rejection_packet)}"
+    )
+
+
+def _classification_packet_for_rework(
+    production_order_id: str,
+    source_state: str,
+    packet: dict[str, Any],
+    route: str,
+    explanation: str,
+) -> dict[str, Any]:
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "orchestrator_os",
+        "source_state": source_state,
+        "default_rejection_reason": packet.get("rejection_reason", packet.get("summary", "")),
+        "classification": "spec_or_design_mismatch",
+        "route_target": route,
+        "route_reason": explanation,
+        "next_handoff_target": "architect_os",
+        "correction_request": packet.get("correction_request", packet.get("evidence", [])),
+    }
+
+
+def _find_rework_route_event(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+    source_state: str,
+) -> dict[str, Any] | None:
+    for event in reversed(list_dispatch_events(conn, production_order_id)):
+        if event["from_state"] != source_state:
+            continue
+        if event["event_type"] in {"dispatch_completed", "dispatch_blocked"}:
+            route = _event_route_decision(event)
+            if route in {"DEV_REWORK", "SPEC_REWORK", "BLOCKED_NEEDS_JARREN"}:
+                return event
+    return None
+
+
+def _event_route_decision(event: dict[str, Any]) -> str:
+    result = str(event.get("result") or "")
+    match = re.search(r"rework_route=([A-Z_]+)", result)
+    if match:
+        return match.group(1)
+    return str(event.get("to_state") or "")
+
+
+def _rework_decision_from_event(
+    event: dict[str, Any],
+    po: ProductionOrder,
+    *,
+    applied: bool,
+) -> dict[str, Any]:
+    route = _event_route_decision(event)
+    return ReworkRouteDecision(
+        production_order_id=po.production_order_id,
+        source_state=str(event["from_state"]),
+        route_decision=route,
+        target_profile=str(event["target_profile"]),
+        target_child_card_id=event["kanban_card_id"],
+        task_type=str(event["next_action"] or ""),
+        explanation=str(event["result"] or ""),
+        stop_condition=str(event["error"] or "") or None,
+        idempotency_key=str(event["packet_id"] or ""),
+        applied=applied,
+    ).to_dict()
 
 
 def log_dispatch_event(
@@ -1542,4 +2504,3 @@ def _supported_dispatch_states_text() -> str:
             "DEV_REWORK",
         ]
     )
-

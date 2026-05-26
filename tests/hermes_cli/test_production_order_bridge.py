@@ -85,11 +85,14 @@ from hermes_cli.production_order_dispatch import (
     build_profile_task_envelope,
     dispatch_event_to_dict,
     dispatch_manifest_for_order,
+    execute_profile_dispatch,
+    apply_accepted_result_action,
     ingest_profile_result_packet,
     list_dispatch_events,
     log_dispatch_event,
     manual_fallback_handoff_for_envelope,
     profile_task_envelope_for_order,
+    route_production_order_rework,
     validate_profile_result_packet,
 )
 from hermes_cli.kanban import _cmd_production_order
@@ -1919,20 +1922,8 @@ def test_build_profile_task_envelope_happy_path_fields_and_json_serializable(con
     json.dumps(serialized)
 
 
-def test_build_profile_task_envelope_rejects_multi_outcome_and_deferred_states(conn, sample_brief):
+def test_build_profile_task_envelope_rejects_deferred_spec_rework_state(conn, sample_brief):
     ready_for_dev = create_ready_for_dev_order(conn, sample_brief)
-
-    with pytest.raises(DispatchManifestError, match="does not yet support envelope generation"):
-        build_profile_task_envelope(
-            conn,
-            create_dev_complete_order(conn, sample_brief).production_order_id,
-        )
-
-    with pytest.raises(DispatchManifestError, match="does not yet support envelope generation"):
-        build_profile_task_envelope(
-            conn,
-            create_default_final_review_order(conn, sample_brief).production_order_id,
-        )
 
     with pytest.raises(DispatchManifestError, match="SPEC_REWORK"):
         dispatch_manifest_for_order(
@@ -2006,6 +1997,20 @@ def test_build_profile_task_envelope_is_idempotent_and_does_not_mutate_cards(con
             "architect_reconcile_packet",
             "ARCHITECT_ACCEPTED",
         ),
+        (
+            create_dev_complete_order,
+            "audit_os",
+            "run_auditos_review_complete_bridge",
+            "auditos_review_packet",
+            "AUDIT_PASSED",
+        ),
+        (
+            create_architect_accepted_order,
+            "default",
+            "run_default_final_review_bridge",
+            "default_final_review_packet",
+            "DONE",
+        ),
     ],
 )
 def test_build_manual_fallback_handoff_fields_prompt_and_json(
@@ -2066,7 +2071,7 @@ def test_build_manual_fallback_handoff_fields_prompt_and_json(
 
 @pytest.mark.parametrize(
     "factory",
-    [run_full_bridge, create_dev_complete_order, create_default_final_review_order],
+    [run_full_bridge],
 )
 def test_build_manual_fallback_handoff_rejects_unsupported_or_deferred_states(conn, sample_brief, factory):
     if factory is run_full_bridge:
@@ -3411,6 +3416,311 @@ def test_dashboard_ignores_null_columns(conn):
     non_po = [t for t in tasks if t.id == task_id]
     assert len(non_po) == 1
     assert non_po[0].production_order_id is None
+
+
+def test_dispatch_executor_returns_manual_fallback_without_invocation(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+
+    result = execute_profile_dispatch(conn, po.production_order_id)
+
+    assert result["executed"] is False
+    assert result["fallback_required"] is True
+    assert result["target_profile"] == "architect_os"
+    assert result["manual_fallback"]["target_profile"] == "architect_os"
+    assert result["next_action"] == "manual_fallback_required"
+    refreshed = list_production_orders(conn)[0]
+    assert refreshed.current_state == "ARCHITECT_SPEC"
+
+
+def test_dispatch_executor_repeat_reuses_fallback_and_events(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+
+    first = execute_profile_dispatch(conn, po.production_order_id)
+    second = execute_profile_dispatch(conn, po.production_order_id)
+
+    assert second["idempotency_key"] == first["idempotency_key"]
+    assert second["manual_fallback"] == first["manual_fallback"]
+    events = list_dispatch_events(conn, po.production_order_id)
+    assert [e["event_type"] for e in events].count("dispatch_started") == 1
+    assert [e["event_type"] for e in events].count("dispatch_handoff_created") == 1
+
+
+def test_dispatch_executor_refuses_unknown_identity(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+
+    with pytest.raises(DispatchManifestError, match="target_profile"):
+        execute_profile_dispatch(
+            conn,
+            po.production_order_id,
+            target_profile="unknown_profile",
+        )
+
+
+def _ingest_and_apply(conn, production_order_id, packet):
+    ingestion = ingest_profile_result_packet(conn, production_order_id, packet)
+    assert ingestion["accepted"] is True
+    return apply_accepted_result_action(conn, production_order_id, result_packet=packet)
+
+
+def test_apply_accepted_architect_result_prepares_dev_stage(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+    packet = architect_spec_packet(po.production_order_id)
+
+    result = _ingest_and_apply(conn, po.production_order_id, packet)
+
+    assert result["applied"] is True
+    assert result["to_state"] == "ARCHITECT_READY_FOR_DEV"
+    refreshed = list_production_orders(conn)[0]
+    assert refreshed.current_owner_profile == "dev_os"
+    assert kb.get_task(conn, refreshed.child_kanban_card_ids[2]).status == "ready"
+
+
+def test_apply_accepted_dev_result_prepares_audit_stage(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    packet = devos_build_packet(po.production_order_id)
+
+    result = _ingest_and_apply(conn, po.production_order_id, packet)
+
+    assert result["to_state"] == "DEV_COMPLETE"
+    refreshed = list_production_orders(conn)[0]
+    assert refreshed.current_owner_profile == "audit_os"
+    assert kb.get_task(conn, refreshed.child_kanban_card_ids[3]).status == "ready"
+
+
+def test_apply_accepted_audit_pass_prepares_architect_reconcile(conn, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    packet = audit_review_packet(po.production_order_id)
+
+    result = _ingest_and_apply(conn, po.production_order_id, packet)
+
+    assert result["to_state"] == "AUDIT_PASSED"
+    refreshed = list_production_orders(conn)[0]
+    assert refreshed.current_owner_profile == "architect_os"
+    assert kb.get_task(conn, refreshed.child_kanban_card_ids[4]).status == "ready"
+
+
+def test_apply_accepted_architect_reconcile_prepares_default_review(conn, sample_brief):
+    po = create_audit_passed_order(conn, sample_brief)
+    packet = architect_reconcile_packet(po.production_order_id)
+
+    result = _ingest_and_apply(conn, po.production_order_id, packet)
+
+    assert result["to_state"] == "ARCHITECT_ACCEPTED"
+    refreshed = list_production_orders(conn)[0]
+    assert refreshed.current_owner_profile == "default"
+    assert kb.get_task(conn, refreshed.child_kanban_card_ids[5]).status == "ready"
+
+
+def test_apply_accepted_default_pass_completes_done(conn, sample_brief):
+    po = create_architect_accepted_order(conn, sample_brief)
+    packet = final_review_packet(po.production_order_id)
+
+    result = _ingest_and_apply(conn, po.production_order_id, packet)
+
+    assert result["to_state"] == "DONE"
+    refreshed = list_production_orders(conn)[0]
+    assert refreshed.current_state == "DONE"
+    assert kb.get_task(conn, refreshed.child_kanban_card_ids[5]).status == "done"
+
+
+def test_apply_accepted_result_is_idempotent(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+    packet = architect_spec_packet(po.production_order_id)
+
+    first = _ingest_and_apply(conn, po.production_order_id, packet)
+    second = apply_accepted_result_action(conn, po.production_order_id, result_packet=packet)
+
+    assert first["applied"] is True
+    assert second["applied"] is False
+    events = _po_event_types(conn, po.production_order_id)
+    assert events.count("architect_spec_completed") == 1
+
+
+def test_apply_conflicting_action_fails(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+    packet = architect_spec_packet(po.production_order_id)
+    _ingest_and_apply(conn, po.production_order_id, packet)
+    other = dict(packet)
+    other["packet_id"] = "different"
+    other["summary"] = "different accepted packet"
+
+    with pytest.raises(DispatchManifestError, match="conflicting state|source_state"):
+        apply_accepted_result_action(conn, po.production_order_id, result_packet=other)
+
+
+def test_unaccepted_packet_cannot_be_applied(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+
+    with pytest.raises(DispatchManifestError, match="before.*accepted"):
+        apply_accepted_result_action(
+            conn,
+            po.production_order_id,
+            result_packet=architect_spec_packet(po.production_order_id),
+        )
+
+
+def _audit_rejected_order(conn, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    packet = audit_rejection_packet(po.production_order_id)
+    return run_auditos_review_reject_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        rejection_packet=packet,
+    )
+
+
+def _default_rejected_order(conn, sample_brief):
+    po = create_default_final_review_order(conn, sample_brief)
+    packet = default_rejection_packet(po.production_order_id)
+    return run_default_final_review_reject_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        rejection_packet=packet,
+    )
+
+
+def test_rework_router_audit_implementation_failure_to_dev(conn, sample_brief):
+    po = _audit_rejected_order(conn, sample_brief)
+    packet = audit_rejection_packet(po.production_order_id)
+    packet["failure_type"] = "implementation test failure"
+
+    result = route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="AUDIT_REJECTED",
+        rejection_packet=packet,
+    )
+
+    assert result["route_decision"] == "DEV_REWORK"
+    assert result["target_profile"] == "dev_os"
+    assert list_production_orders(conn)[0].current_state == "DEV_REWORK"
+
+
+def test_rework_router_audit_spec_failure_to_architect(conn, sample_brief):
+    po = _audit_rejected_order(conn, sample_brief)
+    packet = audit_rejection_packet(po.production_order_id)
+    packet["failure_type"] = "spec design ambiguity"
+
+    result = route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="AUDIT_REJECTED",
+        rejection_packet=packet,
+    )
+
+    assert result["route_decision"] == "SPEC_REWORK"
+    assert result["target_profile"] == "architect_os"
+    assert list_production_orders(conn)[0].current_state == "SPEC_REWORK"
+
+
+def test_rework_router_audit_approval_boundary_blocks(conn, sample_brief):
+    po = _audit_rejected_order(conn, sample_brief)
+    packet = audit_rejection_packet(po.production_order_id)
+    packet["failure_type"] = "needs approval for secret credential"
+
+    result = route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="AUDIT_REJECTED",
+        rejection_packet=packet,
+    )
+
+    assert result["route_decision"] == "BLOCKED_NEEDS_JARREN"
+    assert result["stop_condition"]
+    assert list_production_orders(conn)[0].current_state == "BLOCKED_NEEDS_JARREN"
+
+
+def test_rework_router_default_implementation_mismatch_to_dev(conn, sample_brief):
+    po = _default_rejected_order(conn, sample_brief)
+    packet = default_rejection_packet(po.production_order_id)
+    packet["rejection_category"] = "implementation output mismatch"
+
+    result = route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="DEFAULT_REJECTED",
+        rejection_packet=packet,
+    )
+
+    assert result["route_decision"] == "DEV_REWORK"
+    assert result["target_profile"] == "dev_os"
+
+
+def test_rework_router_default_brief_spec_mismatch_to_architect(conn, sample_brief):
+    po = _default_rejected_order(conn, sample_brief)
+    packet = default_rejection_packet(po.production_order_id)
+    packet["rejection_category"] = "brief/spec mismatch"
+
+    result = route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="DEFAULT_REJECTED",
+        rejection_packet=packet,
+    )
+
+    assert result["route_decision"] == "SPEC_REWORK"
+    assert result["target_profile"] == "architect_os"
+
+
+def test_rework_router_ambiguous_rejection_blocks(conn, sample_brief):
+    po = _audit_rejected_order(conn, sample_brief)
+    packet = audit_rejection_packet(po.production_order_id)
+    packet["summary"] = "Rejected for unclear reasons."
+    packet["correction_request"] = ["Needs another look."]
+    packet["risks_or_notes"] = ["Unclear."]
+
+    result = route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="AUDIT_REJECTED",
+        rejection_packet=packet,
+    )
+
+    assert result["route_decision"] == "BLOCKED_NEEDS_JARREN"
+
+
+def test_rework_router_repeat_is_idempotent(conn, sample_brief):
+    po = _audit_rejected_order(conn, sample_brief)
+    packet = audit_rejection_packet(po.production_order_id)
+    packet["failure_type"] = "implementation bug"
+
+    first = route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="AUDIT_REJECTED",
+        rejection_packet=packet,
+    )
+    second = route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="AUDIT_REJECTED",
+        rejection_packet=packet,
+    )
+
+    assert first["route_decision"] == second["route_decision"] == "DEV_REWORK"
+    assert second["applied"] is False
+
+
+def test_rework_router_conflicting_repeat_fails(conn, sample_brief):
+    po = _audit_rejected_order(conn, sample_brief)
+    packet = audit_rejection_packet(po.production_order_id)
+    packet["failure_type"] = "implementation bug"
+    route_production_order_rework(
+        conn,
+        po.production_order_id,
+        rejection_source="AUDIT_REJECTED",
+        rejection_packet=packet,
+    )
+    other = audit_rejection_packet(po.production_order_id)
+    other["failure_type"] = "spec design ambiguity"
+
+    with pytest.raises(DispatchManifestError, match="conflicts"):
+        route_production_order_rework(
+            conn,
+            po.production_order_id,
+            rejection_source="AUDIT_REJECTED",
+            rejection_packet=other,
+        )
 
 
 def test_base36_random():

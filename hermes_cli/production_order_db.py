@@ -96,12 +96,13 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "DEV_IMPLEMENTING":             {"DEV_COMPLETE"},
     "DEV_COMPLETE":                 {"AUDIT_REVIEW"},
     "AUDIT_REVIEW":                 {"AUDIT_PASSED", "AUDIT_REJECTED"},
-    "AUDIT_REJECTED":               {"DEV_REWORK"},
+    "AUDIT_REJECTED":               {"DEV_REWORK", "SPEC_REWORK", "BLOCKED_NEEDS_JARREN"},
     "AUDIT_PASSED":                 {"ARCHITECT_RECONCILE"},
     "ARCHITECT_RECONCILE":          {"ARCHITECT_ACCEPTED"},
     "ARCHITECT_ACCEPTED":           {"DEFAULT_FINAL_REVIEW"},
     "DEFAULT_FINAL_REVIEW":         {"DONE", "DEFAULT_REJECTED"},
-    "DEFAULT_REJECTED":             {"ORCHESTRATOR_TRIAGE"},
+    "DEFAULT_REJECTED":             {"ORCHESTRATOR_TRIAGE", "DEV_REWORK", "SPEC_REWORK", "BLOCKED_NEEDS_JARREN"},
+    "BLOCKED_NEEDS_JARREN":         set(),
     "DEV_REWORK":                   {"DEV_COMPLETE"},
 }
 
@@ -139,6 +140,7 @@ STATE_OWNERS: dict[str, str] = {
     "ARCHITECT_ACCEPTED":           "default",
     "DEFAULT_FINAL_REVIEW":         "default",
     "DEFAULT_REJECTED":             "orchestrator_os",
+    "BLOCKED_NEEDS_JARREN":         "default",
     "DONE":                         "default",
     "DEV_REWORK":                   "dev_os",
     "SPEC_REWORK":                  "architect_os",

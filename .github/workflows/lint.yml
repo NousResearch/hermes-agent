@@ -9,6 +9,7 @@ name: Lint (ruff + ty)
 #      enforcement fails.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths-ignore:

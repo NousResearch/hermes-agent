@@ -3663,6 +3663,44 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _mentioned_bot_role_ids(self, message: Any) -> set[str]:
+        """Return bot-owned role IDs mentioned by a Discord message.
+
+        Discord exposes user mentions and role mentions separately.  Users often
+        mention a bot's server role (for example ``@Hermes Bot``) expecting it
+        to wake the bot, so role mentions should satisfy ``require_mention``
+        only when the mentioned role is actually assigned to this bot.
+        """
+        role_mentions = getattr(message, "role_mentions", None) or []
+        mentioned_role_ids = {
+            str(role_id)
+            for role in role_mentions
+            for role_id in (getattr(role, "id", role),)
+            if role_id is not None
+        }
+        if not mentioned_role_ids:
+            return set()
+
+        guild = getattr(message, "guild", None) or getattr(getattr(message, "channel", None), "guild", None)
+        member = getattr(guild, "me", None) if guild is not None else None
+        if member is None and guild is not None:
+            get_member = getattr(guild, "get_member", None)
+            user_id = getattr(getattr(self, "_client", None), "user", None)
+            user_id = getattr(user_id, "id", None)
+            if callable(get_member) and user_id is not None:
+                try:
+                    member = get_member(user_id)
+                except Exception:
+                    member = None
+
+        bot_role_ids = {
+            str(role_id)
+            for role in (getattr(member, "roles", None) or [])
+            for role_id in (getattr(role, "id", role),)
+            if role_id is not None
+        }
+        return mentioned_role_ids & bot_role_ids
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -4489,10 +4527,15 @@ class DiscordAdapter(BasePlatformAdapter):
             if snapshot_text_parts and not raw_content:
                 raw_content = "\n".join(snapshot_text_parts)
                 normalized_content = raw_content
-        if self._client.user and self._client.user in message.mentions:
+        mentioned_bot_role_ids = self._mentioned_bot_role_ids(message)
+        client_user = getattr(self._client, "user", None)
+        if (client_user and client_user in message.mentions) or mentioned_bot_role_ids:
             mention_prefix = True
-            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if client_user:
+                normalized_content = normalized_content.replace(f"<@{client_user.id}>", "").strip()
+                normalized_content = normalized_content.replace(f"<@!{client_user.id}>", "").strip()
+            for role_id in mentioned_bot_role_ids:
+                normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}

@@ -59,7 +59,7 @@ class FakeTextChannel:
     def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=987, name=guild_name)
         self.topic = None
 
     def history(self, *, limit, before, after=None, oldest_first=None):
@@ -73,7 +73,7 @@ class FakeForumChannel:
     def __init__(self, channel_id: int = 1, name: str = "support-forum", guild_name: str = "Hermes Server"):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=987, name=guild_name)
         self.type = 15
         self.topic = None
 
@@ -84,7 +84,7 @@ class FakeThread:
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
-        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        self.guild = getattr(parent, "guild", None) or SimpleNamespace(id=987, name=guild_name)
         self.topic = None
 
     def history(self, *, limit, before, after=None, oldest_first=None):
@@ -125,16 +125,18 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, msg_type=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=channel,
+        guild=getattr(channel, "guild", None),
         author=author,
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
     )
@@ -345,6 +347,47 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "hello with mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_accepts_bot_role_mentions_when_required(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_role = SimpleNamespace(id=555, name="Hermes Bot")
+    channel = FakeTextChannel(channel_id=321)
+    channel.guild.me = SimpleNamespace(roles=[bot_role])
+    message = make_message(
+        channel=channel,
+        content=f"<@&{bot_role.id}> hello through role mention",
+        role_mentions=[bot_role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "hello through role mention"
+
+
+@pytest.mark.asyncio
+async def test_discord_ignores_unrelated_role_mentions_when_required(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_role = SimpleNamespace(id=555, name="Hermes Bot")
+    unrelated_role = SimpleNamespace(id=777, name="Other Bot")
+    channel = FakeTextChannel(channel_id=321)
+    channel.guild.me = SimpleNamespace(roles=[bot_role])
+    message = make_message(
+        channel=channel,
+        content=f"<@&{unrelated_role.id}> hello through role mention",
+        role_mentions=[unrelated_role],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -6409,20 +6409,25 @@ class HermesCLI:
             # Trigger memory extraction on the old session before session_id rotates.
             # Use a bounded timeout to avoid blocking /new on slow providers.
             # Memory extraction is best-effort and should never block the UI.
+            #
+            # NOTE: We intentionally do NOT use the executor as a context manager.
+            # `with ThreadPoolExecutor(...) as ex:` calls `shutdown(wait=True)` on
+            # exit, which would block /new until the hung task completes. Instead,
+            # we create the executor, submit the task, and shut down with wait=False
+            # so the background thread finishes asynchronously (orphaned if needed).
+            ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            fut = ex.submit(
+                self.agent.commit_memory_session,
+                self.conversation_history,
+            )
             try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    fut = ex.submit(
-                        self.agent.commit_memory_session,
-                        self.conversation_history,
-                    )
-                    fut.result(timeout=15)
+                fut.result(timeout=15)
             except concurrent.futures.TimeoutError:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Memory commit timed out after 15s; continuing /new"
-                )
+                logger.warning("Memory commit timed out after 15s; continuing /new")
             except Exception:
                 pass
+            finally:
+                ex.shutdown(wait=False)  # Don't block /new on the hung task
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session

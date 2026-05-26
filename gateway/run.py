@@ -1681,8 +1681,9 @@ class GatewayRunner:
     _restart_detached: bool = False
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
-    _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_model_overrides: Dict[str, Dict[str, Any]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _session_weiqi_manual_locks: Dict[str, bool] = {}
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1774,11 +1775,18 @@ class GatewayRunner:
         self._agent_cache_lock = _threading.Lock()
 
         # Per-session model overrides from /model command.
-        # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode,
+        # plus optional ACP command/args for subscription-backed print wrappers.
+        self._session_model_overrides: Dict[str, Dict[str, Any]] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Per-session Wei Qi / 7v manual mode state. Control-plane only;
+        # provider/model and reasoning live in the existing override maps.
+        self._session_weiqi_mode_overrides: Dict[str, Dict[str, str]] = {}
+        # Manual mode commands lock a chat to the chosen route until /自动.
+        # With no lock, the 7v smart router may re-classify every turn.
+        self._session_weiqi_manual_locks: Dict[str, bool] = {}
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -2445,6 +2453,8 @@ class GatewayRunner:
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
+                "command": override.get("command"),
+                "args": override.get("args"),
             }
             if override_runtime.get("api_key"):
                 logger.debug(
@@ -7773,6 +7783,9 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "mode":
+            return await self._handle_weiqi_mode_command(event)
+
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
@@ -8470,9 +8483,21 @@ class GatewayRunner:
             # inherit the previous conversation's model/reasoning overrides
             # or a queued "/model switched" note.
             self._session_model_overrides.pop(session_key, None)
+            self._session_weiqi_mode_overrides.pop(session_key, None)
+            self._session_weiqi_manual_locks.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
+
+        try:
+            self._maybe_apply_weiqi_auto_route(
+                event=event,
+                source=source,
+                session_key=session_key,
+                cfg=_load_gateway_config(),
+            )
+        except Exception as exc:
+            logger.warning("Wei Qi auto routing skipped after error: %s", exc)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -9254,6 +9279,8 @@ class GatewayRunner:
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
+                self._session_weiqi_mode_overrides.pop(session_key, None)
+                self._session_weiqi_manual_locks.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
@@ -9630,6 +9657,8 @@ class GatewayRunner:
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
+        self._session_weiqi_mode_overrides.pop(session_key, None)
+        self._session_weiqi_manual_locks.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
@@ -10452,6 +10481,233 @@ class GatewayRunner:
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
         )
+
+    async def _handle_platforms_command(self, event: MessageEvent) -> str:
+        """Legacy alias for /platform list."""
+        return await self._handle_platform_command(event)
+
+    def _apply_weiqi_mode_preset(
+        self,
+        *,
+        session_key: str,
+        source: SessionSource,
+        preset,
+        cfg: Optional[dict] = None,
+        auto: bool = False,
+    ) -> tuple[bool, str, Any]:
+        """Apply a Wei Qi mode preset to the session override maps."""
+        from hermes_cli.model_switch import switch_model
+
+        cfg = cfg if isinstance(cfg, dict) else _load_gateway_config()
+        model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+        current_model = model_cfg.get("default", "") if isinstance(model_cfg, dict) else ""
+        current_provider = model_cfg.get("provider", "openrouter") if isinstance(model_cfg, dict) else "openrouter"
+        current_base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
+        current_api_key = ""
+        override = self._session_model_overrides.get(session_key, {})
+        if override:
+            current_model = override.get("model", current_model)
+            current_provider = override.get("provider", current_provider)
+            current_base_url = override.get("base_url", current_base_url)
+            current_api_key = override.get("api_key", current_api_key)
+
+        result = switch_model(
+            raw_input=preset.model,
+            current_provider=current_provider,
+            current_model=current_model,
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+            is_global=False,
+            explicit_provider=preset.provider,
+            user_providers=(cfg.get("providers") or {}) if isinstance(cfg, dict) else {},
+            custom_providers=cfg.get("custom_providers") if isinstance(cfg, dict) else None,
+        )
+        if not result.success:
+            return False, result.error_message or "unknown error", result
+
+        self._session_model_overrides[session_key] = {
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "api_key": result.api_key,
+            "base_url": preset.base_url or result.base_url,
+            "api_mode": result.api_mode,
+            "command": preset.acp_command,
+            "args": list(preset.acp_args) if preset.acp_args is not None else None,
+        }
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        route_kind = "auto-routed" if auto else "switched"
+        self._pending_model_notes[session_key] = (
+            f"[Note: Wei Qi mode {route_kind} to {preset.label}. "
+            f"Use Mandarin Chinese by default. Behavior: {preset.description}]"
+        )
+        self._set_session_reasoning_override(
+            session_key,
+            {"enabled": True, "effort": preset.reasoning},
+        )
+        self._session_weiqi_mode_overrides[session_key] = {
+            "key": preset.key,
+            "label": preset.label,
+            "provider": result.target_provider,
+            "model": result.new_model,
+            "reasoning": preset.reasoning,
+            "auto": "true" if auto else "false",
+        }
+        self._evict_cached_agent(session_key)
+        logger.info(
+            "Wei Qi mode %s: session=%s mode=%s provider=%s model=%s reasoning=%s cache=evicted",
+            "auto-routed" if auto else "selected",
+            session_key,
+            preset.key,
+            result.target_provider,
+            result.new_model,
+            preset.reasoning,
+        )
+        return True, "", result
+
+    def _weiqi_auto_routing_enabled(self, cfg: Optional[dict] = None) -> bool:
+        cfg = cfg if isinstance(cfg, dict) else _load_gateway_config()
+        route_cfg = ((cfg.get("weiqi") or {}).get("auto_routing") or {}) if isinstance(cfg, dict) else {}
+        return bool(route_cfg.get("enabled", False))
+
+    def _maybe_apply_weiqi_auto_route(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        session_key: str,
+        cfg: Optional[dict] = None,
+    ) -> None:
+        if not session_key or event.get_command():
+            return
+        cfg = cfg if isinstance(cfg, dict) else _load_gateway_config()
+        if not self._weiqi_auto_routing_enabled(cfg):
+            return
+        if self._session_weiqi_manual_locks.get(session_key):
+            return
+        from hermes_cli.weiqi_modes import classify_weiqi_auto_mode
+
+        has_media = bool(getattr(event, "media_urls", None) or getattr(event, "media", None))
+        preset = classify_weiqi_auto_mode(event.text or "", has_media=has_media)
+        current_state = self._session_weiqi_mode_overrides.get(session_key) or {}
+        if current_state.get("auto") == "true" and current_state.get("key") == preset.key:
+            return
+        ok, err, _result = self._apply_weiqi_mode_preset(
+            session_key=session_key,
+            source=source,
+            preset=preset,
+            cfg=cfg,
+            auto=True,
+        )
+        if not ok:
+            logger.warning(
+                "Wei Qi auto route failed: session=%s mode=%s error=%s",
+                session_key,
+                getattr(preset, "key", "unknown"),
+                err,
+            )
+
+    async def _handle_weiqi_mode_command(self, event: MessageEvent) -> str:
+        """Handle Wei Qi / 7v manual mode commands.
+
+        Mode changes are session-scoped: they update the same transient
+        provider/model and reasoning override maps used by /model and
+        /reasoning, then evict the cached agent for this chat.
+        """
+        from hermes_cli.model_switch import switch_model
+        from hermes_cli.providers import get_label
+        from hermes_cli.weiqi_modes import (
+            OPUS_STATUS,
+            is_auto_request,
+            is_status_request,
+            list_weiqi_modes,
+            resolve_weiqi_mode,
+        )
+
+        command = event.get_command() or "mode"
+        raw_args = event.get_command_args().strip()
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        cfg = _load_gateway_config()
+        model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+        current_model = model_cfg.get("default", "") if isinstance(model_cfg, dict) else ""
+        current_provider = model_cfg.get("provider", "openrouter") if isinstance(model_cfg, dict) else "openrouter"
+        current_base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
+        current_api_key = ""
+        override = self._session_model_overrides.get(session_key, {})
+        if override:
+            current_model = override.get("model", current_model)
+            current_provider = override.get("provider", current_provider)
+            current_base_url = override.get("base_url", current_base_url)
+            current_api_key = override.get("api_key", current_api_key)
+
+        if is_status_request(command, raw_args):
+            mode_state = self._session_weiqi_mode_overrides.get(session_key, {})
+            active_label = mode_state.get("label", "默认助手")
+            active_key = mode_state.get("key", "default")
+            reasoning = self._resolve_session_reasoning_config(
+                source=source,
+                session_key=session_key,
+            )
+            if reasoning is None:
+                reasoning_label = "全局默认"
+            elif reasoning.get("enabled") is False:
+                reasoning_label = "关闭"
+            else:
+                reasoning_label = str(reasoning.get("effort", "medium"))
+            provider_label = get_label(current_provider) if current_provider else "unknown"
+            auto_enabled = self._weiqi_auto_routing_enabled(cfg)
+            manual_locked = bool(self._session_weiqi_manual_locks.get(session_key))
+            lines = [
+                f"当前模式：{active_label} ({active_key})",
+                f"模型路线：{provider_label} / {current_model or 'unknown'}",
+                f"Reasoning：{reasoning_label}",
+                f"智能路由：{'开启' if auto_enabled and not manual_locked else '手动锁定' if manual_locked else '关闭'}",
+                "作用范围：当前微信聊天/会话；不是 7v 全局默认。",
+            ]
+            if active_key in {"advisor", "creative"}:
+                lines.append(f"Opus 状态：{OPUS_STATUS}")
+            return "\n".join(lines)
+
+        if is_auto_request(command, raw_args):
+            self._session_weiqi_manual_locks.pop(session_key, None)
+            if self._weiqi_auto_routing_enabled(cfg):
+                self._session_weiqi_mode_overrides.pop(session_key, None)
+                self._session_model_overrides.pop(session_key, None)
+                self._set_session_reasoning_override(session_key, None)
+                self._evict_cached_agent(session_key)
+                return "已开启智能路由：以后每条普通消息会自动选择合适模型。手动模式仍可用；发送 /顾问、/播客、/中文润色 等会临时锁定当前聊天，发送 /自动 回到智能路由。"
+            return "智能路由当前未在 7v 配置中开启。"
+
+        preset = resolve_weiqi_mode(command, raw_args)
+        if preset is None:
+            lines = ["可用模式："]
+            for item in list_weiqi_modes():
+                lines.append(f"- /{item.aliases[0]}：{item.label} — {item.description}")
+            lines.append("/状态：查看当前模式。")
+            return "\n".join(lines)
+
+        ok, err, result = self._apply_weiqi_mode_preset(
+            session_key=session_key,
+            source=source,
+            preset=preset,
+            cfg=cfg,
+            auto=False,
+        )
+        if not ok:
+            return f"模式切换失败：{err}"
+        self._session_weiqi_manual_locks[session_key] = True
+        provider_label = result.provider_label or get_label(result.target_provider) or result.target_provider
+        lines = [
+            f"已切换到：{preset.label}",
+            f"模型路线：{provider_label} / {result.new_model}",
+            f"Reasoning：{preset.reasoning}",
+            "作用范围：当前微信聊天/会话；不会修改 7v 全局默认。",
+        ]
+        if preset.note:
+            lines.append(preset.note)
+        return "\n".join(lines)
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
@@ -15568,7 +15824,7 @@ class GatewayRunner:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode"):
+        for key in ("provider", "api_key", "base_url", "api_mode", "command", "args"):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val

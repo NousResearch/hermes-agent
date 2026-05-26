@@ -7600,6 +7600,71 @@ class HermesCLI:
         else:
             _cprint("    (session only — add --global to persist)")
 
+    def _handle_weiqi_mode_switch(self, cmd_original: str):
+        """CLI surface for Wei Qi / 7v mode presets using the shared table."""
+        from hermes_cli.model_switch import switch_model
+        from hermes_cli.weiqi_modes import (
+            OPUS_STATUS,
+            is_status_request,
+            list_weiqi_modes,
+            resolve_weiqi_mode,
+        )
+
+        parts = cmd_original.strip().split(maxsplit=1)
+        command = parts[0].lstrip("/") if parts else "mode"
+        args = parts[1].strip() if len(parts) > 1 else ""
+        if is_status_request(command, args):
+            rc = self.reasoning_config
+            if rc is None:
+                reasoning = "global default"
+            elif rc.get("enabled") is False:
+                reasoning = "none"
+            else:
+                reasoning = str(rc.get("effort", "medium"))
+            _cprint(f"  当前模式：CLI session mode")
+            _cprint(f"  模型路线：{self.provider or 'unknown'} / {self.model or 'unknown'}")
+            _cprint(f"  Reasoning：{reasoning}")
+            _cprint("  作用范围：当前 CLI 会话；不会修改 7v 全局默认。")
+            return
+
+        preset = resolve_weiqi_mode(command, args)
+        if preset is None:
+            _cprint("  可用模式：")
+            for item in list_weiqi_modes():
+                _cprint(f"  /{item.aliases[0]} — {item.label}: {item.description}")
+            return
+
+        result = switch_model(
+            raw_input=preset.model,
+            current_provider=self.provider or "",
+            current_model=self.model or "",
+            current_base_url=self.base_url or "",
+            current_api_key=self.api_key or "",
+            is_global=False,
+            explicit_provider=preset.provider,
+        )
+        if not result.success:
+            _cprint(f"  ✗ 模式切换失败：{result.error_message}")
+            return
+        self._apply_model_switch_result(result, persist_global=False)
+        if preset.base_url:
+            self.base_url = preset.base_url
+        if preset.acp_command:
+            self.acp_command = preset.acp_command
+            self.acp_args = list(preset.acp_args or [])
+        self.reasoning_config = {"enabled": True, "effort": preset.reasoning}
+        self.agent = None
+        self._pending_model_switch_note = (
+            f"[Note: Wei Qi mode switched to {preset.label}. "
+            f"Use Mandarin Chinese by default. Behavior: {preset.description}]"
+        )
+        _cprint(f"  ✓ 已切换到：{preset.label}")
+        _cprint(f"    Reasoning: {preset.reasoning}")
+        if preset.note:
+            _cprint(f"    {preset.note}")
+        if preset.key == "creative":
+            _cprint(f"    Opus status: {OPUS_STATUS}")
+
     def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
         state = self._model_picker_state
         if not state:
@@ -8593,6 +8658,8 @@ class HermesCLI:
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "mode":
+            self._handle_weiqi_mode_switch(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":

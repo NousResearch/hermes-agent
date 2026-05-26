@@ -31,6 +31,10 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # Document extraction: local doc-tools and Spark document-ai lanes
+    "document_extract", "document_ai_extract",
+    # Untrusted link/repo/download triage sandbox
+    "untrusted_link_triage", "audit_untrusted_url", "audit_untrusted_repo", "inspect_untrusted_download",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -91,6 +95,21 @@ TOOLSETS = {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
+    },
+
+    "document": {
+        "description": "Document extraction through local doc-tools plus authenticated Spark document-ai for heavy OCR/layout work",
+        "tools": ["document_extract", "document_ai_extract"],
+        "includes": []
+    },
+
+    "untrusted_link_sandbox": {
+        "description": "Docker-isolated triage for untrusted URLs, repositories, and quarantined downloads before normal browsing or cloning",
+        "tools": [
+            "untrusted_link_triage", "audit_untrusted_url",
+            "audit_untrusted_repo", "inspect_untrusted_download",
+        ],
+        "includes": []
     },
     
     "search": {
@@ -342,6 +361,8 @@ TOOLSETS = {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
             "web_search", "web_extract",
+            "document_extract", "document_ai_extract",
+            "untrusted_link_triage", "audit_untrusted_url", "audit_untrusted_repo", "inspect_untrusted_download",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
@@ -362,6 +383,9 @@ TOOLSETS = {
         "tools": [
             # Web
             "web_search", "web_extract",
+            # Document extraction / untrusted-link sandbox
+            "document_extract", "document_ai_extract",
+            "untrusted_link_triage", "audit_untrusted_url", "audit_untrusted_repo", "inspect_untrusted_download",
             # Terminal + process management
             "terminal", "process",
             # File manipulation

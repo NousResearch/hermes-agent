@@ -32,6 +32,21 @@ class TestGetToolset:
         assert ts is not None
         assert "web_search" in ts["tools"]
 
+    def test_document_toolset(self):
+        ts = get_toolset("document")
+        assert ts is not None
+        assert {"document_extract", "document_ai_extract"}.issubset(set(ts["tools"]))
+
+    def test_untrusted_link_sandbox_toolset(self):
+        ts = get_toolset("untrusted_link_sandbox")
+        assert ts is not None
+        assert {
+            "untrusted_link_triage",
+            "audit_untrusted_url",
+            "audit_untrusted_repo",
+            "inspect_untrusted_download",
+        }.issubset(set(ts["tools"]))
+
     def test_merges_registry_tools_into_builtin_toolset(self, monkeypatch):
         reg = ToolRegistry()
         reg.register(

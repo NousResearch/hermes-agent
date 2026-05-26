@@ -154,6 +154,14 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
 | `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
+| `HERMES_DOC_TOOLS_BASE_URL` | Override the local doc-tools sidecar URL for `document_extract` (default: `http://127.0.0.1:9478`) |
+| `HERMES_DOC_TOOLS_STACK_DIR` | Override the local doc-tools stack directory used to find the intake mount |
+| `HERMES_DOC_TOOLS_INTAKE_DIR` | Override the host intake directory that Hermes stages local documents into before calling the sidecar |
+| `HERMES_DOC_TOOLS_TIMEOUT` | HTTP timeout in seconds for local doc-tools extraction |
+| `HERMES_DOCUMENT_AI_TOKEN` | Token for `document_ai_extract`; sent as `X-Document-AI-Token` to the document-AI gateway |
+| `DOCUMENT_AI_TOKEN` / `SPARK_DOCUMENT_AI_TOKEN` | Alternate token names accepted by `document_ai_extract` |
+| `HERMES_DOCUMENT_AI_BASE_URL` | Override the document-AI layout-parsing gateway URL |
+| `HERMES_DOCUMENT_AI_TIMEOUT` | HTTP timeout in seconds for document-AI extraction |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
 | `VERCEL_TOKEN` | Vercel Sandbox access token ([vercel.com](https://vercel.com/)) |

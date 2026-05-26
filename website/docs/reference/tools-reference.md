@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~70 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 7 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
+**Quick counts (current registry):** ~75 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 2 document tools, 4 untrusted-link sandbox tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 7 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -61,6 +61,15 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `delegate_task` | Spawn one or more subagents to work on tasks in isolated contexts. Each subagent gets its own conversation, terminal session, and toolset. Only the final summary is returned -- intermediate tool results never enter your context window. TWO… | — |
+
+## `document` toolset
+
+Local documents use the localhost doc-tools sidecar. Heavier OCR/layout work can use an authenticated document-AI gateway that follows OpenWebUI/PaddleOCR-VL's layout-parsing contract. That gateway expects JSON with a base64 `file` field and numeric `fileType`; do not send `multipart/form-data` uploads to `document_ai_extract` backends.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `document_extract` | Extract markdown or structured data from a local file through the doc-tools sidecar. Hermes stages local files into the sidecar intake directory automatically; URL sources are delegated to `web_extract`. | Running doc-tools sidecar (`document_tools.base_url` or `HERMES_DOC_TOOLS_BASE_URL`) |
+| `document_ai_extract` | Extract a local PDF/image through an authenticated document-AI layout-parsing gateway. Defaults to the redacted endpoint. Use for large, scanned, OCR-heavy, table/layout-heavy, or sensitive documents. | `HERMES_DOCUMENT_AI_TOKEN`, `DOCUMENT_AI_TOKEN`, or `document_ai.token`; optional `HERMES_DOCUMENT_AI_BASE_URL` |
 
 ## `feishu_doc` toolset
 
@@ -176,6 +185,17 @@ Registered when the agent is either (a) spawned by the kanban dispatcher (`HERME
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `todo` | Manage your task list for the current session. Use for complex tasks with 3+ steps or when the user provides multiple tasks. Call with no parameters to read the current list. Writing: - Provide 'todos' array to create/update items - merge=… | — |
+
+## `untrusted_link_sandbox` toolset
+
+Use this toolset before normal web, browser, clone, or file-inspection tools when a URL, public repository, or downloaded artifact is unfamiliar or potentially hostile. The tools call a local Docker sandbox wrapper and return a markdown report path, JSON summary, and short excerpt instead of executing target content on the host.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `untrusted_link_triage` | Safely triage an untrusted URL, repository, or quarantined download and choose the right sandbox path. | Local untrusted-link sandbox stack |
+| `audit_untrusted_url` | Audit an untrusted HTTP(S) URL in the Docker browser sandbox; optional deep CDP telemetry. | Local untrusted-link sandbox stack |
+| `audit_untrusted_repo` | Statically audit an untrusted public GitHub/GitLab repository in the Docker auditor sandbox. | Local untrusted-link sandbox stack |
+| `inspect_untrusted_download` | Inspect a file already saved under the sandbox quarantine directory. | Local untrusted-link sandbox stack |
 
 ## `vision` toolset
 

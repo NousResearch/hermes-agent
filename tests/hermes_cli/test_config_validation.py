@@ -192,6 +192,92 @@ class TestMissingModelSection:
         assert not any("no 'model' section" in i.message for i in issues)
 
 
+class TestMemoryProviderTrap:
+    """memory.provider gates plugin loading independently of memory_enabled / user_profile_enabled.
+
+    Users who set memory_enabled=false expecting the whole subsystem to turn off
+    (watchdog, recall, capture, persona writes) silently keep paying the plugin
+    cost. Warn loudly when this config shape is present. See issue #32624 Trap 1.
+    """
+
+    def test_provider_set_and_memory_enabled_false_warns(self):
+        issues = validate_config_structure({
+            "memory": {
+                "provider": "memory_tencentdb",
+                "memory_enabled": False,
+                "user_profile_enabled": True,
+            },
+        })
+        warnings = [i for i in issues if i.severity == "warning"]
+        match = [i for i in warnings if "memory.provider" in i.message and "memory_enabled" in i.message]
+        assert len(match) == 1, f"Expected one memory-provider warning, got: {warnings}"
+        assert "memory_tencentdb" in match[0].message
+        assert "memory.provider: \"\"" in match[0].hint
+
+    def test_provider_set_and_user_profile_enabled_false_warns(self):
+        issues = validate_config_structure({
+            "memory": {
+                "provider": "honcho",
+                "memory_enabled": True,
+                "user_profile_enabled": False,
+            },
+        })
+        match = [i for i in issues if i.severity == "warning" and "user_profile_enabled" in i.message]
+        assert len(match) == 1
+        assert "honcho" in match[0].message
+
+    def test_provider_set_with_both_flags_false_warns_once(self):
+        issues = validate_config_structure({
+            "memory": {
+                "provider": "mem0",
+                "memory_enabled": False,
+                "user_profile_enabled": False,
+            },
+        })
+        match = [i for i in issues if i.severity == "warning" and "memory.provider" in i.message]
+        # Single combined warning listing both flags — not one per flag.
+        assert len(match) == 1, f"Expected one combined warning, got: {match}"
+        assert "memory_enabled" in match[0].message
+        assert "user_profile_enabled" in match[0].message
+
+    def test_provider_empty_no_warning(self):
+        """The recommended remediation — provider unset — produces no warning."""
+        issues = validate_config_structure({
+            "memory": {
+                "provider": "",
+                "memory_enabled": False,
+                "user_profile_enabled": False,
+            },
+        })
+        assert not any("memory.provider" in i.message for i in issues)
+
+    def test_provider_set_with_both_flags_true_no_warning(self):
+        """Healthy config — provider active and flags on — produces no warning."""
+        issues = validate_config_structure({
+            "memory": {
+                "provider": "hindsight",
+                "memory_enabled": True,
+                "user_profile_enabled": True,
+            },
+        })
+        assert not any("memory.provider" in i.message for i in issues)
+
+    def test_provider_whitespace_only_no_warning(self):
+        """Whitespace-only provider is treated as unset (matches plugin loader)."""
+        issues = validate_config_structure({
+            "memory": {
+                "provider": "   ",
+                "memory_enabled": False,
+            },
+        })
+        assert not any("memory.provider" in i.message for i in issues)
+
+    def test_memory_section_missing_no_crash(self):
+        """No memory section at all — no warning, no crash."""
+        issues = validate_config_structure({})
+        assert not any("memory.provider" in i.message for i in issues)
+
+
 class TestConfigIssueDataclass:
     """ConfigIssue should be a proper dataclass."""
 

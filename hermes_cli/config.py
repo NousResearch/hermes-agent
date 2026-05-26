@@ -3847,6 +3847,35 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 f"Move '{key}' under the appropriate section",
             ))
 
+    # ── memory: external provider is loaded independently of the in-prompt flags ──
+    # `memory.provider` controls whether an external memory plugin is loaded
+    # (watchdog, recall, capture, persona writes). `memory_enabled` /
+    # `user_profile_enabled` only control whether the LLM is told about the
+    # built-in memory tool in the system prompt. Users (and assistant agents
+    # asked to "disable memory") routinely assume `memory_enabled: false`
+    # turns off the whole subsystem; it doesn't.
+    memory_cfg = config.get("memory")
+    if isinstance(memory_cfg, dict):
+        provider_name = memory_cfg.get("provider")
+        if isinstance(provider_name, str) and provider_name.strip():
+            mem_enabled = memory_cfg.get("memory_enabled", True)
+            user_profile_enabled = memory_cfg.get("user_profile_enabled", True)
+            if mem_enabled is False or user_profile_enabled is False:
+                disabled_flags = []
+                if mem_enabled is False:
+                    disabled_flags.append("memory_enabled")
+                if user_profile_enabled is False:
+                    disabled_flags.append("user_profile_enabled")
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"memory.provider='{provider_name.strip()}' is set but "
+                    f"{'/'.join(disabled_flags)}=false — the plugin still "
+                    "loads (watchdog, recall, capture, persona writes) but "
+                    "the LLM is not told it has memory tools",
+                    "To fully disable the memory plugin, set "
+                    "memory.provider: \"\" (empty string)",
+                ))
+
     return issues
 
 

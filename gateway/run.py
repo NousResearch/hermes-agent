@@ -1579,17 +1579,24 @@ def _normalize_empty_agent_response(
             "Try again or use /reset to start a fresh session."
         )
 
+    if agent_result.get("interrupted"):
+        return response
+
+    if agent_result.get("partial"):
+        err = agent_result.get("error", "processing incomplete")
+        return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+
     api_calls = int(agent_result.get("api_calls", 0) or 0)
-    if api_calls > 0 and not agent_result.get("interrupted"):
-        if agent_result.get("partial"):
-            err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+    if api_calls > 0:
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."
         )
 
-    return response
+    return (
+        "⚠️ No response was generated for this turn. The previous run may "
+        "have been interrupted before a model call started — please try again."
+    )
 
 
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
@@ -8756,14 +8763,6 @@ class GatewayRunner:
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
-            _response_time = time.time() - _msg_start_time
-            _api_calls = agent_result.get("api_calls", 0)
-            _resp_len = len(response)
-            logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-                _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
-            )
 
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
@@ -8789,6 +8788,14 @@ class GatewayRunner:
                 agent_result, response, history_len=len(history),
             )
             response = _sanitize_gateway_final_response(source.platform, response)
+            _response_time = time.time() - _msg_start_time
+            _api_calls = agent_result.get("api_calls", 0)
+            _resp_len = len(response)
+            logger.info(
+                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                _platform_name, source.chat_id or "unknown",
+                _response_time, _api_calls, _resp_len,
+            )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.

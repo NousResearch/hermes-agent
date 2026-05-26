@@ -39,6 +39,7 @@ from gateway.run import (
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
+    _normalize_empty_agent_response,
     _should_clear_resume_pending_after_turn,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -68,6 +69,31 @@ def test_resume_pending_is_cleared_only_after_successful_turn():
     assert _should_clear_resume_pending_after_turn({"failed": True}) is False
     assert _should_clear_resume_pending_after_turn({"partial": True}) is False
     assert _should_clear_resume_pending_after_turn({"error": "boom"}) is False
+
+
+def test_empty_zero_api_call_agent_response_gets_user_visible_fallback():
+    """A normal user turn must not complete as response=0 chars.
+
+    Regression for #31884: after /stop, the next Telegram text message could
+    return an empty agent result with api_calls=0 and be silently dropped.
+    """
+    response = _normalize_empty_agent_response(
+        {"final_response": "", "messages": [], "api_calls": 0},
+        "",
+    )
+
+    assert response
+    assert "No response was generated" in response
+
+
+def test_interrupted_empty_agent_response_stays_empty():
+    """The fallback is for accepted turns, not explicit interrupted results."""
+    response = _normalize_empty_agent_response(
+        {"final_response": "", "interrupted": True, "api_calls": 0},
+        "",
+    )
+
+    assert response == ""
 
 
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):

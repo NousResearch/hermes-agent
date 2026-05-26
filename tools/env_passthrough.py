@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from contextvars import ContextVar
 from typing import Iterable
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +110,29 @@ def _load_config_passthrough() -> frozenset[str]:
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
-        passthrough = cfg.get("terminal", {}).get("env_passthrough")
+        passthrough = cfg_get(cfg, "terminal", "env_passthrough")
         if isinstance(passthrough, list):
             for item in passthrough:
-                if isinstance(item, str) and item.strip():
-                    result.add(item.strip())
+                if not isinstance(item, str) or not item.strip():
+                    continue
+                name = item.strip()
+                # Mirror the skill-path filter in register_env_passthrough:
+                # Hermes-managed provider credentials must not be passed
+                # through to execute_code / terminal children, regardless of
+                # whether the request came from a skill or from config.yaml.
+                # See GHSA-rhgp-j443-p4rf.
+                if _is_hermes_provider_credential(name):
+                    logger.warning(
+                        "env passthrough: refusing to register Hermes "
+                        "provider credential %r from config.yaml (blocked "
+                        "by _HERMES_PROVIDER_ENV_BLOCKLIST). Operator "
+                        "configuration must not override the execute_code "
+                        "sandbox's credential scrubbing; see "
+                        "GHSA-rhgp-j443-p4rf.",
+                        name,
+                    )
+                    continue
+                result.add(name)
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
 

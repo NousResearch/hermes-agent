@@ -1,14 +1,14 @@
 ---
-title: "Github Pr Workflow"
+title: "Github Pr Workflow — GitHub PR lifecycle: branch, commit, open, CI, merge"
 sidebar_label: "Github Pr Workflow"
-description: "Full pull request lifecycle — create branches, commit changes, open PRs, monitor CI status, auto-fix failures, and merge"
+description: "GitHub PR lifecycle: branch, commit, open, CI, merge"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Github Pr Workflow
 
-Full pull request lifecycle — create branches, commit changes, open PRs, monitor CI status, auto-fix failures, and merge. Works with gh CLI or falls back to git + GitHub REST API via curl.
+GitHub PR lifecycle: branch, commit, open, CI, merge.
 
 ## Skill metadata
 
@@ -19,8 +19,9 @@ Full pull request lifecycle — create branches, commit changes, open PRs, monit
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Pull-Requests`, `CI/CD`, `Git`, `Automation`, `Merge` |
-| Related skills | [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) |
+| Related skills | [`github-auth`](/user-guide/skills/bundled/github/github-github-auth), [`github-code-review`](/user-guide/skills/bundled/github/github-github-code-review) |
 
 ## Reference: full SKILL.md
 

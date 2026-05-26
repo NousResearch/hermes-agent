@@ -3,7 +3,8 @@
 Bypasses cli.py entirely.  No banner, no spinner, no session_id line,
 no stderr chatter.  Just the agent's final text to stdout.
 
-Toolsets = whatever the user has configured for "cli" in `hermes tools`.
+Toolsets = explicit --toolsets when provided, otherwise whatever the user has
+configured for "cli" in `hermes tools`.
 Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn.
 Approvals = auto-bypassed (HERMES_YOLO_MODE=1 is set for the call).
 Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
@@ -16,7 +17,6 @@ Model / provider selection mirrors `hermes chat`:
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
-    - HERMES_INFERENCE_PROVIDER  (already read by resolve_runtime_provider)
 """
 
 from __future__ import annotations
@@ -27,11 +27,106 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
+from hermes_cli.fallback_config import get_fallback_chain
+
+
+def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
+    if not toolsets:
+        return None
+
+    raw_items = [toolsets] if isinstance(toolsets, str) else toolsets
+    if not isinstance(raw_items, (list, tuple)):
+        raw_items = [raw_items]
+
+    normalized: list[str] = []
+    for item in raw_items:
+        if isinstance(item, str):
+            normalized.extend(part.strip() for part in item.split(","))
+        else:
+            normalized.append(str(item).strip())
+
+    return [item for item in normalized if item] or None
+
+
+def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
+    normalized = _normalize_toolsets(toolsets)
+    if normalized is None:
+        return None, None
+
+    try:
+        from toolsets import validate_toolset
+    except Exception as exc:
+        return None, f"hermes -z: failed to validate --toolsets: {exc}\n"
+
+    built_in = [name for name in normalized if validate_toolset(name)]
+    unresolved = [name for name in normalized if name not in built_in]
+
+    if unresolved:
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            plugin_valid = [name for name in unresolved if validate_toolset(name)]
+        except Exception:
+            plugin_valid = []
+
+        if plugin_valid:
+            built_in.extend(plugin_valid)
+            unresolved = [name for name in unresolved if name not in plugin_valid]
+
+    if any(name in {"all", "*"} for name in built_in):
+        ignored = [name for name in normalized if name not in {"all", "*"}]
+        if ignored:
+            sys.stderr.write(
+                "hermes -z: --toolsets all enables every toolset; "
+                f"ignoring additional entries: {', '.join(ignored)}\n"
+            )
+        return None, None
+
+    mcp_names: set[str] = set()
+    mcp_disabled: set[str] = set()
+    if unresolved:
+        try:
+            from hermes_cli.config import read_raw_config
+            from hermes_cli.tools_config import _parse_enabled_flag
+
+            cfg = read_raw_config()
+            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+            for name, server_cfg in mcp_servers.items():
+                if not isinstance(server_cfg, dict):
+                    continue
+                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
+                    mcp_names.add(str(name))
+                else:
+                    mcp_disabled.add(str(name))
+        except Exception:
+            mcp_names = set()
+            mcp_disabled = set()
+
+    mcp_valid = [name for name in unresolved if name in mcp_names]
+    disabled = [name for name in unresolved if name in mcp_disabled]
+    unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
+    valid = built_in + mcp_valid
+
+    if unknown:
+        sys.stderr.write(f"hermes -z: ignoring unknown --toolsets entries: {', '.join(unknown)}\n")
+    if disabled:
+        sys.stderr.write(
+            "hermes -z: ignoring disabled MCP servers (set enabled: true in config.yaml to use): "
+            f"{', '.join(disabled)}\n"
+        )
+
+    if not valid:
+        return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"
+
+    return valid, None
+
 
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    toolsets: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -39,9 +134,9 @@ def run_oneshot(
         prompt: The user message to send.
         model: Optional model override. Falls back to HERMES_INFERENCE_MODEL
             env var, then config.yaml's model.default / model.model.
-        provider: Optional provider override. Falls back to
-            HERMES_INFERENCE_PROVIDER env var, then config.yaml's model.provider,
-            then "auto".
+        provider: Optional provider override. Falls back to config.yaml's
+            model.provider, then "auto".
+        toolsets: Optional comma-separated string or iterable of toolsets.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -65,6 +160,12 @@ def run_oneshot(
         )
         return 2
 
+    explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
+    if toolsets_error:
+        sys.stderr.write(toolsets_error)
+        return 2
+    use_config_toolsets = _normalize_toolsets(toolsets) is None
+
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -73,11 +174,17 @@ def run_oneshot(
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
-    devnull = open(os.devnull, "w")
+    devnull = open(os.devnull, "w", encoding="utf-8")
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(prompt, model=model, provider=provider)
+            response = _run_agent(
+                prompt,
+                model=model,
+                provider=provider,
+                toolsets=explicit_toolsets,
+                use_config_toolsets=use_config_toolsets,
+            )
     finally:
         try:
             devnull.close()
@@ -92,10 +199,28 @@ def run_oneshot(
     return 0
 
 
+def _create_session_db_for_oneshot():
+    """Best-effort SessionDB for ``hermes -z`` / oneshot mode.
+
+    Oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the SQLite
+    session store itself. Without this, the ``session_search``/recall tool is
+    advertised but every call returns "Session database not available.".
+    """
+    try:
+        from hermes_state import SessionDB
+
+        return SessionDB()
+    except Exception as exc:
+        logging.debug("SQLite session store not available for oneshot mode: %s", exc)
+        return None
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    toolsets: object = None,
+    use_config_toolsets: bool = True,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
@@ -128,32 +253,57 @@ def _run_agent(
     # the user's configured default provider, which may not host the model
     # the caller just asked for.
     effective_provider = (provider or "").strip() or None
+    explicit_base_url_from_alias: Optional[str] = None
     if effective_provider is None and (model or env_model):
         # Only auto-detect when the model was explicitly requested via arg or
         # env var (not when it came from config — that's the "use my defaults"
         # path and the configured provider is already correct).
         explicit_model = (model or "").strip() or env_model
         if explicit_model:
-            cfg_provider = ""
-            if isinstance(model_cfg, dict):
-                cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-            current_provider = (
-                cfg_provider
-                or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
-                or "auto"
-            )
-            detected = detect_provider_for_model(explicit_model, current_provider)
-            if detected:
-                effective_provider, effective_model = detected
+            # First check DIRECT_ALIASES populated from config.yaml `model_aliases:`.
+            # These map a user-defined alias to (model, provider, base_url) for
+            # endpoints not in any catalog (local servers, custom proxies, etc.).
+            try:
+                from hermes_cli import model_switch as _ms
+                _ms._ensure_direct_aliases()
+                direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
+            except Exception:
+                direct = None
+            if direct is not None:
+                effective_model = direct.model
+                effective_provider = direct.provider
+                if direct.base_url:
+                    explicit_base_url_from_alias = direct.base_url.rstrip("/")
+            else:
+                cfg_provider = ""
+                if isinstance(model_cfg, dict):
+                    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+                current_provider = (
+                    cfg_provider
+                    or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
+                    or "auto"
+                )
+                detected = detect_provider_for_model(explicit_model, current_provider)
+                if detected:
+                    effective_provider, effective_model = detected
 
     runtime = resolve_runtime_provider(
         requested=effective_provider,
         target_model=effective_model or None,
+        explicit_base_url=explicit_base_url_from_alias,
     )
 
-    # Pull in whatever toolsets the user has enabled for "cli".
-    # sorted() gives stable ordering; set→list for AIAgent's signature.
-    toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
+    # Pull in explicit toolsets when provided; otherwise use whatever the user
+    # has enabled for "cli". sorted() gives stable ordering for config-derived
+    # sets; explicit values preserve user order.
+    toolsets_list = _normalize_toolsets(toolsets)
+    if toolsets_list is None and use_config_toolsets:
+        toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
+
+    session_db = _create_session_db_for_oneshot()
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    _fb = get_fallback_chain(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),
@@ -164,7 +314,9 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
+        fallback_model=_fb or None,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

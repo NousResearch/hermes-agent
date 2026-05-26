@@ -1,9 +1,10 @@
-import type { ScrollBoxHandle } from '@hermes/ink'
+import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ImageAttachResponse } from '../gatewayTypes.js'
+import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 import type {
@@ -27,11 +28,23 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
+
+// Single source of truth for indicator style names.  Union type is
+// derived from this tuple so adding/removing a style only touches one
+// line — `useConfigSync` (validation) and `session.ts` (slash arg
+// validation + usage hint) both import it.
+export const INDICATOR_STYLES = ['ascii', 'emoji', 'kaomoji', 'unicode'] as const
+export type IndicatorStyle = (typeof INDICATOR_STYLES)[number]
+export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'kaomoji'
+
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
   clearSelection: () => void
   copySelection: () => Promise<string>
+  copySelectionNoClear: () => Promise<string>
   getState: () => unknown
+  version: () => number
   shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
   shiftSelection: (dRow: number, minRow: number, maxRow: number) => void
 }
@@ -85,15 +98,20 @@ export interface TranscriptRow {
 export interface UiState {
   bgTasks: Set<string>
   busy: boolean
+  busyInputMode: BusyInputMode
   compact: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   info: null | SessionInfo
   inlineDiffs: boolean
-  mouseTracking: boolean
+  mouseTracking: MouseTrackingMode
+  pasteCollapseLines: number
+  pasteCollapseChars: number
+
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
+  indicatorStyle: IndicatorStyle
   sid: null | string
   status: string
   statusBar: StatusBarMode
@@ -175,7 +193,7 @@ export interface InputHandlerActions {
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
-  newSession: (msg?: string) => void
+  newSession: (msg?: string, title?: string) => void
   sys: (text: string) => void
 }
 
@@ -196,10 +214,12 @@ export interface InputHandlerContext {
   }
   voice: {
     enabled: boolean
+    recordKey: ParsedVoiceRecordKey
     recording: boolean
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceTts: StateSetter<boolean>
   }
   wheelStep: number
 }
@@ -216,7 +236,7 @@ export interface GatewayEventHandlerContext {
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
-    newSession: (msg?: string) => void
+    newSession: (msg?: string, title?: string) => void
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
@@ -238,6 +258,7 @@ export interface GatewayEventHandlerContext {
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceTts: StateSetter<boolean>
   }
 }
 
@@ -256,12 +277,14 @@ export interface SlashHandlerContext {
     getHistoryItems: () => Msg[]
     getLastUserMsg: () => string
     maybeWarn: (value: unknown) => void
+    setCatalog: StateSetter<null | SlashCatalog>
   }
   session: {
     closeSession: (targetSid?: null | string) => Promise<unknown>
     die: () => void
+    dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
-    newSession: (msg?: string) => void
+    newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
     setSessionStartedAt: StateSetter<number>
@@ -277,6 +300,8 @@ export interface SlashHandlerContext {
   }
   voice: {
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceRecordKey: (v: ParsedVoiceRecordKey) => void
+    setVoiceTts: StateSetter<boolean>
   }
 }
 
@@ -304,6 +329,7 @@ export interface AppLayoutComposerProps {
   queuedDisplay: string[]
   submit: (value: string) => void
   updateInput: StateSetter<string>
+  voiceRecordKey: ParsedVoiceRecordKey
 }
 
 export interface AppLayoutProgressProps {
@@ -331,7 +357,7 @@ export interface AppLayoutTranscriptProps {
 export interface AppLayoutProps {
   actions: AppLayoutActions
   composer: AppLayoutComposerProps
-  mouseTracking: boolean
+  mouseTracking: MouseTrackingMode
   progress: AppLayoutProgressProps
   status: AppLayoutStatusProps
   transcript: AppLayoutTranscriptProps

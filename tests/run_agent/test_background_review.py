@@ -20,6 +20,9 @@ def _bare_agent() -> AIAgent:
     agent._memory_store = object()
     agent._memory_enabled = True
     agent._user_profile_enabled = False
+    agent._cached_system_prompt = "test-cached-system-prompt"
+    import datetime as _dt
+    agent.session_start = _dt.datetime(2026, 1, 1, 12, 0, 0)
     agent._MEMORY_REVIEW_PROMPT = "review memory"
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
@@ -126,4 +129,115 @@ def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
     assert observed["after_finally"] is None, (
         "Background review leaked its approval callback into the worker "
         "thread's TLS slot; a recycled thread-id could reuse it."
+    )
+
+
+def test_background_review_summary_is_attributed_to_self_improvement_loop(monkeypatch):
+    """The CLI/gateway emission must identify the self-improvement loop.
+
+    Users who miss the line in their terminal have no way to tell that the
+    background review was what modified their skill/memory stores. The
+    summary prefix ``💾 Self-improvement review: …`` makes the origin
+    explicit so both the CLI and gateway deliveries are unambiguous.
+    """
+    import json
+
+    captured_prints: list = []
+    captured_bg_callback: list = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            # Simulate a review that successfully updated memory so
+            # _summarize_background_review_actions returns a real action.
+            self._session_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_bg",
+                    "content": json.dumps(
+                        {"success": True, "message": "Entry added", "target": "memory"}
+                    ),
+                }
+            ]
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._safe_print = lambda *a, **kw: captured_prints.append(" ".join(str(x) for x in a))
+    agent.background_review_callback = lambda msg: captured_bg_callback.append(msg)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    # Exactly one summary should have been emitted, and it must identify
+    # the self-improvement review explicitly.
+    assert len(captured_prints) == 1, captured_prints
+    printed = captured_prints[0]
+    assert "Self-improvement review" in printed, printed
+    assert "Memory updated" in printed, printed
+
+    # Gateway path gets the same prefix.
+    assert len(captured_bg_callback) == 1
+    assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
+        captured_bg_callback[0]
+    )
+
+
+def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
+    """The background review fork must NOT touch external memory plugins.
+
+    Without skip_memory=True on the fork constructor, AIAgent.__init__
+    rebuilds its own _memory_manager from config, scoped to the parent's
+    session_id.  The review fork's run_conversation() then leaks the
+    harness prompt into the user's real memory namespace via three
+    ingestion sites: on_turn_start (cadence + turn message),
+    prefetch_all (recall query), and sync_all (harness prompt + review
+    output recorded as a (user, assistant) turn pair).  The fix is a
+    single kwarg on the fork constructor — this test guards it.
+    """
+    captured_kwargs: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert captured_kwargs.get("skip_memory") is True, (
+        "Background review fork must be constructed with skip_memory=True "
+        "so AIAgent.__init__ does not rebuild a _memory_manager wired to "
+        "external plugins (honcho, mem0, supermemory, ...).  Without this "
+        "the fork leaks harness prompts into the user's real memory "
+        "namespace via on_turn_start / prefetch_all / sync_all."
     )

@@ -44,7 +44,7 @@ def test_opencode_go_appears_when_api_key_set():
     # opencode-go can appear as "built-in" (from PROVIDER_TO_MODELS_DEV when
     # models.dev is reachable) or "hermes" (from HERMES_OVERLAYS fallback when
     # the API is unavailable, e.g. in CI).
-    assert opencode_go["source"] in ("built-in", "hermes")
+    assert opencode_go["source"] in {"built-in", "hermes"}
 
 
 def test_opencode_go_not_appears_when_no_creds():

@@ -4,7 +4,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -119,6 +119,87 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual(todos)
   })
 
+  it('prints compaction progress status into the transcript', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'compressing', text: 'compressing 968 messages (~123,400 tok)…' },
+      type: 'status.update'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+  })
+
+  it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    const verdict = '✓ Goal achieved: long judge reason goes only in transcript, not merged with cwd label.'
+
+    vi.useFakeTimers()
+
+    try {
+      onEvent({
+        payload: { kind: 'goal', text: verdict },
+        type: 'status.update'
+      } as any)
+
+      expect(ctx.system.sys).toHaveBeenCalledWith(verdict)
+      expect(getUiState().status).toBe('✓ goal complete')
+
+      vi.advanceTimersByTime(6001)
+      expect(getUiState().status).toBe('ready')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('maps goal status.update prefixes to short status strings', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'goal', text: '↻ Continuing toward goal (1/10): reason' },
+      type: 'status.update'
+    } as any)
+    expect(getUiState().status).toBe('↻ goal continuing')
+
+    onEvent({
+      payload: { kind: 'goal', text: '⏸ Goal paused — budget exhausted.' },
+      type: 'status.update'
+    } as any)
+    expect(getUiState().status).toBe('⏸ goal paused')
+  })
+
+  it('surfaces self-improvement review summaries as a persistent system line', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { text: "💾 Self-improvement review: Skill 'hermes-release' patched" },
+      type: 'review.summary'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith(
+      "💾 Self-improvement review: Skill 'hermes-release' patched"
+    )
+  })
+
+  it('ignores review.summary events with empty or missing text', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: '' }, type: 'review.summary' } as any)
+    onEvent({ payload: { text: '   ' }, type: 'review.summary' } as any)
+    onEvent({ payload: undefined, type: 'review.summary' } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+  })
+
   it('clears the visible todo list when the todo tool returns an empty list', () => {
     const appended: Msg[] = []
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
@@ -223,14 +304,40 @@ describe('createGatewayEventHandler', () => {
     vi.useFakeTimers()
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    createGatewayEventHandler(buildCtx(appended))({ payload: { text: streamed }, type: 'thinking.delta' } as any)
-    vi.runOnlyPendingTimers()
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: streamed }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
 
-    expect(getTurnState().reasoning).toBe(streamed)
-    expect(getTurnState().reasoningActive).toBe(true)
-    expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
-    vi.useRealTimers()
+      expect(getTurnState().reasoning).toBe(streamed)
+      expect(getTurnState().reasoningActive).toBe(true)
+      expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores late thinking.delta after the turn has already completed', () => {
+    vi.useFakeTimers()
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+      expect(getUiState().busy).toBe(false)
+      expect(getUiState().status).toBe('ready')
+
+      onEvent({ payload: { text: 'thinking...' }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(getUiState().status).toBe('ready')
+      expect(getTurnState().reasoning).toBe('')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('preserves streamed reasoning as one completed thinking panel after segment flushes', () => {
@@ -262,6 +369,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('shows verbose reasoning even when normal reasoning display is off', () => {
+    vi.useFakeTimers()
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const streamed = 'verbose-only reasoning'
+
+    try {
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: { text: streamed, verbose: true }, type: 'reasoning.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(turnController.reasoningText).toBe(streamed)
+      expect(getTurnState().reasoning).toBe(streamed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ignores fallback reasoning.available when streamed reasoning already exists', () => {
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'
@@ -291,6 +417,82 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.thinking).toBe(fromServer)
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(fromServer))
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
+  })
+
+  it('renders browser.progress events as system transcript lines as they stream in', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const handler = createGatewayEventHandler(ctx)
+
+    handler({
+      payload: { message: 'Chromium-family browser launched and listening on port 9222' },
+      type: 'browser.progress'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('Chromium-family browser launched and listening on port 9222')
+  })
+
+  it('annotates gateway.start_timeout with stderr tail lines so users can diagnose without /logs', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        cwd: '/repo',
+        python: '/opt/venv/bin/python',
+        stderr_tail:
+          '[startup] timed out\nModuleNotFoundError: No module named openai\nFileNotFoundError: ~/.hermes/config.yaml'
+      },
+      type: 'gateway.start_timeout'
+    } as any)
+
+    const messages = getTurnState().activity.map(a => a.text)
+
+    expect(messages.some(m => m.includes('gateway startup timed out'))).toBe(true)
+    expect(messages.some(m => m.includes('ModuleNotFoundError'))).toBe(true)
+    expect(messages.some(m => m.includes('FileNotFoundError'))).toBe(true)
+  })
+
+  it('prefers raw text over Rich-rendered ANSI on message.complete (#16391)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const raw = 'Hermes here.\n\nLine two.'
+    // Rich-rendered ANSI (`final_response_markdown: render`) used to win,
+    // which left visible escape codes in Ink output. Raw text must win.
+    const rendered = '\u001b[33mHermes here.\u001b[0m\n\n\u001b[2mLine two.\u001b[0m'
+
+    onEvent({ payload: { rendered, text: raw }, type: 'message.complete' } as any)
+
+    const assistant = appended.find(msg => msg.role === 'assistant')
+    expect(assistant?.text).toBe(raw)
+    expect(assistant?.text).not.toContain('\u001b[')
+  })
+
+  it('falls back to payload.rendered when text is missing on message.complete', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const rendered = 'fallback when gateway omitted text'
+
+    onEvent({ payload: { rendered }, type: 'message.complete' } as any)
+
+    const assistant = appended.find(msg => msg.role === 'assistant')
+    expect(assistant?.text).toBe(rendered)
+  })
+
+  it('always accumulates raw text in message.delta and ignores `rendered` (#16391)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // Stream of partial text deltas; each delta carries an incremental
+    // Rich-ANSI fragment.  Pre-fix code would replace the whole bufRef
+    // with the latest fragment, dropping prior text.
+    onEvent({ payload: { rendered: '\u001b[33mFi\u001b[0m', text: 'Fi' }, type: 'message.delta' } as any)
+    onEvent({ payload: { rendered: '\u001b[33mrst.\u001b[0m', text: 'rst.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { text: ' second.' }, type: 'message.delta' } as any)
+    onEvent({ payload: {}, type: 'message.complete' } as any)
+
+    const assistant = appended.find(msg => msg.role === 'assistant')
+    expect(assistant?.text).toBe('First. second.')
   })
 
   it('anchors inline_diff as its own segment where the edit happened', () => {
@@ -327,6 +529,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]?.tools?.[0]).toContain('Patch')
     expect(appended[3]?.text).toBe('patch applied')
     expect(appended[3]?.text).not.toContain('```diff')
+  })
+
+  it('keeps verbose result text on inline_diff tool completions', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { args_text: '{ "path": "foo.ts" }', context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { inline_diff: diff, result_text: 'patched result', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+
+    expect(turnController.segmentMessages[0]).toMatchObject({ kind: 'diff' })
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Args:\n{ "path": "foo.ts" }')
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Result:\npatched result')
   })
 
   it('keeps full final responses from duplicating flushed pre-diff narration', () => {
@@ -437,6 +658,152 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_auto_resume_recent: false } } }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_auto_resume_recent: true } } }
+      }
+
+      if (method === 'session.most_recent') {
+        return { session_id: 'sess-most-recent' }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-most-recent'))
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with auto_resume on but no eligible session, falls back to new', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_auto_resume_recent: true } } }
+      }
+
+      if (method === 'session.most_recent') {
+        return { session_id: null }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready when config.get rejects, falls back to new session', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        throw new Error('gateway timeout')
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready when session.most_recent rejects, falls back to new session', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_auto_resume_recent: true } } }
+      }
+
+      if (method === 'session.most_recent') {
+        throw new Error('db locked')
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with STARTUP_RESUME_ID set, the env wins over config auto_resume', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = 'env-explicit'
+    ctx.gateway.rpc = vi.fn(async () => ({
+      config: { display: { tui_auto_resume_recent: true } }
+    }))
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('env-explicit'))
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
   it('keeps gateway noise informational and approval out of Activity', async () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
@@ -473,5 +840,141 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { message: 'boom' }, type: 'error' } as any)
 
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
+  })
+
+  it('accepts timeout/error subagent terminal statuses and ignores stale live events', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'timeout child', status: 'timeout', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+
+    // Late start/spawn updates must not clobber terminal timeout/error states.
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'timeout child', subagent_id: 'sa-timeout', task_index: 0 },
+      type: 'subagent.spawn_requested'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-timeout')?.status).toBe('timeout')
+
+    onEvent({
+      payload: { goal: 'error child', subagent_id: 'sa-error', task_index: 1 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'error child', status: 'error', subagent_id: 'sa-error', task_index: 1 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-error')?.status).toBe('error')
+  })
+
+  it('normalizes unknown subagent.complete statuses to completed', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { goal: 'weird child', subagent_id: 'sa-weird', task_index: 2 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'weird child', status: 'mystery_status', subagent_id: 'sa-weird', task_index: 2 },
+      type: 'subagent.complete'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
+  })
+
+  it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {
+    // Repro for the discord report: ctrl-c interrupts, but late reasoning/tool
+    // events from the still-winding-down agent loop kept populating the UI for
+    // ~1s, making it look like the interrupt had been ignored.
+    //
+    // Fake timers because `interruptTurn` schedules a real setTimeout for
+    // its cooldown — without flushing it inside this test, the timeout
+    // can fire later and mutate uiStore/turnState during unrelated tests
+    // (cross-file flake).
+    vi.useFakeTimers()
+
+    try {
+      const appended: Msg[] = []
+      const ctx = buildCtx(appended)
+      ctx.gateway.gw.request = vi.fn(async () => ({ status: 'interrupted' }))
+      const onEvent = createGatewayEventHandler(ctx)
+
+      patchUiState({ sid: 'sess-1' })
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({
+        payload: {
+          context: 'pre',
+          name: 'search',
+          todos: [{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }],
+          tool_id: 't-1'
+        },
+        type: 'tool.start'
+      } as any)
+
+      // Pre-interrupt todos should land in turn state.
+      expect(getTurnState().todos).toEqual([{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }])
+
+      turnController.interruptTurn({
+        appendMessage: (msg: Msg) => appended.push(msg),
+        gw: ctx.gateway.gw,
+        sid: 'sess-1',
+        sys: ctx.system.sys
+      })
+
+      onEvent({ payload: { text: 'still thinking…' }, type: 'reasoning.delta' } as any)
+      // Post-interrupt tool.start with a todos payload — must NOT mutate todos.
+      onEvent({
+        payload: {
+          context: 'post',
+          name: 'browser',
+          todos: [{ content: 'late ghost', id: 'todo-ghost', status: 'pending' }],
+          tool_id: 't-2'
+        },
+        type: 'tool.start'
+      } as any)
+      // Late tool.generating must NOT push a 'drafting …' line into the trail.
+      const trailBefore = getTurnState().turnTrail.length
+      onEvent({ payload: { name: 'browser' }, type: 'tool.generating' } as any)
+      expect(getTurnState().turnTrail.length).toBe(trailBefore)
+      onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
+      onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
+      onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
+
+      expect(getTurnState().tools).toEqual([])
+      expect(turnController.reasoningText).toBe('')
+      expect(turnController.bufRef).toBe('')
+      expect(getTurnState().streamPendingTools).toEqual([])
+      expect(getTurnState().streamSegments).toEqual([])
+      // Stale post-interrupt todos must not have leaked through.
+      // (This test does not assert that pre-interrupt todos are cleared —
+      // current interrupt path leaves them visible until the next message.)
+      expect(getTurnState().todos.find(t => t.content === 'late ghost')).toBeUndefined()
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'fresh' }, type: 'reasoning.delta' } as any)
+
+      expect(turnController.reasoningText).toBe('fresh')
+    } finally {
+      // Drain pending fake timers BEFORE restoring real timers so a mid-
+      // test assertion failure can't leak the interrupt-cooldown setTimeout
+      // across test files (the original Copilot concern).
+      vi.runAllTimers()
+      vi.useRealTimers()
+    }
   })
 })

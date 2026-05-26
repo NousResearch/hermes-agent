@@ -23,6 +23,7 @@ from rich.table import Table
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
 
@@ -178,9 +179,12 @@ def _existing_categories() -> List[str]:
             # top level (no category); otherwise treat as a category bucket.
             if (entry / "SKILL.md").exists():
                 continue
-            # Has at least one nested SKILL.md?
+            # Has at least one nested SKILL.md (excluding dependency/cache dirs)?
             try:
-                if any(entry.rglob("SKILL.md")):
+                if any(
+                    not is_excluded_skill_path(p)
+                    for p in entry.rglob("SKILL.md")
+                ):
                     out.append(entry.name)
             except OSError:
                 continue
@@ -303,7 +307,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     _PER_SOURCE_LIMIT = {
         "official": 200, "skills-sh": 200, "well-known": 50,
         "github": 200, "clawhub": 500, "claude-marketplace": 100,
-        "lobehub": 500,
+        "lobehub": 500, "browse-sh": 500,
     }
 
     with c.status("[bold]Fetching skills from registries..."):
@@ -319,12 +323,14 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
 
-    # Deduplicate by name, preferring higher trust
+    # Deduplicate by identifier, preferring higher trust.
+    # identifier is always unique per skill; name is not (browse-sh skills from different
+    # sites can share the same task name, e.g. "search-listings" on Airbnb and Booking.com).
     seen: dict = {}
     for r in all_results:
         rank = _TRUST_RANK.get(r.trust_level, 0)
-        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
-            seen[r.name] = r
+        if r.identifier not in seen or rank > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
+            seen[r.identifier] = r
     deduped = list(seen.values())
 
     # Sort: official first, then by trust level (desc), then alphabetically
@@ -544,7 +550,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    if bundle.source == "official":
+        scan_source = "official"
+    else:
+        scan_source = (
+            getattr(bundle, "identifier", "")
+            or getattr(meta, "identifier", "")
+            or identifier
+        )
     result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 
@@ -593,7 +606,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             answer = input("Confirm [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
-        if answer not in ("y", "yes"):
+        if answer not in {"y", "yes"}:
             c.print("[dim]Installation cancelled.[/]\n")
             shutil.rmtree(q_path, ignore_errors=True)
             return
@@ -684,7 +697,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     page_size = max(1, min(page_size, 100))
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
     _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
-                         "claude-marketplace": 50, "lobehub": 50}
+                         "claude-marketplace": 50, "lobehub": 50, "browse-sh": 500}
     auth = GitHubAuth()
     sources = create_source_router(auth)
     all_results: list = []
@@ -702,8 +715,8 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     seen: dict = {}
     for r in all_results:
         rank = _TRUST_RANK.get(r.trust_level, 0)
-        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
-            seen[r.name] = r
+        if r.identifier not in seen or rank > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
+            seen[r.identifier] = r
     deduped = list(seen.values())
     deduped.sort(key=lambda r: (-_TRUST_RANK.get(r.trust_level, 0), r.source != "official", r.name.lower()))
     total = len(deduped)
@@ -900,8 +913,14 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
 
-def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Re-run security scan on installed hub skills."""
+def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
+             deep: bool = False) -> None:
+    """Re-run security scan on installed hub skills.
+
+    When ``deep=True``, also runs an opt-in AST-level diagnostic on Python
+    files (review aid only — not a security gate; skills_guard.py verdicts
+    are unchanged).
+    """
     from tools.skills_hub import HubLockFile, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
 
@@ -922,6 +941,9 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
 
+    if deep:
+        from tools.skills_ast_audit import ast_scan_path, format_ast_report
+
     for entry in targets:
         skill_path = SKILLS_DIR / entry["install_path"]
         if not skill_path.exists():
@@ -930,6 +952,10 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
         c.print(format_scan_report(result))
+
+        if deep:
+            c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
+
         c.print()
 
 
@@ -948,7 +974,7 @@ def do_uninstall(name: str, console: Optional[Console] = None,
             answer = input("Confirm [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
-        if answer not in ("y", "yes"):
+        if answer not in {"y", "yes"}:
             c.print("[dim]Cancelled.[/]\n")
             return
 
@@ -984,7 +1010,7 @@ def do_reset(name: str, restore: bool = False,
             answer = input("Confirm [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
-        if answer not in ("y", "yes"):
+        if answer not in {"y", "yes"}:
             c.print("[dim]Cancelled.[/]\n")
             return
 
@@ -1138,7 +1164,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
             f"https://api.github.com/repos/{target_repo}/forks",
             headers=headers, timeout=30,
         )
-        if resp.status_code in (200, 202):
+        if resp.status_code in {200, 202}:
             fork = resp.json()
             fork_repo = fork["full_name"]
         elif resp.status_code == 403:
@@ -1257,7 +1283,7 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
         sys.stdout.write(payload)
     else:
         out = Path(output_path)
-        out.write_text(payload)
+        out.write_text(payload, encoding="utf-8")
         c.print(f"[bold green]Snapshot exported:[/] {out}")
         c.print(f"[dim]{len(installed)} skill(s), {len(tap_list)} tap(s)[/]\n")
 
@@ -1274,7 +1300,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
         return
 
     try:
-        snapshot = json.loads(inp.read_text())
+        snapshot = json.loads(inp.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         c.print(f"[bold red]Error:[/] Invalid JSON in {inp}\n")
         return
@@ -1337,7 +1363,8 @@ def skills_command(args) -> None:
     elif action == "update":
         do_update(name=getattr(args, "name", None))
     elif action == "audit":
-        do_audit(name=getattr(args, "name", None))
+        do_audit(name=getattr(args, "name", None),
+                 deep=getattr(args, "deep", False))
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1389,6 +1416,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills update
         /skills audit
         /skills audit my-skill
+        /skills audit --deep
+        /skills audit my-skill --deep
         /skills uninstall my-skill
         /skills tap list
         /skills tap add owner/repo
@@ -1503,8 +1532,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_update(name=name, console=c)
 
     elif action == "audit":
-        name = args[0] if args else None
-        do_audit(name=name, console=c)
+        name = args[0] if args and not args[0].startswith("--") else None
+        deep = "--deep" in args
+        do_audit(name=name, console=c, deep=deep)
 
     elif action == "uninstall":
         if not args:
@@ -1564,7 +1594,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         repo = args[1] if len(args) > 1 else ""
         do_tap(tap_action, repo=repo, console=c)
 
-    elif action in ("help", "--help", "-h"):
+    elif action in {"help", "--help", "-h"}:
         _print_skills_help(c)
 
     else:

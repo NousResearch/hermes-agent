@@ -1,10 +1,10 @@
 """Tests for gateway session management."""
-
 import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
     SessionStore,
@@ -12,8 +12,12 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,
 )
+
+# Legacy name preserved for these tests; product renamed the function to
+# canonical_whatsapp_identifier.  Keep the tests referencing the old name
+# working without duplicating the suite.
+normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
 class TestSessionSourceRoundtrip:
@@ -85,8 +89,13 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
-    def test_invalid_platform_raises(self):
-        with pytest.raises((ValueError, KeyError)):
+    def test_unknown_platform_rejected_for_bad_names(self):
+        """Arbitrary platform names are rejected (no accidental enum pollution).
+
+        Only bundled platform plugins (discovered under ``plugins/platforms/``)
+        and runtime-registered plugins get dynamic enum members.
+        """
+        with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 
@@ -421,20 +430,90 @@ class TestBuildSessionContextPrompt:
         assert "Multi-user thread" not in prompt
 
 
-class TestSessionStoreRewriteTranscript:
-    """Regression: /retry and /undo must persist truncated history to disk."""
+class TestSenderPrefixWithBackfill:
+    """Regression: sender prefix must not wrap the backfill context block.
+
+    Tests exercise the real GatewayRunner._prepare_inbound_message_text()
+    method to ensure the [sender_name] prefix applies only to the trigger
+    message, not the channel_context backfill block.
+    """
 
     @pytest.fixture()
-    def store(self, tmp_path):
+    def runner(self):
+        from gateway.run import GatewayRunner
+
+        r = GatewayRunner.__new__(GatewayRunner)
+        r.config = GatewayConfig(group_sessions_per_user=False)
+        r.adapters = {}
+        r._model = "test-model"
+        r._base_url = ""
+        r._has_setup_skill = lambda: False
+        return r
+
+    @pytest.fixture()
+    def source(self):
+        return SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="group",
+            user_name="Alice",
+        )
+
+    @pytest.mark.asyncio
+    async def test_plain_message_gets_prefix(self, runner, source):
+        """Normal message without backfill gets [sender] prefix."""
+        event = MessageEvent(text="hello world", source=source)
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result == "[Alice] hello world"
+
+    @pytest.mark.asyncio
+    async def test_backfill_prefix_only_on_trigger(self, runner, source):
+        """Backfill context must NOT get the sender prefix."""
+        event = MessageEvent(
+            text="hello world",
+            source=source,
+            channel_context="[Recent channel messages]\n[Bob] some context",
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith("[Recent channel messages]")
+        assert "[Alice] [Recent channel messages]" not in result
+        assert "[New message]\n[Alice] hello world" in result
+
+    @pytest.mark.asyncio
+    async def test_backfill_preserves_context_block(self, runner, source):
+        """The backfill block should pass through unchanged — no double-prefixing."""
+        context = "[Recent channel messages]\n[Bob] first\n[Charlie [bot]] second"
+        event = MessageEvent(
+            text="hey everyone", source=source, channel_context=context,
+        )
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result.startswith(context)
+        assert "[Alice] hey everyone" in result
+        assert "[Alice] [Bob]" not in result
+        assert "[Alice] [Charlie" not in result
+        assert "[Alice] [Recent" not in result
+
+
+class TestSessionStoreRewriteTranscript:
+    """Regression: /retry and /undo must persist truncated history to DB."""
+
+    @pytest.fixture()
+    def store(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None  # no SQLite for these tests
-        s._loaded = True
+        s = SessionStore(sessions_dir=tmp_path, config=config)
         return s
 
-    def test_rewrite_replaces_jsonl(self, store, tmp_path):
+    def test_rewrite_replaces_transcript(self, store, tmp_path):
         session_id = "test_session_1"
+        store._db.create_session(session_id=session_id, source="test")
         # Write initial transcript
         for msg in [
             {"role": "user", "content": "hello"},
@@ -457,6 +536,7 @@ class TestSessionStoreRewriteTranscript:
 
     def test_rewrite_with_empty_list(self, store):
         session_id = "test_session_2"
+        store._db.create_session(session_id=session_id, source="test")
         store.append_to_transcript(session_id, {"role": "user", "content": "hi"})
 
         store.rewrite_transcript(session_id, [])
@@ -465,148 +545,31 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
-class TestLoadTranscriptCorruptLines:
-    """Regression: corrupt JSONL lines (e.g. from mid-write crash) must be
-    skipped instead of crashing the entire transcript load.  GH-1193."""
+class TestLoadTranscriptDBOnly:
+    """After spec 002, load_transcript reads only from state.db."""
 
-    @pytest.fixture()
-    def store(self, tmp_path):
+    def test_db_only_returns_empty_for_nonexistent(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
         config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None
-        s._loaded = True
-        return s
-
-    def test_corrupt_line_skipped(self, store, tmp_path):
-        session_id = "corrupt_test"
-        transcript_path = store.get_transcript_path(session_id)
-        transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(transcript_path, "w") as f:
-            f.write('{"role": "user", "content": "hello"}\n')
-            f.write('{"role": "assistant", "content": "hi th')  # truncated
-            f.write("\n")
-            f.write('{"role": "user", "content": "goodbye"}\n')
-
-        messages = store.load_transcript(session_id)
-        assert len(messages) == 2
-        assert messages[0]["content"] == "hello"
-        assert messages[1]["content"] == "goodbye"
-
-    def test_all_lines_corrupt_returns_empty(self, store, tmp_path):
-        session_id = "all_corrupt"
-        transcript_path = store.get_transcript_path(session_id)
-        transcript_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(transcript_path, "w") as f:
-            f.write("not json at all\n")
-            f.write("{truncated\n")
-
-        messages = store.load_transcript(session_id)
-        assert messages == []
-
-    def test_valid_transcript_unaffected(self, store, tmp_path):
-        session_id = "valid_test"
-        store.append_to_transcript(session_id, {"role": "user", "content": "a"})
-        store.append_to_transcript(session_id, {"role": "assistant", "content": "b"})
-
-        messages = store.load_transcript(session_id)
-        assert len(messages) == 2
-        assert messages[0]["content"] == "a"
-        assert messages[1]["content"] == "b"
-
-
-class TestLoadTranscriptPreferLongerSource:
-    """Regression: load_transcript must return whichever source (SQLite or JSONL)
-    has more messages to prevent silent truncation.  GH-3212."""
-
-    @pytest.fixture()
-    def store_with_db(self, tmp_path):
-        """SessionStore with both SQLite and JSONL active."""
-        from hermes_state import SessionDB
-
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = SessionDB(db_path=tmp_path / "state.db")
-        s._loaded = True
-        return s
-
-    def test_jsonl_longer_than_sqlite_returns_jsonl(self, store_with_db):
-        """Legacy session: JSONL has full history, SQLite has only recent turn."""
-        sid = "legacy_session"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # JSONL has 10 messages (legacy history — written before SQLite existed)
-        for i in range(10):
-            role = "user" if i % 2 == 0 else "assistant"
-            store_with_db.append_to_transcript(
-                sid, {"role": role, "content": f"msg-{i}"}, skip_db=True,
-            )
-        # SQLite has only 2 messages (recent turn after migration)
-        store_with_db._db.append_message(session_id=sid, role="user", content="new-q")
-        store_with_db._db.append_message(session_id=sid, role="assistant", content="new-a")
-
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 10
-        assert result[0]["content"] == "msg-0"
-
-    def test_sqlite_longer_than_jsonl_returns_sqlite(self, store_with_db):
-        """Fully migrated session: SQLite has more (JSONL stopped growing)."""
-        sid = "migrated_session"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # JSONL has 2 old messages
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "old-q"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "old-a"}, skip_db=True,
-        )
-        # SQLite has 4 messages (superset after migration)
-        for i in range(4):
-            role = "user" if i % 2 == 0 else "assistant"
-            store_with_db._db.append_message(session_id=sid, role=role, content=f"db-{i}")
-
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 4
-        assert result[0]["content"] == "db-0"
-
-    def test_sqlite_empty_falls_back_to_jsonl(self, store_with_db):
-        """No SQLite rows — falls back to JSONL (original behavior preserved)."""
-        sid = "no_db_rows"
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "hello"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "hi"}, skip_db=True,
-        )
-
-        result = store_with_db.load_transcript(sid)
-        assert len(result) == 2
-        assert result[0]["content"] == "hello"
-
-    def test_both_empty_returns_empty(self, store_with_db):
-        """Neither source has data — returns empty list."""
-        result = store_with_db.load_transcript("nonexistent")
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        result = store.load_transcript("nonexistent")
         assert result == []
 
-    def test_equal_length_prefers_sqlite(self, store_with_db):
-        """When both have same count, SQLite wins (has richer fields like reasoning)."""
-        sid = "equal_session"
-        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # Write 2 messages to JSONL only
-        store_with_db.append_to_transcript(
-            sid, {"role": "user", "content": "jsonl-q"}, skip_db=True,
-        )
-        store_with_db.append_to_transcript(
-            sid, {"role": "assistant", "content": "jsonl-a"}, skip_db=True,
-        )
-        # Write 2 different messages to SQLite only
-        store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
-        store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
+    def test_db_only_returns_messages(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        sid = "db_only_session"
+        store._db.create_session(session_id=sid, source="gateway", model="m")
+        store._db.append_message(session_id=sid, role="user", content="db-q")
+        store._db.append_message(session_id=sid, role="assistant", content="db-a")
 
-        result = store_with_db.load_transcript(sid)
+        result = store.load_transcript(sid)
         assert len(result) == 2
-        # Should be the SQLite version (equal count → prefers SQLite)
         assert result[0]["content"] == "db-q"
+        assert result[1]["content"] == "db-a"
 
 
 class TestSessionStoreSwitchSession:
@@ -1233,3 +1196,45 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+    def test_db_rewrite_is_atomic_on_insert_failure(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "atomic-rewrite-test"
+        db.create_session(session_id=session_id, source="cli")
+        db.append_message(session_id=session_id, role="user", content="before user")
+        db.append_message(session_id=session_id, role="assistant", content="before assistant")
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        # Force the second insert inside replace_messages to fail, simulating
+        # any storage-layer error that might abort a multi-row rewrite.
+        real_encode = SessionDB._encode_content
+        calls = {"n": 0}
+
+        def flaky_encode(cls, content):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated storage failure")
+            return real_encode.__func__(cls, content)
+
+        monkeypatch.setattr(SessionDB, "_encode_content", classmethod(flaky_encode))
+
+        replacement = [
+            {"role": "user", "content": "after user"},
+            {"role": "assistant", "content": "after assistant"},
+        ]
+
+        store.rewrite_transcript(session_id, replacement)
+
+        # The rewrite must roll back atomically — original messages preserved.
+        after = db.get_messages_as_conversation(session_id)
+        assert [msg["content"] for msg in after] == [
+            "before user",
+            "before assistant",
+        ]

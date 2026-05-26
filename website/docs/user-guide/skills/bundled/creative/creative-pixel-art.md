@@ -1,14 +1,14 @@
 ---
-title: "Pixel Art — Convert images into retro pixel art with hardware-accurate palettes (NES, Game Boy, PICO-8, C64, etc"
+title: "Pixel Art — Pixel art w/ era palettes (NES, Game Boy, PICO-8)"
 sidebar_label: "Pixel Art"
-description: "Convert images into retro pixel art with hardware-accurate palettes (NES, Game Boy, PICO-8, C64, etc"
+description: "Pixel art w/ era palettes (NES, Game Boy, PICO-8)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Pixel Art
 
-Convert images into retro pixel art with hardware-accurate palettes (NES, Game Boy, PICO-8, C64, etc.), and animate them into short videos. Presets cover arcade, SNES, and 10+ era-correct looks. Use `clarify` to let the user pick a style before generating.
+Pixel art w/ era palettes (NES, Game Boy, PICO-8).
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Convert images into retro pixel art with hardware-accurate palettes (NES, Game B
 | Version | `2.0.0` |
 | Author | dodo-reach |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `creative`, `pixel-art`, `arcade`, `snes`, `nes`, `gameboy`, `retro`, `image`, `video` |
 
 ## Reference: full SKILL.md

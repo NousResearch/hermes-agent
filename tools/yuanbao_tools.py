@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,6 @@ def _get_active_adapter():
         return get_active_adapter()
     except ImportError:
         return None
-
-
-if TYPE_CHECKING:
-    from gateway.platforms.yuanbao import YuanbaoAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +122,7 @@ async def query_group_members(
         hint = {"mention_hint": MENTION_HINT} if mention else {}
 
         if action == "list_bots":
-            bots = [m for m in all_members if m["role"] in ("yuanbao_ai", "bot")]
+            bots = [m for m in all_members if m["role"] in {"yuanbao_ai", "bot"}]
             if not bots:
                 return {"success": False, "error": "No bots found in this group."}
             return {
@@ -418,7 +414,7 @@ async def send_dm(
 # Registry registration
 # ---------------------------------------------------------------------------
 
-from tools.registry import registry, tool_result, tool_error  # noqa: E402
+from tools.registry import registry, tool_result  # noqa: E402
 
 
 def _check_yuanbao():
@@ -476,6 +472,7 @@ async def _handle_yb_send_dm(args, **kw):
     embedded_media, message = BasePlatformAdapter.extract_media(message)
     if embedded_media:
         media_files.extend(embedded_media)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     return tool_result(await send_dm(
         group_code=group_code,        name=args.get("name", ""),

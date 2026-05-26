@@ -108,7 +108,7 @@ async def test_finalize_before_reset(mock_invoke_hook):
     await runner._handle_reset_command(_make_event("/new"))
 
     calls = [c for c in mock_invoke_hook.call_args_list
-             if c[0][0] in ("on_session_finalize", "on_session_reset")]
+             if c[0][0] in {"on_session_finalize", "on_session_reset"}]
     hook_names = [c[0][0] for c in calls]
     assert hook_names == ["on_session_finalize", "on_session_reset"]
 

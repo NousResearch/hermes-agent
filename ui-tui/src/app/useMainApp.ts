@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
-import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -16,7 +16,9 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
+import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -52,7 +54,7 @@ const capHistory = (items: Msg[]): Msg[] => {
   return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))] : items.slice(-MAX_HISTORY)
 }
 
-const statusColorOf = (status: string, t: { dim: string; error: string; ok: string; warn: string }) => {
+const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
     return t.ok
   }
@@ -65,7 +67,7 @@ const statusColorOf = (status: string, t: { dim: string; error: string; ok: stri
     return t.warn
   }
 
-  return t.dim
+  return t.muted
 }
 
 export function useMainApp(gw: GatewayClient) {
@@ -100,8 +102,10 @@ export function useMainApp(gw: GatewayClient) {
   const [stickyPrompt, setStickyPrompt] = useState('')
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)
   const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [voiceTts, setVoiceTts] = useState(false)
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
+  const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
@@ -143,10 +147,46 @@ export function useMainApp(gw: GatewayClient) {
 
   const hasSelection = useHasSelection()
   const selection = useSelection()
+  const lastCopiedVersionRef = useRef(-1)
 
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
+
+  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
+  // mouse tracking, so the only reliable native-feeling path is iTerm-style
+  // copy-on-select: once a drag creates a stable TUI selection, write it to
+  // the system clipboard while keeping the highlight visible.
+  //
+  // Subscribe directly via the ink selection bus (not useSyncExternalStore)
+  // so React doesn't re-render MainApp on every drag-move tick. The version
+  // ref de-dupes against re-entrant notifications.
+  useEffect(() => {
+    if (!isMac) {
+      return
+    }
+
+    return selection.subscribe(() => {
+      if (!selection.hasSelection()) {
+        return
+      }
+
+      const state = selection.getState() as { isDragging?: boolean } | null
+
+      if (state?.isDragging) {
+        return
+      }
+
+      const version = selection.version()
+
+      if (version === lastCopiedVersionRef.current) {
+        return
+      }
+
+      lastCopiedVersionRef.current = version
+      void selection.copySelectionNoClear()
+    })
+  }, [selection])
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()
@@ -194,9 +234,15 @@ export function useMainApp(gw: GatewayClient) {
     return next
   }, [])
 
+  // Wrapped row heights are width-dependent. Cached layout outlives a resize
+  // and lands sticky-scroll at the stale max, cutting off the tail. The
+  // hook's "scale heights by oldCols/newCols" path is too approximate for
+  // mixed markdown — we deliberately remount every row so yoga re-measures
+  // off live geometry. Cost: per-row local state (e.g. systemOpen toggles)
+  // resets on resize; small UX hit for a hard correctness win.
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: messageId(msg), msg })),
-    [historyItems, messageId]
+    () => historyItems.map((msg, index) => ({ index, key: `${messageId(msg)}:c${cols}`, msg })),
+    [cols, historyItems, messageId]
   )
 
   const detailsLayoutKey = useMemo(() => {
@@ -206,8 +252,12 @@ export function useMainApp(gw: GatewayClient) {
     return `${thinking}:${tools}`
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
-  const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
+  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
+  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+  const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
+  const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
   const heightCache = useMemo(() => {
     let cache = heightCachesRef.current.get(heightCacheKey)
@@ -224,14 +274,31 @@ export function useMainApp(gw: GatewayClient) {
     return cache
   }, [heightCacheKey])
 
+  // Index of the first user-role message — separator-rendering in
+  // appLayout.tsx skips this row, so the height estimator must skip it
+  // too. -1 when no user message exists yet (no row will gate true).
+  const firstUserIdx = useMemo(() => virtualRows.findIndex(r => r.msg.role === 'user'), [virtualRows])
+
   const estimateRowHeight = useCallback(
     (index: number) =>
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
-        limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
+        thinkingVisible: thinkingDetailsVisible,
+        toolsVisible: toolsDetailsVisible,
+        userPrompt: ui.theme.brand.prompt,
+        withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
-    [cols, detailsVisible, ui.compact, virtualRows]
+    [
+      cols,
+      detailsVisible,
+      firstUserIdx,
+      thinkingDetailsVisible,
+      toolsDetailsVisible,
+      ui.compact,
+      ui.theme.brand.prompt,
+      virtualRows
+    ]
   )
 
   const syncHeightCache = useCallback(
@@ -319,8 +386,21 @@ export function useMainApp(gw: GatewayClient) {
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
   const die = useCallback(() => {
-    gw.kill()
+    gw.kill('app.die')
     exit()
+    // Ink's exit() calls unmount() which resets terminal modes but does NOT
+    // call process.exit().  Without an explicit exit the Node process stays
+    // alive (stdin listener keeps the event loop open), so the process.on('exit')
+    // handler in entry.tsx — which sends the final resetTerminalModes() — never
+    // fires.  This leaves kitty keyboard protocol, mouse modes, etc. enabled
+    // in the parent shell.  See issue #19194.
+    process.exit(0)
+  }, [exit, gw])
+
+  const dieWithCode = useCallback((code: number) => {
+    gw.kill(`app.dieWithCode:${code}`)
+    exit()
+    process.exit(code)
   }, [exit, gw])
 
   const session = useSessionLifecycle({
@@ -347,7 +427,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.busy])
 
-  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
+  useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
@@ -365,10 +445,20 @@ export function useMainApp(gw: GatewayClient) {
 
     let timer: ReturnType<typeof setTimeout> | undefined
 
+    // Resize reflows wrapped lines; if the user is still pinned to the tail
+    // we need to re-snap once React has remeasured. virtualRows is keyed on
+    // cols so every column change forces a fresh measurement pass before
+    // this timer fires. Re-check isSticky() inside the timeout — a manual
+    // scroll during the 100ms window otherwise yanks the user back to tail.
     const onResize = () => {
       clearTimeout(timer)
       timer = setTimeout(() => {
         timer = undefined
+
+        if (scrollRef.current?.isSticky()) {
+          scrollRef.current.scrollToBottom()
+        }
+
         void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
       }, 100)
     }
@@ -492,10 +582,12 @@ export function useMainApp(gw: GatewayClient) {
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,
+      recordKey: voiceRecordKey,
       recording: voiceRecording,
       setProcessing: setVoiceProcessing,
       setRecording: setVoiceRecording,
-      setVoiceEnabled
+      setVoiceEnabled,
+      setVoiceTts
     },
     wheelStep: WHEEL_SCROLL_STEP
   })
@@ -519,7 +611,8 @@ export function useMainApp(gw: GatewayClient) {
         voice: {
           setProcessing: setVoiceProcessing,
           setRecording: setVoiceRecording,
-          setVoiceEnabled
+          setVoiceEnabled,
+          setVoiceTts
         }
       }),
     [
@@ -557,10 +650,10 @@ export function useMainApp(gw: GatewayClient) {
     gw.on('exit', exitHandler)
     gw.drain()
 
+    // entry.tsx's setupGracefulExit handles process cleanup on real exit.
     return () => {
       gw.off('event', handler)
       gw.off('exit', exitHandler)
-      gw.kill()
     }
   }, [gw, sys])
 
@@ -582,11 +675,13 @@ export function useMainApp(gw: GatewayClient) {
           catalog,
           getHistoryItems: () => historyItemsRef.current,
           getLastUserMsg: () => lastUserMsgRef.current,
-          maybeWarn
+          maybeWarn,
+          setCatalog
         },
         session: {
           closeSession: session.closeSession,
           die,
+          dieWithCode,
           guardBusySessionSwitch: session.guardBusySessionSwitch,
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,
@@ -595,7 +690,7 @@ export function useMainApp(gw: GatewayClient) {
         },
         slashFlightRef,
         transcript: { page, panel, send, setHistoryItems, sys, trimLastExchange: session.trimLastExchange },
-        voice: { setVoiceEnabled }
+        voice: { setVoiceEnabled, setVoiceRecordKey }
       }),
     [
       catalog,
@@ -675,18 +770,42 @@ export function useMainApp(gw: GatewayClient) {
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
 
+  const thinkingPanelVisible =
+    sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
+  const toolsPanelVisible =
+    sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
+  const activityPanelVisible =
+    sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const showProgressArea = useTurnSelector(state =>
     anyPanelVisible
       ? Boolean(
           ui.busy ||
           state.outcome ||
           state.streamPendingTools.length ||
-          state.streamSegments.length ||
+          state.streamSegments.some(segment => {
+            const hasThinking = Boolean(segment.thinking?.trim())
+            const hasTrailTools = Boolean(segment.tools?.length)
+
+            if (segment.kind === 'trail' && !segment.text) {
+              return (
+                (thinkingPanelVisible && hasThinking) || ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
+              )
+            }
+
+            return (
+              Boolean(segment.text?.trim()) ||
+              (thinkingPanelVisible && hasThinking) ||
+              ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
+            )
+          }) ||
           state.subagents.length ||
           state.tools.length ||
           state.todos.length ||
           state.turnTrail.length ||
-          hasReasoning ||
+          (thinkingPanelVisible && hasReasoning) ||
           state.activity.length
         )
       : state.activity.some(item => item.tone !== 'info')
@@ -719,9 +838,10 @@ export function useMainApp(gw: GatewayClient) {
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,
-      updateInput: composerActions.setInput
+      updateInput: composerActions.setInput,
+      voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit]
+    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling
@@ -743,7 +863,7 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
     }),
     [
       cwd,
@@ -755,7 +875,8 @@ export function useMainApp(gw: GatewayClient) {
       ui,
       voiceEnabled,
       voiceProcessing,
-      voiceRecording
+      voiceRecording,
+      voiceTts
     ]
   )
 

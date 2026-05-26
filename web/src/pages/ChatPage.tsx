@@ -22,7 +22,9 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Typography } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Typography } from "@/components/NouiTypography";
+import { HERMES_BASE_PATH } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -32,6 +34,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
@@ -42,7 +45,7 @@ function buildWsUrl(
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const qs = new URLSearchParams({ token, channel });
   if (resume) qs.set("resume", resume);
-  return `${proto}//${window.location.host}/api/pty?${qs.toString()}`;
+  return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
@@ -101,12 +104,16 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
-export default function ChatPage() {
+export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const [searchParams] = useSearchParams();
+  // Exposed to the main metrics-sync effect so it can refit the terminal
+  // the moment `isActive` flips back to true (display:none → display:flex
+  // collapses the host's box, so ResizeObserver never fires on return).
+  const syncMetricsRef = useRef<(() => void) | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
   const [banner, setBanner] = useState<string | null>(() =>
@@ -116,10 +123,19 @@ export default function ChatPage() {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+  // Raw state for the mobile side-sheet + a derived value that force-
+  // closes whenever the chat tab isn't active.  The *derived* value is
+  // what side-effects (body-scroll lock, keydown listener, portal render)
+  // key on — that way switching to another tab triggers the effect's
+  // cleanup, releasing the scroll-lock on /sessions etc.  Returning to
+  // /chat re-runs the effect (derived flips back to true) and re-locks.
+  // Keying on the raw state would leak the body.overflow="hidden" across
+  // tabs because the dep wouldn't change on tab switch.
+  const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
+  const mobilePanelOpen = isActive && mobilePanelOpenRaw;
   const { setEnd } = usePageHeader();
   const { t } = useI18n();
-  const closeMobilePanel = useCallback(() => setMobilePanelOpen(false), []);
+  const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
     [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
@@ -133,8 +149,39 @@ export default function ChatPage() {
       : false,
   );
 
-  const resumeRef = useRef<string | null>(searchParams.get("resume"));
-  const channel = useMemo(() => generateChannelId(), []);
+  // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
+  // switches. That is great for ordinary /chat navigation, but it means query
+  // param changes do NOT remount the component. Resume-in-chat from the
+  // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
+  // treat the current resume target as part of the PTY identity and rebuild the
+  // terminal session when it changes.
+  const resumeParam = searchParams.get("resume");
+  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+
+  useEffect(() => {
+    if (!resumeParam) return;
+
+    let cancelled = false;
+
+    api
+      .getSessionLatestDescendant(resumeParam)
+      .then((res) => {
+        if (cancelled || !res.session_id || res.session_id === resumeParam) {
+          return;
+        }
+
+        const next = new URLSearchParams(searchParams);
+        next.set("resume", res.session_id);
+        setSearchParams(next, { replace: true });
+      })
+      .catch(() => {
+        // Best-effort: old servers or missing sessions should not block chat.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeParam, searchParams, setSearchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -161,37 +208,43 @@ export default function ChatPage() {
   useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
     const onChange = (e: MediaQueryListEvent) => {
-      if (e.matches) setMobilePanelOpen(false);
+      if (e.matches) setMobilePanelOpenRaw(false);
     };
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
   useEffect(() => {
+    // When hidden (non-chat tab) we must not register the header button —
+    // another page owns the header's end slot at that point.
+    if (!isActive) {
+      setEnd(null);
+      return;
+    }
     if (!narrow) {
       setEnd(null);
       return;
     }
     setEnd(
-      <button
-        type="button"
-        onClick={() => setMobilePanelOpen(true)}
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded border border-current/20",
-          "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",
-          "text-midground/80 hover:text-midground hover:bg-midground/5",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-          "shrink-0 cursor-pointer",
-        )}
+      <Button
+        ghost
+        onClick={() => setMobilePanelOpenRaw(true)}
         aria-expanded={mobilePanelOpen}
         aria-controls="chat-side-panel"
+        className={cn(
+          "shrink-0 rounded border border-current/20",
+          "px-2 py-1 text-xs font-medium tracking-wide",
+          "text-text-secondary hover:text-midground hover:bg-midground/5",
+        )}
       >
-        <PanelRight className="h-3 w-3 shrink-0" />
-        {modelToolsLabel}
-      </button>,
+        <span className="inline-flex items-center gap-1.5">
+          <PanelRight className="h-3 w-3 shrink-0" />
+          {modelToolsLabel}
+        </span>
+      </Button>,
     );
     return () => setEnd(null);
-  }, [narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
+  }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   const handleCopyLast = () => {
     const ws = wsRef.current;
@@ -234,7 +287,20 @@ export default function ChatPage() {
       fontWeight: "400",
       fontWeightBold: "700",
       macOptionIsMeta: true,
-      scrollback: 0,
+      // Hold Option (Alt on Linux/Windows) to force native text selection
+      // even when the inner Hermes TUI has enabled xterm mouse-events
+      // mode (CSI ?1000h family). Without this, click-and-drag in the
+      // chat canvas selects nothing and Cmd+C falls back to copying the
+      // entire visible buffer, which is rarely what the user wants.
+      // See #25720.
+      macOptionClickForcesSelection: true,
+      // Right-click selects the word under the pointer. xterm.js default
+      // is false; enabling it gives users a single-action selection
+      // path on top of the modifier-based bypass above.
+      rightClickSelectsWord: true,
+      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
+      // history in xterm.js so the browser wheel can scroll it directly.
+      scrollback: 5000,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -278,7 +344,7 @@ export default function ChatPage() {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -337,6 +403,22 @@ export default function ChatPage() {
     fitRef.current = fit;
     term.loadAddon(fit);
 
+    // Dashboard chat should scroll the browser-side transcript, not send
+    // mouse-wheel protocol bytes through the PTY.
+    term.attachCustomWheelEventHandler((ev) => {
+      const delta = ev.deltaY;
+      if (!delta) {
+        return false;
+      }
+
+      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
+      term.scrollLines(delta > 0 ? step : -step);
+
+      ev.preventDefault();
+      ev.stopPropagation();
+      return false;
+    });
+
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -392,6 +474,12 @@ export default function ChatPage() {
 
     let metricsDebounce: ReturnType<typeof setTimeout> | null = null;
     const syncTerminalMetrics = () => {
+      // display:none hosts have clientWidth/Height = 0, which fit() turns
+      // into a 1x1 terminal.  Skip entirely while hidden; the visibility
+      // effect below runs another fit as soon as the tab is shown again.
+      if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
+        return;
+      }
       const w = terminalTierWidthPx(host);
       const nextSize = terminalFontSizeForWidth(w);
       const nextLh = terminalLineHeightForWidth(w);
@@ -422,6 +510,7 @@ export default function ChatPage() {
         wsRef.current.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
       }
     };
+    syncMetricsRef.current = syncTerminalMetrics;
 
     const scheduleSyncTerminalMetrics = () => {
       if (metricsDebounce) clearTimeout(metricsDebounce);
@@ -436,7 +525,6 @@ export default function ChatPage() {
 
     window.addEventListener("resize", scheduleSyncTerminalMetrics);
     window.visualViewport?.addEventListener("resize", scheduleSyncTerminalMetrics);
-    window.visualViewport?.addEventListener("scroll", scheduleSyncTerminalMetrics);
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -457,7 +545,7 @@ export default function ChatPage() {
     });
 
     // WebSocket
-    const url = buildWsUrl(token, resumeRef.current, channel);
+    const url = buildWsUrl(token, resumeParam, channel);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -503,53 +591,27 @@ export default function ChatPage() {
       term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
     };
 
-    // Keystrokes + mouse events → PTY, with cell-level dedup for motion.
+    // Keystrokes → PTY.
     //
-    // Ink enables `\x1b[?1003h` (any-motion tracking), which asks the
-    // terminal to report every mouse-move as an SGR mouse event even with
-    // no button held.  xterm.js happily emits one report per pixel of
-    // mouse motion; without deduping, a casual mouse-over floods Ink with
-    // hundreds of redraw-triggering reports and the UI goes laggy
-    // (scrolling stutters, clicks land on stale positions by the time
-    // Ink finishes processing the motion backlog).
+    // IMPORTANT:
+    // The embedded web chat has occasionally surfaced stray letters/digits
+    // in the input line after a turn completes. The most likely culprit is
+    // browser-side terminal control traffic being forwarded back into the
+    // PTY as if it were user text. SGR mouse tracking is the highest-risk
+    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
+    // ordinary bytes to the backend.
     //
-    // We keep track of the last cell we reported a motion for.  Press,
-    // release, and wheel events always pass through; motion events only
-    // pass through if the cell changed.  Parsing is cheap — SGR reports
-    // are short literal strings.
+    // For the browser embed we prefer input stability over terminal-style
+    // mouse reporting, so we drop SGR mouse reports entirely instead of
+    // forwarding them into Hermes. Keyboard input, paste, and resize still
+    // behave normally.
     // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
     const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-    let lastMotionCell = { col: -1, row: -1 };
-    let lastMotionCb = -1;
     const onDataDisposable = term.onData((data) => {
       if (ws.readyState !== WebSocket.OPEN) return;
 
-      const m = SGR_MOUSE_RE.exec(data);
-      if (m) {
-        const cb = parseInt(m[1], 10);
-        const col = parseInt(m[2], 10);
-        const row = parseInt(m[3], 10);
-        const released = m[4] === "m";
-        // Motion events have bit 0x20 (32) set in the button code.
-        // Wheel events have bit 0x40 (64); always forward wheel.
-        const isMotion = (cb & 0x20) !== 0 && (cb & 0x40) === 0;
-        const isWheel = (cb & 0x40) !== 0;
-        if (isMotion && !isWheel && !released) {
-          if (
-            col === lastMotionCell.col &&
-            row === lastMotionCell.row &&
-            cb === lastMotionCb
-          ) {
-            return; // same cell + same button state; skip redundant report
-          }
-          lastMotionCell = { col, row };
-          lastMotionCb = cb;
-        } else {
-          // Non-motion event (press, release, wheel) — reset dedup state
-          // so the next motion after this always reports.
-          lastMotionCell = { col: -1, row: -1 };
-          lastMotionCb = -1;
-        }
+      if (SGR_MOUSE_RE.test(data)) {
+        return;
       }
 
       ws.send(data);
@@ -565,16 +627,13 @@ export default function ChatPage() {
 
     return () => {
       unmounting = true;
+      syncMetricsRef.current = null;
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
         "resize",
-        scheduleSyncTerminalMetrics,
-      );
-      window.visualViewport?.removeEventListener(
-        "scroll",
         scheduleSyncTerminalMetrics,
       );
       ro.disconnect();
@@ -591,7 +650,52 @@ export default function ChatPage() {
         copyResetRef.current = null;
       }
     };
-  }, [channel]);
+  }, [channel, resumeParam]);
+
+  // When the user returns to the chat tab (isActive: false → true), the
+  // terminal host just transitioned from display:none to display:flex.
+  // ResizeObserver won't fire on that kind of style-driven box change —
+  // xterm thinks its grid is still whatever it was when the tab was
+  // hidden (or 0×0, if it was hidden before first fit).  Force a refit
+  // after two animation frames so layout has committed.
+  //
+  // Focus handling: we only steal focus back into the terminal when
+  // nothing else inside ChatPage was holding it (typically the first
+  // activation after mount, where document.activeElement is <body>; or
+  // a return after the user had been typing in the terminal, where
+  // focus was already on the xterm textarea before the tab got hidden
+  // and has since fallen back to <body>).  If the user had clicked
+  // into the sidebar (model picker, tool-call entry) before switching
+  // tabs, we must not yank focus away from wherever they left it when
+  // they come back — that's a surprise and an a11y foot-gun.
+  useEffect(() => {
+    if (!isActive) return;
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = requestAnimationFrame(() => {
+      raf1 = 0;
+      raf2 = requestAnimationFrame(() => {
+        raf2 = 0;
+        syncMetricsRef.current?.();
+        const host = hostRef.current;
+        const active = typeof document !== "undefined"
+          ? document.activeElement
+          : null;
+        const focusIsElsewhereInChatPage =
+          active !== null &&
+          active !== document.body &&
+          host !== null &&
+          !host.contains(active);
+        if (!focusIsElsewhereInChatPage) {
+          termRef.current?.focus();
+        }
+      });
+    });
+    return () => {
+      if (raf1) cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [isActive]);
 
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
@@ -604,26 +708,24 @@ export default function ChatPage() {
   //     model badge, tool-call list, model picker. Best-effort: if the
   //     sidecar fails to connect the terminal pane keeps working.
   //
-  // `normal-case` opts out of the dashboard's global `uppercase` rule on
-  // the root `<div>` in App.tsx — terminal output must preserve case.
-  //
   // Mobile model/tools sheet is portaled to `document.body` so it stacks
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
   // dashboard column uses `relative z-2`, which traps `position:fixed`
   // descendants below those layers (see Toast.tsx).
   const mobileModelToolsPortal =
+    isActive &&
     narrow &&
     portalRoot &&
     createPortal(
       <>
         {mobilePanelOpen && (
-          <button
-            type="button"
+          <Button
+            ghost
             aria-label={t.app.closeModelTools}
             onClick={closeMobilePanel}
             className={cn(
-              "fixed inset-0 z-[55]",
-              "bg-black/60 backdrop-blur-sm cursor-pointer",
+              "fixed inset-0 z-[55] p-0 block",
+              "bg-black/60 backdrop-blur-sm",
             )}
           />
         )}
@@ -651,7 +753,8 @@ export default function ChatPage() {
             )}
           >
             <Typography
-              className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+              mondwest
+              className="text-display font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
               style={{ mixBlendMode: "plus-lighter" }}
             >
               {t.app.modelToolsSheetTitle}
@@ -659,18 +762,15 @@ export default function ChatPage() {
               {t.app.modelToolsSheetSubtitle}
             </Typography>
 
-            <button
-              type="button"
+            <Button
+              ghost
+              size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className={cn(
-                "inline-flex h-7 w-7 items-center justify-center",
-                "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-              )}
+              className="text-text-secondary hover:text-midground"
             >
-              <X className="h-4 w-4" />
-            </button>
+              <X />
+            </Button>
           </div>
 
           <div
@@ -687,7 +787,7 @@ export default function ChatPage() {
     );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 normal-case">
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
@@ -713,29 +813,30 @@ export default function ChatPage() {
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
-          <button
-            type="button"
+          <Button
+            ghost
             onClick={handleCopyLast}
             title="Copy last assistant response as raw markdown"
             aria-label="Copy last assistant response"
             className={cn(
-              "absolute z-10 flex items-center gap-1.5",
+              "absolute z-10",
+              "normal-case tracking-normal font-normal",
               "rounded border border-current/30",
               "bg-black/20 backdrop-blur-sm",
-              "opacity-60 hover:opacity-100 hover:border-current/60",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
-              "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current",
-              "cursor-pointer",
-              "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}
             style={{ color: TERMINAL_THEME.foreground }}
           >
-            <Copy className="h-3 w-3 shrink-0" />
-            <span className="hidden min-[400px]:inline tracking-wide">
-              {copyState === "copied" ? "copied" : "copy last response"}
+            <span className="inline-flex items-center gap-1.5">
+              <Copy className="h-3 w-3 shrink-0" />
+              <span className="hidden min-[400px]:inline tracking-wide">
+                {copyState === "copied" ? "copied" : "copy last response"}
+              </span>
             </span>
-          </button>
+          </Button>
         </div>
 
         {!narrow && (
@@ -743,9 +844,9 @@ export default function ChatPage() {
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col lg:h-full lg:w-80"
+            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
-            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+            <div className="min-h-0 flex-1 overflow-hidden">
               <ChatSidebar channel={channel} />
             </div>
           </div>

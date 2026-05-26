@@ -26,8 +26,10 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_bundled_skills_dir, get_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Tuple
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +43,10 @@ def _get_bundled_dir() -> Path:
     """Locate the bundled skills/ directory.
 
     Checks HERMES_BUNDLED_SKILLS env var first (set by Nix wrapper),
-    then falls back to the relative path from this source file.
+    then a wheel-installed data dir, then falls back to the relative
+    path from this source file.
     """
-    env_override = os.getenv("HERMES_BUNDLED_SKILLS")
-    if env_override:
-        return Path(env_override)
-    return Path(__file__).parent.parent / "skills"
+    return get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
 
 
 def _read_manifest() -> Dict[str, str]:
@@ -98,7 +98,7 @@ def _write_manifest(entries: Dict[str, str]):
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, MANIFEST_FILE)
+            atomic_replace(tmp_path, MANIFEST_FILE)
         except BaseException:
             try:
                 os.unlink(tmp_path)
@@ -140,8 +140,7 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
         return skills
 
     for skill_md in bundled_dir.rglob("SKILL.md"):
-        path_str = str(skill_md)
-        if "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str:
+        if is_excluded_skill_path(skill_md):
             continue
         skill_dir = skill_md.parent
         skill_name = _read_skill_name(skill_md, skill_dir.name)
@@ -344,7 +343,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     manifest = _read_manifest()
     bundled_dir = _get_bundled_dir()
     bundled_skills = _discover_bundled_skills(bundled_dir)
-    bundled_by_name = {skill_name: skill_dir for skill_name, skill_dir in bundled_skills}
+    bundled_by_name = dict(bundled_skills)
 
     in_manifest = name in manifest
     is_bundled = name in bundled_by_name
@@ -424,7 +423,12 @@ if __name__ == "__main__":
         f"{result['skipped']} unchanged",
     ]
     if result["user_modified"]:
-        parts.append(f"{len(result['user_modified'])} user-modified (kept)")
+        names = result["user_modified"]
+        MAX_SHOW = 5
+        shown = ", ".join(names[:MAX_SHOW])
+        if len(names) > MAX_SHOW:
+            shown += f", +{len(names) - MAX_SHOW} more"
+        parts.append(f"{len(names)} user-modified (kept): {shown}")
     if result["cleaned"]:
         parts.append(f"{len(result['cleaned'])} cleaned from manifest")
     print(f"\nDone: {', '.join(parts)}. {result['total_bundled']} total bundled.")

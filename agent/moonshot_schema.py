@@ -15,6 +15,18 @@ and MoonshotAI/kimi-cli#1595:
 2. When ``anyOf`` is used, ``type`` must be on the ``anyOf`` children, not
    the parent.  Presence of both causes "type should be defined in anyOf
    items instead of the parent schema".
+3. ``enum`` arrays on scalar-typed nodes may not contain ``null`` or empty
+   strings.  Strip those entries (drop the enum entirely if it becomes empty).
+4. ``$ref`` nodes may not carry sibling keywords.  Moonshot expands the
+   reference before validation and then rejects the node if sibling keys
+   like ``description`` remain on the same node as ``$ref``.  Strip every
+   sibling from ``$ref`` nodes so only ``{"$ref": "..."}`` survives.
+   (Ported from anomalyco/opencode#24730.)
+5. ``items`` may not be a tuple-style array (``items: [schemaA, schemaB]``
+   for positional element schemas).  Moonshot's schema engine requires a
+   single object schema applied to every array element.  Collapse tuple
+   ``items`` to the first element schema (or ``{}`` if the tuple is empty).
+   (Ported from anomalyco/opencode#24730.)
 
 The ``#/definitions/...`` → ``#/$defs/...`` rewrite for draft-07 refs is
 handled separately in ``tools/mcp_tool._normalize_mcp_input_schema`` so it
@@ -66,6 +78,16 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
             }
         elif key in _SCHEMA_LIST_KEYS and isinstance(value, list):
             repaired[key] = [_repair_schema(v, is_schema=True) for v in value]
+        elif key == "items" and isinstance(value, list):
+            # Rule 5: tuple-style ``items`` arrays (positional element
+            # schemas) are not accepted by Moonshot.  Collapse to the
+            # first element schema if present, else to ``{}``.  This
+            # matches opencode's behaviour for moonshotai / kimi models.
+            first = value[0] if value else {}
+            if isinstance(first, dict):
+                repaired[key] = _repair_schema(first, is_schema=True)
+            else:
+                repaired[key] = first
         elif key in _SCHEMA_NODE_KEYS:
             # items / not / additionalProperties: single nested schema.
             # additionalProperties can also be a bool — leave those alone.
@@ -81,20 +103,70 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
         return repaired
 
     # Rule 2: when anyOf is present, type belongs only on the children.
+    # Additionally, Moonshot rejects null-type branches inside anyOf
+    # (enum value (<nil>) does not match any type in [string]).
+    # Collapse the anyOf to the first non-null branch and infer its type.
     if "anyOf" in repaired and isinstance(repaired["anyOf"], list):
         repaired.pop("type", None)
-        return repaired
+        non_null = [b for b in repaired["anyOf"]
+                    if isinstance(b, dict) and b.get("type") != "null"]
+        if non_null and len(non_null) < len(repaired["anyOf"]):
+            # Drop the anyOf wrapper — keep only the non-null branch.
+            # If there's a single non-null branch, promote it and fall
+            # through to Rules 1/3 so nullable/enum cleanup still applies
+            # to the merged node.
+            if len(non_null) == 1:
+                merge = {k: v for k, v in repaired.items() if k != "anyOf"}
+                merge.update(non_null[0])
+                repaired = merge
+            else:
+                repaired["anyOf"] = non_null
+                return repaired
+        else:
+            # Nothing to collapse — parent type stripped, children already
+            # repaired by the recursive walk above.
+            return repaired
+
+    # Moonshot also rejects non-standard keywords like ``nullable`` on
+    # parameter schemas — strip it.
+    repaired.pop("nullable", None)
 
     # Rule 1: property schemas without type need one.  $ref nodes are exempt
     # — their type comes from the referenced definition.
+    # Fill missing type BEFORE Rule 3 so enum cleanup can check the type.
+    if "$ref" not in repaired:
+        repaired = _fill_missing_type(repaired)
+
+    # Rule 3: Moonshot rejects null/empty-string values inside enum arrays
+    # when the parent type is a scalar (string, integer, etc.).  The error:
+    #   "enum value (<nil>) does not match any type in [string]"
+    # Strip null and empty-string from enum values, and if the enum becomes
+    # empty, drop it entirely.
+    if "enum" in repaired and isinstance(repaired["enum"], list):
+        node_type = repaired.get("type")
+        if node_type in {"string", "integer", "number", "boolean"}:
+            cleaned = [v for v in repaired["enum"]
+                       if v is not None and v != ""]
+            if cleaned:
+                repaired["enum"] = cleaned
+            else:
+                repaired.pop("enum")
+
+    # Rule 4: $ref nodes must not have sibling keywords.  Moonshot expands
+    # the reference before validation and then rejects the node if siblings
+    # like ``description`` / ``type`` / ``default`` appear alongside $ref.
+    # The referenced definition still carries its own description on the
+    # target node, which Moonshot accepts.
+    # (Ported from anomalyco/opencode#24730.)
     if "$ref" in repaired:
-        return repaired
-    return _fill_missing_type(repaired)
+        return {"$ref": repaired["$ref"]}
+
+    return repaired
 
 
 def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     """Infer a reasonable ``type`` if this schema node has none."""
-    if "type" in node and node["type"] not in (None, ""):
+    if "type" in node and node["type"] not in {None, ""}:
         return node
 
     # Heuristic: presence of ``properties`` → object, ``items`` → array, ``enum``

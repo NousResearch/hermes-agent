@@ -1,3 +1,4 @@
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import {
   AlertCircle,
   Check,
@@ -87,12 +88,11 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
     <div
       className={`rounded-md border overflow-hidden ${STATUS_TONE[tool.status]}`}
     >
-      <button
-        type="button"
+      <ListItem
         onClick={() => setUserOverride(!open)}
         disabled={!hasBody}
         aria-expanded={open}
-        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-foreground/2 disabled:cursor-default cursor-pointer transition-colors"
+        className="px-2.5 py-1.5 text-xs hover:bg-foreground/2 disabled:cursor-default"
       >
         {hasBody ? (
           <Chevron className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -104,7 +104,7 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
 
         <span className="font-mono font-medium shrink-0">{tool.name}</span>
 
-        <span className="font-mono text-muted-foreground/80 truncate min-w-0 flex-1">
+        <span className="font-mono text-text-secondary truncate min-w-0 flex-1">
           {tool.context ?? ""}
         </span>
 
@@ -128,11 +128,11 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
         )}
 
         {elapsed && (
-          <span className="font-mono text-[0.65rem] text-muted-foreground tabular-nums shrink-0">
+          <span className="font-mono text-xs text-text-tertiary tabular-nums shrink-0">
             {elapsed}
           </span>
         )}
-      </button>
+      </ListItem>
 
       {open && hasBody && (
         <div className="border-t border-border/60 px-3 py-2 space-y-2 text-xs font-mono">
@@ -186,8 +186,8 @@ function Section({
   return (
     <div className="flex gap-3">
       <span
-        className={`uppercase tracking-wider text-[0.6rem] shrink-0 w-14 pt-0.5 ${
-          tone === "error" ? "text-destructive/80" : "text-muted-foreground/60"
+        className={`text-display font-mondwest tracking-wider text-xs shrink-0 w-20 pt-0.5 ${
+          tone === "error" ? "text-destructive" : "text-text-tertiary"
         }`}
       >
         {label}
@@ -224,5 +224,5 @@ function diffLineClass(line: string): string {
   if (line.startsWith("-") && !line.startsWith("---"))
     return "text-destructive";
   if (line.startsWith("@@")) return "text-primary";
-  return "text-muted-foreground/80";
+  return "text-text-secondary";
 }

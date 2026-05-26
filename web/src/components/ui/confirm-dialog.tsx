@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { cn, themedBody } from "@/lib/utils";
 
 export function ConfirmDialog({
   cancelLabel = "Cancel",
@@ -64,6 +64,7 @@ export function ConfirmDialog({
       <div
         ref={dialogRef}
         className={cn(
+          themedBody,
           "relative w-full max-w-md mx-4",
           "border border-border bg-card shadow-lg",
           "animate-[dialog-in_180ms_ease-out]",
@@ -82,7 +83,7 @@ export function ConfirmDialog({
           <div className="flex-1 min-w-0 flex flex-col gap-1">
             <h2
               id="confirm-dialog-title"
-              className="font-expanded text-sm font-bold tracking-[0.08em] uppercase blend-lighter"
+              className="font-mondwest text-display text-sm font-bold tracking-[0.12em] blend-lighter"
             >
               {title}
             </h2>
@@ -90,7 +91,7 @@ export function ConfirmDialog({
             {description && (
               <p
                 id="confirm-dialog-desc"
-                className="font-mondwest text-xs text-muted-foreground leading-relaxed"
+                className="font-mondwest normal-case text-xs text-muted-foreground leading-relaxed"
               >
                 {description}
               </p>
@@ -101,8 +102,7 @@ export function ConfirmDialog({
         <div className="flex items-center justify-end gap-2 p-3">
           <Button
             type="button"
-            variant="ghost"
-            size="sm"
+            outlined
             onClick={onCancel}
             disabled={loading}
           >
@@ -111,8 +111,7 @@ export function ConfirmDialog({
           <Button
             data-confirm
             type="button"
-            variant={destructive ? "destructive" : "default"}
-            size="sm"
+            destructive={destructive}
             onClick={onConfirm}
             disabled={loading}
           >

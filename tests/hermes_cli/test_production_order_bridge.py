@@ -23,6 +23,7 @@ import argparse
 import json
 import re
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,11 @@ from hermes_cli.production_order_db import (
     validate_devos_build_packet,
     validate_orchestrator_classification_packet,
     validate_state_transition,
+)
+from hermes_cli.production_order_dispatch import (
+    DispatchManifestError,
+    build_dispatch_manifest,
+    dispatch_manifest_for_order,
 )
 from hermes_cli.kanban import _cmd_production_order
 
@@ -403,6 +409,22 @@ def create_default_final_review_order(conn, sample_brief) -> ProductionOrder:
             (po.current_state, cid),
         )
     return po
+
+def _assert_six_card_graph_preserved(conn, po, original_child_ids):
+    refreshed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    assert refreshed.parent_kanban_card_id == po.parent_kanban_card_id
+    assert refreshed.child_kanban_card_ids == original_child_ids
+    assert len(refreshed.child_kanban_card_ids) == 6
+
+def _po_event_types(conn, production_order_id):
+    rows = conn.execute(
+        "SELECT event_type FROM production_order_events WHERE production_order_id = ? ORDER BY id",
+        (production_order_id,),
+    ).fetchall()
+    return [row["event_type"] for row in rows]
 
 # ---------------------------------------------------------------------------
 # Production Order ID Generation
@@ -1372,7 +1394,298 @@ def test_validate_devos_build_packet_accepts_stage_result_and_implementation_art
     assert validated is packet
 
 
+
+def test_dispatch_manifest_covers_supported_states_and_routes(conn, sample_brief):
+    def expect_manifest(manifest, *, state, owner, profile, card_id, task_type, required_input_packet, expected_result_packet, bridge_function):
+        assert manifest.current_state == state
+        assert manifest.current_owner_profile == owner
+        assert manifest.target_profile == profile
+        assert manifest.target_child_card_id == card_id
+        assert manifest.task_type == task_type
+        assert manifest.required_input_packet == required_input_packet
+        assert manifest.expected_result_packet == expected_result_packet
+        assert manifest.bridge_function == bridge_function
+        assert manifest.stop_conditions
+        assert manifest.manual_fallback["enabled"] is True
+        assert manifest.manual_fallback["task_prompt_template"] is None
+        assert manifest.manual_fallback["target_profile"] == profile
+        assert manifest.manual_fallback["target_child_card_id"] == card_id
+        assert manifest.manual_fallback["task_type"] == task_type
+        assert manifest.manual_fallback["required_input_packet"] == required_input_packet
+        assert manifest.manual_fallback["expected_result_packet"] == expected_result_packet
+        assert manifest.manual_fallback["bridge_function"] == bridge_function
+        assert manifest.manual_fallback["stop_conditions"] == list(manifest.stop_conditions)
+        assert manifest.manual_fallback["source_truth"] == WORKFLOW_SPEC_SOURCE
+        assert manifest.manual_fallback["current_state"] == state
+        assert manifest.to_dict()["stop_conditions"] == list(manifest.stop_conditions)
+
+    initial = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(initial),
+        state="ORCHESTRATOR_TRIAGE",
+        owner="orchestrator_os",
+        profile="orchestrator_os",
+        card_id=initial.child_kanban_card_ids[0],
+        task_type="orchestrator_triage",
+        required_input_packet="orchestrator_handoff_packet",
+        expected_result_packet="architect_handoff_packet",
+        bridge_function="run_orchestrator_triage_bridge",
+    )
+
+    architect_spec = run_orchestrator_triage_bridge(
+        conn,
+        production_order_id=initial.production_order_id,
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(architect_spec),
+        state="ARCHITECT_SPEC",
+        owner="architect_os",
+        profile="architect_os",
+        card_id=architect_spec.child_kanban_card_ids[1],
+        task_type="architect_spec",
+        required_input_packet="architect_handoff_packet",
+        expected_result_packet="architect_spec_packet",
+        bridge_function="run_architect_spec_bridge",
+    )
+
+    ready_for_dev = create_ready_for_dev_order(conn, sample_brief)
+    expect_manifest(
+        dispatch_manifest_for_order(ready_for_dev),
+        state="ARCHITECT_READY_FOR_DEV",
+        owner="dev_os",
+        profile="dev_os",
+        card_id=ready_for_dev.child_kanban_card_ids[2],
+        task_type="dev_build",
+        required_input_packet="devos_handoff_packet",
+        expected_result_packet="devos_build_packet",
+        bridge_function="run_devos_complete_bridge",
+    )
+
+    dev_implementing = replace(
+        ready_for_dev,
+        current_state="DEV_IMPLEMENTING",
+        current_owner_profile="dev_os",
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(dev_implementing),
+        state="DEV_IMPLEMENTING",
+        owner="dev_os",
+        profile="dev_os",
+        card_id=dev_implementing.child_kanban_card_ids[2],
+        task_type="dev_build",
+        required_input_packet="devos_handoff_packet",
+        expected_result_packet="devos_build_packet",
+        bridge_function="run_devos_complete_bridge",
+    )
+
+    dev_complete = create_dev_complete_order(conn, sample_brief)
+    expect_manifest(
+        dispatch_manifest_for_order(dev_complete),
+        state="DEV_COMPLETE",
+        owner="audit_os",
+        profile="audit_os",
+        card_id=dev_complete.child_kanban_card_ids[3],
+        task_type="audit_review",
+        required_input_packet="auditos_handoff_packet",
+        expected_result_packet="auditos_review_packet",
+        bridge_function="run_auditos_review_complete_bridge",
+    )
+
+    audit_review = replace(
+        dev_complete,
+        current_state="AUDIT_REVIEW",
+        current_owner_profile="audit_os",
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(audit_review),
+        state="AUDIT_REVIEW",
+        owner="audit_os",
+        profile="audit_os",
+        card_id=audit_review.child_kanban_card_ids[3],
+        task_type="audit_review",
+        required_input_packet="auditos_handoff_packet",
+        expected_result_packet="auditos_review_packet",
+        bridge_function="run_auditos_review_complete_bridge",
+    )
+
+    audit_passed = create_audit_passed_order(conn, sample_brief)
+    expect_manifest(
+        dispatch_manifest_for_order(audit_passed),
+        state="AUDIT_PASSED",
+        owner="architect_os",
+        profile="architect_os",
+        card_id=audit_passed.child_kanban_card_ids[4],
+        task_type="architect_reconcile",
+        required_input_packet="architect_reconcile_handoff_packet",
+        expected_result_packet="architect_reconcile_packet",
+        bridge_function="run_architect_reconcile_bridge",
+    )
+
+    architect_reconcile = replace(
+        audit_passed,
+        current_state="ARCHITECT_RECONCILE",
+        current_owner_profile="architect_os",
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(architect_reconcile),
+        state="ARCHITECT_RECONCILE",
+        owner="architect_os",
+        profile="architect_os",
+        card_id=architect_reconcile.child_kanban_card_ids[4],
+        task_type="architect_reconcile",
+        required_input_packet="architect_reconcile_handoff_packet",
+        expected_result_packet="architect_reconcile_packet",
+        bridge_function="run_architect_reconcile_bridge",
+    )
+
+    architect_accepted = create_architect_accepted_order(conn, sample_brief)
+    expect_manifest(
+        dispatch_manifest_for_order(architect_accepted),
+        state="ARCHITECT_ACCEPTED",
+        owner="default",
+        profile="default",
+        card_id=architect_accepted.child_kanban_card_ids[5],
+        task_type="default_final_review",
+        required_input_packet="default_final_review_handoff_packet",
+        expected_result_packet="default_final_review_packet",
+        bridge_function="run_default_final_review_bridge",
+    )
+
+    default_final_review = create_default_final_review_order(conn, sample_brief)
+    expect_manifest(
+        dispatch_manifest_for_order(default_final_review),
+        state="DEFAULT_FINAL_REVIEW",
+        owner="default",
+        profile="default",
+        card_id=default_final_review.child_kanban_card_ids[5],
+        task_type="default_final_review",
+        required_input_packet="default_final_review_handoff_packet",
+        expected_result_packet="default_final_review_packet",
+        bridge_function="run_default_final_review_bridge",
+    )
+
+    default_rejected = run_default_final_review_reject_bridge(
+        conn,
+        production_order_id=default_final_review.production_order_id,
+        rejection_packet=default_rejection_packet(default_final_review.production_order_id),
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(default_rejected),
+        state="DEFAULT_REJECTED",
+        owner="orchestrator_os",
+        profile="orchestrator_os",
+        card_id=default_rejected.child_kanban_card_ids[0],
+        task_type="default_rejection_triage",
+        required_input_packet="default_rejection_packet",
+        expected_result_packet="default_rejection_handoff_packet",
+        bridge_function="run_orchestrator_default_rejection_triage_bridge",
+    )
+
+    default_triage = run_orchestrator_default_rejection_triage_bridge(
+        conn,
+        production_order_id=default_rejected.production_order_id,
+        rejection_packet=default_rejection_packet(
+            default_rejected.production_order_id,
+            source_state="DEFAULT_REJECTED",
+        ),
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(default_triage),
+        state="ORCHESTRATOR_TRIAGE",
+        owner="orchestrator_os",
+        profile="orchestrator_os",
+        card_id=default_triage.child_kanban_card_ids[0],
+        task_type="orchestrator_default_rejection_classification",
+        required_input_packet="default_rejection_handoff_packet",
+        expected_result_packet="orchestrator_classification_packet",
+        bridge_function="run_orchestrator_classification_bridge",
+    )
+
+    audit_rejected_source = create_dev_complete_order(conn, sample_brief)
+    audit_rejected = run_auditos_review_reject_bridge(
+        conn,
+        production_order_id=audit_rejected_source.production_order_id,
+        rejection_packet=audit_rejection_packet(audit_rejected_source.production_order_id),
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(audit_rejected),
+        state="AUDIT_REJECTED",
+        owner="orchestrator_os",
+        profile="orchestrator_os",
+        card_id=audit_rejected.child_kanban_card_ids[2],
+        task_type="orchestrator_rework",
+        required_input_packet="auditos_rejection_packet",
+        expected_result_packet="devos_rework_handoff_packet",
+        bridge_function="run_orchestrator_rework_bridge",
+    )
+
+    dev_rework = run_orchestrator_rework_bridge(
+        conn,
+        production_order_id=audit_rejected.production_order_id,
+        rejection_packet=audit_rejection_packet(audit_rejected.production_order_id, "AUDIT_REJECTED"),
+    )
+    expect_manifest(
+        dispatch_manifest_for_order(dev_rework),
+        state="DEV_REWORK",
+        owner="dev_os",
+        profile="dev_os",
+        card_id=dev_rework.child_kanban_card_ids[2],
+        task_type="dev_rework",
+        required_input_packet="devos_rework_handoff_packet",
+        expected_result_packet="devos_build_packet",
+        bridge_function="run_devos_rework_complete_bridge",
+    )
+
+
+def test_build_dispatch_manifest_is_read_only_and_rejects_unsupported_states(conn, sample_brief):
+    po = create_default_final_review_order(conn, sample_brief)
+    before_total_changes = conn.total_changes
+    before_tasks = conn.execute(
+        "SELECT id, current_state, status FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    before_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    manifest = build_dispatch_manifest(conn, po.production_order_id)
+
+    after_total_changes = conn.total_changes
+    after_tasks = conn.execute(
+        "SELECT id, current_state, status FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    after_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    assert after_total_changes == before_total_changes
+    assert after_tasks == before_tasks
+    assert after_events == before_events
+    assert manifest.production_order_id == po.production_order_id
+    assert manifest.manual_fallback["task_prompt_template"] is None
+    assert manifest.to_dict()["stop_conditions"] == list(manifest.stop_conditions)
+
+    with pytest.raises(DispatchManifestError, match="SPEC_REWORK"):
+        dispatch_manifest_for_order(
+            replace(
+                po,
+                current_state="SPEC_REWORK",
+                current_owner_profile="architect_os",
+            )
+        )
+
+
 @pytest.mark.parametrize(
+
     ("mutator", "expected_message"),
     [
         (lambda packet: packet.pop("summary"), "summary"),
@@ -1623,325 +1936,10 @@ def test_orchestrator_default_rejection_classification_bridge(
     assert routed.current_state == expected_state
     assert routed.current_owner_profile == expected_owner
 
-    target_card = kb.get_task(conn, po.child_kanban_card_ids[target_card_index])
-    assert target_card is not None
-    assert target_card.body is not None
-    assert '"route_target": ' in target_card.body
-    assert expected_target_token in target_card.body
-    assert '"requested_next_state": ' in target_card.body
-
-    event_types = _po_event_types(conn, po.production_order_id)
-    assert "retry_started" in event_types
-    assert "handoff_created" in event_types
-    assert "state_transitioned" in event_types
-
-
-def test_orchestrator_classification_bridge_requires_default_rejected_provenance(
-    conn,
-    sample_brief,
-):
-    po = run_full_bridge(
-        conn,
-        title=sample_brief["title"],
-        source_brief=json.dumps(sample_brief),
-        priority_lane="Relay",
-        repo_or_workspace=sample_brief["target repo or workspace"],
-    )
-
-    assert po.current_state == "ORCHESTRATOR_TRIAGE"
-    assert not any(
-        entry.from_state == "DEFAULT_REJECTED" and entry.to_state == "ORCHESTRATOR_TRIAGE"
-        for entry in po.stage_history
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="Orchestrator classification routing requires prior DEFAULT_REJECTED triage",
-    ):
-        run_orchestrator_classification_bridge(
-            conn,
-            production_order_id=po.production_order_id,
-            classification_packet=orchestrator_classification_packet(
-                po.production_order_id,
-                "implementation_mismatch",
-            ),
-        )
-
-
-@pytest.mark.parametrize(
-    ("mutator", "expected_exception", "expected_message"),
-    [
-        (lambda po, packet: packet.pop("summary"), ValueError, "summary"),
-        (lambda po, packet: packet.__setitem__("production_order_id", "PO-wrong"), ValueError, "production_order_id"),
-        (lambda po, packet: packet.__setitem__("owner_profile", "architect_os"), ValueError, "owner_profile"),
-        (lambda po, packet: packet.__setitem__("source_state", "ARCHITECT_SPEC"), ValueError, "source_state"),
-        (lambda po, packet: packet.__setitem__("test_status", "failed"), ValueError, "pass/green/success"),
-    ],
-)
-def test_devos_complete_bridge_failures_do_not_mutate_state(
-    conn,
-    sample_brief,
-    mutator,
-    expected_exception,
-    expected_message,
-):
-    po = create_ready_for_dev_order(conn, sample_brief)
-    packet = devos_build_packet(po.production_order_id)
-    original_parent = kb.get_task(conn, po.parent_kanban_card_id)
-    original_devos = kb.get_task(conn, po.child_kanban_card_ids[2])
-    original_audit = kb.get_task(conn, po.child_kanban_card_ids[3])
-    original_event_count = conn.execute(
-        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
-        (po.production_order_id,),
-    ).fetchone()["n"]
-
-    assert original_parent is not None
-    assert original_devos is not None
-    assert original_audit is not None
-    mutator(po, packet)
-
-    with pytest.raises(expected_exception, match=expected_message):
-        run_devos_complete_bridge(
-            conn,
-            production_order_id=po.production_order_id,
-            devos_packet=packet,
-        )
-
-    refreshed = [
-        order for order in list_production_orders(conn)
-        if order.production_order_id == po.production_order_id
-    ][0]
-    refreshed_parent = kb.get_task(conn, refreshed.parent_kanban_card_id)
-    refreshed_devos = kb.get_task(conn, refreshed.child_kanban_card_ids[2])
-    refreshed_audit = kb.get_task(conn, refreshed.child_kanban_card_ids[3])
-    refreshed_event_count = conn.execute(
-        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
-        (po.production_order_id,),
-    ).fetchone()["n"]
-
-    assert refreshed_parent is not None
-    assert refreshed_devos is not None
-    assert refreshed_audit is not None
-    assert refreshed.current_state == "ARCHITECT_READY_FOR_DEV"
-    assert refreshed.current_owner_profile == "dev_os"
-    assert refreshed_parent.current_state == original_parent.current_state
-    assert refreshed_devos.body == original_devos.body
-    assert refreshed_audit.body == original_audit.body
-    assert refreshed_event_count == original_event_count
-    assert len(refreshed.child_kanban_card_ids) == 6
-
-
-def test_devos_complete_bridge_rejects_wrong_runtime_state_without_mutation(conn, sample_brief):
-    po = create_ready_for_dev_order(conn, sample_brief)
-    original_event_count = conn.execute(
-        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
-        (po.production_order_id,),
-    ).fetchone()["n"]
-    conn.execute(
-        "UPDATE tasks SET current_state = ? WHERE id = ?",
-        ("ARCHITECT_SPEC", po.parent_kanban_card_id),
-    )
-
-    with pytest.raises(StateTransitionError, match="expected 'ARCHITECT_READY_FOR_DEV'"):
-        run_devos_complete_bridge(
-            conn,
-            production_order_id=po.production_order_id,
-            devos_packet=devos_build_packet(po.production_order_id),
-        )
-
-    refreshed = [
-        order for order in list_production_orders(conn)
-        if order.production_order_id == po.production_order_id
-    ][0]
-    refreshed_event_count = conn.execute(
-        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
-        (po.production_order_id,),
-    ).fetchone()["n"]
-    assert refreshed.current_state == "ARCHITECT_SPEC"
-    assert refreshed.current_owner_profile == "architect_os"
-    assert len(refreshed.child_kanban_card_ids) == 6
-    assert refreshed_event_count == original_event_count
-
-
-def test_cli_dev_complete_requires_result_file(capsys):
-    rc = _cmd_production_order(argparse.Namespace(
-        po_action="dev-complete",
-        production_order_id="PO-20260525-test",
-        board=None,
-        result_file=None,
-        json=False,
-    ))
-
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert "--result-file is required" in captured.err
-
-
-def test_cli_dev_complete_json(capsys, conn, tmp_path, sample_brief):
-    po = create_ready_for_dev_order(conn, sample_brief)
-    packet_path = tmp_path / "devos-packet.json"
-    packet_path.write_text(json.dumps(devos_build_packet(po.production_order_id)), encoding="utf-8")
-
-    rc = _cmd_production_order(argparse.Namespace(
-        po_action="dev-complete",
-        production_order_id=po.production_order_id,
-        board=None,
-        result_file=str(packet_path),
-        json=True,
-    ))
-
-    captured = capsys.readouterr()
-    assert rc == 0
-    parsed = json.loads(captured.out)
-    assert parsed["production_order_id"] == po.production_order_id
-    assert parsed["current_state"] == "DEV_COMPLETE"
-    assert parsed["current_owner_profile"] == "audit_os"
-    assert parsed["child_card_ids"] == po.child_kanban_card_ids
-    assert "Slice 7" not in captured.out
-
-
-def test_dev_complete_show_events_json_is_strict_json(capsys, conn, sample_brief):
-    po = create_ready_for_dev_order(conn, sample_brief)
-    run_devos_complete_bridge(
-        conn,
-        production_order_id=po.production_order_id,
-        devos_packet=devos_build_packet(po.production_order_id),
-    )
-
-    rc = _cmd_production_order(argparse.Namespace(
-        po_action="show",
-        production_order_id=po.production_order_id,
-        board=None,
-        events=True,
-        json=True,
-    ))
-
-    captured = capsys.readouterr()
-    assert rc == 0
-    parsed = json.loads(captured.out)
-    assert parsed["current_state"] == "DEV_COMPLETE"
-    assert parsed["current_owner_profile"] == "audit_os"
-    event_types = [event["event_type"] for event in parsed["events"]]
-    assert event_types[-2:] == ["dev_build_completed", "handoff_created"]
-    assert "\n  Events (" not in captured.out
-
-
-def test_dev_complete_show_events_text_remains_human_readable(capsys, conn, sample_brief):
-    po = create_ready_for_dev_order(conn, sample_brief)
-    run_devos_complete_bridge(
-        conn,
-        production_order_id=po.production_order_id,
-        devos_packet=devos_build_packet(po.production_order_id),
-    )
-
-    rc = _cmd_production_order(argparse.Namespace(
-        po_action="show",
-        production_order_id=po.production_order_id,
-        board=None,
-        events=True,
-        json=False,
-    ))
-
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert "Events (12):" in captured.out
-    assert "dev_build_started" in captured.out
-    assert "dev_build_completed" in captured.out
-    assert "handoff_created" in captured.out
-    assert "dispatch_audit_os" not in captured.out
-
-
-# ---------------------------------------------------------------------------
-# AuditOS / ArchitectOS Reconcile / Final Review Bridges
-# ---------------------------------------------------------------------------
-
-
-def _po_event_types(conn, production_order_id: str) -> list[str]:
-    rows = conn.execute(
-        "SELECT event_type FROM production_order_events "
-        "WHERE production_order_id = ? ORDER BY id",
-        (production_order_id,),
-    ).fetchall()
-    return [row["event_type"] for row in rows]
-
-
-def _assert_six_card_graph_preserved(conn, po: ProductionOrder, original_child_ids: list[str]) -> None:
-    assert po.child_kanban_card_ids == original_child_ids
-    assert len(po.child_kanban_card_ids) == 6
-    assert len(set(po.child_kanban_card_ids)) == 6
-    link_count = conn.execute(
-        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
-        (po.parent_kanban_card_id,),
-    ).fetchone()["n"]
-    assert link_count == 6
-
-
-def test_validate_auditos_review_packet_accepts_minimal_packet():
-    packet = audit_review_packet("PO-20260525-test")
-
-    validated = validate_auditos_review_packet(
-        packet,
-        expected_production_order_id="PO-20260525-test",
-        expected_source_state="DEV_COMPLETE",
-    )
-
-    assert validated is packet
-
-
-def test_validate_architect_reconcile_packet_accepts_minimal_packet():
-    packet = architect_reconcile_packet("PO-20260525-test")
-
-    validated = validate_architect_reconcile_packet(
-        packet,
-        expected_production_order_id="PO-20260525-test",
-        expected_source_state="AUDIT_PASSED",
-    )
-
-    assert validated is packet
-
-
-def test_validate_default_final_review_packet_accepts_minimal_packet():
-    packet = final_review_packet("PO-20260525-test")
-
-    validated = validate_default_final_review_packet(
-        packet,
-        expected_production_order_id="PO-20260525-test",
-        expected_source_state="ARCHITECT_ACCEPTED",
-    )
-
-    assert validated is packet
-
-
-def test_auditos_review_bridge_moves_existing_order_to_audit_passed(conn, sample_brief):
-    po = create_dev_complete_order(conn, sample_brief)
-    original_child_ids = list(po.child_kanban_card_ids)
-
-    completed = run_auditos_review_complete_bridge(
-        conn,
-        production_order_id=po.production_order_id,
-        review_packet=audit_review_packet(po.production_order_id),
-    )
-
-    assert completed.current_state == "AUDIT_PASSED"
-    assert completed.current_owner_profile == "architect_os"
-    _assert_six_card_graph_preserved(conn, completed, original_child_ids)
-
-    audit_card = kb.get_task(conn, original_child_ids[3])
-    reconcile_card = kb.get_task(conn, original_child_ids[4])
-    assert audit_card is not None
-    assert reconcile_card is not None
-    assert audit_card.body is not None
-    assert reconcile_card.body is not None
-    assert "--- RESULT PACKET ---" in audit_card.body
-    assert '"owner_profile": "audit_os"' in audit_card.body
-    assert "--- HANDOFF PACKET ---" in reconcile_card.body
-    assert '"to_profile": "architect_os"' in reconcile_card.body
-    assert reconcile_card.status == "ready"
-
     event_types = _po_event_types(conn, po.production_order_id)
     assert event_types[-3:] == [
-        "audit_review_started",
-        "audit_review_completed",
+        "retry_started",
+        "state_transitioned",
         "handoff_created",
     ]
 

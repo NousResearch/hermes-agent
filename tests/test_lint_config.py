@@ -254,3 +254,25 @@ class TestToolsSendMessage:
         )
 
 
+class TestToolsPatchParser:
+    """tools/patch_parser.py must have zero F821 violations."""
+
+    TARGET = REPO_ROOT / "tools" / "patch_parser.py"
+
+    def test_patch_parser_has_zero_f821(self):
+        """tools/patch_parser.py must have zero F821 (undefined-name) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F821",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/patch_parser.py has F821 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+

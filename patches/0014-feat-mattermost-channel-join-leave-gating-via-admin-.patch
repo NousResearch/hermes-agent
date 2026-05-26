@@ -1,0 +1,205 @@
+From fbae2d1940182110ed3db292e09b91101f52cbc5 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 23:05:47 +1200
+Subject: [PATCH 14/27] feat(mattermost): channel join/leave gating via admin
+ verification
+
+When the bot is added to a channel, it now verifies the adder is a
+platform admin via swarm-map-policy. Non-admin additions cause the bot
+to leave immediately. If the policy plugin is unavailable, the bot
+leaves (fail-closed). Adds _handle_channel_join and _leave_channel
+methods with user_added WebSocket event handling.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ plugins/platforms/mattermost/adapter.py | 74 +++++++++++++++++++++++
+ tests/gateway/test_mattermost.py        | 80 +++++++++++++++++++++++++
+ 2 files changed, 154 insertions(+)
+
+diff --git a/plugins/platforms/mattermost/adapter.py b/plugins/platforms/mattermost/adapter.py
+index c91cc75ce..e5f60c138 100644
+--- a/plugins/platforms/mattermost/adapter.py
++++ b/plugins/platforms/mattermost/adapter.py
+@@ -691,6 +691,15 @@ class MattermostAdapter(BasePlatformAdapter):
+     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
+         """Process a single WebSocket event."""
+         event_type = event.get("event")
++
++        # Channel join gating: when bot is added to a channel, verify the
++        # adder is an admin.  Non-admin additions cause the bot to leave.
++        if event_type == "user_added":
++            data = event.get("data", {})
++            if data.get("user_id") == self._bot_user_id:
++                await self._handle_channel_join(data)
++            return
++
+         if event_type != "posted":
+             return
+ 
+@@ -883,7 +892,72 @@ class MattermostAdapter(BasePlatformAdapter):
+ 
+         await self.handle_message(msg_event)
+ 
++    # ------------------------------------------------------------------
++    # Channel join/leave gating
++    # ------------------------------------------------------------------
++
++    async def _handle_channel_join(self, data: Dict[str, Any]) -> None:
++        """Handle bot being added to a channel. Leave if adder is not admin."""
++        channel_id = data.get("channel_id", "")
++        adder_id = data.get("adder_id", "")  # Mattermost provides this in user_added events
++
++        if not channel_id:
++            return
++
++        try:
++            from plugins.swarm_map_policy import is_platform_admin
++        except (ImportError, TypeError):
++            logger.warning(
++                "swarm-map-policy plugin not available — leaving channel %s (fail-closed)",
++                channel_id,
++            )
++            await self._leave_channel(channel_id)
++            return
++
++        try:
++            is_admin = is_platform_admin(adder_id, "mattermost") if adder_id else False
++        except Exception:
++            is_admin = False
++
++        if not is_admin:
++            logger.info(
++                "Non-admin %s added bot to channel %s — leaving",
++                adder_id, channel_id,
++            )
++            await self._leave_channel(channel_id)
++            return
++
++        # Admin added bot — log and stay.
++        channel_name = ""
++        try:
++            channel_info = await self._api_get(f"channels/{channel_id}")
++            channel_name = channel_info.get("display_name", "") or channel_info.get("name", "")
++        except Exception:
++            pass
++
++        logger.info(
++            "Admin %s added bot to channel %s (%s) — staying",
++            adder_id, channel_id, channel_name,
++        )
+ 
++    async def _leave_channel(self, channel_id: str) -> None:
++        """Remove bot from a channel via Mattermost API."""
++        if not self._bot_user_id:
++            return
++        import aiohttp
++        url = f"{self._base_url}/api/v4/channels/{channel_id}/members/{self._bot_user_id}"
++        try:
++            async with self._session.delete(
++                url, headers=self._headers(),
++                timeout=aiohttp.ClientTimeout(total=15)
++            ) as resp:
++                if resp.status < 400:
++                    logger.info("Left channel %s", channel_id)
++                else:
++                    body = await resp.text()
++                    logger.error("Failed to leave channel %s: %s %s", channel_id, resp.status, body[:200])
++        except aiohttp.ClientError as exc:
++            logger.error("Network error leaving channel %s: %s", channel_id, exc)
+ 
+ 
+ # ---------------------------------------------------------------------------
+diff --git a/tests/gateway/test_mattermost.py b/tests/gateway/test_mattermost.py
+index 5b6850912..7d0998b92 100644
+--- a/tests/gateway/test_mattermost.py
++++ b/tests/gateway/test_mattermost.py
+@@ -559,6 +559,86 @@ class TestMattermostMentionBehavior:
+             assert "2+2" in msg.text
+ 
+ 
++# ---------------------------------------------------------------------------
++# Channel join/leave gating
++# ---------------------------------------------------------------------------
++
++class TestMattermostChannelJoinGating:
++    def setup_method(self):
++        self.adapter = _make_adapter()
++        self.adapter._bot_user_id = "bot_user_id"
++        self.adapter._bot_username = "hermes-bot"
++        self.adapter._session = MagicMock()
++        self.adapter.handle_message = AsyncMock()
++
++    @pytest.mark.asyncio
++    async def test_user_added_event_triggers_join_handler(self):
++        """user_added event for bot should trigger _handle_channel_join."""
++        self.adapter._handle_channel_join = AsyncMock()
++        event = {
++            "event": "user_added",
++            "data": {
++                "user_id": "bot_user_id",
++                "channel_id": "chan_new",
++                "adder_id": "admin_123",
++            },
++        }
++        await self.adapter._handle_ws_event(event)
++        self.adapter._handle_channel_join.assert_called_once()
++
++    @pytest.mark.asyncio
++    async def test_user_added_for_other_user_ignored(self):
++        """user_added event for non-bot user should not trigger join handler."""
++        self.adapter._handle_channel_join = AsyncMock()
++        event = {
++            "event": "user_added",
++            "data": {
++                "user_id": "other_user",
++                "channel_id": "chan_new",
++                "adder_id": "someone",
++            },
++        }
++        await self.adapter._handle_ws_event(event)
++        self.adapter._handle_channel_join.assert_not_called()
++
++    @pytest.mark.asyncio
++    async def test_non_admin_causes_leave(self):
++        """When adder is not admin, bot should leave the channel."""
++        self.adapter._leave_channel = AsyncMock()
++
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=False):
++            await self.adapter._handle_channel_join({
++                "channel_id": "chan_restricted",
++                "adder_id": "non_admin_user",
++            })
++        self.adapter._leave_channel.assert_called_once_with("chan_restricted")
++
++    @pytest.mark.asyncio
++    async def test_admin_causes_stay(self):
++        """When adder is admin, bot should stay in the channel."""
++        self.adapter._leave_channel = AsyncMock()
++        self.adapter._api_get = AsyncMock(return_value={"display_name": "General"})
++
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=True):
++            await self.adapter._handle_channel_join({
++                "channel_id": "chan_allowed",
++                "adder_id": "admin_user",
++            })
++        self.adapter._leave_channel.assert_not_called()
++
++    @pytest.mark.asyncio
++    async def test_missing_plugin_causes_leave(self):
++        """When swarm_map_policy is not importable, bot should leave (fail-closed)."""
++        self.adapter._leave_channel = AsyncMock()
++
++        with patch.dict("sys.modules", {"plugins.swarm_map_policy": None}):
++            await self.adapter._handle_channel_join({
++                "channel_id": "chan_no_plugin",
++                "adder_id": "someone",
++            })
++        self.adapter._leave_channel.assert_called_once_with("chan_no_plugin")
++
++
+ # ---------------------------------------------------------------------------
+ # File upload (send_image)
+ # ---------------------------------------------------------------------------
+-- 
+2.50.1 (Apple Git-155)
+

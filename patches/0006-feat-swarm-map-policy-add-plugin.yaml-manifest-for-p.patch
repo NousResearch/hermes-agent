@@ -1,0 +1,37 @@
+From 8ebb195fad642f5f64ac40669f8fcf4fe76babfa Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 22:37:32 +1200
+Subject: [PATCH 06/27] feat(swarm-map-policy): add plugin.yaml manifest for
+ plugin discovery
+
+Without this manifest, the plugin system won't discover the swarm_map_policy
+plugin. Declares HSM_URL and HERMES_AGENT_NAME as required env vars.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ plugins/swarm_map_policy/plugin.yaml | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+ create mode 100644 plugins/swarm_map_policy/plugin.yaml
+
+diff --git a/plugins/swarm_map_policy/plugin.yaml b/plugins/swarm_map_policy/plugin.yaml
+new file mode 100644
+index 000000000..180a0d44a
+--- /dev/null
++++ b/plugins/swarm_map_policy/plugin.yaml
+@@ -0,0 +1,13 @@
++name: swarm-map-policy
++version: 1.0.0
++description: "HSM-backed group access control, admin resolution, and approval gating for multi-tenant Hermes deployments."
++author: NimbleCo
++requires_env:
++  - name: HSM_URL
++    description: "URL of the Hermes Swarm Map API"
++    prompt: "HSM API URL"
++    password: false
++  - name: HERMES_AGENT_NAME
++    description: "Agent identifier in HSM"
++    prompt: "Agent name"
++    password: false
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,7 +1,7 @@
-From d5a96e4cb36df8ab1331e01d18f502ab482eb611 Mon Sep 17 00:00:00 2001
+From fe653a204721671058262198ec5b12ebc734b530 Mon Sep 17 00:00:00 2001
 From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
 Date: Fri, 22 May 2026 11:13:07 +1200
-Subject: [PATCH 3/3] feat: add swarm-map-policy plugin for HSM group access
+Subject: [PATCH 03/27] feat: add swarm-map-policy plugin for HSM group access
  control
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

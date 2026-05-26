@@ -1,0 +1,184 @@
+From 9bb9827d6c22725fe9458b2c8d2816fe83e3c769 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Tue, 26 May 2026 12:25:38 +1200
+Subject: [PATCH 27/27] feat(signal): auto-detect group creation via
+ syncMessage
+
+When the bot is a founding member of a new Signal group, signal-cli sends
+a syncMessage with a top-level groupV2 field instead of a regular invite
+envelope. Previously this was dropped at the early return. Now we detect
+groupV2 inside syncMessage and promote it to the envelope level so the
+existing group invite handler (policy check, joinGroup RPC, runtime
+allowlist update) processes it.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/platforms/signal.py             |   9 +-
+ tests/gateway/test_signal_sync_group.py | 135 ++++++++++++++++++++++++
+ 2 files changed, 143 insertions(+), 1 deletion(-)
+ create mode 100644 tests/gateway/test_signal_sync_group.py
+
+diff --git a/gateway/platforms/signal.py b/gateway/platforms/signal.py
+index 51d5dbedc..f6856e0b4 100644
+--- a/gateway/platforms/signal.py
++++ b/gateway/platforms/signal.py
+@@ -488,7 +488,14 @@ class SignalAdapter(BasePlatformAdapter):
+                         is_note_to_self = True
+                         envelope_data = {**envelope_data, "dataMessage": sent_msg}
+             if not is_note_to_self:
+-                return
++                # Check if the syncMessage contains a top-level groupV2 field
++                # (founding-member group creation). If so, promote it to the
++                # envelope level so the existing group invite handler picks it up.
++                sync_group_v2 = sync_msg.get("groupV2") if sync_msg else None
++                if sync_group_v2 and isinstance(sync_group_v2, dict) and sync_group_v2.get("groupId"):
++                    envelope_data = {**envelope_data, "groupV2": sync_group_v2}
++                else:
++                    return
+ 
+         # Extract sender info
+         sender = (
+diff --git a/tests/gateway/test_signal_sync_group.py b/tests/gateway/test_signal_sync_group.py
+new file mode 100644
+index 000000000..566bc3310
+--- /dev/null
++++ b/tests/gateway/test_signal_sync_group.py
+@@ -0,0 +1,135 @@
++"""Tests for Signal syncMessage group auto-detection.
++
++When the bot is a founding member of a new Signal group, signal-cli sends a
++syncMessage with a top-level groupV2 field instead of a regular group invite
++envelope.  The adapter should detect this and route to the existing group invite
++handler.
++"""
++import pytest
++from unittest.mock import AsyncMock
++
++from gateway.config import PlatformConfig
++from tests.gateway.test_signal_enhancements import _make_signal_adapter
++
++
++@pytest.fixture(autouse=True)
++def _reset_signal_scheduler():
++    from gateway.platforms.signal_rate_limit import _reset_scheduler
++    _reset_scheduler()
++    yield
++    _reset_scheduler()
++
++
++class TestSyncMessageGroupCreation:
++    """syncMessage with groupV2 should be routed to the group invite handler."""
++
++    @pytest.mark.asyncio
++    async def test_sync_message_group_creation_detected(self, monkeypatch):
++        """syncMessage with top-level groupV2 should add group to
++        group_allow_from when group_invite_policy is allow-all."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            group_invite_policy="allow-all",
++        )
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++
++        # syncMessage with groupV2 at the syncMessage level (not inside sentMessage)
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
++                "sourceName": "Group Creator",
++                "syncMessage": {
++                    "groupV2": {"groupId": "sync-created-group-001"},
++                },
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        assert "joinGroup" in rpc_calls
++        assert "sync-created-group-001" in adapter.group_allow_from
++
++    @pytest.mark.asyncio
++    async def test_sync_message_group_creation_respects_policy(self, monkeypatch):
++        """With approved-only policy and unknown inviter, group should NOT
++        be added from a syncMessage groupV2."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15551111111",  # only this user approved
++        )
++        # default policy is approved-only
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++
++        # Sender is NOT in the approved list
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "77777777-7777-7777-7777-777777777777",
++                "sourceName": "Unknown Creator",
++                "syncMessage": {
++                    "groupV2": {"groupId": "sync-created-group-002"},
++                },
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        assert "joinGroup" not in rpc_calls
++        assert "sync-created-group-002" not in adapter.group_allow_from
++
++    @pytest.mark.asyncio
++    async def test_sync_message_note_to_self_still_works(self, monkeypatch):
++        """Note to Self messages via syncMessage should still be promoted
++        to dataMessage and not be confused with group creation."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            account="+15551234567",
++            allowed_users="*",
++        )
++
++        processed_messages = []
++
++        # Save original _handle_envelope to check dataMessage promotion
++        original_handle = adapter._handle_envelope
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++
++        # Note to Self: sentMessage with destination matching bot's account
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15551234567",
++                "sourceUuid": "self-uuid-1234",
++                "sourceName": "Bot",
++                "syncMessage": {
++                    "sentMessage": {
++                        "destinationNumber": "+15551234567",
++                        "timestamp": 999999,
++                        "message": "Note to myself",
++                    },
++                },
++            }
++        }
++
++        # Should not raise, and should not add any group
++        await adapter._handle_envelope(envelope)
++
++        # No group should have been added
++        assert len(adapter.group_allow_from) == 0
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,79 @@
+From 1b4887b93e03d71edee429e6b0b7143dd54dfacc Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Sat, 23 May 2026 12:48:14 +1200
+Subject: [PATCH 17/27] feat(signal): observe unmentioned group messages as
+ passive context
+
+Instead of dropping group messages where the bot isn't @mentioned,
+set observe_only=True so they're stored in the session transcript for
+context. Gated by SIGNAL_OBSERVE_UNMENTIONED env var (default: true).
+Commands and replies-to-bot still trigger full agent response.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/platforms/signal.py | 35 ++++++++++++++++++++++++++++++-----
+ 1 file changed, 30 insertions(+), 5 deletions(-)
+
+diff --git a/gateway/platforms/signal.py b/gateway/platforms/signal.py
+index 03def9272..4fc25d80b 100644
+--- a/gateway/platforms/signal.py
++++ b/gateway/platforms/signal.py
+@@ -620,7 +620,11 @@ class SignalAdapter(BasePlatformAdapter):
+         if text and mentions:
+             text = _render_mentions(text, mentions)
+ 
+-        # Mention filter: in groups, only process messages that @mention the bot account
++        # Mention filter: in groups, only process messages that @mention the bot account.
++        # When the bot is not mentioned, the message is dispatched as observe_only
++        # (recorded in session transcript for context but no agent response)
++        # unless SIGNAL_OBSERVE_UNMENTIONED is set to false.
++        _observe_only = False
+         if is_group and self.require_mention:
+             account_norm = self._account_normalized
+             # Check rendered mention tags OR raw mention metadata
+@@ -632,10 +636,30 @@ class SignalAdapter(BasePlatformAdapter):
+                 for m in (data_message.get("mentions") or [])
+             )
+             if not mentioned_in_text and not mentioned_in_metadata:
+-                logger.debug(
+-                    "Signal: ignoring group message (require_mention=true, bot not mentioned)"
+-                )
+-                return
++                # Check for replies to bot and commands before dropping
++                is_reply_to_bot = False
++                quote_data = data_message.get("quote") or {}
++                if quote_data:
++                    bot_uuid = self._recipient_uuid_by_number.get(account_norm, "")
++                    quote_author = quote_data.get("authorNumber") or ""
++                    quote_uuid = quote_data.get("authorUuid") or ""
++                    is_reply_to_bot = (
++                        (quote_author and quote_author == account_norm)
++                        or (bot_uuid and quote_uuid == bot_uuid)
++                    )
++                is_command = bool(text and text.strip().startswith("/"))
++
++                if not is_reply_to_bot and not is_command:
++                    observe_enabled = os.getenv(
++                        "SIGNAL_OBSERVE_UNMENTIONED", "true"
++                    ).lower() in ("true", "1", "yes")
++                    if observe_enabled:
++                        _observe_only = True
++                    else:
++                        logger.debug(
++                            "Signal: ignoring group message (require_mention=true, bot not mentioned)"
++                        )
++                        return
+ 
+         # Extract quote (reply-to) context from Signal dataMessage
+         quote_data = data_message.get("quote") or {}
+@@ -720,6 +744,7 @@ class SignalAdapter(BasePlatformAdapter):
+             raw_message={"sender": sender, "timestamp_ms": ts_ms},
+             reply_to_message_id=reply_to_id,
+             reply_to_text=reply_to_text,
++            observe_only=_observe_only,
+         )
+ 
+         logger.debug("Signal: message from %s in %s: %s",
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,988 @@
+From ec459d16c71576edb8862072f552b65f61962c81 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 11:14:23 +1200
+Subject: [PATCH 04/27] docs: add generated patches and README for MT layer
+ documentation
+
+---
+ ..._id-memory-scoping-for-per-channel-t.patch | 459 ++++++++++++++++++
+ ...text_id-prevent-global-entry-mutatio.patch | 228 +++++++++
+ ...ap-policy-plugin-for-HSM-group-acces.patch | 211 ++++++++
+ patches/README.md                             |  46 ++
+ 4 files changed, 944 insertions(+)
+ create mode 100644 patches/0001-feat-add-context_id-memory-scoping-for-per-channel-t.patch
+ create mode 100644 patches/0002-fix-sanitize-context_id-prevent-global-entry-mutatio.patch
+ create mode 100644 patches/0003-feat-add-swarm-map-policy-plugin-for-HSM-group-acces.patch
+ create mode 100644 patches/README.md
+
+diff --git a/patches/0001-feat-add-context_id-memory-scoping-for-per-channel-t.patch b/patches/0001-feat-add-context_id-memory-scoping-for-per-channel-t.patch
+new file mode 100644
+index 000000000..e018b9281
+--- /dev/null
++++ b/patches/0001-feat-add-context_id-memory-scoping-for-per-channel-t.patch
+@@ -0,0 +1,459 @@
++From fe80096f01779906bb0f549acd412d3a70ce2237 Mon Sep 17 00:00:00 2001
++From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
++Date: Fri, 22 May 2026 11:04:56 +1200
++Subject: [PATCH 1/3] feat: add context_id memory scoping for
++ per-channel/tenant isolation
++
++Adds an opaque context_id parameter to MemoryStore that routes memory
++writes to per-context subdirectories (memories/contexts/{context_id}/).
++Reads merge global + context-scoped entries. Backwards-compatible:
++context_id=None preserves existing single-tenant behavior exactly.
++
++Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
++---
++ agent/agent_init.py                |   3 +
++ gateway/run.py                     |  13 ++
++ run_agent.py                       |   2 +
++ tests/tools/test_memory_scoping.py | 237 +++++++++++++++++++++++++++++
++ tools/memory_tool.py               |  55 ++++++-
++ 5 files changed, 302 insertions(+), 8 deletions(-)
++ create mode 100644 tests/tools/test_memory_scoping.py
++
++diff --git a/agent/agent_init.py b/agent/agent_init.py
++index be9a09dd2..819da1fcb 100644
++--- a/agent/agent_init.py
+++++ b/agent/agent_init.py
++@@ -192,6 +192,7 @@ def init_agent(
++     skip_context_files: bool = False,
++     load_soul_identity: bool = False,
++     skip_memory: bool = False,
+++    context_id: Optional[str] = None,
++     session_db=None,
++     parent_session_id: str = None,
++     iteration_budget: "IterationBudget" = None,
++@@ -270,6 +271,7 @@ def init_agent(
++     agent._chat_name = chat_name
++     agent._chat_type = chat_type
++     agent._thread_id = thread_id
+++    agent._context_id = context_id  # Per-channel/tenant memory scoping
++     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
++     # Pluggable print function — CLI replaces this with _cprint so that
++     # raw ANSI status lines are routed through prompt_toolkit's renderer
++@@ -1049,6 +1051,7 @@ def init_agent(
++                 agent._memory_store = MemoryStore(
++                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
++                     user_char_limit=mem_config.get("user_char_limit", 1375),
+++                    context_id=context_id,
++                 )
++                 agent._memory_store.load_from_disk()
++         except Exception:
++diff --git a/gateway/run.py b/gateway/run.py
++index 0f56ad61c..5e081521b 100644
++--- a/gateway/run.py
+++++ b/gateway/run.py
++@@ -11417,6 +11417,11 @@ class GatewayRunner:
++                     except Exception as e:
++                         logger.warning("Background task vision enrichment failed: %s", e)
++ 
+++            # Per-channel memory scoping for background tasks
+++            _bg_context_id = None
+++            if source.chat_type in ("group", "forum", "channel") and source.chat_id:
+++                _bg_context_id = source.chat_id
+++
++             def run_sync():
++                 agent = AIAgent(
++                     model=turn_route["model"],
++@@ -11443,6 +11448,7 @@ class GatewayRunner:
++                     chat_name=source.chat_name,
++                     chat_type=source.chat_type,
++                     thread_id=source.thread_id,
+++                    context_id=_bg_context_id,
++                     session_db=self._session_db,
++                     fallback_model=self._fallback_model,
++                 )
++@@ -16281,6 +16287,12 @@ class GatewayRunner:
++                         logger.debug("Reusing cached agent for session %s", session_key)
++ 
++             if agent is None:
+++                # Per-channel memory scoping: group/channel chats get scoped memory,
+++                # DMs get global memory.
+++                _context_id = None
+++                if source.chat_type in ("group", "forum", "channel") and source.chat_id:
+++                    _context_id = source.chat_id
+++
++                 # Config changed or first message — create fresh agent
++                 agent = AIAgent(
++                     model=turn_route["model"],
++@@ -16310,6 +16322,7 @@ class GatewayRunner:
++                     chat_type=source.chat_type,
++                     thread_id=source.thread_id,
++                     gateway_session_key=session_key,
+++                    context_id=_context_id,
++                     session_db=self._session_db,
++                     fallback_model=self._fallback_model,
++                 )
++diff --git a/run_agent.py b/run_agent.py
++index 001d03784..546d92cbc 100644
++--- a/run_agent.py
+++++ b/run_agent.py
++@@ -402,6 +402,7 @@ class AIAgent:
++         skip_context_files: bool = False,
++         load_soul_identity: bool = False,
++         skip_memory: bool = False,
+++        context_id: Optional[str] = None,
++         session_db=None,
++         parent_session_id: str = None,
++         iteration_budget: "IterationBudget" = None,
++@@ -471,6 +472,7 @@ class AIAgent:
++             skip_context_files=skip_context_files,
++             load_soul_identity=load_soul_identity,
++             skip_memory=skip_memory,
+++            context_id=context_id,
++             session_db=session_db,
++             parent_session_id=parent_session_id,
++             iteration_budget=iteration_budget,
++diff --git a/tests/tools/test_memory_scoping.py b/tests/tools/test_memory_scoping.py
++new file mode 100644
++index 000000000..a37345426
++--- /dev/null
+++++ b/tests/tools/test_memory_scoping.py
++@@ -0,0 +1,237 @@
+++"""Tests for context_id-based memory scoping in MemoryStore.
+++
+++Validates that:
+++- No context_id → global path (backward compatible)
+++- context_id → writes to contexts/{id}/, reads merge global + scoped
+++- Different contexts are isolated from each other
+++- Concurrent writes to different contexts don't block each other
+++"""
+++
+++import os
+++import tempfile
+++import threading
+++from pathlib import Path
+++from unittest.mock import patch
+++
+++import pytest
+++
+++from tools.memory_tool import MemoryStore, ENTRY_DELIMITER
+++
+++
+++@pytest.fixture
+++def mem_dir(tmp_path):
+++    """Create a temporary memory directory and patch get_memory_dir to use it."""
+++    with patch("tools.memory_tool.get_memory_dir", return_value=tmp_path):
+++        yield tmp_path
+++
+++
+++class TestNoContextId:
+++    """Backward compatibility: context_id=None uses global paths."""
+++
+++    def test_no_context_id_uses_global_path(self, mem_dir):
+++        store = MemoryStore()
+++        path = store._path_for("memory")
+++        assert path == mem_dir / "MEMORY.md"
+++
+++        path_user = store._path_for("user")
+++        assert path_user == mem_dir / "USER.md"
+++
+++    def test_no_context_id_backward_compatible(self, mem_dir):
+++        """Full round-trip: add, save, reload — same as upstream behavior."""
+++        store = MemoryStore()
+++        store.load_from_disk()
+++
+++        result = store.add("memory", "global note")
+++        assert result["success"] is True
+++
+++        # Verify file was written to global path
+++        assert (mem_dir / "MEMORY.md").exists()
+++        assert "global note" in (mem_dir / "MEMORY.md").read_text()
+++
+++        # No context directory created
+++        assert not (mem_dir / "contexts").exists()
+++
+++    def test_no_context_id_read_write_cycle(self, mem_dir):
+++        """Write with no context, read back — identical to upstream."""
+++        store = MemoryStore()
+++        store.load_from_disk()
+++        store.add("memory", "fact one")
+++        store.add("user", "user pref")
+++
+++        # Fresh store, same dir
+++        store2 = MemoryStore()
+++        store2.load_from_disk()
+++        assert "fact one" in store2.memory_entries
+++        assert "user pref" in store2.user_entries
+++
+++
+++class TestContextId:
+++    """context_id routes writes to per-context subdirectory."""
+++
+++    def test_context_id_creates_scoped_directory(self, mem_dir):
+++        store = MemoryStore(context_id="group-123")
+++        store.load_from_disk()
+++
+++        result = store.add("memory", "scoped note")
+++        assert result["success"] is True
+++
+++        scoped_path = mem_dir / "contexts" / "group-123" / "MEMORY.md"
+++        assert scoped_path.exists()
+++        assert "scoped note" in scoped_path.read_text()
+++
+++    def test_context_id_path_for_returns_scoped(self, mem_dir):
+++        store = MemoryStore(context_id="chan-456")
+++        assert store._path_for("memory") == mem_dir / "contexts" / "chan-456" / "MEMORY.md"
+++        assert store._path_for("user") == mem_dir / "contexts" / "chan-456" / "USER.md"
+++
+++    def test_context_id_merges_global_and_scoped(self, mem_dir):
+++        """Reads should include both global and context-scoped entries."""
+++        # Write a global entry directly
+++        (mem_dir / "MEMORY.md").write_text("global fact")
+++
+++        # Create scoped store and add a scoped entry
+++        store = MemoryStore(context_id="grp-1")
+++        store.load_from_disk()
+++
+++        # Should have loaded the global entry
+++        assert "global fact" in store.memory_entries
+++
+++        # Add a scoped entry
+++        store.add("memory", "scoped fact")
+++
+++        # Reload to verify merge
+++        store2 = MemoryStore(context_id="grp-1")
+++        store2.load_from_disk()
+++        assert "global fact" in store2.memory_entries
+++        assert "scoped fact" in store2.memory_entries
+++
+++    def test_scoped_write_does_not_modify_global(self, mem_dir):
+++        """Writing with context_id should not touch global MEMORY.md."""
+++        (mem_dir / "MEMORY.md").write_text("original global")
+++
+++        store = MemoryStore(context_id="grp-2")
+++        store.load_from_disk()
+++        store.add("memory", "scoped only")
+++
+++        # Global file unchanged
+++        assert (mem_dir / "MEMORY.md").read_text() == "original global"
+++
+++    def test_global_path_for_helper(self, mem_dir):
+++        store = MemoryStore(context_id="ctx-1")
+++        assert store._global_path_for("memory") == mem_dir / "MEMORY.md"
+++        assert store._global_path_for("user") == mem_dir / "USER.md"
+++
+++
+++class TestContextIsolation:
+++    """Different context_ids are isolated from each other."""
+++
+++    def test_different_contexts_are_isolated(self, mem_dir):
+++        store_a = MemoryStore(context_id="group-A")
+++        store_a.load_from_disk()
+++        store_a.add("memory", "only for A")
+++
+++        store_b = MemoryStore(context_id="group-B")
+++        store_b.load_from_disk()
+++        store_b.add("memory", "only for B")
+++
+++        # Reload A — should not see B's entry
+++        store_a2 = MemoryStore(context_id="group-A")
+++        store_a2.load_from_disk()
+++        assert "only for A" in store_a2.memory_entries
+++        assert "only for B" not in store_a2.memory_entries
+++
+++        # Reload B — should not see A's entry
+++        store_b2 = MemoryStore(context_id="group-B")
+++        store_b2.load_from_disk()
+++        assert "only for B" in store_b2.memory_entries
+++        assert "only for A" not in store_b2.memory_entries
+++
+++    def test_both_see_global(self, mem_dir):
+++        """Both contexts should see global entries."""
+++        (mem_dir / "MEMORY.md").write_text("shared global")
+++
+++        store_a = MemoryStore(context_id="group-A")
+++        store_a.load_from_disk()
+++        assert "shared global" in store_a.memory_entries
+++
+++        store_b = MemoryStore(context_id="group-B")
+++        store_b.load_from_disk()
+++        assert "shared global" in store_b.memory_entries
+++
+++
+++class TestReplaceAndRemove:
+++    """Replace and remove operate on scoped files, not global."""
+++
+++    def test_replace_in_scoped_context(self, mem_dir):
+++        store = MemoryStore(context_id="ctx-r")
+++        store.load_from_disk()
+++        store.add("memory", "old entry")
+++        store.replace("memory", "old entry", "new entry")
+++
+++        store2 = MemoryStore(context_id="ctx-r")
+++        store2.load_from_disk()
+++        assert "new entry" in store2.memory_entries
+++        assert "old entry" not in store2.memory_entries
+++
+++    def test_remove_from_scoped_context(self, mem_dir):
+++        store = MemoryStore(context_id="ctx-rm")
+++        store.load_from_disk()
+++        store.add("memory", "to remove")
+++        store.remove("memory", "to remove")
+++
+++        store2 = MemoryStore(context_id="ctx-rm")
+++        store2.load_from_disk()
+++        assert "to remove" not in store2.memory_entries
+++
+++
+++class TestSystemPromptSnapshot:
+++    """System prompt snapshot merges global + scoped at load time."""
+++
+++    def test_snapshot_includes_both(self, mem_dir):
+++        (mem_dir / "MEMORY.md").write_text("global info")
+++
+++        # Write scoped entry
+++        scoped_dir = mem_dir / "contexts" / "snap-ctx"
+++        scoped_dir.mkdir(parents=True)
+++        (scoped_dir / "MEMORY.md").write_text("scoped info")
+++
+++        store = MemoryStore(context_id="snap-ctx")
+++        store.load_from_disk()
+++
+++        snapshot = store.format_for_system_prompt("memory")
+++        assert snapshot is not None
+++        assert "global info" in snapshot
+++        assert "scoped info" in snapshot
+++
+++
+++class TestConcurrentContextWrites:
+++    """Different contexts use different lock files, so they don't block each other."""
+++
+++    def test_concurrent_context_writes_dont_block(self, mem_dir):
+++        results = {}
+++        errors = {}
+++
+++        def write_to_context(ctx_id, entry):
+++            try:
+++                store = MemoryStore(context_id=ctx_id)
+++                store.load_from_disk()
+++                result = store.add("memory", entry)
+++                results[ctx_id] = result
+++            except Exception as e:
+++                errors[ctx_id] = e
+++
+++        t1 = threading.Thread(target=write_to_context, args=("ctx-1", "entry from 1"))
+++        t2 = threading.Thread(target=write_to_context, args=("ctx-2", "entry from 2"))
+++
+++        t1.start()
+++        t2.start()
+++        t1.join(timeout=5)
+++        t2.join(timeout=5)
+++
+++        assert not errors, f"Errors: {errors}"
+++        assert results["ctx-1"]["success"] is True
+++        assert results["ctx-2"]["success"] is True
+++
+++        # Verify isolation
+++        assert (mem_dir / "contexts" / "ctx-1" / "MEMORY.md").exists()
+++        assert (mem_dir / "contexts" / "ctx-2" / "MEMORY.md").exists()
++diff --git a/tools/memory_tool.py b/tools/memory_tool.py
++index 78d3a1549..a62b1dd65 100644
++--- a/tools/memory_tool.py
+++++ b/tools/memory_tool.py
++@@ -115,21 +115,38 @@ class MemoryStore:
++         Tool responses always reflect this live state.
++     """
++ 
++-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+++    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+++                 context_id: Optional[str] = None):
++         self.memory_entries: List[str] = []
++         self.user_entries: List[str] = []
++         self.memory_char_limit = memory_char_limit
++         self.user_char_limit = user_char_limit
+++        self.context_id = context_id
++         # Frozen snapshot for system prompt -- set once at load_from_disk()
++         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
++ 
++     def load_from_disk(self):
++-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
+++        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
+++
+++        When context_id is set, reads global entries first then merges in
+++        context-scoped entries (deduplicating).  Writes always go to the
+++        scoped path via _path_for().
+++        """
++         mem_dir = get_memory_dir()
++         mem_dir.mkdir(parents=True, exist_ok=True)
++ 
++-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
++-        self.user_entries = self._read_file(mem_dir / "USER.md")
+++        # Always start with global entries
+++        self.memory_entries = self._read_file(self._global_path_for("memory"))
+++        self.user_entries = self._read_file(self._global_path_for("user"))
+++
+++        # Merge context-scoped entries when context_id is set
+++        if self.context_id is not None:
+++            scoped_dir = mem_dir / "contexts" / self.context_id
+++            scoped_dir.mkdir(parents=True, exist_ok=True)
+++            scoped_memory = self._read_file(scoped_dir / "MEMORY.md")
+++            scoped_user = self._read_file(scoped_dir / "USER.md")
+++            self.memory_entries.extend(scoped_memory)
+++            self.user_entries.extend(scoped_user)
++ 
++         # Deduplicate entries (preserves order, keeps first occurrence)
++         self.memory_entries = list(dict.fromkeys(self.memory_entries))
++@@ -179,25 +196,47 @@ class MemoryStore:
++             fd.close()
++ 
++     @staticmethod
++-    def _path_for(target: str) -> Path:
+++    def _global_path_for(target: str) -> Path:
+++        """Return the global (unscoped) path for a memory target."""
++         mem_dir = get_memory_dir()
++         if target == "user":
++             return mem_dir / "USER.md"
++         return mem_dir / "MEMORY.md"
++ 
+++    def _path_for(self, target: str) -> Path:
+++        """Return the write path for a memory target.
+++
+++        When context_id is set, routes to contexts/{context_id}/ subdirectory.
+++        When context_id is None, returns the global path (backward compatible).
+++        """
+++        if self.context_id is None:
+++            return self._global_path_for(target)
+++        mem_dir = get_memory_dir()
+++        if target == "user":
+++            return mem_dir / "contexts" / self.context_id / "USER.md"
+++        return mem_dir / "contexts" / self.context_id / "MEMORY.md"
+++
++     def _reload_target(self, target: str):
++         """Re-read entries from disk into in-memory state.
++ 
++         Called under file lock to get the latest state before mutating.
+++        When context_id is set, merges global + scoped entries.
++         """
++-        fresh = self._read_file(self._path_for(target))
+++        if self.context_id is not None:
+++            # Merge global + scoped
+++            global_entries = self._read_file(self._global_path_for(target))
+++            scoped_entries = self._read_file(self._path_for(target))
+++            fresh = global_entries + scoped_entries
+++        else:
+++            fresh = self._read_file(self._path_for(target))
++         fresh = list(dict.fromkeys(fresh))  # deduplicate
++         self._set_entries(target, fresh)
++ 
++     def save_to_disk(self, target: str):
++         """Persist entries to the appropriate file. Called after every mutation."""
++-        get_memory_dir().mkdir(parents=True, exist_ok=True)
++-        self._write_file(self._path_for(target), self._entries_for(target))
+++        path = self._path_for(target)
+++        path.parent.mkdir(parents=True, exist_ok=True)
+++        self._write_file(path, self._entries_for(target))
++ 
++     def _entries_for(self, target: str) -> List[str]:
++         if target == "user":
++-- 
++2.50.1 (Apple Git-155)
++
+diff --git a/patches/0002-fix-sanitize-context_id-prevent-global-entry-mutatio.patch b/patches/0002-fix-sanitize-context_id-prevent-global-entry-mutatio.patch
+new file mode 100644
+index 000000000..5feaf86dc
+--- /dev/null
++++ b/patches/0002-fix-sanitize-context_id-prevent-global-entry-mutatio.patch
+@@ -0,0 +1,228 @@
++From 1b5d36bbcd61aa202cd0f9e7b50f58f9de6ca2f1 Mon Sep 17 00:00:00 2001
++From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
++Date: Fri, 22 May 2026 11:11:01 +1200
++Subject: [PATCH 2/3] fix: sanitize context_id, prevent global entry mutation
++ from scoped contexts
++
++- Sanitize context_id in MemoryStore.__init__: replace path separators
++  and parent-ref sequences so chat IDs from Telegram/Signal/etc. can't
++  escape the contexts/ directory via path traversal
++- Treat empty string context_id as None (routes to global path)
++- Track _global_entry_count in merged lists; replace() and remove()
++  return an error when targeting a global entry from a scoped context
++- Extract _context_id_for_source() static helper in GatewayRunner,
++  replacing two identical 3-line inline derivation blocks
++- Add tests: path traversal sanitization, empty context_id, replace/remove
++  on global entries from scoped context
++
++Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
++---
++ gateway/run.py                     | 18 ++++++----
++ tests/tools/test_memory_scoping.py | 44 +++++++++++++++++++++++
++ tools/memory_tool.py               | 56 ++++++++++++++++++++++++++++--
++ 3 files changed, 109 insertions(+), 9 deletions(-)
++
++diff --git a/gateway/run.py b/gateway/run.py
++index 5e081521b..b97848505 100644
++--- a/gateway/run.py
+++++ b/gateway/run.py
++@@ -1614,6 +1614,16 @@ class GatewayRunner:
++         # Track background tasks to prevent garbage collection mid-execution
++         self._background_tasks: set = set()
++ 
+++    @staticmethod
+++    def _context_id_for_source(source) -> Optional[str]:
+++        """Derive memory context_id from message source.
+++
+++        Group/forum/channel chats get per-chat scoped memory; DMs get global
+++        memory (None).  MemoryStore sanitizes the returned value before use.
+++        """
+++        if source.chat_type in ("group", "forum", "channel") and source.chat_id:
+++            return str(source.chat_id)
+++        return None
++ 
++     def _wire_teams_pipeline_runtime(self) -> None:
++         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
++@@ -11418,9 +11428,7 @@ class GatewayRunner:
++                         logger.warning("Background task vision enrichment failed: %s", e)
++ 
++             # Per-channel memory scoping for background tasks
++-            _bg_context_id = None
++-            if source.chat_type in ("group", "forum", "channel") and source.chat_id:
++-                _bg_context_id = source.chat_id
+++            _bg_context_id = self._context_id_for_source(source)
++ 
++             def run_sync():
++                 agent = AIAgent(
++@@ -16289,9 +16297,7 @@ class GatewayRunner:
++             if agent is None:
++                 # Per-channel memory scoping: group/channel chats get scoped memory,
++                 # DMs get global memory.
++-                _context_id = None
++-                if source.chat_type in ("group", "forum", "channel") and source.chat_id:
++-                    _context_id = source.chat_id
+++                _context_id = self._context_id_for_source(source)
++ 
++                 # Config changed or first message — create fresh agent
++                 agent = AIAgent(
++diff --git a/tests/tools/test_memory_scoping.py b/tests/tools/test_memory_scoping.py
++index a37345426..1ad2c5b42 100644
++--- a/tests/tools/test_memory_scoping.py
+++++ b/tests/tools/test_memory_scoping.py
++@@ -204,6 +204,50 @@ class TestSystemPromptSnapshot:
++         assert "scoped info" in snapshot
++ 
++ 
+++class TestPathTraversalAndEdgeCases:
+++    """Security and edge-case tests for context_id handling."""
+++
+++    def test_context_id_path_traversal_sanitized(self, mem_dir):
+++        """Path traversal in context_id is sanitized."""
+++        store = MemoryStore(context_id="../../etc/passwd")
+++        store.load_from_disk()
+++        store.add("memory", "test entry")
+++
+++        # Should NOT escape the contexts directory
+++        assert not (mem_dir.parent.parent / "etc" / "passwd" / "MEMORY.md").exists()
+++        # Should be sanitized to a safe path under contexts/
+++        contexts_dir = mem_dir / "contexts"
+++        assert contexts_dir.exists()
+++
+++    def test_empty_context_id_treated_as_none(self, mem_dir):
+++        """Empty string context_id behaves like None (global)."""
+++        store = MemoryStore(context_id="")
+++        assert store.context_id is None
+++
+++    def test_replace_global_entry_from_scoped_context_fails(self, mem_dir):
+++        """Replacing a global entry from a scoped context returns error."""
+++        # Write a global entry directly
+++        (mem_dir / "MEMORY.md").write_text("The sky is blue")
+++
+++        store = MemoryStore(context_id="group-123")
+++        store.load_from_disk()
+++        # Try to replace a global entry
+++        result = store.replace("memory", "sky is blue", "sky is green")
+++        assert result["success"] is False
+++        assert "global" in result["error"].lower()
+++
+++    def test_remove_global_entry_from_scoped_context_fails(self, mem_dir):
+++        """Removing a global entry from a scoped context returns error."""
+++        # Write a global entry directly
+++        (mem_dir / "MEMORY.md").write_text("The sky is blue")
+++
+++        store = MemoryStore(context_id="group-123")
+++        store.load_from_disk()
+++        result = store.remove("memory", "sky is blue")
+++        assert result["success"] is False
+++        assert "global" in result["error"].lower()
+++
+++
++ class TestConcurrentContextWrites:
++     """Different contexts use different lock files, so they don't block each other."""
++ 
++diff --git a/tools/memory_tool.py b/tools/memory_tool.py
++index a62b1dd65..c38a127f3 100644
++--- a/tools/memory_tool.py
+++++ b/tools/memory_tool.py
++@@ -121,7 +121,15 @@ class MemoryStore:
++         self.user_entries: List[str] = []
++         self.memory_char_limit = memory_char_limit
++         self.user_char_limit = user_char_limit
++-        self.context_id = context_id
+++        # Sanitize context_id: treat empty/falsy as None; replace path separators
+++        # and parent-ref sequences so chat IDs from any platform can't escape
+++        # the contexts/ directory via path traversal.
+++        if context_id:
+++            safe_id = str(context_id).replace("/", "_").replace("\\", "_").replace("..", "_")
+++            self.context_id: Optional[str] = safe_id
+++        else:
+++            self.context_id = None
+++        self._global_entry_count: int = 0  # tracks how many entries came from global files
++         # Frozen snapshot for system prompt -- set once at load_from_disk()
++         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
++ 
++@@ -152,6 +160,16 @@ class MemoryStore:
++         self.memory_entries = list(dict.fromkeys(self.memory_entries))
++         self.user_entries = list(dict.fromkeys(self.user_entries))
++ 
+++        # Track how many of the merged memory entries came from global files.
+++        # Used by replace/remove to reject mutations targeting global entries
+++        # when operating from a scoped context.
+++        if self.context_id is not None:
+++            global_raw = self._read_file(self._global_path_for("memory"))
+++            global_set = set(global_raw)
+++            self._global_entry_count = sum(1 for e in self.memory_entries if e in global_set)
+++        else:
+++            self._global_entry_count = 0
+++
++         # Capture frozen snapshot for system prompt injection
++         self._system_prompt_snapshot = {
++             "memory": self._render_block("memory", self.memory_entries),
++@@ -220,16 +238,23 @@ class MemoryStore:
++         """Re-read entries from disk into in-memory state.
++ 
++         Called under file lock to get the latest state before mutating.
++-        When context_id is set, merges global + scoped entries.
+++        When context_id is set, merges global + scoped entries and updates
+++        _global_entry_count for the memory target (used by replace/remove
+++        to block mutations on global entries from a scoped context).
++         """
++         if self.context_id is not None:
++             # Merge global + scoped
++             global_entries = self._read_file(self._global_path_for(target))
++             scoped_entries = self._read_file(self._path_for(target))
++             fresh = global_entries + scoped_entries
+++            fresh = list(dict.fromkeys(fresh))  # deduplicate
+++            if target == "memory":
+++                # Recount global entries after dedup
+++                global_set = set(global_entries)
+++                self._global_entry_count = sum(1 for e in fresh if e in global_set)
++         else:
++             fresh = self._read_file(self._path_for(target))
++-        fresh = list(dict.fromkeys(fresh))  # deduplicate
+++            fresh = list(dict.fromkeys(fresh))  # deduplicate
++         self._set_entries(target, fresh)
++ 
++     def save_to_disk(self, target: str):
++@@ -341,6 +366,20 @@ class MemoryStore:
++                 # All identical -- safe to replace just the first
++ 
++             idx = matches[0][0]
+++
+++            # Guard: refuse to mutate a global entry from a scoped context.
+++            # Global entries occupy the first _global_entry_count positions in
+++            # the merged list. Saving goes to the scoped file only, so any
+++            # modification would be lost on the next reload.
+++            if self.context_id is not None and idx < self._global_entry_count:
+++                return {
+++                    "success": False,
+++                    "error": (
+++                        "Cannot modify a global entry from a scoped context. "
+++                        "Use scope='global' to modify global entries."
+++                    ),
+++                }
+++
++             limit = self._char_limit(target)
++ 
++             # Check that replacement doesn't blow the budget
++@@ -391,6 +430,17 @@ class MemoryStore:
++                 # All identical -- safe to remove just the first
++ 
++             idx = matches[0][0]
+++
+++            # Guard: refuse to remove a global entry from a scoped context.
+++            if self.context_id is not None and idx < self._global_entry_count:
+++                return {
+++                    "success": False,
+++                    "error": (
+++                        "Cannot modify a global entry from a scoped context. "
+++                        "Use scope='global' to modify global entries."
+++                    ),
+++                }
+++
++             entries.pop(idx)
++             self._set_entries(target, entries)
++             self.save_to_disk(target)
++-- 
++2.50.1 (Apple Git-155)
++
+diff --git a/patches/0003-feat-add-swarm-map-policy-plugin-for-HSM-group-acces.patch b/patches/0003-feat-add-swarm-map-policy-plugin-for-HSM-group-acces.patch
+new file mode 100644
+index 000000000..c13d2be3e
+--- /dev/null
++++ b/patches/0003-feat-add-swarm-map-policy-plugin-for-HSM-group-acces.patch
+@@ -0,0 +1,211 @@
++From d5a96e4cb36df8ab1331e01d18f502ab482eb611 Mon Sep 17 00:00:00 2001
++From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
++Date: Fri, 22 May 2026 11:13:07 +1200
++Subject: [PATCH 3/3] feat: add swarm-map-policy plugin for HSM group access
++ control
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++Plugin integrates with Hermes Swarm Map (HSM) to enforce group
++allowlists and admin checks. Uses standard plugin hooks
++(on_session_start, pre_tool_call) — no core code changes.
++
++Security: fail-closed for group checks, fail-open for tool calls.
++---
++ plugins/swarm_map_policy/README.md     | 22 ++++++
++ plugins/swarm_map_policy/__init__.py   | 98 ++++++++++++++++++++++++++
++ tests/plugins/test_swarm_map_policy.py | 47 ++++++++++++
++ 3 files changed, 167 insertions(+)
++ create mode 100644 plugins/swarm_map_policy/README.md
++ create mode 100644 plugins/swarm_map_policy/__init__.py
++ create mode 100644 tests/plugins/test_swarm_map_policy.py
++
++diff --git a/plugins/swarm_map_policy/README.md b/plugins/swarm_map_policy/README.md
++new file mode 100644
++index 000000000..f524ba958
++--- /dev/null
+++++ b/plugins/swarm_map_policy/README.md
++@@ -0,0 +1,22 @@
+++# Swarm Map Policy Plugin
+++
+++Integrates Hermes with [Hermes Swarm Map](https://github.com/NimbleCoOrg/hermes-swarm-map) for multi-tenant group access control.
+++
+++## Configuration
+++
+++Set these environment variables in your agent's `.env`:
+++
+++```
+++HSM_URL=http://localhost:3002
+++HERMES_AGENT_NAME=hermes-personal
+++```
+++
+++## Security Model
+++
+++- **Group checks:** Fail-closed. If HSM is unreachable, group messages are denied.
+++- **Tool checks:** Fail-open. If HSM is not configured, all tools are allowed.
+++
+++## Hooks Used
+++
+++- `on_session_start` — validate group access and cache admin status
+++- `pre_tool_call` — gate tools based on HSM policy (future)
++diff --git a/plugins/swarm_map_policy/__init__.py b/plugins/swarm_map_policy/__init__.py
++new file mode 100644
++index 000000000..78e875a4f
++--- /dev/null
+++++ b/plugins/swarm_map_policy/__init__.py
++@@ -0,0 +1,98 @@
+++"""Swarm Map Policy Plugin — HSM-backed group access control.
+++
+++Integrates with Hermes Swarm Map (HSM) to enforce:
+++- Group allowlists: only groups registered in HSM can interact
+++- Admin checks: platform admin status from HSM settings
+++- Tool gating: (future) per-group tool restrictions
+++
+++Configuration via environment variables:
+++- HSM_URL: URL of the HSM API (e.g., http://localhost:3002)
+++- HERMES_AGENT_NAME: Agent identifier in HSM (e.g., hermes-personal)
+++
+++Security model:
+++- Group checks: FAIL-CLOSED (deny if HSM unreachable)
+++- Tool checks: FAIL-OPEN (allow if not configured)
+++"""
+++
+++import logging
+++import os
+++from typing import Optional
+++
+++logger = logging.getLogger(__name__)
+++
+++try:
+++    import requests
+++except ImportError:
+++    requests = None
+++
+++
+++def _hsm_url() -> Optional[str]:
+++    """Get HSM API URL from environment."""
+++    return os.environ.get("HSM_URL") or None
+++
+++
+++def _harness_id() -> Optional[str]:
+++    """Get this agent's harness ID from environment."""
+++    return os.environ.get("HERMES_AGENT_NAME") or None
+++
+++
+++def is_group_allowed(group_id: str, platform: str) -> bool:
+++    """Check if a group is in the HSM allowlist. Fail-closed."""
+++    url = _hsm_url()
+++    harness = _harness_id()
+++    if not url or not harness:
+++        logger.warning("swarm-map-policy: HSM not configured, denying group")
+++        return False
+++    try:
+++        resp = requests.get(
+++            f"{url}/api/harnesses/{harness}/surfaces/{platform}/groups/{group_id}",
+++            timeout=5,
+++        )
+++        return resp.status_code == 200 and resp.json().get("allowed", False)
+++    except Exception as e:
+++        logger.warning("swarm-map-policy: HSM check failed (fail-closed): %s", e)
+++        return False
+++
+++
+++def is_tool_allowed(tool_name: str, group_id: str) -> bool:
+++    """Check if a tool is allowed for a group. Fail-open."""
+++    url = _hsm_url()
+++    if not url:
+++        return True
+++    return True  # Future: check HSM tool gating API
+++
+++
+++def is_platform_admin(user_id: str, platform: str) -> bool:
+++    """Check if a user is a platform admin via HSM. Fail-closed."""
+++    url = _hsm_url()
+++    harness = _harness_id()
+++    if not url or not harness:
+++        return False
+++    try:
+++        resp = requests.get(
+++            f"{url}/api/harnesses/{harness}/surfaces/{platform}/admins/{user_id}",
+++            timeout=5,
+++        )
+++        return resp.status_code == 200 and resp.json().get("is_admin", False)
+++    except Exception:
+++        return False
+++
+++
+++def _on_session_start(session_id: str = None, **kwargs) -> None:
+++    """Log session start. Future: cache admin status, validate group."""
+++    logger.debug("swarm-map-policy: session start %s", session_id)
+++
+++
+++def _pre_tool_call(tool_name: str = None, **kwargs) -> None:
+++    """Gate tool calls based on HSM policy. Returns None to allow."""
+++    return None
+++
+++
+++def register(ctx):
+++    """Register plugin hooks."""
+++    if not requests:
+++        logger.warning("swarm-map-policy: 'requests' not installed, plugin disabled")
+++        return
+++    ctx.register_hook("on_session_start", _on_session_start)
+++    ctx.register_hook("pre_tool_call", _pre_tool_call)
+++    logger.info("swarm-map-policy: registered (HSM_URL=%s)", _hsm_url() or "not set")
++diff --git a/tests/plugins/test_swarm_map_policy.py b/tests/plugins/test_swarm_map_policy.py
++new file mode 100644
++index 000000000..1ac0cf0b5
++--- /dev/null
+++++ b/tests/plugins/test_swarm_map_policy.py
++@@ -0,0 +1,47 @@
+++"""Tests for swarm-map-policy plugin — HSM integration for group access control."""
+++import pytest
+++from unittest.mock import patch, MagicMock
+++
+++
+++class TestSwarmMapPolicy:
+++
+++    def test_plugin_registers_hooks(self):
+++        """Plugin registers on_session_start and pre_tool_call hooks."""
+++        from plugins.swarm_map_policy import register
+++        ctx = MagicMock()
+++        register(ctx)
+++        hook_names = [call.args[0] for call in ctx.register_hook.call_args_list]
+++        assert "on_session_start" in hook_names
+++        assert "pre_tool_call" in hook_names
+++
+++    def test_hsm_url_from_env(self):
+++        from plugins.swarm_map_policy import _hsm_url
+++        with patch.dict("os.environ", {"HSM_URL": "http://localhost:3002"}):
+++            assert _hsm_url() == "http://localhost:3002"
+++
+++    def test_hsm_url_missing_returns_none(self):
+++        from plugins.swarm_map_policy import _hsm_url
+++        with patch.dict("os.environ", {}, clear=True):
+++            assert _hsm_url() is None
+++
+++    def test_group_check_fail_closed_on_error(self):
+++        from plugins.swarm_map_policy import is_group_allowed
+++        with patch("plugins.swarm_map_policy._hsm_url", return_value="http://dead:9999"):
+++            with patch("plugins.swarm_map_policy.requests") as mock_req:
+++                mock_req.get.side_effect = Exception("Connection refused")
+++                assert is_group_allowed("group-123", "signal") is False
+++
+++    def test_group_check_fail_closed_no_config(self):
+++        from plugins.swarm_map_policy import is_group_allowed
+++        with patch("plugins.swarm_map_policy._hsm_url", return_value=None):
+++            assert is_group_allowed("group-123", "signal") is False
+++
+++    def test_tool_check_fail_open(self):
+++        from plugins.swarm_map_policy import is_tool_allowed
+++        with patch("plugins.swarm_map_policy._hsm_url", return_value=None):
+++            assert is_tool_allowed("dangerous_tool", "group-123") is True
+++
+++    def test_admin_check_fail_closed(self):
+++        from plugins.swarm_map_policy import is_platform_admin
+++        with patch("plugins.swarm_map_policy._hsm_url", return_value=None):
+++            assert is_platform_admin("user-123", "signal") is False
++-- 
++2.50.1 (Apple Git-155)
++
+diff --git a/patches/README.md b/patches/README.md
+new file mode 100644
+index 000000000..ac93be86a
+--- /dev/null
++++ b/patches/README.md
+@@ -0,0 +1,46 @@
++# Hermes Multi-Tenancy Patches
++
++These patches add multi-tenant memory isolation to [Hermes](https://github.com/NousResearch/hermes-agent). They are generated from the commits on this fork and represent the complete delta from upstream.
++
++## What's Changed
++
++### Memory Scoping via context_id
++
++Adds per-channel/tenant memory isolation. Memory writes are routed to scoped subdirectories based on an opaque `context_id`. Reads merge global and scoped entries. Backwards-compatible: `context_id=None` preserves existing behavior.
++
++**Files changed:** `tools/memory_tool.py`, `agent/agent_init.py`, `run_agent.py`, `gateway/run.py`
++
++### Swarm Map Policy Plugin
++
++[Hermes Swarm Map](https://github.com/NimbleCoOrg/hermes-swarm-map) integration plugin for group access control. Uses standard plugin hooks — no core code changes.
++
++**Files changed:** `plugins/swarm_map_policy/`
++
++## Patches
++
++| File | Commit |
++|------|--------|
++| `0001-feat-add-context_id-memory-scoping-for-per-channel-t.patch` | feat: add context_id memory scoping for per-channel/tenant isolation |
++| `0002-fix-sanitize-context_id-prevent-global-entry-mutatio.patch` | fix: sanitize context_id, prevent global entry mutation from scoped contexts |
++| `0003-feat-add-swarm-map-policy-plugin-for-HSM-group-acces.patch` | feat: add swarm-map-policy plugin for HSM group access control |
++
++## Applying Manually
++
++```bash
++git clone https://github.com/NousResearch/hermes-agent.git
++cd hermes-agent
++git am /path/to/patches/*.patch
++```
++
++## Regenerating
++
++After rebasing onto a new upstream version:
++
++```bash
++git format-patch upstream/main..HEAD -o patches/
++```
++
++## Related
++
++- [Hermes Swarm Map](https://github.com/NimbleCoOrg/hermes-swarm-map) — Admin GUI for managing Hermes agents
++- Upstream Issue: _link pending_
+-- 
+2.50.1 (Apple Git-155)
+

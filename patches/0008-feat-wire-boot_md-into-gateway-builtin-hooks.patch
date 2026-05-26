@@ -1,0 +1,41 @@
+From 1ad3753ddc25afba5feb19c8abc647d457bc0fe5 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 22:38:41 +1200
+Subject: [PATCH 08/27] feat: wire boot_md into gateway builtin hooks
+
+Register boot_md handler in _register_builtin_hooks() so it fires
+on every gateway:startup event without needing a HOOK.yaml in the
+hooks directory.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/hooks.py | 13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/gateway/hooks.py b/gateway/hooks.py
+index 5ab451192..4cf09cf0e 100644
+--- a/gateway/hooks.py
++++ b/gateway/hooks.py
+@@ -53,13 +53,12 @@ class HookRegistry:
+         return list(self._loaded_hooks)
+ 
+     def _register_builtin_hooks(self) -> None:
+-        """Register built-in hooks that are always active.
+-
+-        Currently empty — no shipped built-in hooks. Kept as the extension
+-        point for future always-on gateway hooks so they drop in without
+-        re-plumbing discover_and_load().
+-        """
+-        return
++        """Register built-in hooks that are always active."""
++        try:
++            from gateway.builtin_hooks.boot_md import handle as boot_md_handle
++            self._handlers.setdefault("gateway:startup", []).append(boot_md_handle)
++        except Exception as e:
++            print(f"[hooks] Failed to load boot_md builtin hook: {e}", flush=True)
+ 
+     def discover_and_load(self) -> None:
+         """
+-- 
+2.50.1 (Apple Git-155)
+

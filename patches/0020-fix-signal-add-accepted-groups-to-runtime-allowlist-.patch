@@ -1,0 +1,111 @@
+From c65b12b2562a8d095febbbffa6415d4efb624802 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Mon, 25 May 2026 11:37:30 +1200
+Subject: [PATCH 20/27] fix(signal): add accepted groups to runtime allowlist
+ after invite
+
+When a group invite is accepted, the group ID is now dynamically added
+to the runtime allowlist so subsequent messages are processed. Fixes
+the chicken-and-egg problem where groups were disabled when the
+allowlist was empty, preventing the normal admin-invite flow from
+working.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/platforms/signal.py               |  9 ++++
+ tests/gateway/test_signal_enhancements.py | 59 +++++++++++++++++++++++
+ 2 files changed, 68 insertions(+)
+
+diff --git a/gateway/platforms/signal.py b/gateway/platforms/signal.py
+index 4fc25d80b..6b5731e0f 100644
+--- a/gateway/platforms/signal.py
++++ b/gateway/platforms/signal.py
+@@ -571,6 +571,15 @@ class SignalAdapter(BasePlatformAdapter):
+                             "Signal: failed to accept group invitation for %s",
+                             group_v2_invite_id[:12] if group_v2_invite_id else "?",
+                         )
++                        return
++
++                # Dynamically add the accepted group to the runtime allowlist
++                # so subsequent messages from this group are not dropped.
++                self.group_allow_from.add(group_v2_invite_id)
++                logger.info(
++                    "Signal: group %s added to runtime allowlist after invite acceptance",
++                    group_v2_invite_id[:12] if group_v2_invite_id else "?",
++                )
+                 return  # nothing else to process — no dataMessage
+ 
+         # Get data message — also check editMessage (edited messages contain
+diff --git a/tests/gateway/test_signal_enhancements.py b/tests/gateway/test_signal_enhancements.py
+index d654f38d7..0f8ad1284 100644
+--- a/tests/gateway/test_signal_enhancements.py
++++ b/tests/gateway/test_signal_enhancements.py
+@@ -380,6 +380,65 @@ class TestGroupInvitePolicy:
+ 
+         assert "joinGroup" in rpc_calls
+ 
++    @pytest.mark.asyncio
++    async def test_accepted_group_added_to_runtime_allowlist(self, monkeypatch):
++        """After accepting a group invite, the group ID should be added to
++        the runtime allowlist so subsequent messages are not dropped."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15559999999",
++        )
++
++        # Initially no groups in allowlist
++        assert len(adapter.group_allow_from) == 0
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "66666666-6666-6666-6666-666666666666",
++                "sourceName": "Approved User",
++                "groupV2": {"groupId": "new-group-abc123"},
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        # Group should now be in the runtime allowlist
++        assert "new-group-abc123" in adapter.group_allow_from
++
++    @pytest.mark.asyncio
++    async def test_failed_join_does_not_add_to_allowlist(self, monkeypatch):
++        """If both joinGroup and updateGroup fail, group should NOT be added
++        to the allowlist."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15559999999",
++        )
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            raise Exception(f"{method} failed")
++
++        adapter._rpc = mock_rpc
++
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "66666666-6666-6666-6666-666666666666",
++                "sourceName": "Approved User",
++                "groupV2": {"groupId": "failed-group-xyz"},
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        # Group should NOT be in the allowlist since join failed
++        assert "failed-group-xyz" not in adapter.group_allow_from
++
+ 
+ # ---------------------------------------------------------------------------
+ # 2.7 Profile Name Setting
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,138 @@
+From 53499a9940916cbcf143dc955b033c068b5285cc Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 11:14:42 +1200
+Subject: [PATCH 05/27] ci: add GHCR publish and weekly upstream sync workflows
+
+---
+ .github/workflows/ghcr-publish.yml  | 49 +++++++++++++++++++++++
+ .github/workflows/upstream-sync.yml | 62 +++++++++++++++++++++++++++++
+ 2 files changed, 111 insertions(+)
+ create mode 100644 .github/workflows/ghcr-publish.yml
+ create mode 100644 .github/workflows/upstream-sync.yml
+
+diff --git a/.github/workflows/ghcr-publish.yml b/.github/workflows/ghcr-publish.yml
+new file mode 100644
+index 000000000..c3ea39cc8
+--- /dev/null
++++ b/.github/workflows/ghcr-publish.yml
+@@ -0,0 +1,49 @@
++name: Publish Docker Image (Fork)
++
++# Fork-specific workflow. The upstream docker-publish.yml only runs on
++# github.repository == 'NousResearch/hermes-agent'; this workflow handles
++# publishing to GHCR for NimbleCoOrg/hermes-agent.
++
++on:
++  push:
++    branches: [main]
++  workflow_dispatch:
++
++env:
++  REGISTRY: ghcr.io
++  IMAGE_NAME: ${{ github.repository }}
++
++jobs:
++  build-and-push:
++    runs-on: ubuntu-latest
++    permissions:
++      contents: read
++      packages: write
++
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Log in to Container Registry
++        uses: docker/login-action@v3
++        with:
++          registry: ${{ env.REGISTRY }}
++          username: ${{ github.actor }}
++          password: ${{ secrets.GITHUB_TOKEN }}
++
++      - name: Extract metadata
++        id: meta
++        uses: docker/metadata-action@v5
++        with:
++          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
++          tags: |
++            type=raw,value=latest
++            type=sha,prefix=
++            type=raw,value={{date 'YYYY-MM-DD'}}
++
++      - name: Build and push
++        uses: docker/build-push-action@v5
++        with:
++          context: .
++          push: true
++          tags: ${{ steps.meta.outputs.tags }}
++          labels: ${{ steps.meta.outputs.labels }}
+diff --git a/.github/workflows/upstream-sync.yml b/.github/workflows/upstream-sync.yml
+new file mode 100644
+index 000000000..da0db7875
+--- /dev/null
++++ b/.github/workflows/upstream-sync.yml
+@@ -0,0 +1,62 @@
++name: Upstream Sync
++
++on:
++  schedule:
++    - cron: '0 6 * * 1'
++  workflow_dispatch:
++
++jobs:
++  sync:
++    runs-on: ubuntu-latest
++    permissions:
++      contents: write
++      pull-requests: write
++      issues: write
++
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++
++      - name: Configure git
++        run: |
++          git config user.name "github-actions[bot]"
++          git config user.email "github-actions[bot]@users.noreply.github.com"
++
++      - name: Fetch upstream
++        run: |
++          git remote add upstream https://github.com/NousResearch/hermes-agent.git || true
++          git fetch upstream main
++
++      - name: Attempt rebase
++        id: rebase
++        run: |
++          git checkout -b upstream-sync-$(date +%Y%m%d)
++          if git rebase upstream/main; then
++            echo "status=clean" >> $GITHUB_OUTPUT
++          else
++            git rebase --abort
++            echo "status=conflict" >> $GITHUB_OUTPUT
++          fi
++
++      - name: Create PR on clean rebase
++        if: steps.rebase.outputs.status == 'clean'
++        run: |
++          git push origin upstream-sync-$(date +%Y%m%d)
++          gh pr create \
++            --title "chore: sync with upstream $(date +%Y-%m-%d)" \
++            --body "Automated weekly rebase onto upstream/main. All patches applied cleanly." \
++            --base main \
++            --head upstream-sync-$(date +%Y%m%d)
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++
++      - name: Open issue on conflict
++        if: steps.rebase.outputs.status == 'conflict'
++        run: |
++          gh issue create \
++            --title "Upstream sync conflict $(date +%Y-%m-%d)" \
++            --body "Weekly rebase onto upstream/main had conflicts. Manual resolution needed." \
++            --label "upstream-sync"
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,238 @@
+From c742d7ce1d7d99a59dccd6d3000e1d51ca3497a9 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 22:38:36 +1200
+Subject: [PATCH 07/27] feat: add boot.md builtin hook for startup prompt
+ execution
+
+Reads ~/.hermes/BOOT.md on gateway startup and runs it as an agent
+prompt in a background thread (daemon=True) so it never blocks startup.
+Adapted from the old fork to use hermes_cli.config.get_hermes_home().
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/builtin_hooks/boot_md.py |  87 +++++++++++++++++++++++
+ tests/gateway/test_boot_md.py    | 118 +++++++++++++++++++++++++++++++
+ 2 files changed, 205 insertions(+)
+ create mode 100644 gateway/builtin_hooks/boot_md.py
+ create mode 100644 tests/gateway/test_boot_md.py
+
+diff --git a/gateway/builtin_hooks/boot_md.py b/gateway/builtin_hooks/boot_md.py
+new file mode 100644
+index 000000000..9db9d9d56
+--- /dev/null
++++ b/gateway/builtin_hooks/boot_md.py
+@@ -0,0 +1,87 @@
++"""Built-in boot-md hook — run ~/.hermes/BOOT.md on gateway startup.
++
++This hook is always registered. It silently skips if no BOOT.md exists.
++To activate, create ``~/.hermes/BOOT.md`` with instructions for the
++agent to execute on every gateway restart.
++
++Example BOOT.md::
++
++    # Startup Checklist
++
++    1. Check if any cron jobs failed overnight
++    2. Send a status update to Discord #general
++    3. If there are errors in /opt/app/deploy.log, summarize them
++
++The agent runs in a background thread so it doesn't block gateway
++startup. If nothing needs attention, it replies with [SILENT] to
++suppress delivery.
++"""
++
++import logging
++import threading
++from pathlib import Path
++
++from hermes_cli.config import get_hermes_home
++
++logger = logging.getLogger("hooks.boot-md")
++
++HERMES_HOME = get_hermes_home()
++BOOT_FILE = HERMES_HOME / "BOOT.md"
++
++
++def _build_boot_prompt(content: str) -> str:
++    """Wrap BOOT.md content in a system-level instruction."""
++    return (
++        "You are running a startup boot checklist. Follow the BOOT.md "
++        "instructions below exactly.\n\n"
++        "---\n"
++        f"{content}\n"
++        "---\n\n"
++        "Execute each instruction. If you need to send a message to a "
++        "platform, use the send_message tool.\n"
++        "If nothing needs attention and there is nothing to report, "
++        "reply with ONLY: [SILENT]"
++    )
++
++
++def _run_boot_agent(content: str) -> None:
++    """Spawn a one-shot agent session to execute the boot instructions."""
++    try:
++        from run_agent import AIAgent
++
++        prompt = _build_boot_prompt(content)
++        agent = AIAgent(
++            quiet_mode=True,
++            skip_context_files=True,
++            skip_memory=True,
++            max_iterations=20,
++        )
++        result = agent.run_conversation(prompt)
++        response = result.get("final_response", "")
++        if response and "[SILENT]" not in response:
++            logger.info("boot-md completed: %s", response[:200])
++        else:
++            logger.info("boot-md completed (nothing to report)")
++    except Exception as e:
++        logger.error("boot-md agent failed: %s", e)
++
++
++async def handle(event_type: str, context: dict) -> None:
++    """Gateway startup handler — run BOOT.md if it exists."""
++    if not BOOT_FILE.exists():
++        return
++
++    content = BOOT_FILE.read_text(encoding="utf-8").strip()
++    if not content:
++        return
++
++    logger.info("Running BOOT.md (%d chars)", len(content))
++
++    # Run in a background thread so we don't block gateway startup.
++    thread = threading.Thread(
++        target=_run_boot_agent,
++        args=(content,),
++        name="boot-md",
++        daemon=True,
++    )
++    thread.start()
+diff --git a/tests/gateway/test_boot_md.py b/tests/gateway/test_boot_md.py
+new file mode 100644
+index 000000000..2c9567a35
+--- /dev/null
++++ b/tests/gateway/test_boot_md.py
+@@ -0,0 +1,118 @@
++"""Tests for the boot_md builtin hook."""
++
++import tempfile
++import threading
++from pathlib import Path
++from unittest import mock
++
++import pytest
++
++
++@pytest.fixture
++def hermes_home(tmp_path):
++    """Provide a temporary HERMES_HOME directory."""
++    return tmp_path
++
++
++@pytest.fixture
++def boot_file(hermes_home):
++    """Return the path where BOOT.md would live."""
++    return hermes_home / "BOOT.md"
++
++
++def _import_boot_md(hermes_home):
++    """Import boot_md with get_hermes_home patched to return hermes_home."""
++    with mock.patch("hermes_cli.config.get_hermes_home", return_value=hermes_home):
++        import importlib
++        import gateway.builtin_hooks.boot_md as mod
++        importlib.reload(mod)
++        return mod
++
++
++@pytest.mark.asyncio
++async def test_boot_md_runs_on_startup(hermes_home, boot_file):
++    """BOOT.md exists with content -> AIAgent.run_conversation is called."""
++    boot_file.write_text("# Startup\n1. Check logs\n")
++
++    mod = _import_boot_md(hermes_home)
++
++    with mock.patch.object(mod, "threading") as mock_threading:
++        mock_thread = mock.MagicMock()
++        mock_threading.Thread.return_value = mock_thread
++
++        await mod.handle("gateway:startup", {})
++
++        mock_threading.Thread.assert_called_once()
++        call_kwargs = mock_threading.Thread.call_args
++        assert call_kwargs.kwargs["daemon"] is True
++        assert call_kwargs.kwargs["name"] == "boot-md"
++        mock_thread.start.assert_called_once()
++
++
++@pytest.mark.asyncio
++async def test_boot_md_skips_if_no_file(hermes_home):
++    """No BOOT.md -> AIAgent is never instantiated."""
++    mod = _import_boot_md(hermes_home)
++
++    with mock.patch.object(mod, "threading") as mock_threading:
++        await mod.handle("gateway:startup", {})
++        mock_threading.Thread.assert_not_called()
++
++
++@pytest.mark.asyncio
++async def test_boot_md_skips_if_empty(hermes_home, boot_file):
++    """BOOT.md exists but is empty -> AIAgent is never called."""
++    boot_file.write_text("   \n  \n")
++
++    mod = _import_boot_md(hermes_home)
++
++    with mock.patch.object(mod, "threading") as mock_threading:
++        await mod.handle("gateway:startup", {})
++        mock_threading.Thread.assert_not_called()
++
++
++@pytest.mark.asyncio
++async def test_boot_md_runs_in_background_thread(hermes_home, boot_file):
++    """Verify threading.Thread is used with daemon=True."""
++    boot_file.write_text("# Check stuff\n")
++
++    mod = _import_boot_md(hermes_home)
++
++    with mock.patch.object(mod, "threading") as mock_threading:
++        mock_thread = mock.MagicMock()
++        mock_threading.Thread.return_value = mock_thread
++
++        await mod.handle("gateway:startup", {})
++
++        call_kwargs = mock_threading.Thread.call_args
++        assert call_kwargs.kwargs["daemon"] is True
++        assert call_kwargs.kwargs["target"] == mod._run_boot_agent
++        assert call_kwargs.kwargs["args"] == ("# Check stuff",)
++
++
++def test_run_boot_agent_calls_ai_agent(hermes_home, boot_file):
++    """_run_boot_agent spawns AIAgent and calls run_conversation."""
++    mod = _import_boot_md(hermes_home)
++
++    mock_agent = mock.MagicMock()
++    mock_agent.run_conversation.return_value = {"final_response": "[SILENT]"}
++
++    with mock.patch("gateway.builtin_hooks.boot_md.AIAgent", create=True) as MockAgent:
++        # We need to patch the import inside _run_boot_agent
++        with mock.patch.dict("sys.modules", {"run_agent": mock.MagicMock(AIAgent=mock.MagicMock(return_value=mock_agent))}):
++            mod._run_boot_agent("# Do stuff")
++
++            # Verify run_conversation was called with the built prompt
++            mock_agent.run_conversation.assert_called_once()
++            prompt_arg = mock_agent.run_conversation.call_args[0][0]
++            assert "# Do stuff" in prompt_arg
++            assert "BOOT.md" in prompt_arg
++
++
++def test_build_boot_prompt(hermes_home):
++    """_build_boot_prompt wraps content correctly."""
++    mod = _import_boot_md(hermes_home)
++    prompt = mod._build_boot_prompt("Check the logs")
++    assert "Check the logs" in prompt
++    assert "[SILENT]" in prompt
++    assert "BOOT.md" in prompt
+-- 
+2.50.1 (Apple Git-155)
+

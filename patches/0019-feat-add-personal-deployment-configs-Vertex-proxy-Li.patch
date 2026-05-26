@@ -1,0 +1,236 @@
+From 5f77363cba594fef545cfee2c830a4d82cd28a38 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Sat, 23 May 2026 12:53:14 +1200
+Subject: [PATCH 19/27] feat: add personal deployment configs (Vertex proxy,
+ LiteLLM, voice memo)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+LiteLLM proxy sidecar config for routing Claude via Bedrock and Gemini
+via Vertex AI. Signal host-path translation patch for voice memo
+attachments when signal-cli runs on the host. Telegram proxy already
+supported upstream — documented only.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ docker/deploy/README.md                  | 52 +++++++++++++++++
+ docker/deploy/docker-compose.litellm.yml | 21 +++++++
+ docker/deploy/litellm-config.yaml        | 39 +++++++++++++
+ docker/deploy/signal-host-path.patch     | 71 ++++++++++++++++++++++++
+ 4 files changed, 183 insertions(+)
+ create mode 100644 docker/deploy/README.md
+ create mode 100644 docker/deploy/docker-compose.litellm.yml
+ create mode 100644 docker/deploy/litellm-config.yaml
+ create mode 100644 docker/deploy/signal-host-path.patch
+
+diff --git a/docker/deploy/README.md b/docker/deploy/README.md
+new file mode 100644
+index 000000000..0e897e097
+--- /dev/null
++++ b/docker/deploy/README.md
+@@ -0,0 +1,52 @@
++# Mac Mini Deployment Configs
++
++Personal deployment configs for running Hermes on the Mac Mini.
++These are overlay files — they don't modify upstream code.
++
++## LiteLLM Proxy Sidecar
++
++Routes model requests through Bedrock (Claude) and Vertex AI (Gemini)
++instead of using API keys directly.
++
++```bash
++# Start with LiteLLM overlay
++docker compose -f docker-compose.yml -f docker/deploy/docker-compose.litellm.yml up -d
++```
++
++Required env vars in `~/.hermes/.env`:
++- `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (Bedrock)
++- `GOOGLE_CLOUD_API_KEY` (Vertex AI)
++
++Then configure each agent's model to use the proxy:
++```yaml
++model:
++  provider: custom
++  base_url: http://litellm-proxy:4000/v1
++```
++
++## Signal Voice Memo Path Translation
++
++When Hermes runs in Docker but signal-cli runs on the host (via
++`host.docker.internal`), attachment paths like `/opt/data/cache/audio/tts.ogg`
++are unreachable from signal-cli.
++
++Apply the patch:
++```bash
++git apply docker/deploy/signal-host-path.patch
++```
++
++Then set in your agent's env:
++```
++SIGNAL_HOST_DATA_DIR=~/.hermes
++```
++
++This translates container paths (`/opt/data/...`) to host paths
++(`~/.hermes/...`) before passing them to signal-cli.
++
++## Telegram Proxy
++
++Upstream already supports `TELEGRAM_PROXY` env var via `resolve_proxy_url()`.
++No patch needed — just set the env var if your network requires a proxy:
++```
++TELEGRAM_PROXY=socks5://host:port
++```
+diff --git a/docker/deploy/docker-compose.litellm.yml b/docker/deploy/docker-compose.litellm.yml
+new file mode 100644
+index 000000000..58e4e68cb
+--- /dev/null
++++ b/docker/deploy/docker-compose.litellm.yml
+@@ -0,0 +1,21 @@
++# LiteLLM proxy sidecar — translates OpenAI-compatible API to Bedrock + Vertex AI
++#
++# Usage (overlay on main compose):
++#   docker compose -f docker-compose.yml -f docker/deploy/docker-compose.litellm.yml up -d
++#
++# Requires env vars in ~/.hermes/.env:
++#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (for Bedrock)
++#   GOOGLE_CLOUD_API_KEY                       (for Vertex AI)
++
++services:
++  litellm:
++    image: ghcr.io/berriai/litellm:main-latest
++    container_name: litellm-proxy
++    restart: unless-stopped
++    volumes:
++      - ./docker/deploy/litellm-config.yaml:/app/config.yaml:ro
++    env_file:
++      - ~/.hermes/.env
++    ports:
++      - "4000:4000"
++    command: ["--config", "/app/config.yaml", "--port", "4000"]
+diff --git a/docker/deploy/litellm-config.yaml b/docker/deploy/litellm-config.yaml
+new file mode 100644
+index 000000000..f2561c734
+--- /dev/null
++++ b/docker/deploy/litellm-config.yaml
+@@ -0,0 +1,39 @@
++# LiteLLM proxy config — routes model requests to Bedrock + Vertex AI
++#
++# Hermes agents point here as a custom provider:
++#   model:
++#     provider: custom
++#     base_url: http://litellm-proxy:4000/v1
++#
++# Env vars read from ~/.hermes/.env via docker-compose env_file:
++#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (Bedrock)
++#   GOOGLE_CLOUD_API_KEY                       (Vertex AI)
++
++model_list:
++  - model_name: "claude-sonnet-4"
++    litellm_params:
++      model: "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"
++      aws_region_name: "us-west-2"
++
++  - model_name: "claude-haiku-4-5"
++    litellm_params:
++      model: "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
++      aws_region_name: "us-west-2"
++
++  - model_name: "gemini-2.5-flash"
++    litellm_params:
++      model: "vertex_ai/gemini-2.5-flash"
++      vertex_project: "nimbleco"
++      vertex_location: "us-central1"
++      api_key: "os.environ/GOOGLE_CLOUD_API_KEY"
++
++  - model_name: "gemini-2.5-pro"
++    litellm_params:
++      model: "vertex_ai/gemini-2.5-pro"
++      vertex_project: "nimbleco"
++      vertex_location: "us-central1"
++      api_key: "os.environ/GOOGLE_CLOUD_API_KEY"
++
++litellm_settings:
++  drop_params: true
++  set_verbose: false
+diff --git a/docker/deploy/signal-host-path.patch b/docker/deploy/signal-host-path.patch
+new file mode 100644
+index 000000000..06333003f
+--- /dev/null
++++ b/docker/deploy/signal-host-path.patch
+@@ -0,0 +1,71 @@
++--- a/gateway/platforms/signal.py	2026-05-23 12:51:47
+++++ b/gateway/platforms/signal.py	2026-05-23 12:52:31
++@@ -255,6 +255,15 @@
++         # phone-number sets when UUID resolution wasn't possible.
++         self.dm_allow_from_uuids: set = set()
++         self.group_allow_from_uuids: set = set()
+++
+++        # Container-to-host path translation for signal-cli attachments.
+++        # When the gateway runs in Docker (HERMES_HOME=/opt/data) but signal-cli
+++        # runs on the host via host.docker.internal, file paths like
+++        # /opt/data/cache/audio/tts_123.ogg are unreachable from signal-cli.
+++        # SIGNAL_HOST_DATA_DIR tells us the host-side mount point so we can
+++        # translate container paths before passing them to signal-cli.
+++        self._container_data_prefix = os.getenv("HERMES_HOME", "")
+++        self._host_data_dir = os.getenv("SIGNAL_HOST_DATA_DIR", "")
++ 
++         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
++                      self.http_url, redact_phone(self.account),
++@@ -1516,7 +1525,7 @@
++         params: Dict[str, Any] = {
++             "account": self.account,
++             "message": caption or "",
++-            "attachments": [file_path],
+++            "attachments": [self._translate_container_path_to_host(file_path)],
++         }
++ 
++         if chat_id.startswith("group:"):
++@@ -1529,7 +1538,34 @@
++             self._track_sent_timestamp(result)
++             return SendResult(success=True)
++         return SendResult(success=False, error="RPC send with attachment failed")
+++
+++    def _translate_container_path_to_host(self, path: str) -> str:
+++        """Translate a container file path to the equivalent host path.
+++
+++        When Hermes runs in Docker with /opt/data as HERMES_HOME and signal-cli
+++        runs on the host (via host.docker.internal), attachment paths like
+++        /opt/data/cache/audio/tts_123.ogg are invisible to signal-cli.
+++
+++        If SIGNAL_HOST_DATA_DIR is set (e.g. ~/.hermes), this replaces the
+++        container HERMES_HOME prefix with the host path.
+++        Without SIGNAL_HOST_DATA_DIR, the path is returned unchanged.
+++        """
+++        if (
+++            not self._host_data_dir
+++            or not self._container_data_prefix
+++            or not path.startswith(self._container_data_prefix)
+++        ):
+++            return path
++ 
+++        host_data = os.path.expanduser(self._host_data_dir)
+++        relative = path[len(self._container_data_prefix):]
+++        translated = host_data.rstrip("/") + "/" + relative.lstrip("/")
+++        logger.debug(
+++            "Signal: translated container path %s → host path %s",
+++            path, translated,
+++        )
+++        return translated
+++
++     async def _send_attachment(
++         self,
++         chat_id: str,
++@@ -1555,7 +1591,7 @@
++         params: Dict[str, Any] = {
++             "account": self.account,
++             "message": caption or "",
++-            "attachments": [file_path],
+++            "attachments": [self._translate_container_path_to_host(file_path)],
++         }
++ 
++         if chat_id.startswith("group:"):
+-- 
+2.50.1 (Apple Git-155)
+

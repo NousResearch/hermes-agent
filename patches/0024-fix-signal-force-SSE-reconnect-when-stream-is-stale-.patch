@@ -1,0 +1,41 @@
+From 172684242f59ee57724c9543de30150ef316550b Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Mon, 25 May 2026 17:14:08 +1200
+Subject: [PATCH 24/27] fix(signal): force SSE reconnect when stream is stale
+ but daemon healthy
+
+The SSE stream to signal-cli silently dies after a few minutes while
+the daemon itself stays healthy. The health monitor was detecting the
+idle state but just resetting the timer instead of reconnecting.
+Now forces a reconnect when the daemon is healthy but the SSE stream
+has been silent past the stale threshold (120s).
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/platforms/signal.py | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/gateway/platforms/signal.py b/gateway/platforms/signal.py
+index b620545e6..0811269ba 100644
+--- a/gateway/platforms/signal.py
++++ b/gateway/platforms/signal.py
+@@ -434,10 +434,12 @@ class SignalAdapter(BasePlatformAdapter):
+                         f"{self.http_url}/api/v1/check", timeout=10.0
+                     )
+                     if resp.status_code == 200:
+-                        # Daemon is alive but SSE is idle — update activity to
+-                        # avoid repeated warnings (connection may just be quiet)
+-                        self._last_sse_activity = time.time()
+-                        logger.debug("Signal: daemon healthy, SSE idle")
++                        # Daemon is alive but SSE stream is silent. Force
++                        # reconnect — a healthy daemon with a dead SSE stream
++                        # means the HTTP connection is stale (common with
++                        # long-lived SSE over Docker networking).
++                        logger.warning("Signal: daemon healthy but SSE stale (%.0fs idle), forcing reconnect", elapsed)
++                        self._force_reconnect()
+                     else:
+                         logger.warning("Signal: health check failed (%d), forcing reconnect", resp.status_code)
+                         self._force_reconnect()
+-- 
+2.50.1 (Apple Git-155)
+

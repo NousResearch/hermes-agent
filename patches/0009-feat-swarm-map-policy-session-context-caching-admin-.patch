@@ -1,0 +1,363 @@
+From a363cb3daa9cc9bcc460c9a4d8a51c876ad2d1c5 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 22:39:05 +1200
+Subject: [PATCH 09/27] feat(swarm-map-policy): session context caching, admin
+ resolution, and approval gating
+
+Implements MT Phase 1, Tasks 1-3:
+
+1. Session context caching via pre_gateway_dispatch hook:
+   - Uses threading.local() to cache platform/chat_id/user_id/is_admin
+   - Extracts from MessageEvent.source on each incoming message
+   - Exposes get_session_context() and clear_session_context() helpers
+
+2. Admin identity resolution from HSM API:
+   - Calls is_platform_admin() during pre_gateway_dispatch
+   - Caches result in thread-local is_admin flag
+   - Fail-closed: defaults to False on any error
+
+3. Approval command admin gating via pre_tool_call:
+   - ADMIN_GATED_TOOLS set blocks "approval" and "pr_approval"
+   - Returns {"action": "block"} for non-admin users
+   - Fail-closed: blocks if no session context exists
+
+15 new tests covering all three features (22 total, all passing).
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ plugins/swarm_map_policy/__init__.py   |  66 ++++++++-
+ tests/plugins/test_swarm_map_policy.py | 184 ++++++++++++++++++++++++-
+ 2 files changed, 245 insertions(+), 5 deletions(-)
+
+diff --git a/plugins/swarm_map_policy/__init__.py b/plugins/swarm_map_policy/__init__.py
+index 78e875a4f..0dc237d15 100644
+--- a/plugins/swarm_map_policy/__init__.py
++++ b/plugins/swarm_map_policy/__init__.py
+@@ -3,7 +3,8 @@
+ Integrates with Hermes Swarm Map (HSM) to enforce:
+ - Group allowlists: only groups registered in HSM can interact
+ - Admin checks: platform admin status from HSM settings
+-- Tool gating: (future) per-group tool restrictions
++- Session context caching: platform/chat_id/user_id/is_admin from gateway events
++- Approval gating: admin-only tool restrictions
+ 
+ Configuration via environment variables:
+ - HSM_URL: URL of the HSM API (e.g., http://localhost:3002)
+@@ -11,11 +12,14 @@ Configuration via environment variables:
+ 
+ Security model:
+ - Group checks: FAIL-CLOSED (deny if HSM unreachable)
++- Admin checks: FAIL-CLOSED (deny if HSM unreachable)
++- Approval gating: FAIL-CLOSED (deny if no session context)
+ - Tool checks: FAIL-OPEN (allow if not configured)
+ """
+ 
+ import logging
+ import os
++import threading
+ from typing import Optional
+ 
+ logger = logging.getLogger(__name__)
+@@ -25,6 +29,12 @@ try:
+ except ImportError:
+     requests = None
+ 
++# Thread-local storage for session context (plugin hooks are synchronous)
++_session_ctx = threading.local()
++
++# Tools that require admin privileges
++ADMIN_GATED_TOOLS = {"approval", "pr_approval"}
++
+ 
+ def _hsm_url() -> Optional[str]:
+     """Get HSM API URL from environment."""
+@@ -36,6 +46,25 @@ def _harness_id() -> Optional[str]:
+     return os.environ.get("HERMES_AGENT_NAME") or None
+ 
+ 
++def get_session_context() -> Optional[dict]:
++    """Get cached session context dict, or None if not set."""
++    if not hasattr(_session_ctx, "platform"):
++        return None
++    return {
++        "platform": _session_ctx.platform,
++        "chat_id": _session_ctx.chat_id,
++        "user_id": _session_ctx.user_id,
++        "is_admin": getattr(_session_ctx, "is_admin", False),
++    }
++
++
++def clear_session_context() -> None:
++    """Clear cached session context."""
++    for attr in ("platform", "chat_id", "user_id", "is_admin"):
++        if hasattr(_session_ctx, attr):
++            delattr(_session_ctx, attr)
++
++
+ def is_group_allowed(group_id: str, platform: str) -> bool:
+     """Check if a group is in the HSM allowlist. Fail-closed."""
+     url = _hsm_url()
+@@ -78,13 +107,41 @@ def is_platform_admin(user_id: str, platform: str) -> bool:
+         return False
+ 
+ 
++def _pre_gateway_dispatch(event=None, **kwargs):
++    """Cache session context from incoming message event and resolve admin status."""
++    if event is None:
++        return None
++    source = event.source
++    _session_ctx.platform = source.platform.value if source.platform else ""
++    _session_ctx.chat_id = source.chat_id or ""
++    _session_ctx.user_id = source.user_id or ""
++    # Resolve admin status from HSM (fail-closed)
++    _session_ctx.is_admin = False
++    try:
++        user_id = _session_ctx.user_id
++        platform = _session_ctx.platform
++        if user_id and platform:
++            _session_ctx.is_admin = is_platform_admin(user_id, platform)
++    except Exception as e:
++        logger.warning("swarm-map-policy: admin resolution failed (fail-closed): %s", e)
++        _session_ctx.is_admin = False
++    return None  # Allow normal dispatch
++
++
+ def _on_session_start(session_id: str = None, **kwargs) -> None:
+-    """Log session start. Future: cache admin status, validate group."""
++    """Log session start."""
+     logger.debug("swarm-map-policy: session start %s", session_id)
+ 
+ 
+-def _pre_tool_call(tool_name: str = None, **kwargs) -> None:
+-    """Gate tool calls based on HSM policy. Returns None to allow."""
++def _pre_tool_call(tool_name: str = None, **kwargs):
++    """Gate tool calls based on HSM policy. Returns None to allow, dict to block."""
++    if tool_name in ADMIN_GATED_TOOLS:
++        ctx = get_session_context()
++        if not ctx or not ctx.get("is_admin"):
++            return {
++                "action": "block",
++                "message": "Admin privileges required for approval commands.",
++            }
+     return None
+ 
+ 
+@@ -95,4 +152,5 @@ def register(ctx):
+         return
+     ctx.register_hook("on_session_start", _on_session_start)
+     ctx.register_hook("pre_tool_call", _pre_tool_call)
++    ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
+     logger.info("swarm-map-policy: registered (HSM_URL=%s)", _hsm_url() or "not set")
+diff --git a/tests/plugins/test_swarm_map_policy.py b/tests/plugins/test_swarm_map_policy.py
+index 1ac0cf0b5..4443e22bb 100644
+--- a/tests/plugins/test_swarm_map_policy.py
++++ b/tests/plugins/test_swarm_map_policy.py
+@@ -1,18 +1,36 @@
+ """Tests for swarm-map-policy plugin — HSM integration for group access control."""
+ import pytest
+ from unittest.mock import patch, MagicMock
++from enum import Enum
++
++
++def _make_event(platform="signal", chat_id="group-123", user_id="user-456"):
++    """Create a mock MessageEvent with source attributes."""
++    class MockPlatform(Enum):
++        SIGNAL = "signal"
++        TELEGRAM = "telegram"
++        DISCORD = "discord"
++
++    event = MagicMock()
++    event.source.chat_id = chat_id
++    event.source.user_id = user_id
++    # Set platform as an enum with .value
++    platform_enum = MockPlatform(platform) if platform in ("signal", "telegram", "discord") else MagicMock(value=platform)
++    event.source.platform = platform_enum
++    return event
+ 
+ 
+ class TestSwarmMapPolicy:
+ 
+     def test_plugin_registers_hooks(self):
+-        """Plugin registers on_session_start and pre_tool_call hooks."""
++        """Plugin registers on_session_start, pre_tool_call, and pre_gateway_dispatch hooks."""
+         from plugins.swarm_map_policy import register
+         ctx = MagicMock()
+         register(ctx)
+         hook_names = [call.args[0] for call in ctx.register_hook.call_args_list]
+         assert "on_session_start" in hook_names
+         assert "pre_tool_call" in hook_names
++        assert "pre_gateway_dispatch" in hook_names
+ 
+     def test_hsm_url_from_env(self):
+         from plugins.swarm_map_policy import _hsm_url
+@@ -45,3 +63,167 @@ class TestSwarmMapPolicy:
+         from plugins.swarm_map_policy import is_platform_admin
+         with patch("plugins.swarm_map_policy._hsm_url", return_value=None):
+             assert is_platform_admin("user-123", "signal") is False
++
++
++class TestSessionContextCaching:
++    """Tests for session context caching via pre_gateway_dispatch."""
++
++    def setup_method(self):
++        """Clear session context before each test."""
++        from plugins.swarm_map_policy import clear_session_context
++        clear_session_context()
++
++    def test_pre_gateway_dispatch_caches_context(self):
++        """pre_gateway_dispatch extracts and caches platform/chat_id/user_id."""
++        from plugins.swarm_map_policy import _pre_gateway_dispatch, get_session_context
++        event = _make_event(platform="signal", chat_id="group-123", user_id="user-456")
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=False):
++            result = _pre_gateway_dispatch(event=event)
++        assert result is None  # Should allow normal dispatch
++        ctx = get_session_context()
++        assert ctx is not None
++        assert ctx["platform"] == "signal"
++        assert ctx["chat_id"] == "group-123"
++        assert ctx["user_id"] == "user-456"
++
++    def test_pre_gateway_dispatch_returns_none_on_no_event(self):
++        """pre_gateway_dispatch returns None when no event provided."""
++        from plugins.swarm_map_policy import _pre_gateway_dispatch, get_session_context
++        result = _pre_gateway_dispatch(event=None)
++        assert result is None
++        assert get_session_context() is None
++
++    def test_get_session_context_none_before_dispatch(self):
++        """get_session_context returns None before any dispatch."""
++        from plugins.swarm_map_policy import get_session_context
++        assert get_session_context() is None
++
++    def test_clear_session_context_resets(self):
++        """clear_session_context removes cached data."""
++        from plugins.swarm_map_policy import (
++            _pre_gateway_dispatch, get_session_context, clear_session_context
++        )
++        event = _make_event()
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=False):
++            _pre_gateway_dispatch(event=event)
++        assert get_session_context() is not None
++        clear_session_context()
++        assert get_session_context() is None
++
++    def test_pre_gateway_dispatch_handles_none_source_fields(self):
++        """Gracefully handles None platform/chat_id/user_id."""
++        from plugins.swarm_map_policy import _pre_gateway_dispatch, get_session_context
++        event = MagicMock()
++        event.source.platform = None
++        event.source.chat_id = None
++        event.source.user_id = None
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=False):
++            result = _pre_gateway_dispatch(event=event)
++        assert result is None
++        ctx = get_session_context()
++        assert ctx["platform"] == ""
++        assert ctx["chat_id"] == ""
++        assert ctx["user_id"] == ""
++
++
++class TestAdminResolution:
++    """Tests for admin identity resolution during pre_gateway_dispatch."""
++
++    def setup_method(self):
++        from plugins.swarm_map_policy import clear_session_context
++        clear_session_context()
++
++    def test_admin_resolved_on_dispatch(self):
++        """Admin status is resolved and cached during pre_gateway_dispatch."""
++        from plugins.swarm_map_policy import _pre_gateway_dispatch, get_session_context
++        event = _make_event(platform="signal", user_id="admin-user")
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=True):
++            _pre_gateway_dispatch(event=event)
++        ctx = get_session_context()
++        assert ctx["is_admin"] is True
++
++    def test_non_admin_resolved_on_dispatch(self):
++        """Non-admin status is correctly cached."""
++        from plugins.swarm_map_policy import _pre_gateway_dispatch, get_session_context
++        event = _make_event(platform="signal", user_id="regular-user")
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=False):
++            _pre_gateway_dispatch(event=event)
++        ctx = get_session_context()
++        assert ctx["is_admin"] is False
++
++    def test_admin_resolution_fail_closed(self):
++        """Admin resolution defaults to False on HSM failure."""
++        from plugins.swarm_map_policy import _pre_gateway_dispatch, get_session_context
++        event = _make_event(platform="signal", user_id="user-123")
++        with patch("plugins.swarm_map_policy.is_platform_admin", side_effect=Exception("HSM down")):
++            _pre_gateway_dispatch(event=event)
++        ctx = get_session_context()
++        assert ctx["is_admin"] is False
++
++    def test_admin_resolution_called_with_correct_args(self):
++        """is_platform_admin called with user_id and platform from event."""
++        from plugins.swarm_map_policy import _pre_gateway_dispatch
++        event = _make_event(platform="telegram", user_id="tg-user-789")
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=False) as mock_admin:
++            _pre_gateway_dispatch(event=event)
++        mock_admin.assert_called_once_with("tg-user-789", "telegram")
++
++
++class TestApprovalGating:
++    """Tests for approval command admin gating via pre_tool_call."""
++
++    def setup_method(self):
++        from plugins.swarm_map_policy import clear_session_context
++        clear_session_context()
++
++    def _set_admin_context(self, is_admin=True):
++        """Set up session context with admin status."""
++        from plugins.swarm_map_policy import _pre_gateway_dispatch
++        event = _make_event(platform="signal", user_id="user-1")
++        with patch("plugins.swarm_map_policy.is_platform_admin", return_value=is_admin):
++            _pre_gateway_dispatch(event=event)
++
++    def test_admin_can_use_approval_tool(self):
++        """Admin users can execute approval tools."""
++        from plugins.swarm_map_policy import _pre_tool_call
++        self._set_admin_context(is_admin=True)
++        result = _pre_tool_call(tool_name="approval")
++        assert result is None  # Allowed
++
++    def test_non_admin_blocked_from_approval(self):
++        """Non-admin users are blocked from approval tools."""
++        from plugins.swarm_map_policy import _pre_tool_call
++        self._set_admin_context(is_admin=False)
++        result = _pre_tool_call(tool_name="approval")
++        assert result is not None
++        assert result["action"] == "block"
++        assert "admin" in result["message"].lower() or "Admin" in result["message"]
++
++    def test_non_admin_blocked_from_pr_approval(self):
++        """Non-admin users are blocked from pr_approval tool."""
++        from plugins.swarm_map_policy import _pre_tool_call
++        self._set_admin_context(is_admin=False)
++        result = _pre_tool_call(tool_name="pr_approval")
++        assert result is not None
++        assert result["action"] == "block"
++
++    def test_no_context_blocks_approval(self):
++        """Missing session context blocks approval tools (fail-closed)."""
++        from plugins.swarm_map_policy import _pre_tool_call
++        # No dispatch happened, so no context
++        result = _pre_tool_call(tool_name="approval")
++        assert result is not None
++        assert result["action"] == "block"
++
++    def test_non_gated_tool_allowed_without_admin(self):
++        """Non-gated tools are allowed regardless of admin status."""
++        from plugins.swarm_map_policy import _pre_tool_call
++        self._set_admin_context(is_admin=False)
++        result = _pre_tool_call(tool_name="web_search")
++        assert result is None  # Allowed
++
++    def test_non_gated_tool_allowed_without_context(self):
++        """Non-gated tools are allowed even without session context."""
++        from plugins.swarm_map_policy import _pre_tool_call
++        result = _pre_tool_call(tool_name="web_search")
++        assert result is None  # Allowed
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,71 @@
+From 8b86c12689a09f9856262b31fbbc359c853f60e2 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 23:05:00 +1200
+Subject: [PATCH 12/27] feat(mattermost): allow system posts through as agent
+ context
+
+System posts (join/leave/header changes) are no longer filtered out.
+They provide useful conversational context for the agent to understand
+channel activity.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ plugins/platforms/mattermost/adapter.py |  5 ++---
+ tests/gateway/test_mattermost.py        | 10 ++++++----
+ 2 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/plugins/platforms/mattermost/adapter.py b/plugins/platforms/mattermost/adapter.py
+index 788de6909..c91cc75ce 100644
+--- a/plugins/platforms/mattermost/adapter.py
++++ b/plugins/platforms/mattermost/adapter.py
+@@ -708,9 +708,8 @@ class MattermostAdapter(BasePlatformAdapter):
+         if post.get("user_id") == self._bot_user_id:
+             return
+ 
+-        # Ignore system posts.
+-        if post.get("type"):
+-            return
++        # Allow system posts through (join/leave/header changes) — they
++        # provide useful conversational context for the agent.
+ 
+         post_id = post.get("id", "")
+ 
+diff --git a/tests/gateway/test_mattermost.py b/tests/gateway/test_mattermost.py
+index cad621e06..5b6850912 100644
+--- a/tests/gateway/test_mattermost.py
++++ b/tests/gateway/test_mattermost.py
+@@ -323,13 +323,14 @@ class TestMattermostWebSocketParsing:
+         assert not self.adapter.handle_message.called
+ 
+     @pytest.mark.asyncio
+-    async def test_ignore_system_posts(self):
+-        """Posts with a 'type' field (system messages) should be ignored."""
++    async def test_system_posts_pass_through(self):
++        """Posts with a 'type' field (system messages) should be passed through
++        as context for the agent, not dropped."""
+         post_data = {
+             "id": "sys_post",
+             "user_id": "user_123",
+             "channel_id": "chan_456",
+-            "message": "user joined",
++            "message": "@hermes-bot user joined",
+             "type": "system_join_channel",
+         }
+         event = {
+@@ -337,11 +338,12 @@ class TestMattermostWebSocketParsing:
+             "data": {
+                 "post": json.dumps(post_data),
+                 "channel_type": "O",
++                "sender_name": "@system",
+             },
+         }
+ 
+         await self.adapter._handle_ws_event(event)
+-        assert not self.adapter.handle_message.called
++        assert self.adapter.handle_message.called
+ 
+     @pytest.mark.asyncio
+     async def test_channel_type_mapping(self):
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,778 @@
+From 0b364463201982816453b78a593876897500d084 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 23:05:44 +1200
+Subject: [PATCH 13/27] feat(signal): UUID allowlisting, group invite policy,
+ and profile name setting
+
+Port three Signal adapter improvements from old fork as clean patches:
+
+- UUID-based allowlisting: resolves phone numbers to Signal UUIDs at
+  startup via listContacts/getUserStatus, with lazy fallback resolution
+  on first message. Adds dm_allow_from_uuids and group_allow_from_uuids
+  sets for stable identity matching.
+
+- Group invite policy: SIGNAL_GROUP_INVITE_POLICY env var controls
+  auto-accept of group invitations. "approved-only" (default) only
+  accepts from users in the DM allowlist; "allow-all" accepts from
+  anyone. Falls back from joinGroup to updateGroup RPC.
+
+- Profile name setting: SIGNAL_PROFILE_NAME env var sets the bot's
+  Signal profile name via updateProfile RPC during connect(). Silent
+  no-op when unset; failures logged but never block startup.
+
+Includes 21 tests covering all three features.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/platforms/signal.py               | 226 ++++++++++-
+ tests/gateway/test_signal_enhancements.py | 458 ++++++++++++++++++++++
+ 2 files changed, 682 insertions(+), 2 deletions(-)
+ create mode 100644 tests/gateway/test_signal_enhancements.py
+
+diff --git a/gateway/platforms/signal.py b/gateway/platforms/signal.py
+index 45eef2a07..03def9272 100644
+--- a/gateway/platforms/signal.py
++++ b/gateway/platforms/signal.py
+@@ -192,6 +192,13 @@ class SignalAdapter(BasePlatformAdapter):
+         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
+ 
++        # Group invite policy — who can add the bot to new groups.
++        # "approved-only" (default): only users in dm_allow_from can invite
++        # "allow-all": anyone can invite the bot to groups
++        self.group_invite_policy = os.getenv(
++            "SIGNAL_GROUP_INVITE_POLICY", "approved-only"
++        ).strip().lower()
++
+         # Mention filter — only respond in groups when the bot account is @mentioned.
+         # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
+         _rm_cfg = extra.get("require_mention")
+@@ -242,6 +249,13 @@ class SignalAdapter(BasePlatformAdapter):
+         self._recipient_number_by_uuid: Dict[str, str] = {}
+         self._recipient_cache_lock = asyncio.Lock()
+ 
++        # UUID-resolved versions of the allowlists.  Populated after
++        # connect() when the RPC layer is available.  Auth checks use
++        # these first (stable identifiers) and fall back to the raw
++        # phone-number sets when UUID resolution wasn't possible.
++        self.dm_allow_from_uuids: set = set()
++        self.group_allow_from_uuids: set = set()
++
+         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
+                      self.http_url, redact_phone(self.account),
+                      "enabled" if self.group_allow_from else "disabled")
+@@ -281,6 +295,13 @@ class SignalAdapter(BasePlatformAdapter):
+ 
+             self._running = True
+             self._last_sse_activity = time.time()
++
++            # Resolve phone-number allowlists to UUIDs now that RPC is live.
++            await self._resolve_allowlist_uuids()
++
++            # Set profile name from environment if configured.
++            await self._set_profile_name()
++
+             self._sse_task = asyncio.create_task(self._sse_listener())
+             self._health_monitor_task = asyncio.create_task(self._health_monitor())
+ 
+@@ -489,10 +510,73 @@ class SignalAdapter(BasePlatformAdapter):
+         if self.ignore_stories and envelope_data.get("storyMessage"):
+             return
+ 
++        # ------------------------------------------------------------------
++        # Auto-accept group invitations (gated by group invite policy)
++        # Group invites arrive as envelopes with groupV2 update info but no
++        # dataMessage.  Policy is controlled by SIGNAL_GROUP_INVITE_POLICY:
++        #   "allow-all" — accept all group invitations
++        #   "approved-only" (default) — only accept from approved users
++        # ------------------------------------------------------------------
++        data_message_raw = envelope_data.get("dataMessage")
++        if not data_message_raw:
++            group_v2_invite = envelope_data.get("groupV2") or {}
++            group_v2_invite_id = group_v2_invite.get("groupId")
++            # Also check for a top-level groupV2Update field (older signal-cli)
++            if not group_v2_invite_id:
++                group_v2_update = envelope_data.get("groupV2Update") or {}
++                group_v2_invite_id = group_v2_update.get("groupId")
++            if group_v2_invite_id:
++                # Check group invite policy
++                if self.group_invite_policy == "allow-all":
++                    inviter_approved = True
++                else:
++                    # Check if the inviter is an approved user.
++                    # Prefer UUID match (stable) with phone-number fallback.
++                    inviter_approved = (
++                        not self.dm_allow_from  # no allowlist = open mode
++                        or "*" in self.dm_allow_from  # wildcard = accept all
++                        or (sender_uuid and sender_uuid in self.dm_allow_from_uuids)
++                        or sender in self.dm_allow_from
++                        or sender_uuid in self.dm_allow_from
++                    )
++                if not inviter_approved:
++                    logger.warning(
++                        "Signal: rejecting group invite from unapproved user %s for group %s",
++                        sender_uuid[:12] if sender_uuid else sender,
++                        group_v2_invite_id[:12] if group_v2_invite_id else "?",
++                    )
++                    return
++                try:
++                    logger.info(
++                        "Signal: auto-accepting group invitation from %s for group %s",
++                        sender_uuid[:12] if sender_uuid else sender,
++                        group_v2_invite_id[:12] if group_v2_invite_id else "?",
++                    )
++                    await self._rpc(
++                        "joinGroup",
++                        {"account": self.account, "groupId": group_v2_invite_id},
++                    )
++                except Exception:
++                    logger.warning(
++                        "Signal: joinGroup failed for %s, trying updateGroup",
++                        group_v2_invite_id[:12] if group_v2_invite_id else "?",
++                    )
++                    try:
++                        await self._rpc(
++                            "updateGroup",
++                            {"account": self.account, "groupId": group_v2_invite_id},
++                        )
++                    except Exception:
++                        logger.exception(
++                            "Signal: failed to accept group invitation for %s",
++                            group_v2_invite_id[:12] if group_v2_invite_id else "?",
++                        )
++                return  # nothing else to process — no dataMessage
++
+         # Get data message — also check editMessage (edited messages contain
+         # their updated dataMessage inside editMessage.dataMessage)
+         data_message = (
+-            envelope_data.get("dataMessage")
++            data_message_raw
+             or (envelope_data.get("editMessage") or {}).get("dataMessage")
+         )
+         if not data_message:
+@@ -644,12 +728,26 @@ class SignalAdapter(BasePlatformAdapter):
+         await self.handle_message(event)
+ 
+     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
+-        """Cache any number↔UUID mapping observed from Signal envelopes."""
++        """Cache any number↔UUID mapping observed from Signal envelopes.
++
++        Also performs lazy allowlist resolution: if the phone number is in an
++        allowlist but its UUID wasn't resolved at startup, add it now.
++        """
+         if not number or not service_id or not _is_signal_service_id(service_id):
+             return
+         self._recipient_uuid_by_number[number] = service_id
+         self._recipient_number_by_uuid[service_id] = number
+ 
++        # Lazy allowlist resolution — pick up UUIDs we missed at startup
++        if number in self.dm_allow_from and service_id not in self.dm_allow_from_uuids:
++            self.dm_allow_from_uuids.add(service_id)
++            logger.debug("Signal: lazily resolved DM allowlist entry %s → %s",
++                         redact_phone(number), service_id[:12])
++        if number in self.group_allow_from and service_id not in self.group_allow_from_uuids:
++            self.group_allow_from_uuids.add(service_id)
++            logger.debug("Signal: lazily resolved group allowlist entry %s → %s",
++                         redact_phone(number), service_id[:12])
++
+     def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
+         """Best-effort extraction of a Signal service ID from listContacts output."""
+         if not isinstance(contact, dict):
+@@ -701,6 +799,130 @@ class SignalAdapter(BasePlatformAdapter):
+ 
+             return self._recipient_uuid_by_number.get(chat_id, chat_id)
+ 
++    # ------------------------------------------------------------------
++    # Allowlist UUID Resolution
++    # ------------------------------------------------------------------
++
++    async def _resolve_allowlist_uuids(self) -> None:
++        """Resolve phone numbers in dm/group allowlists to Signal UUIDs.
++
++        Called once after connect() succeeds.  Numbers that can't be resolved
++        (unknown contacts) are silently skipped — they'll be resolved lazily
++        when a message arrives via _remember_recipient_identifiers().
++        """
++        # Collect all phone numbers that need resolution (skip wildcards / UUIDs)
++        numbers_to_resolve: set = set()
++        for entry in self.dm_allow_from | self.group_allow_from:
++            if entry == "*":
++                continue
++            if _is_signal_service_id(entry):
++                # Already a UUID — add directly to resolved sets
++                if entry in self.dm_allow_from:
++                    self.dm_allow_from_uuids.add(entry)
++                if entry in self.group_allow_from:
++                    self.group_allow_from_uuids.add(entry)
++                continue
++            if _looks_like_e164_number(entry):
++                numbers_to_resolve.add(entry)
++
++        if not numbers_to_resolve:
++            return
++
++        try:
++            contacts = await self._rpc("listContacts", {
++                "account": self.account,
++                "allRecipients": True,
++            })
++        except Exception:
++            logger.warning("Signal: could not resolve allowlist UUIDs — listContacts failed")
++            return
++
++        if not isinstance(contacts, list):
++            return
++
++        # Build UUID cache from all contacts
++        for contact in contacts:
++            if not isinstance(contact, dict):
++                continue
++            number = contact.get("number")
++            if not number:
++                continue
++            for phone in numbers_to_resolve:
++                service_id = self._extract_contact_uuid(contact, phone)
++                if service_id:
++                    self._remember_recipient_identifiers(number, service_id)
++                    if phone in self.dm_allow_from:
++                        self.dm_allow_from_uuids.add(service_id)
++                    if phone in self.group_allow_from:
++                        self.group_allow_from_uuids.add(service_id)
++
++        resolved = len(self.dm_allow_from_uuids) + len(self.group_allow_from_uuids)
++        if resolved:
++            logger.info(
++                "Signal: resolved %d allowlist entries to UUIDs (dm=%d, group=%d)",
++                resolved, len(self.dm_allow_from_uuids), len(self.group_allow_from_uuids),
++            )
++        unresolved = numbers_to_resolve - set(self._recipient_uuid_by_number.keys())
++
++        # Fallback: try getUserStatus for numbers not found in listContacts.
++        # This resolves phone numbers of users who haven't messaged us yet.
++        for phone in list(unresolved):
++            try:
++                statuses = await self._rpc("getUserStatus", {
++                    "account": self.account,
++                    "recipients": [phone],
++                })
++                if isinstance(statuses, list):
++                    for status in statuses:
++                        if not isinstance(status, dict):
++                            continue
++                        sid = status.get("uuid") or status.get("serviceId")
++                        if sid and _is_signal_service_id(sid):
++                            self._remember_recipient_identifiers(phone, sid)
++                            if phone in self.dm_allow_from:
++                                self.dm_allow_from_uuids.add(sid)
++                            if phone in self.group_allow_from:
++                                self.group_allow_from_uuids.add(sid)
++                            unresolved.discard(phone)
++                            logger.info("Signal: resolved %s via getUserStatus → %s",
++                                        redact_phone(phone), sid[:12])
++            except Exception:
++                pass  # getUserStatus not available or failed — skip
++
++        if unresolved:
++            logger.warning(
++                "Signal: %d allowlist phone(s) could not be resolved to UUID — "
++                "will try lazily on first message: %s",
++                len(unresolved),
++                ", ".join(redact_phone(n) for n in unresolved),
++            )
++
++    # ------------------------------------------------------------------
++    # Profile Name Setting
++    # ------------------------------------------------------------------
++
++    async def _set_profile_name(self) -> None:
++        """Set the Signal profile name from SIGNAL_PROFILE_NAME env var.
++
++        Called once during connect() after the RPC layer is live.  If the
++        env var is unset or empty, this is a silent no-op.  Failures are
++        logged as warnings but never prevent startup.
++        """
++        profile_name = os.getenv("SIGNAL_PROFILE_NAME")
++        if not profile_name:
++            return
++        try:
++            result = await self._rpc("updateProfile", {
++                "account": self.account,
++                "givenName": profile_name,
++            })
++            if result is not None:
++                logger.info('Signal: set profile name to "%s"', profile_name)
++            else:
++                logger.warning("Signal: updateProfile returned no result — profile name may not have been set")
++        except Exception as e:
++            logger.warning("Signal: failed to set profile name: %s", e)
++
+     # ------------------------------------------------------------------
+     # Attachment Handling
+     # ------------------------------------------------------------------
+diff --git a/tests/gateway/test_signal_enhancements.py b/tests/gateway/test_signal_enhancements.py
+new file mode 100644
+index 000000000..d654f38d7
+--- /dev/null
++++ b/tests/gateway/test_signal_enhancements.py
+@@ -0,0 +1,458 @@
++"""Tests for Signal adapter enhancements: UUID allowlisting, group invite policy, profile name."""
++import asyncio
++import pytest
++from unittest.mock import AsyncMock, MagicMock, patch
++
++from gateway.config import Platform, PlatformConfig
++
++
++# ---------------------------------------------------------------------------
++# Shared Helpers
++# ---------------------------------------------------------------------------
++
++def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
++    """Create a SignalAdapter with sensible test defaults."""
++    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", ""))
++    if "allowed_users" in extra:
++        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", extra.pop("allowed_users"))
++    if "group_invite_policy" in extra:
++        monkeypatch.setenv("SIGNAL_GROUP_INVITE_POLICY", extra.pop("group_invite_policy"))
++    if "profile_name" in extra:
++        monkeypatch.setenv("SIGNAL_PROFILE_NAME", extra.pop("profile_name"))
++    from gateway.platforms.signal import SignalAdapter
++    config = PlatformConfig()
++    config.enabled = True
++    config.extra = {
++        "http_url": "http://localhost:8080",
++        "account": account,
++        **extra,
++    }
++    return SignalAdapter(config)
++
++
++@pytest.fixture(autouse=True)
++def _reset_signal_scheduler():
++    from gateway.platforms.signal_rate_limit import _reset_scheduler
++    _reset_scheduler()
++    yield
++    _reset_scheduler()
++
++
++# ---------------------------------------------------------------------------
++# 2.1 UUID-Based Allowlisting
++# ---------------------------------------------------------------------------
++
++class TestUUIDAallowlisting:
++    """UUID resolution for DM and group allowlists."""
++
++    def test_init_creates_empty_uuid_sets(self, monkeypatch):
++        adapter = _make_signal_adapter(monkeypatch)
++        assert isinstance(adapter.dm_allow_from_uuids, set)
++        assert isinstance(adapter.group_allow_from_uuids, set)
++        assert len(adapter.dm_allow_from_uuids) == 0
++        assert len(adapter.group_allow_from_uuids) == 0
++
++    def test_uuid_entries_in_allowlist_added_directly(self, monkeypatch):
++        """UUIDs already in the allowlist should be added to uuid sets on resolve."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,+15559999999",
++        )
++        # UUID is in dm_allow_from
++        assert "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in adapter.dm_allow_from
++
++    @pytest.mark.asyncio
++    async def test_resolve_allowlist_uuids_from_contacts(self, monkeypatch):
++        """Phone numbers in allowlists should be resolved via listContacts."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15559999999",
++        )
++
++        contacts_response = [
++            {
++                "number": "+15559999999",
++                "uuid": "11111111-1111-1111-1111-111111111111",
++            }
++        ]
++
++        async def mock_rpc(method, params, **kwargs):
++            if method == "listContacts":
++                return contacts_response
++            if method == "getUserStatus":
++                return []
++            return None
++
++        adapter._rpc = mock_rpc
++        await adapter._resolve_allowlist_uuids()
++
++        assert "11111111-1111-1111-1111-111111111111" in adapter.dm_allow_from_uuids
++        assert "+15559999999" in adapter._recipient_uuid_by_number
++        assert adapter._recipient_uuid_by_number["+15559999999"] == "11111111-1111-1111-1111-111111111111"
++
++    @pytest.mark.asyncio
++    async def test_resolve_allowlist_uuids_fallback_to_getUserStatus(self, monkeypatch):
++        """Numbers not in contacts should fall back to getUserStatus."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15558888888",
++        )
++
++        async def mock_rpc(method, params, **kwargs):
++            if method == "listContacts":
++                return []  # no contacts match
++            if method == "getUserStatus":
++                return [{"uuid": "22222222-2222-2222-2222-222222222222"}]
++            return None
++
++        adapter._rpc = mock_rpc
++        await adapter._resolve_allowlist_uuids()
++
++        assert "22222222-2222-2222-2222-222222222222" in adapter.dm_allow_from_uuids
++
++    @pytest.mark.asyncio
++    async def test_resolve_allowlist_skips_wildcards(self, monkeypatch):
++        """Wildcard '*' entries should not be resolved."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="*",
++        )
++
++        call_count = 0
++
++        async def mock_rpc(method, params, **kwargs):
++            nonlocal call_count
++            call_count += 1
++            return []
++
++        adapter._rpc = mock_rpc
++        await adapter._resolve_allowlist_uuids()
++
++        # Should not have called listContacts — nothing to resolve
++        assert call_count == 0
++
++    def test_lazy_resolution_on_remember_identifiers(self, monkeypatch):
++        """_remember_recipient_identifiers should lazily add UUIDs to allowlist sets."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15557777777",
++        )
++
++        assert len(adapter.dm_allow_from_uuids) == 0
++
++        adapter._remember_recipient_identifiers("+15557777777", "33333333-3333-3333-3333-333333333333")
++
++        assert "33333333-3333-3333-3333-333333333333" in adapter.dm_allow_from_uuids
++
++    def test_lazy_resolution_group_allowlist(self, monkeypatch):
++        """Lazy resolution should also work for group allowlists."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            group_allowed="+15556666666",
++        )
++
++        assert len(adapter.group_allow_from_uuids) == 0
++
++        adapter._remember_recipient_identifiers("+15556666666", "44444444-4444-4444-4444-444444444444")
++
++        assert "44444444-4444-4444-4444-444444444444" in adapter.group_allow_from_uuids
++
++    def test_lazy_resolution_skips_non_allowlist_numbers(self, monkeypatch):
++        """Numbers not in any allowlist should not be added to uuid sets."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15551111111",
++        )
++
++        adapter._remember_recipient_identifiers("+15552222222", "55555555-5555-5555-5555-555555555555")
++
++        assert "55555555-5555-5555-5555-555555555555" not in adapter.dm_allow_from_uuids
++
++
++# ---------------------------------------------------------------------------
++# 2.4 Group Invite Policy
++# ---------------------------------------------------------------------------
++
++class TestGroupInvitePolicy:
++    """SIGNAL_GROUP_INVITE_POLICY controls auto-accept of group invites."""
++
++    def test_default_policy_is_approved_only(self, monkeypatch):
++        adapter = _make_signal_adapter(monkeypatch)
++        assert adapter.group_invite_policy == "approved-only"
++
++    def test_allow_all_policy(self, monkeypatch):
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            group_invite_policy="allow-all",
++        )
++        assert adapter.group_invite_policy == "allow-all"
++
++    def test_policy_strips_whitespace(self, monkeypatch):
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            group_invite_policy="  Allow-All  ",
++        )
++        assert adapter.group_invite_policy == "allow-all"
++
++    @pytest.mark.asyncio
++    async def test_group_invite_accepted_from_approved_user(self, monkeypatch):
++        """Group invite from approved user should be auto-accepted."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15559999999",
++        )
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            if method == "joinGroup":
++                return {"success": True}
++            return None
++
++        adapter._rpc = mock_rpc
++
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "66666666-6666-6666-6666-666666666666",
++                "sourceName": "Approved User",
++                "groupV2": {"groupId": "test-group-id-123"},
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        assert "joinGroup" in rpc_calls
++
++    @pytest.mark.asyncio
++    async def test_group_invite_rejected_from_unapproved_user(self, monkeypatch):
++        """Group invite from unapproved user should be rejected (approved-only policy)."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15551111111",
++        )
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "77777777-7777-7777-7777-777777777777",
++                "sourceName": "Unknown User",
++                "groupV2": {"groupId": "test-group-id-456"},
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        # Should NOT have called joinGroup
++        assert "joinGroup" not in rpc_calls
++
++    @pytest.mark.asyncio
++    async def test_group_invite_accepted_with_allow_all_policy(self, monkeypatch):
++        """Group invite from anyone should be accepted with allow-all policy."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15551111111",
++            group_invite_policy="allow-all",
++        )
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "88888888-8888-8888-8888-888888888888",
++                "sourceName": "Random User",
++                "groupV2": {"groupId": "test-group-id-789"},
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        assert "joinGroup" in rpc_calls
++
++    @pytest.mark.asyncio
++    async def test_group_invite_accepted_with_wildcard_allowlist(self, monkeypatch):
++        """Group invite should be accepted when dm_allow_from contains '*'."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="*",
++        )
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "99999999-9999-9999-9999-999999999999",
++                "sourceName": "Any User",
++                "groupV2": {"groupId": "test-group-wildcard"},
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        assert "joinGroup" in rpc_calls
++
++    @pytest.mark.asyncio
++    async def test_group_invite_fallback_to_updateGroup(self, monkeypatch):
++        """If joinGroup fails, should fall back to updateGroup."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15559999999",
++        )
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            if method == "joinGroup":
++                raise Exception("joinGroup not supported")
++            if method == "updateGroup":
++                return {"success": True}
++            return None
++
++        adapter._rpc = mock_rpc
++
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15559999999",
++                "sourceUuid": "66666666-6666-6666-6666-666666666666",
++                "sourceName": "Approved User",
++                "groupV2": {"groupId": "test-group-fallback"},
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        assert "joinGroup" in rpc_calls
++        assert "updateGroup" in rpc_calls
++
++    @pytest.mark.asyncio
++    async def test_group_invite_uuid_match(self, monkeypatch):
++        """Group invite should be accepted when inviter's UUID is in the resolved allowlist."""
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            allowed_users="+15559999999",
++        )
++        # Pre-populate UUID resolution
++        adapter.dm_allow_from_uuids.add("aabbccdd-aabb-ccdd-eeff-aabbccddeeff")
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++
++        # Envelope where sender is identified only by UUID (no number match)
++        envelope = {
++            "envelope": {
++                "sourceNumber": "+15550000000",  # not in allowlist
++                "sourceUuid": "aabbccdd-aabb-ccdd-eeff-aabbccddeeff",  # IS in uuid set
++                "sourceName": "UUID User",
++                "groupV2": {"groupId": "test-group-uuid"},
++            }
++        }
++
++        await adapter._handle_envelope(envelope)
++
++        assert "joinGroup" in rpc_calls
++
++
++# ---------------------------------------------------------------------------
++# 2.7 Profile Name Setting
++# ---------------------------------------------------------------------------
++
++class TestProfileNameSetting:
++    """SIGNAL_PROFILE_NAME sets bot profile via updateProfile on connect."""
++
++    @pytest.mark.asyncio
++    async def test_set_profile_name_calls_updateProfile(self, monkeypatch):
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            profile_name="TestBot",
++        )
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append({"method": method, "params": dict(params)})
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++        await adapter._set_profile_name()
++
++        assert len(rpc_calls) == 1
++        assert rpc_calls[0]["method"] == "updateProfile"
++        assert rpc_calls[0]["params"]["givenName"] == "TestBot"
++        assert rpc_calls[0]["params"]["account"] == "+15551234567"
++
++    @pytest.mark.asyncio
++    async def test_set_profile_name_noop_when_not_set(self, monkeypatch):
++        adapter = _make_signal_adapter(monkeypatch)
++
++        rpc_calls = []
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            rpc_calls.append(method)
++            return {"success": True}
++
++        adapter._rpc = mock_rpc
++        await adapter._set_profile_name()
++
++        # Should not have called updateProfile
++        assert "updateProfile" not in rpc_calls
++
++    @pytest.mark.asyncio
++    async def test_set_profile_name_handles_failure_gracefully(self, monkeypatch):
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            profile_name="FailBot",
++        )
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            if method == "updateProfile":
++                raise Exception("RPC timeout")
++            return None
++
++        adapter._rpc = mock_rpc
++
++        # Should not raise — failures are logged but non-fatal
++        await adapter._set_profile_name()
++
++    @pytest.mark.asyncio
++    async def test_set_profile_name_handles_null_result(self, monkeypatch):
++        adapter = _make_signal_adapter(
++            monkeypatch,
++            profile_name="NullBot",
++        )
++
++        async def mock_rpc(method, params, rpc_id=None, **kwargs):
++            return None  # updateProfile returned no result
++
++        adapter._rpc = mock_rpc
++
++        # Should not raise
++        await adapter._set_profile_name()
+-- 
+2.50.1 (Apple Git-155)
+

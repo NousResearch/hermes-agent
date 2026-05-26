@@ -1,0 +1,129 @@
+From f9d2614b2b87478ec328ca97b6996e7b2b2fd494 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 23:04:38 +1200
+Subject: [PATCH 11/27] feat(mattermost): complete mention gating with command
+ and thread-reply bypass
+
+Slash commands (/help, /new, etc.) and replies to bot-authored messages
+now pass through mention gating without requiring @mention. This matches
+the old fork's behavior and prevents users from needing to @mention the
+bot when continuing a conversation it started or issuing commands.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ plugins/platforms/mattermost/adapter.py | 16 +++++-
+ tests/gateway/test_mattermost.py        | 71 +++++++++++++++++++++++++
+ 2 files changed, 86 insertions(+), 1 deletion(-)
+
+diff --git a/plugins/platforms/mattermost/adapter.py b/plugins/platforms/mattermost/adapter.py
+index bb6dc9b81..788de6909 100644
+--- a/plugins/platforms/mattermost/adapter.py
++++ b/plugins/platforms/mattermost/adapter.py
+@@ -768,7 +768,21 @@ class MattermostAdapter(BasePlatformAdapter):
+                 for pattern in mention_patterns
+             )
+ 
+-            if require_mention and not is_free_channel and not has_mention:
++            # Slash commands always pass through mention gating.
++            is_command = bool(message_text and message_text.strip().startswith("/"))
++
++            # Replies to bot messages pass through — the user is continuing
++            # a conversation the bot started.
++            is_reply_to_bot = False
++            root_id = post.get("root_id")
++            if root_id and not has_mention and not is_command:
++                try:
++                    root_post = await self._api_get(f"posts/{root_id}")
++                    is_reply_to_bot = root_post.get("user_id") == self._bot_user_id
++                except Exception:
++                    pass
++
++            if require_mention and not is_free_channel and not has_mention and not is_reply_to_bot and not is_command:
+                 logger.debug(
+                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                     channel_id,
+diff --git a/tests/gateway/test_mattermost.py b/tests/gateway/test_mattermost.py
+index cafe5ad68..cad621e06 100644
+--- a/tests/gateway/test_mattermost.py
++++ b/tests/gateway/test_mattermost.py
+@@ -472,6 +472,77 @@ class TestMattermostMentionBehavior:
+             await self.adapter._handle_ws_event(self._make_event("hello", channel_type="D"))
+             assert self.adapter.handle_message.called
+ 
++    @pytest.mark.asyncio
++    async def test_slash_command_bypasses_mention_requirement(self):
++        """Slash commands should pass through even without @mention."""
++        with patch.dict(os.environ, {}, clear=False):
++            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
++            os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
++            await self.adapter._handle_ws_event(self._make_event("/help"))
++            assert self.adapter.handle_message.called
++
++    @pytest.mark.asyncio
++    async def test_reply_to_bot_bypasses_mention_requirement(self):
++        """Replies to bot messages should pass through without @mention."""
++        post_data = {
++            "id": "post_reply",
++            "user_id": "user_123",
++            "channel_id": "chan_456",
++            "message": "thanks for that",
++            "root_id": "bot_root_post",
++        }
++        event = {
++            "event": "posted",
++            "data": {
++                "post": json.dumps(post_data),
++                "channel_type": "O",
++                "sender_name": "@alice",
++            },
++        }
++
++        # Mock _api_get to return a post authored by the bot
++        self.adapter._api_get = AsyncMock(return_value={
++            "id": "bot_root_post",
++            "user_id": "bot_user_id",
++        })
++
++        with patch.dict(os.environ, {}, clear=False):
++            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
++            os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
++            await self.adapter._handle_ws_event(event)
++            assert self.adapter.handle_message.called
++
++    @pytest.mark.asyncio
++    async def test_reply_to_non_bot_still_requires_mention(self):
++        """Replies to non-bot messages should still require @mention."""
++        post_data = {
++            "id": "post_reply2",
++            "user_id": "user_123",
++            "channel_id": "chan_456",
++            "message": "replying to someone else",
++            "root_id": "other_user_post",
++        }
++        event = {
++            "event": "posted",
++            "data": {
++                "post": json.dumps(post_data),
++                "channel_type": "O",
++                "sender_name": "@alice",
++            },
++        }
++
++        # Mock _api_get to return a post NOT authored by the bot
++        self.adapter._api_get = AsyncMock(return_value={
++            "id": "other_user_post",
++            "user_id": "other_user_456",
++        })
++
++        with patch.dict(os.environ, {}, clear=False):
++            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
++            os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
++            await self.adapter._handle_ws_event(event)
++            assert not self.adapter.handle_message.called
++
+     @pytest.mark.asyncio
+     async def test_mention_stripped_from_text(self):
+         """@mention is stripped from message text."""
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,41 @@
+From 83983e1461be8ee86f9cc6c24baeeb569603efb6 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Mon, 25 May 2026 11:53:27 +1200
+Subject: [PATCH 22/27] fix(signal): strip bot's own @mention from group
+ message text
+
+Without this, commands like "/sethome" prefixed with a mention
+(e.g. "@+16893576460 /sethome") fail command detection because
+is_command() checks text.startswith("/"). Matches Mattermost
+adapter behavior which already strips mentions.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/platforms/signal.py | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/gateway/platforms/signal.py b/gateway/platforms/signal.py
+index 6b5731e0f..b620545e6 100644
+--- a/gateway/platforms/signal.py
++++ b/gateway/platforms/signal.py
+@@ -670,6 +670,17 @@ class SignalAdapter(BasePlatformAdapter):
+                         )
+                         return
+ 
++        # Strip the bot's own @mention from the text so the agent sees clean
++        # input and commands like "/sethome" are correctly detected even when
++        # prefixed with a mention (e.g. "@+16893576460 /sethome").
++        if is_group and text and self._account_normalized:
++            import re as _re
++            for pattern in [
++                f"@{_re.escape(self._account_normalized)}",
++                f"@{_re.escape(self._account_normalized.lstrip('+'))}",
++            ]:
++                text = _re.sub(pattern, "", text, flags=_re.IGNORECASE).strip()
++
+         # Extract quote (reply-to) context from Signal dataMessage
+         quote_data = data_message.get("quote") or {}
+         reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
+-- 
+2.50.1 (Apple Git-155)
+

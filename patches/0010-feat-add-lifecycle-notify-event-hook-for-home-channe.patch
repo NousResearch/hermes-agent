@@ -1,0 +1,195 @@
+From 05c9951ea0aee653d985ab4801cd7b04183c6b3f Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Fri, 22 May 2026 22:48:01 +1200
+Subject: [PATCH 10/27] feat: add lifecycle-notify event hook for home channel
+ routing
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Sends startup notification to configured HERMES_HOME_CHANNEL on
+gateway:startup. Logs for now — full adapter-based message delivery
+deferred to Phase 2 (HSM wizard integration).
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ hooks/lifecycle-notify/HOOK.yaml     |   4 ++
+ hooks/lifecycle-notify/handler.py    |  40 +++++++++++
+ tests/hooks/__init__.py              |   0
+ tests/hooks/test_lifecycle_notify.py | 102 +++++++++++++++++++++++++++
+ 4 files changed, 146 insertions(+)
+ create mode 100644 hooks/lifecycle-notify/HOOK.yaml
+ create mode 100644 hooks/lifecycle-notify/handler.py
+ create mode 100644 tests/hooks/__init__.py
+ create mode 100644 tests/hooks/test_lifecycle_notify.py
+
+diff --git a/hooks/lifecycle-notify/HOOK.yaml b/hooks/lifecycle-notify/HOOK.yaml
+new file mode 100644
+index 000000000..2214dafaf
+--- /dev/null
++++ b/hooks/lifecycle-notify/HOOK.yaml
+@@ -0,0 +1,4 @@
++name: lifecycle-notify
++description: Send startup notification to home channel
++events:
++  - gateway:startup
+diff --git a/hooks/lifecycle-notify/handler.py b/hooks/lifecycle-notify/handler.py
+new file mode 100644
+index 000000000..19bdcc956
+--- /dev/null
++++ b/hooks/lifecycle-notify/handler.py
+@@ -0,0 +1,40 @@
++"""Send lifecycle notifications to the configured home channel.
++
++This hook fires on gateway:startup and logs a notification that the agent
++is online. Full adapter-based message sending (actually delivering the
++notification to the home channel via Signal/Telegram/etc.) will be wired
++in Phase 2 when the HSM wizard deploys this hook into agent containers.
++
++Environment variables read:
++  HERMES_HOME_CHANNEL    — target channel/group ID for lifecycle messages
++  HERMES_AGENT_NAME      — display name of this agent (default: "hermes")
++  HERMES_DEFAULT_PLATFORM — platform adapter name (e.g. "signal", "telegram")
++"""
++
++import logging
++import os
++
++logger = logging.getLogger("hooks.lifecycle-notify")
++
++
++async def handle(event_type: str, context: dict) -> None:
++    """On gateway:startup, log an 'online' notification for the home channel."""
++    if event_type != "gateway:startup":
++        return
++
++    home_channel = os.environ.get("HERMES_HOME_CHANNEL")
++    if not home_channel:
++        return
++
++    agent_name = os.environ.get("HERMES_AGENT_NAME", "hermes")
++    platform = os.environ.get("HERMES_DEFAULT_PLATFORM", "")
++
++    if not platform:
++        return
++
++    logger.info(
++        "%s is online (home_channel=%s, platform=%s)",
++        agent_name,
++        home_channel,
++        platform,
++    )
+diff --git a/tests/hooks/__init__.py b/tests/hooks/__init__.py
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/tests/hooks/test_lifecycle_notify.py b/tests/hooks/test_lifecycle_notify.py
+new file mode 100644
+index 000000000..56231aea4
+--- /dev/null
++++ b/tests/hooks/test_lifecycle_notify.py
+@@ -0,0 +1,102 @@
++"""Tests for the lifecycle-notify event hook."""
++
++import importlib
++import logging
++import os
++from unittest import mock
++
++import pytest
++
++
++def _import_handler():
++    """Import the lifecycle-notify handler module."""
++    import importlib.util
++
++    handler_path = os.path.join(
++        os.path.dirname(__file__),
++        "..",
++        "..",
++        "hooks",
++        "lifecycle-notify",
++        "handler.py",
++    )
++    handler_path = os.path.normpath(handler_path)
++    spec = importlib.util.spec_from_file_location("lifecycle_notify_handler", handler_path)
++    mod = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(mod)
++    return mod
++
++
++@pytest.mark.asyncio
++async def test_startup_notification_logged(caplog):
++    """gateway:startup with HERMES_HOME_CHANNEL set emits a log message."""
++    mod = _import_handler()
++
++    env = {
++        "HERMES_HOME_CHANNEL": "test-channel-123",
++        "HERMES_AGENT_NAME": "test-agent",
++        "HERMES_DEFAULT_PLATFORM": "signal",
++    }
++    with mock.patch.dict(os.environ, env, clear=False):
++        with caplog.at_level(logging.INFO, logger="hooks.lifecycle-notify"):
++            await mod.handle("gateway:startup", {"platforms": ["signal"]})
++
++    assert any("test-agent" in r.message and "online" in r.message for r in caplog.records), (
++        f"Expected log about agent online, got: {[r.message for r in caplog.records]}"
++    )
++
++
++@pytest.mark.asyncio
++async def test_skips_without_home_channel(caplog):
++    """No HERMES_HOME_CHANNEL set means no log output."""
++    mod = _import_handler()
++
++    env_remove = {"HERMES_HOME_CHANNEL": ""}
++    with mock.patch.dict(os.environ, env_remove, clear=False):
++        # Ensure the var is actually absent
++        with mock.patch.dict(os.environ, {}, clear=False):
++            os.environ.pop("HERMES_HOME_CHANNEL", None)
++            with caplog.at_level(logging.INFO, logger="hooks.lifecycle-notify"):
++                await mod.handle("gateway:startup", {})
++
++    assert not any("online" in r.message for r in caplog.records), (
++        f"Should not log when no home channel, got: {[r.message for r in caplog.records]}"
++    )
++
++
++@pytest.mark.asyncio
++async def test_skips_non_startup_events(caplog):
++    """Non gateway:startup events are ignored."""
++    mod = _import_handler()
++
++    env = {
++        "HERMES_HOME_CHANNEL": "test-channel-123",
++        "HERMES_AGENT_NAME": "test-agent",
++        "HERMES_DEFAULT_PLATFORM": "signal",
++    }
++    with mock.patch.dict(os.environ, env, clear=False):
++        with caplog.at_level(logging.INFO, logger="hooks.lifecycle-notify"):
++            await mod.handle("session:start", {"session_id": "abc"})
++
++    assert not any("online" in r.message for r in caplog.records), (
++        f"Should not log for non-startup events, got: {[r.message for r in caplog.records]}"
++    )
++
++
++@pytest.mark.asyncio
++async def test_skips_without_platform(caplog):
++    """No HERMES_DEFAULT_PLATFORM means no notification."""
++    mod = _import_handler()
++
++    env = {
++        "HERMES_HOME_CHANNEL": "test-channel-123",
++        "HERMES_AGENT_NAME": "test-agent",
++    }
++    with mock.patch.dict(os.environ, env, clear=False):
++        os.environ.pop("HERMES_DEFAULT_PLATFORM", None)
++        with caplog.at_level(logging.INFO, logger="hooks.lifecycle-notify"):
++            await mod.handle("gateway:startup", {})
++
++    assert not any("online" in r.message for r in caplog.records), (
++        f"Should not log without platform, got: {[r.message for r in caplog.records]}"
++    )
+-- 
+2.50.1 (Apple Git-155)
+

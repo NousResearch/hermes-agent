@@ -1,0 +1,33 @@
+From c7b7bda1d8688d217cdde0dfbe583b420a918bd5 Mon Sep 17 00:00:00 2001
+From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
+Date: Mon, 25 May 2026 17:58:58 +1200
+Subject: [PATCH 26/27] fix(signal): detect voice memos by audio content type,
+ not voiceNote flag
+
+signal-cli SSE JSON doesn't include voiceNote or flags fields.
+Detect voice memos by contentType starting with "audio/" instead.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ gateway/platforms/signal.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/gateway/platforms/signal.py b/gateway/platforms/signal.py
+index ee8df691b..51d5dbedc 100644
+--- a/gateway/platforms/signal.py
++++ b/gateway/platforms/signal.py
+@@ -662,8 +662,10 @@ class SignalAdapter(BasePlatformAdapter):
+ 
+                 # Voice memos bypass observe_only — you can't add text or
+                 # @mention to a voice memo, so requiring mention is impossible.
++                # signal-cli SSE doesn't include a voiceNote flag — detect by
++                # audio content type (audio/aac, audio/ogg, audio/mp4, etc.)
+                 is_voice_memo = any(
+-                    att.get("voiceNote") or "voice" in str(att.get("flags", "")).lower()
++                    str(att.get("contentType", "")).startswith("audio/")
+                     for att in (data_message.get("attachments") or [])
+                 )
+ 
+-- 
+2.50.1 (Apple Git-155)
+

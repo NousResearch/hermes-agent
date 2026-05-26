@@ -1,7 +1,7 @@
-From 1b5d36bbcd61aa202cd0f9e7b50f58f9de6ca2f1 Mon Sep 17 00:00:00 2001
+From 1cbf2ea69b2c12156a1882e9d964673e8267870e Mon Sep 17 00:00:00 2001
 From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
 Date: Fri, 22 May 2026 11:11:01 +1200
-Subject: [PATCH 2/3] fix: sanitize context_id, prevent global entry mutation
+Subject: [PATCH 02/27] fix: sanitize context_id, prevent global entry mutation
  from scoped contexts
 
 - Sanitize context_id in MemoryStore.__init__: replace path separators
@@ -23,10 +23,10 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
  3 files changed, 109 insertions(+), 9 deletions(-)
 
 diff --git a/gateway/run.py b/gateway/run.py
-index 5e081521b..b97848505 100644
+index 16eec4b3c..fb639bbf4 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -1614,6 +1614,16 @@ class GatewayRunner:
+@@ -1861,6 +1861,16 @@ class GatewayRunner:
          # Track background tasks to prevent garbage collection mid-execution
          self._background_tasks: set = set()
  
@@ -43,7 +43,7 @@ index 5e081521b..b97848505 100644
  
      def _wire_teams_pipeline_runtime(self) -> None:
          """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
-@@ -11418,9 +11428,7 @@ class GatewayRunner:
+@@ -11716,9 +11726,7 @@ class GatewayRunner:
                          logger.warning("Background task vision enrichment failed: %s", e)
  
              # Per-channel memory scoping for background tasks
@@ -54,7 +54,7 @@ index 5e081521b..b97848505 100644
  
              def run_sync():
                  agent = AIAgent(
-@@ -16289,9 +16297,7 @@ class GatewayRunner:
+@@ -16615,9 +16623,7 @@ class GatewayRunner:
              if agent is None:
                  # Per-channel memory scoping: group/channel chats get scoped memory,
                  # DMs get global memory.
@@ -121,10 +121,10 @@ index a37345426..1ad2c5b42 100644
      """Different contexts use different lock files, so they don't block each other."""
  
 diff --git a/tools/memory_tool.py b/tools/memory_tool.py
-index a62b1dd65..c38a127f3 100644
+index 69ec0e559..2436a6b25 100644
 --- a/tools/memory_tool.py
 +++ b/tools/memory_tool.py
-@@ -121,7 +121,15 @@ class MemoryStore:
+@@ -128,7 +128,15 @@ class MemoryStore:
          self.user_entries: List[str] = []
          self.memory_char_limit = memory_char_limit
          self.user_char_limit = user_char_limit
@@ -141,7 +141,7 @@ index a62b1dd65..c38a127f3 100644
          # Frozen snapshot for system prompt -- set once at load_from_disk()
          self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
  
-@@ -152,6 +160,16 @@ class MemoryStore:
+@@ -174,6 +182,16 @@ class MemoryStore:
          self.memory_entries = list(dict.fromkeys(self.memory_entries))
          self.user_entries = list(dict.fromkeys(self.user_entries))
  
@@ -155,22 +155,23 @@ index a62b1dd65..c38a127f3 100644
 +        else:
 +            self._global_entry_count = 0
 +
-         # Capture frozen snapshot for system prompt injection
-         self._system_prompt_snapshot = {
-             "memory": self._render_block("memory", self.memory_entries),
-@@ -220,16 +238,23 @@ class MemoryStore:
-         """Re-read entries from disk into in-memory state.
+         # Sanitize entries for the system-prompt snapshot only.  Live state
+         # (memory_entries / user_entries) keeps the raw text so the user
+         # can see + remove poisoned entries via the memory tool.
+@@ -291,7 +309,9 @@ class MemoryStore:
+         flushing would discard the un-roundtrippable content.
+         Returns None on clean reload.
  
-         Called under file lock to get the latest state before mutating.
 -        When context_id is set, merges global + scoped entries.
 +        When context_id is set, merges global + scoped entries and updates
 +        _global_entry_count for the memory target (used by replace/remove
 +        to block mutations on global entries from a scoped context).
          """
-         if self.context_id is not None:
-             # Merge global + scoped
+         path = self._path_for(target)
+         bak = self._detect_external_drift(target)
+@@ -300,9 +320,14 @@ class MemoryStore:
              global_entries = self._read_file(self._global_path_for(target))
-             scoped_entries = self._read_file(self._path_for(target))
+             scoped_entries = self._read_file(path)
              fresh = global_entries + scoped_entries
 +            fresh = list(dict.fromkeys(fresh))  # deduplicate
 +            if target == "memory":
@@ -178,13 +179,13 @@ index a62b1dd65..c38a127f3 100644
 +                global_set = set(global_entries)
 +                self._global_entry_count = sum(1 for e in fresh if e in global_set)
          else:
-             fresh = self._read_file(self._path_for(target))
+             fresh = self._read_file(path)
 -        fresh = list(dict.fromkeys(fresh))  # deduplicate
 +            fresh = list(dict.fromkeys(fresh))  # deduplicate
          self._set_entries(target, fresh)
+         return bak
  
-     def save_to_disk(self, target: str):
-@@ -341,6 +366,20 @@ class MemoryStore:
+@@ -422,6 +447,20 @@ class MemoryStore:
                  # All identical -- safe to replace just the first
  
              idx = matches[0][0]
@@ -205,7 +206,7 @@ index a62b1dd65..c38a127f3 100644
              limit = self._char_limit(target)
  
              # Check that replacement doesn't blow the budget
-@@ -391,6 +430,17 @@ class MemoryStore:
+@@ -474,6 +513,17 @@ class MemoryStore:
                  # All identical -- safe to remove just the first
  
              idx = matches[0][0]

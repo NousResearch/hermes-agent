@@ -1,7 +1,7 @@
-From fe80096f01779906bb0f549acd412d3a70ce2237 Mon Sep 17 00:00:00 2001
+From e938f03da94c751ed5eccd96c8c8d304f8c52018 Mon Sep 17 00:00:00 2001
 From: Juniper Bevensee <juniperbevensee@users.noreply.github.com>
 Date: Fri, 22 May 2026 11:04:56 +1200
-Subject: [PATCH 1/3] feat: add context_id memory scoping for
+Subject: [PATCH 01/27] feat: add context_id memory scoping for
  per-channel/tenant isolation
 
 Adds an opaque context_id parameter to MemoryStore that routes memory
@@ -15,12 +15,12 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
  gateway/run.py                     |  13 ++
  run_agent.py                       |   2 +
  tests/tools/test_memory_scoping.py | 237 +++++++++++++++++++++++++++++
- tools/memory_tool.py               |  55 ++++++-
- 5 files changed, 302 insertions(+), 8 deletions(-)
+ tools/memory_tool.py               |  53 ++++++-
+ 5 files changed, 301 insertions(+), 7 deletions(-)
  create mode 100644 tests/tools/test_memory_scoping.py
 
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index be9a09dd2..819da1fcb 100644
+index e20755c50..7ac6e4c5d 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
 @@ -192,6 +192,7 @@ def init_agent(
@@ -39,7 +39,7 @@ index be9a09dd2..819da1fcb 100644
      agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
      # Pluggable print function — CLI replaces this with _cprint so that
      # raw ANSI status lines are routed through prompt_toolkit's renderer
-@@ -1049,6 +1051,7 @@ def init_agent(
+@@ -1072,6 +1074,7 @@ def init_agent(
                  agent._memory_store = MemoryStore(
                      memory_char_limit=mem_config.get("memory_char_limit", 2200),
                      user_char_limit=mem_config.get("user_char_limit", 1375),
@@ -48,10 +48,10 @@ index be9a09dd2..819da1fcb 100644
                  agent._memory_store.load_from_disk()
          except Exception:
 diff --git a/gateway/run.py b/gateway/run.py
-index 0f56ad61c..5e081521b 100644
+index 9568eab2c..16eec4b3c 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -11417,6 +11417,11 @@ class GatewayRunner:
+@@ -11715,6 +11715,11 @@ class GatewayRunner:
                      except Exception as e:
                          logger.warning("Background task vision enrichment failed: %s", e)
  
@@ -63,7 +63,7 @@ index 0f56ad61c..5e081521b 100644
              def run_sync():
                  agent = AIAgent(
                      model=turn_route["model"],
-@@ -11443,6 +11448,7 @@ class GatewayRunner:
+@@ -11741,6 +11746,7 @@ class GatewayRunner:
                      chat_name=source.chat_name,
                      chat_type=source.chat_type,
                      thread_id=source.thread_id,
@@ -71,7 +71,7 @@ index 0f56ad61c..5e081521b 100644
                      session_db=self._session_db,
                      fallback_model=self._fallback_model,
                  )
-@@ -16281,6 +16287,12 @@ class GatewayRunner:
+@@ -16607,6 +16613,12 @@ class GatewayRunner:
                          logger.debug("Reusing cached agent for session %s", session_key)
  
              if agent is None:
@@ -84,7 +84,7 @@ index 0f56ad61c..5e081521b 100644
                  # Config changed or first message — create fresh agent
                  agent = AIAgent(
                      model=turn_route["model"],
-@@ -16310,6 +16322,7 @@ class GatewayRunner:
+@@ -16636,6 +16648,7 @@ class GatewayRunner:
                      chat_type=source.chat_type,
                      thread_id=source.thread_id,
                      gateway_session_key=session_key,
@@ -93,10 +93,10 @@ index 0f56ad61c..5e081521b 100644
                      fallback_model=self._fallback_model,
                  )
 diff --git a/run_agent.py b/run_agent.py
-index 001d03784..546d92cbc 100644
+index d2d65314f..c59c88954 100644
 --- a/run_agent.py
 +++ b/run_agent.py
-@@ -402,6 +402,7 @@ class AIAgent:
+@@ -403,6 +403,7 @@ class AIAgent:
          skip_context_files: bool = False,
          load_soul_identity: bool = False,
          skip_memory: bool = False,
@@ -104,7 +104,7 @@ index 001d03784..546d92cbc 100644
          session_db=None,
          parent_session_id: str = None,
          iteration_budget: "IterationBudget" = None,
-@@ -471,6 +472,7 @@ class AIAgent:
+@@ -472,6 +473,7 @@ class AIAgent:
              skip_context_files=skip_context_files,
              load_soul_identity=load_soul_identity,
              skip_memory=skip_memory,
@@ -356,10 +356,10 @@ index 000000000..a37345426
 +        assert (mem_dir / "contexts" / "ctx-1" / "MEMORY.md").exists()
 +        assert (mem_dir / "contexts" / "ctx-2" / "MEMORY.md").exists()
 diff --git a/tools/memory_tool.py b/tools/memory_tool.py
-index 78d3a1549..a62b1dd65 100644
+index 5b9af5592..69ec0e559 100644
 --- a/tools/memory_tool.py
 +++ b/tools/memory_tool.py
-@@ -115,21 +115,38 @@ class MemoryStore:
+@@ -122,11 +122,13 @@ class MemoryStore:
          Tool responses always reflect this live state.
      """
  
@@ -374,14 +374,15 @@ index 78d3a1549..a62b1dd65 100644
          # Frozen snapshot for system prompt -- set once at load_from_disk()
          self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
  
-     def load_from_disk(self):
--        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-+        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
+@@ -147,12 +149,26 @@ class MemoryStore:
+ 
+         Scanning is deterministic from disk bytes, so the snapshot remains
+         stable for the entire session (prefix-cache invariant holds).
 +
 +        When context_id is set, reads global entries first then merges in
 +        context-scoped entries (deduplicating).  Writes always go to the
 +        scoped path via _path_for().
-+        """
+         """
          mem_dir = get_memory_dir()
          mem_dir.mkdir(parents=True, exist_ok=True)
  
@@ -402,7 +403,7 @@ index 78d3a1549..a62b1dd65 100644
  
          # Deduplicate entries (preserves order, keeps first occurrence)
          self.memory_entries = list(dict.fromkeys(self.memory_entries))
-@@ -179,25 +196,47 @@ class MemoryStore:
+@@ -244,12 +260,26 @@ class MemoryStore:
              fd.close()
  
      @staticmethod
@@ -427,22 +428,29 @@ index 78d3a1549..a62b1dd65 100644
 +            return mem_dir / "contexts" / self.context_id / "USER.md"
 +        return mem_dir / "contexts" / self.context_id / "MEMORY.md"
 +
-     def _reload_target(self, target: str):
+     def _reload_target(self, target: str) -> Optional[str]:
          """Re-read entries from disk into in-memory state.
  
-         Called under file lock to get the latest state before mutating.
+@@ -260,18 +290,27 @@ class MemoryStore:
+         When drift is detected the caller must abort the mutation —
+         flushing would discard the un-roundtrippable content.
+         Returns None on clean reload.
++
 +        When context_id is set, merges global + scoped entries.
          """
--        fresh = self._read_file(self._path_for(target))
+         path = self._path_for(target)
+         bak = self._detect_external_drift(target)
+-        fresh = self._read_file(path)
 +        if self.context_id is not None:
 +            # Merge global + scoped
 +            global_entries = self._read_file(self._global_path_for(target))
-+            scoped_entries = self._read_file(self._path_for(target))
++            scoped_entries = self._read_file(path)
 +            fresh = global_entries + scoped_entries
 +        else:
-+            fresh = self._read_file(self._path_for(target))
++            fresh = self._read_file(path)
          fresh = list(dict.fromkeys(fresh))  # deduplicate
          self._set_entries(target, fresh)
+         return bak
  
      def save_to_disk(self, target: str):
          """Persist entries to the appropriate file. Called after every mutation."""

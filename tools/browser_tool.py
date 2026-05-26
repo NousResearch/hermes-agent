@@ -55,7 +55,6 @@ import json
 import logging
 import os
 import re
-import signal
 import subprocess
 import shutil
 import sys
@@ -73,7 +72,7 @@ from hermes_cli.config import cfg_get
 try:
     from tools.website_policy import check_website_access
 except Exception:
-    check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
+    check_website_access = lambda url: None  # fail-open if policy module unavailable
 
 try:
     from tools.url_safety import (
@@ -81,24 +80,24 @@ try:
         is_always_blocked_url as _is_always_blocked_url,
     )
 except Exception:
-    _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
-    _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
+    _is_safe_url = lambda url: False  # fail-closed: block all if safety module unavailable
+    _is_always_blocked_url = lambda url: True  # fail-closed on the floor too
 # Browser-provider ABC + registry — PR #25214 moved the per-vendor providers
 # (Browserbase / Browser Use / Firecrawl) out of ``tools/browser_providers/``
 # and into ``plugins/browser/<vendor>/``. The dispatcher consults the
 # registry; the legacy class names are re-exported below as backward-compat
 # shims for callers that import them from this module.
-from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # noqa: F401  (legacy alias)
-from agent.browser_registry import (  # noqa: F401  (test-patchable surface)
+from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # (legacy alias)
+from agent.browser_registry import (  # (test-patchable surface)
     get_provider as _registry_get_browser_provider,
 )
-from plugins.browser.browserbase.provider import (  # noqa: F401  (legacy import surface)
+from plugins.browser.browserbase.provider import (  # (legacy import surface)
     BrowserbaseBrowserProvider as BrowserbaseProvider,
 )
-from plugins.browser.browser_use.provider import (  # noqa: F401
+from plugins.browser.browser_use.provider import (
     BrowserUseBrowserProvider as BrowserUseProvider,
 )
-from plugins.browser.firecrawl.provider import (  # noqa: F401
+from plugins.browser.firecrawl.provider import (
     FirecrawlBrowserProvider as FirecrawlProvider,
 )
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
@@ -108,7 +107,7 @@ from tools.tool_backend_helpers import normalize_browser_cloud_provider
 try:
     from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
 except ImportError:
-    _is_camofox_mode = lambda: False  # noqa: E731
+    _is_camofox_mode = lambda: False
 
 logger = logging.getLogger(__name__)
 

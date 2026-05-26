@@ -121,6 +121,58 @@ class TestCleanF821:
 
 
 
+
+
+class TestCleanRUF100BrowserTool:
+    """RUF100 (unused noqa directive) must stay at zero for tools/browser_tool.py.
+
+    RUF100 is a universally-applied rule — it fires whenever a ``# noqa``
+    directive names a rule that ruff's selected rule set doesn't enforce.
+    """
+
+    TARGET = REPO_ROOT / "tools" / "browser_tool.py"
+
+    def test_tools_browser_tool_py_has_zero_ruf100_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=RUF100",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has RUF100 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+class TestCleanF401:
+    """F401 (unused import) must stay at zero for targeted files.
+
+    F401 fires when an imported name is never used in the module.
+    Backward-compat re-exports should use ``# noqa: F401`` with a
+    comment naming the dependent callers.
+
+    Note: F401 is NOT in ``[tool.ruff.lint.select]``, so these tests
+    explicitly pass ``--select=F401`` to check it.
+    """
+
+    TARGET = REPO_ROOT / "tools" / "browser_tool.py"
+
+    def test_tools_browser_tool_py_has_zero_f401_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+
+
 class TestLintWorkflow:
     WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lint.yml"
 

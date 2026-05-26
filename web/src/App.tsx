@@ -569,7 +569,7 @@ export default function App() {
             </div>
 
             <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
+              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-1.5"
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
@@ -723,8 +723,8 @@ function SidebarNavLink({ closeMobile, item, pendingApprovalCount, t }: SidebarN
         className={({ isActive }) =>
           cn(
             "group relative flex items-center gap-3",
-            "px-5 py-2",
-            "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
+            "px-5 py-1.5",
+            "font-mondwest text-display uppercase text-[0.8125rem] tracking-[0.11em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
             isActive

@@ -281,12 +281,13 @@ const DAILY_DRIVERS = [
   "Record durable state",
 ];
 
-const readablePanel = "rounded-xl border border-[#284848] bg-[#061f1f]/85 p-4 shadow-sm shadow-black/20";
+const readablePanel = "min-w-0 rounded-xl border border-[#284848] bg-[#061f1f]/85 p-4 shadow-sm shadow-black/20";
 const cockpitCard = "border-[#264545] bg-[#071717]/90 shadow-[0_0_0_1px_rgba(47,214,161,0.04),0_18px_60px_rgba(0,0,0,0.28)]";
 const cockpitPanel = "rounded-xl border border-[#284848] bg-black/30 p-3";
-const readableTitle = "text-base font-semibold leading-6 text-text-primary";
-const readableBody = "mt-1 text-sm leading-6 text-text-secondary";
+const readableTitle = "min-w-0 break-words text-base font-semibold leading-6 text-text-primary";
+const readableBody = "mt-1 min-w-0 break-words text-sm leading-6 text-text-secondary";
 const readableSectionHeading = "text-sm font-semibold uppercase tracking-[0.08em] text-emerald-100/90";
+const readableBadge = "max-w-full shrink-0 whitespace-normal text-right leading-5 sm:max-w-[10rem]";
 
 function isProblemJob(job: CronJob): boolean {
   const state = getJobState(job).toLowerCase();
@@ -331,7 +332,7 @@ function platformSummary(status: StatusResponse | null): string {
 function WorkspaceRail({ activeJobs, recentSessions }: { activeJobs: CronJob[]; recentSessions: SessionInfo[] }) {
   return (
     <aside className="font-readable-ui hidden xl:block">
-      <div className="sticky top-5 space-y-4">
+      <div className="sticky top-5 flex max-h-[calc(100vh-2.5rem)] flex-col gap-4">
         <Card className={cn(cockpitCard, "overflow-hidden")}>
           <CardContent className="space-y-4 p-4">
             <div className="flex items-center gap-2 text-emerald-200">
@@ -349,13 +350,13 @@ function WorkspaceRail({ activeJobs, recentSessions }: { activeJobs: CronJob[]; 
           </CardContent>
         </Card>
 
-        <Card className={cockpitCard}>
-          <CardContent className="space-y-3 p-4">
+        <Card className={cn(cockpitCard, "min-h-0 flex-1 overflow-hidden")}>
+          <CardContent className="flex h-full min-h-0 flex-col gap-3 p-4">
             <div className="flex items-center gap-2 text-emerald-200">
               <Bot className="h-4 w-4" />
               <div className="text-sm font-semibold uppercase tracking-[0.12em]">Recent trace</div>
             </div>
-            <div className="space-y-2">
+            <div className="min-h-0 flex-1 space-y-2 overflow-hidden">
               {recentSessions.slice(0, 4).map((session) => (
                 <Link
                   key={session.id}
@@ -382,7 +383,7 @@ function WorkspaceRail({ activeJobs, recentSessions }: { activeJobs: CronJob[]; 
 function CommandDeck({ status, activeJobs, approvalSummary }: { status: StatusResponse | null; activeJobs: CronJob[]; approvalSummary: OpsApprovalSummary | null }) {
   return (
     <aside className="font-readable-ui hidden 2xl:block">
-      <div className="sticky top-5 space-y-4">
+      <div className="sticky top-5 flex max-h-[calc(100vh-2.5rem)] flex-col gap-4">
         <Card className={cockpitCard}>
           <CardContent className="space-y-4 p-4">
             <div className="flex items-center justify-between gap-3">
@@ -428,8 +429,8 @@ function CommandDeck({ status, activeJobs, approvalSummary }: { status: StatusRe
           </CardContent>
         </Card>
 
-        <Card className={cockpitCard}>
-          <CardContent className="space-y-3 p-4">
+        <Card className={cn(cockpitCard, "min-h-0 flex-1")}>
+          <CardContent className="flex h-full min-h-0 flex-col gap-3 p-4">
             <div className="flex items-center gap-2 text-emerald-200">
               <ShieldCheck className="h-4 w-4" />
               <div className="text-sm font-semibold uppercase tracking-[0.12em]">Live guardrail</div>
@@ -457,7 +458,7 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
   const platformCount = status?.gateway_platforms ? Object.keys(status.gateway_platforms).length : 0;
 
   return (
-    <section className="font-readable-ui grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+    <section className="font-readable-ui grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.8fr)]">
       <Card className={cockpitCard}>
         <CardContent className="space-y-4 p-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -493,29 +494,32 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
             </div>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div
+            className="grid gap-3"
+            style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 22rem), 1fr))" }}
+          >
             <div className="space-y-2">
               <div className={readableSectionHeading}>Waiting on approval / do not auto-run</div>
               {approvalSummary?.pending?.length ? (
                 approvalSummary.pending.slice(0, 4).map((item) => (
                   <Link key={item.id} to="/approvals" className="block rounded-xl border border-amber-400/25 bg-amber-500/15 p-4 transition hover:border-amber-300/50">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
+                    <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
                         <div className={readableTitle}>{item.title}</div>
                         <div className={readableBody}>{item.target}</div>
                       </div>
-                      <Badge tone="outline" className="shrink-0 border-amber-400/30 text-amber-200">{item.risk_label}</Badge>
+                      <Badge tone="outline" className={cn(readableBadge, "border-amber-400/30 text-amber-200")}>{item.risk_label}</Badge>
                     </div>
                   </Link>
                 ))
               ) : DECISION_QUEUE.map((item) => (
                 <div key={item.label} className={readablePanel}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
+                  <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
                       <div className={readableTitle}>{item.label}</div>
                       <div className={readableBody}>{item.detail}</div>
                     </div>
-                    <Badge tone="outline" className="shrink-0 border-amber-400/30 text-amber-200">{item.risk}</Badge>
+                    <Badge tone="outline" className={cn(readableBadge, "border-amber-400/30 text-amber-200")}>{item.risk}</Badge>
                   </div>
                 </div>
               ))}
@@ -525,12 +529,12 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
               <div className={readableSectionHeading}>Next safe project moves</div>
               {nextProjects.map((project) => (
                 <div key={project.name} className={readablePanel}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
+                  <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
                       <div className={readableTitle}>{project.name}</div>
                       <div className={readableBody}>{project.phase}</div>
                     </div>
-                    <Badge tone="outline" className={cn("shrink-0", projectHealthTone(project.health))}>{project.health}</Badge>
+                    <Badge tone="outline" className={cn(readableBadge, projectHealthTone(project.health))}>{project.health}</Badge>
                   </div>
                   <div className="mt-3 text-sm leading-6 text-text-secondary">{project.next}</div>
                 </div>
@@ -715,7 +719,7 @@ export default function MissionControlPage() {
 
   return (
     <main className="h-full overflow-auto bg-[radial-gradient(circle_at_50%_-10%,rgba(16,185,129,0.18),transparent_34%),linear-gradient(180deg,#031111_0%,#061616_55%,#030808_100%)] px-4 py-5 lg:px-6">
-      <div className="mx-auto grid max-w-[1800px] gap-5 xl:grid-cols-[250px_minmax(0,1fr)] 2xl:grid-cols-[250px_minmax(0,1fr)_330px]">
+      <div className="mx-auto grid max-w-[2200px] gap-5 xl:grid-cols-[220px_minmax(0,1fr)] 2xl:grid-cols-[220px_minmax(0,1fr)_300px]">
         <WorkspaceRail activeJobs={activeJobs} recentSessions={recentSessions} />
 
         <div className="flex min-w-0 flex-col gap-5">
@@ -732,7 +736,7 @@ export default function MissionControlPage() {
                 A practical Obsidian-style operating cockpit for Jenny: focus, approvals, live status, project routing, run traces, and durable AI Ops Brain records — without hidden execution.
               </Typography>
             </div>
-            <div className="grid min-w-72 gap-2 text-sm">
+            <div className="grid w-full gap-2 text-sm sm:min-w-72 lg:w-auto">
               <div className="flex items-center justify-between rounded-xl border border-[#284848] bg-black/30 px-3 py-2">
                 <span className="text-text-secondary">Gateway</span>
                 <span className={cn("font-semibold", status?.gateway_running ? "text-emerald-300" : "text-red-300")}>
@@ -784,7 +788,7 @@ export default function MissionControlPage() {
               <div className="grid gap-3 md:grid-cols-4">
                 {OPERATING_LANES.map((lane, idx) => (
                   <div key={lane.label} className={cockpitPanel}>
-                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-text-primary">
+                    <div className="mb-2 flex items-start gap-2 text-sm font-semibold leading-5 text-text-primary">
                       <span className="flex h-6 w-6 items-center justify-center rounded-full border border-midground/40 bg-midground/10 text-xs text-midground">
                         {idx + 1}
                       </span>
@@ -850,21 +854,21 @@ export default function MissionControlPage() {
             {PROJECTS.map((project) => (
               <Card key={project.name} className={cn(cockpitCard, "overflow-hidden")}>
                 <CardContent className={cn("space-y-4 bg-gradient-to-br p-4", project.tone)}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
+                  <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
                       <div className="text-lg font-semibold text-text-primary">{project.name}</div>
                       <div className="text-sm text-text-secondary">{project.short}</div>
                     </div>
-                    <Badge tone="outline" className="border-white/20 text-text-secondary">
+                    <Badge tone="outline" className={cn(readableBadge, "border-white/20 text-text-secondary")}>
                       {project.profile}
                     </Badge>
                   </div>
 
                   <div className="grid gap-2 text-xs text-text-secondary">
                     <div className={cockpitPanel}>
-                      <div className="mb-1 flex items-center justify-between gap-2 font-semibold text-text-primary">
-                        <span className="flex items-center gap-1"><CheckCircle2 className="h-3.5 w-3.5" /> Project health</span>
-                        <Badge tone="outline" className={projectHealthTone(project.health)}>{project.health}</Badge>
+                      <div className="mb-1 flex min-w-0 flex-col gap-2 font-semibold text-text-primary sm:flex-row sm:items-start sm:justify-between">
+                        <span className="flex min-w-0 items-center gap-1"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> Project health</span>
+                        <Badge tone="outline" className={cn(readableBadge, projectHealthTone(project.health))}>{project.health}</Badge>
                       </div>
                       <div>{project.phase}</div>
                     </div>

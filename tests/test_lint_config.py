@@ -171,6 +171,29 @@ class TestCleanF401:
         )
 
 
+class TestCleanF401ZombieProcess:
+    """F401 (unused import) must stay at zero for
+    tests/tools/test_zombie_process_cleanup.py.
+
+    This file was found to have 3 unused imports that were not caught
+    because F401 is not in the project's select list.  This regression
+    test explicitly passes --select=F401 to catch re-introductions.
+    """
+
+    TARGET = REPO_ROOT / "tests" / "tools" / "test_zombie_process_cleanup.py"
+
+    def test_zombie_process_cleanup_py_has_zero_f401_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
+
 
 
 class TestLintWorkflow:

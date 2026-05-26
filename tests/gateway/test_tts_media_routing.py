@@ -234,6 +234,10 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
         "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
         (allowed_root,),
     )
+    # This test exercises the strict-allowlist path; disable recency trust so
+    # the freshly-written tmp_path file is not auto-accepted by the trust
+    # window. (Recency trust is covered separately in test_platform_base.py.)
+    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
     adapter = SimpleNamespace(
         name="test",
         extract_media=BasePlatformAdapter.extract_media,

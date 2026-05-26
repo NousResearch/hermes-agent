@@ -62,6 +62,12 @@ def social_status_path() -> Path:
     return get_hermes_home() / "state" / "ops-center" / "social-platform-status.json"
 
 
+def social_status_history_path() -> Path:
+    """Return the profile-local manual snapshot history JSONL path."""
+
+    return get_hermes_home() / "state" / "ops-center" / "social-platform-status-history.jsonl"
+
+
 def _display_count(value: Any) -> str:
     if value is None:
         return "Needs sync"
@@ -144,6 +150,77 @@ def read_social_platform_status(path: Optional[Path] = None) -> Dict[str, Any]:
     return base
 
 
+def _history_summary(platforms: List[Dict[str, Any]]) -> Dict[str, Any]:
+    counts = {"ok": 0, "needs_review": 0, "blocked": 0, "not_connected": 0, "needs_sync": 0}
+    for item in platforms:
+        status = _normalize_status(item.get("status"))
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _append_history_event(snapshot: Dict[str, Any], history_path: Path) -> None:
+    """Append a compact local-only audit event for manual status snapshots."""
+
+    platforms = snapshot.get("platforms") if isinstance(snapshot, dict) else []
+    if not isinstance(platforms, list):
+        platforms = []
+    event = {
+        "timestamp": snapshot.get("updated_at"),
+        "source": snapshot.get("source"),
+        "mode": "manual_local_only",
+        "platform_count": len(platforms),
+        "status_counts": _history_summary([item for item in platforms if isinstance(item, dict)]),
+        "platforms": [
+            {
+                "platform": item.get("platform"),
+                "published": item.get("published"),
+                "scheduled": item.get("scheduled"),
+                "status": item.get("status"),
+                "last_checked_at": item.get("last_checked_at"),
+            }
+            for item in platforms
+            if isinstance(item, dict)
+        ],
+    }
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    with history_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def read_social_platform_history(path: Optional[Path] = None, *, limit: int = 8) -> Dict[str, Any]:
+    """Read compact local-only manual snapshot history from JSONL."""
+
+    history_file = path or social_status_history_path()
+    safe_limit = max(1, min(int(limit or 8), 50))
+    result: Dict[str, Any] = {
+        "ok": True,
+        "mode": "local_read_only",
+        "path": str(history_file),
+        "warning": None,
+        "events": [],
+    }
+    if not history_file.exists():
+        return result
+    try:
+        lines = history_file.read_text(encoding="utf-8").splitlines()
+    except Exception as exc:  # pragma: no cover - file read errors vary
+        result["warning"] = f"Could not read local status history: {exc}"
+        return result
+
+    events: List[Dict[str, Any]] = []
+    for line in lines[-safe_limit:]:
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    result["events"] = list(reversed(events))
+    return result
+
+
 def _storage_platform(raw: Dict[str, Any], default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return a safe storage shape for the local manual snapshot."""
 
@@ -160,7 +237,13 @@ def _storage_platform(raw: Dict[str, Any], default: Optional[Dict[str, Any]] = N
     }
 
 
-def write_manual_social_platform_status(payload: Dict[str, Any], path: Optional[Path] = None) -> Dict[str, Any]:
+def write_manual_social_platform_status(
+    payload: Dict[str, Any],
+    path: Optional[Path] = None,
+    *,
+    history_path: Optional[Path] = None,
+    record_history: bool = True,
+) -> Dict[str, Any]:
     """Write a local manual social-platform status snapshot.
 
     This is intentionally local-only. It writes JSON under ``$HERMES_HOME/state``
@@ -193,6 +276,8 @@ def write_manual_social_platform_status(payload: Dict[str, Any], path: Optional[
     tmp = status_file.with_suffix(status_file.suffix + ".tmp")
     tmp.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(status_file)
+    if record_history:
+        _append_history_event(snapshot, history_path or social_status_history_path())
     return read_social_platform_status(status_file)
 
 
@@ -200,12 +285,17 @@ def cli_main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Manage local-only Jenny Ops social platform status snapshots.")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("read", help="Print normalized local social platform status JSON")
+    history_parser = sub.add_parser("history", help="Print compact local manual snapshot history JSON")
+    history_parser.add_argument("--limit", type=int, default=8, help="Maximum history events to show")
     write_parser = sub.add_parser("write", help="Write a manual local-only snapshot from a JSON file")
     write_parser.add_argument("--json-file", required=True, help="Path to a JSON payload with a platforms list")
     args = parser.parse_args(argv)
 
     if args.command == "read":
         print(json.dumps(read_social_platform_status(), indent=2, sort_keys=True))
+        return 0
+    if args.command == "history":
+        print(json.dumps(read_social_platform_history(limit=args.limit), indent=2, sort_keys=True))
         return 0
     if args.command == "write":
         payload = json.loads(Path(args.json_file).read_text(encoding="utf-8"))

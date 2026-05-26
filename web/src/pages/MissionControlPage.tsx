@@ -32,7 +32,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsApprovalSummary, OpsSocialPlatformStatus, OpsSocialPlatformStatusItem, OpsSocialPlatformStatusUpdate, SessionInfo, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsApprovalSummary, OpsSocialPlatformHistory, OpsSocialPlatformHistoryEvent, OpsSocialPlatformStatus, OpsSocialPlatformStatusItem, OpsSocialPlatformStatusUpdate, SessionInfo, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -385,6 +385,22 @@ function getSocialStaleness(item: OpsSocialPlatformStatusItem): { label: string;
   if (ageDays === 0) return { label: "Checked today", stale: false };
   if (ageDays === 1) return { label: "Checked 1 day ago", stale: false };
   return { label: `Checked ${ageDays} days ago`, stale: ageDays >= SOCIAL_STATUS_STALE_DAYS };
+}
+
+function formatHistoryTime(value?: string | null): string {
+  if (!value) return "Unknown time";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function describeHistoryEvent(event: OpsSocialPlatformHistoryEvent): string {
+  const counts = event.status_counts || {};
+  const parts = SOCIAL_STATUS_OPTIONS
+    .map((option) => [option.label, counts[option.value] || 0] as const)
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `${count} ${label.toLowerCase()}`);
+  return parts.length ? parts.join(" · ") : `${event.platform_count || 0} platform rows`;
 }
 
 function getJobTitle(job: CronJob): string {
@@ -980,6 +996,40 @@ function ManualSocialSnapshotForm({ platforms, onSaved }: { platforms: OpsSocial
   );
 }
 
+function SocialSnapshotHistoryPanel({ history }: { history: OpsSocialPlatformHistory | null }) {
+  const events = history?.events || [];
+  return (
+    <div className={cockpitPanel}>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="font-semibold text-text-primary">Manual snapshot history</div>
+        <Badge tone="outline" className="border-cyan-400/30 text-cyan-200">local JSONL audit</Badge>
+      </div>
+      <div className="mt-1 text-sm leading-6 text-text-secondary">
+        Shows recent manual saves from the local history file. It is not a platform sync, scheduler, or posting log.
+      </div>
+      {history?.warning && <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 p-2 text-sm text-amber-100">{history.warning}</div>}
+      <div className="mt-3 space-y-2">
+        {events.length ? events.slice(0, 5).map((event, idx) => (
+          <div key={`${event.timestamp || "event"}-${idx}`} className="rounded-lg border border-white/10 bg-black/25 p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-text-primary">{formatHistoryTime(event.timestamp)}</div>
+                <div className="mt-1 text-xs leading-5 text-text-secondary">{event.source || "manual-dashboard-snapshot"}</div>
+              </div>
+              <Badge tone="outline" className="border-white/20 text-text-secondary">{event.platform_count || 0} rows</Badge>
+            </div>
+            <div className="mt-2 text-sm leading-5 text-text-secondary">{describeHistoryEvent(event)}</div>
+          </div>
+        )) : (
+          <div className="rounded-lg border border-white/10 bg-black/25 p-3 text-sm leading-6 text-text-secondary">
+            No manual snapshot history yet. The next local save will append an audit record.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GoalLauncher() {
   const [selected, setSelected] = useState(GOAL_TEMPLATES[0]);
   const [customGoal, setCustomGoal] = useState(GOAL_TEMPLATES[0].prompt);
@@ -1077,6 +1127,7 @@ export default function MissionControlPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [approvalSummary, setApprovalSummary] = useState<OpsApprovalSummary | null>(null);
   const [socialStatus, setSocialStatus] = useState<OpsSocialPlatformStatus | null>(null);
+  const [socialHistory, setSocialHistory] = useState<OpsSocialPlatformHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { setEnd } = usePageHeader();
 
@@ -1088,13 +1139,15 @@ export default function MissionControlPage() {
       api.getSessions(8),
       api.getOpsApprovalSummary(),
       api.getOpsSocialPlatformStatus(),
-    ]).then(([statusResult, jobsResult, sessionsResult, approvalSummaryResult, socialStatusResult]) => {
+      api.getOpsSocialPlatformStatusHistory(8),
+    ]).then(([statusResult, jobsResult, sessionsResult, approvalSummaryResult, socialStatusResult, socialHistoryResult]) => {
       if (statusResult.status === "fulfilled") setStatus(statusResult.value);
       if (jobsResult.status === "fulfilled") setJobs(jobsResult.value);
       if (sessionsResult.status === "fulfilled") setSessions(sessionsResult.value.sessions);
       if (approvalSummaryResult.status === "fulfilled") setApprovalSummary(approvalSummaryResult.value);
       if (socialStatusResult.status === "fulfilled") setSocialStatus(socialStatusResult.value);
-      const failures = [statusResult, jobsResult, sessionsResult, approvalSummaryResult].filter((r) => r.status === "rejected");
+      if (socialHistoryResult.status === "fulfilled") setSocialHistory(socialHistoryResult.value);
+      const failures = [statusResult, jobsResult, sessionsResult, approvalSummaryResult, socialStatusResult, socialHistoryResult].filter((r) => r.status === "rejected");
       setError(failures.length ? "Some live status panels could not refresh." : null);
     });
   }, []);
@@ -1124,6 +1177,10 @@ export default function MissionControlPage() {
   );
   const recentSessions = useMemo(() => sessions.slice(0, 5), [sessions]);
   const socialPlatforms = socialStatus?.platforms?.length ? socialStatus.platforms : SOCIAL_PLATFORM_STATUS;
+  const handleSocialSnapshotSaved = useCallback((saved: OpsSocialPlatformStatus) => {
+    setSocialStatus(saved);
+    api.getOpsSocialPlatformStatusHistory(8).then(setSocialHistory).catch(() => undefined);
+  }, []);
 
   return (
     <main className="h-full overflow-auto bg-[radial-gradient(circle_at_50%_-10%,rgba(16,185,129,0.18),transparent_34%),linear-gradient(180deg,#031111_0%,#061616_55%,#030808_100%)] px-4 py-5 lg:px-6">
@@ -1343,7 +1400,8 @@ export default function MissionControlPage() {
                 <FileText className="h-5 w-5" />
                 <H2 className="text-xl">Manual status snapshot</H2>
               </div>
-              <ManualSocialSnapshotForm key={socialStatus?.updated_at || "default-social-status"} platforms={socialPlatforms} onSaved={setSocialStatus} />
+              <ManualSocialSnapshotForm key={socialStatus?.updated_at || "default-social-status"} platforms={socialPlatforms} onSaved={handleSocialSnapshotSaved} />
+              <SocialSnapshotHistoryPanel history={socialHistory} />
               <div className={cockpitPanel}>
                 <div className="font-semibold text-text-primary">Gate line</div>
                 <div className="mt-1 text-sm leading-6 text-text-secondary">

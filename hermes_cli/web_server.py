@@ -2681,6 +2681,16 @@ async def get_ops_social_platform_status():
         raise _approval_error(exc) from exc
 
 
+@app.get("/api/ops/social-platform-status/history")
+async def get_ops_social_platform_status_history(limit: int = 8):
+    try:
+        from hermes_cli.ops_social_status import read_social_platform_history
+
+        return read_social_platform_history(limit=limit)
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.post("/api/ops/social-platform-status")
 async def update_ops_social_platform_status(payload: Dict[str, Any]):
     try:

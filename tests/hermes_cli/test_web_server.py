@@ -235,6 +235,21 @@ class TestWebServerEndpoints:
         assert resp.status_code == 400
         assert "platforms" in resp.json()["detail"]
 
+    def test_get_ops_social_platform_status_history(self):
+        created = self.client.post(
+            "/api/ops/social-platform-status",
+            json={"source": "history-route-test", "platforms": [{"platform": "YouTube", "published": "1", "scheduled": "0", "status": "ok"}]},
+        )
+        assert created.status_code == 200
+
+        resp = self.client.get("/api/ops/social-platform-status/history?limit=3")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "local_read_only"
+        assert data["events"][0]["source"] == "history-route-test"
+        assert data["events"][0]["status_counts"]["ok"] >= 1
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

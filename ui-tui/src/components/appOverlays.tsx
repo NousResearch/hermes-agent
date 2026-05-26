@@ -187,10 +187,15 @@ export function FloatingOverlays({
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
                 >
-                  <Text bold color={theme.color.label}>
-                    {' '}
-                    {item.display}
-                  </Text>
+                  {/* flexShrink=0 — when meta overflows the row, Ink/Yoga
+                      otherwise shaves the last char off the display column
+                      (e.g. /goal renders as /goa). */}
+                  <Box flexShrink={0}>
+                    <Text bold color={theme.color.label}>
+                      {' '}
+                      {item.display}
+                    </Text>
+                  </Box>
                   {item.meta ? (
                     <Text
                       backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}

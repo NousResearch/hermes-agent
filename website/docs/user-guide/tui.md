@@ -106,7 +106,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/usage` | Rich token / cost / context panel |
 | `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
 | `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
-| `/mouse` | Toggle mouse tracking on/off at runtime (also persists to `display.mouse_tracking` in `config.yaml`) |
+| `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |
 
 Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).
 
@@ -190,7 +190,13 @@ display:
     thinking: expanded       # always open
     tools: expanded          # always open
     activity: collapsed      # opt back IN to the activity panel (hidden by default)
-  mouse_tracking: true       # disable if your terminal conflicts with mouse reporting
+  mouse_tracking: all        # off | wheel | buttons | all (or true/false for back-compat).
+                             #   wheel   — 1000+1006 (scroll + click; no drag, no hover —
+                             #             recommended inside tmux to silence the prompt-row
+                             #             "No image in clipboard" spam from hover events)
+                             #   buttons — adds 1002 for terminal-side drag selection
+                             #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
+                             #             link mouseenter, etc.)
 ```
 
 Runtime toggles:

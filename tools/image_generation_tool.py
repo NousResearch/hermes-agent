@@ -26,8 +26,7 @@ import os
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional, Union
-from urllib.parse import urlencode
+from typing import Any, Dict, Optional
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
 # eagerly added ~64 ms to every CLI cold start because
@@ -52,19 +51,17 @@ def _load_fal_client() -> Any:
     global fal_client
     if fal_client is not None:
         return fal_client
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("image.fal", prompt=False)
-    except ImportError:
-        pass
-    except Exception as e:
-        raise ImportError(str(e))
-    import fal_client as _fal_client  # noqa: F811 — module-global rebind
-    fal_client = _fal_client
+    from tools.fal_common import import_fal_client
+    fal_client = import_fal_client()
     return fal_client
 
 
 from tools.debug_helpers import DebugSession
+from tools.fal_common import (
+    _ManagedFalSyncClient,
+    _extract_http_status,
+    _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
+)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
@@ -360,95 +357,6 @@ def _resolve_managed_fal_gateway():
     return resolve_managed_tool_gateway("fal-queue")
 
 
-def _normalize_fal_queue_url_format(queue_run_origin: str) -> str:
-    normalized_origin = str(queue_run_origin or "").strip().rstrip("/")
-    if not normalized_origin:
-        raise ValueError("Managed FAL queue origin is required")
-    return f"{normalized_origin}/"
-
-
-class _ManagedFalSyncClient:
-    """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
-
-    def __init__(self, *, key: str, queue_run_origin: str):
-        # Trigger the lazy import on first construction. Idempotent — the
-        # placeholder is overwritten with the real module on first call.
-        _load_fal_client()
-        sync_client_class = getattr(fal_client, "SyncClient", None)
-        if sync_client_class is None:
-            raise RuntimeError("fal_client.SyncClient is required for managed FAL gateway mode")
-
-        client_module = getattr(fal_client, "client", None)
-        if client_module is None:
-            raise RuntimeError("fal_client.client is required for managed FAL gateway mode")
-
-        self._queue_url_format = _normalize_fal_queue_url_format(queue_run_origin)
-        self._sync_client = sync_client_class(key=key)
-        self._http_client = getattr(self._sync_client, "_client", None)
-        self._maybe_retry_request = getattr(client_module, "_maybe_retry_request", None)
-        self._raise_for_status = getattr(client_module, "_raise_for_status", None)
-        self._request_handle_class = getattr(client_module, "SyncRequestHandle", None)
-        self._add_hint_header = getattr(client_module, "add_hint_header", None)
-        self._add_priority_header = getattr(client_module, "add_priority_header", None)
-        self._add_timeout_header = getattr(client_module, "add_timeout_header", None)
-
-        if self._http_client is None:
-            raise RuntimeError("fal_client.SyncClient._client is required for managed FAL gateway mode")
-        if self._maybe_retry_request is None or self._raise_for_status is None:
-            raise RuntimeError("fal_client.client request helpers are required for managed FAL gateway mode")
-        if self._request_handle_class is None:
-            raise RuntimeError("fal_client.client.SyncRequestHandle is required for managed FAL gateway mode")
-
-    def submit(
-        self,
-        application: str,
-        arguments: Dict[str, Any],
-        *,
-        path: str = "",
-        hint: Optional[str] = None,
-        webhook_url: Optional[str] = None,
-        priority: Any = None,
-        headers: Optional[Dict[str, str]] = None,
-        start_timeout: Optional[Union[int, float]] = None,
-    ):
-        url = self._queue_url_format + application
-        if path:
-            url += "/" + path.lstrip("/")
-        if webhook_url is not None:
-            url += "?" + urlencode({"fal_webhook": webhook_url})
-
-        request_headers = dict(headers or {})
-        if hint is not None and self._add_hint_header is not None:
-            self._add_hint_header(hint, request_headers)
-        if priority is not None:
-            if self._add_priority_header is None:
-                raise RuntimeError("fal_client.client.add_priority_header is required for priority requests")
-            self._add_priority_header(priority, request_headers)
-        if start_timeout is not None:
-            if self._add_timeout_header is None:
-                raise RuntimeError("fal_client.client.add_timeout_header is required for timeout requests")
-            self._add_timeout_header(start_timeout, request_headers)
-
-        response = self._maybe_retry_request(
-            self._http_client,
-            "POST",
-            url,
-            json=arguments,
-            timeout=getattr(self._sync_client, "default_timeout", 120.0),
-            headers=request_headers,
-        )
-        self._raise_for_status(response)
-
-        data = response.json()
-        return self._request_handle_class(
-            request_id=data["request_id"],
-            response_url=data["response_url"],
-            status_url=data["status_url"],
-            cancel_url=data["cancel_url"],
-            client=self._http_client,
-        )
-
-
 def _get_managed_fal_client(managed_gateway):
     """Reuse the managed FAL client so its internal httpx.Client is not leaked per call."""
     global _managed_fal_client, _managed_fal_client_config
@@ -461,7 +369,11 @@ def _get_managed_fal_client(managed_gateway):
         if _managed_fal_client is not None and _managed_fal_client_config == client_config:
             return _managed_fal_client
 
+        # Resolve fal_client on the legacy module — preserves the test
+        # pattern of monkey-patching ``image_generation_tool.fal_client``.
+        _load_fal_client()
         _managed_fal_client = _ManagedFalSyncClient(
+            fal_client,
             key=managed_gateway.nous_user_token,
             queue_run_origin=managed_gateway.gateway_origin,
         )
@@ -500,24 +412,6 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
                 f"  • Pick a different model via `hermes tools` → Image Generation."
             ) from exc
         raise
-
-
-def _extract_http_status(exc: BaseException) -> Optional[int]:
-    """Return an HTTP status code from httpx/fal exceptions, else None.
-
-    Defensive across exception shapes — httpx.HTTPStatusError exposes
-    ``.response.status_code`` while fal_client wrappers may expose
-    ``.status_code`` directly.
-    """
-    response = getattr(exc, "response", None)
-    if response is not None:
-        status = getattr(response, "status_code", None)
-        if isinstance(status, int):
-            return status
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int):
-        return status
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -973,9 +867,12 @@ def _read_configured_image_provider():
     """Return the value of ``image_gen.provider`` from config.yaml, or None.
 
     We only consult the plugin registry when this is explicitly set — an
-    unset value keeps users on the legacy in-tree FAL path even when other
+    unset value keeps users on the in-tree FAL fallback even when other
     providers happen to be registered (e.g. a user has OPENAI_API_KEY set
-    for other features but never asked for OpenAI image gen).
+    for other features but never asked for OpenAI image gen). ``"fal"``
+    explicitly routes through ``plugins/image_gen/fal/`` (which delegates
+    back into this module's pipeline via call-time indirection — see
+    issue #26241).
     """
     try:
         from hermes_cli.config import load_config
@@ -994,15 +891,16 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
-    built-in FAL path.
+    in-tree FAL fallback in ``image_generate_tool``.
 
-    Dispatch only fires when ``image_gen.provider`` is explicitly set AND
-    it does not point to ``fal`` (FAL still lives in-tree in this PR;
-    a later PR ports it into ``plugins/image_gen/fal/``). Any other value
-    that matches a registered plugin provider wins.
+    Dispatch fires when ``image_gen.provider`` is explicitly set — including
+    ``"fal"`` itself, which now resolves to the
+    ``plugins/image_gen/fal/`` plugin (the plugin re-enters this module's
+    pipeline via ``_it`` indirection so behavior is identical to the
+    direct call, just routed through the registry).
     """
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
+    if not configured:
         return None
 
     # Also read configured model so we can pass it to the plugin

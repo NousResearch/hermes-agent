@@ -452,3 +452,64 @@ class TestCodexNormalizeResponse:
         tc = nr.tool_calls[0]
         assert tc.name == "terminal"
         assert '"command"' in tc.arguments
+
+
+
+class TestCodexTransportTimeout:
+    """Forward per-request timeout from build_kwargs to the SDK kwargs."""
+
+    def test_positive_timeout_preserved(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            timeout=600.0,
+        )
+        assert kw.get("timeout") == 600.0
+
+    def test_zero_timeout_dropped(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            timeout=0,
+        )
+        assert "timeout" not in kw
+
+    def test_none_timeout_omitted(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            timeout=None,
+        )
+        assert "timeout" not in kw
+
+    def test_inf_timeout_dropped(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            timeout=float("inf"),
+        )
+        assert "timeout" not in kw
+
+    def test_bool_timeout_dropped(self, transport):
+        """``True`` is technically int but must not survive — caller bug guard."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            timeout=True,
+        )
+        assert "timeout" not in kw
+
+    def test_request_overrides_can_supply_timeout(self, transport):
+        """request_overrides["timeout"] is honored when no explicit kwarg passed."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            request_overrides={"timeout": 450.0},
+        )
+        assert kw.get("timeout") == 450.0

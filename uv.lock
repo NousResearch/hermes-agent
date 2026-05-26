@@ -1817,6 +1817,9 @@ web = [
     { name = "fastapi" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+wecom = [
+    { name = "defusedxml" },
+]
 youtube = [
     { name = "youtube-transcript-api" },
 ]
@@ -1840,6 +1843,7 @@ requires-dist = [
     { name = "croniter", specifier = "==6.0.0" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.155.0" },
     { name = "debugpy", marker = "extra == 'dev'", specifier = "==1.8.20" },
+    { name = "defusedxml", marker = "extra == 'wecom'", specifier = "==0.7.1" },
     { name = "dingtalk-stream", marker = "extra == 'dingtalk'", specifier = "==0.24.3" },
     { name = "discord-py", extras = ["voice"], marker = "extra == 'messaging'", specifier = "==2.7.1" },
     { name = "edge-tts", marker = "extra == 'edge-tts'", specifier = "==7.2.7" },
@@ -1878,7 +1882,7 @@ requires-dist = [
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.0.1" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
-    { name = "inkbox", specifier = ">=0.4.0,<1" },
+    { name = "inkbox", specifier = ">=0.4.5,<1" },
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.5.3" },
     { name = "markdown", marker = "extra == 'matrix'", specifier = "==3.10.2" },
@@ -1923,7 +1927,7 @@ requires-dist = [
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.5.7" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "inkbox", "acp", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "inkbox", "acp", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -2149,7 +2153,7 @@ wheels = [
 
 [[package]]
 name = "inkbox"
-version = "0.4.0"
+version = "0.4.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argon2-cffi" },
@@ -2158,9 +2162,9 @@ dependencies = [
     { name = "h2" },
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/e6/6a64783628bc151d6141bdd538d9daadef0264784e7ae9650fc9ebb1af1c/inkbox-0.4.0.tar.gz", hash = "sha256:281313402de4d33d7a20d3e69c5a0406753907b3f007160c009f5b4b4412f2da", size = 203491, upload-time = "2026-05-15T16:40:25.71Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/43/9b/ce81f961b57ab700ef71dd6fe0569192d43610cd210cc82c25465b8c981f/inkbox-0.4.5.tar.gz", hash = "sha256:ebae92504662891ad608b83ebbcf2f98c9313acf85aaeb04cb461532ab4cc70a", size = 224109, upload-time = "2026-05-22T22:40:45.242Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/31/26d6ee16b04b591e91049015e83aa6be9176ad9be9dd9e5bd697c07ebc86/inkbox-0.4.0-py3-none-any.whl", hash = "sha256:73c8df380320f858f18d2379ff5f63b82fb4522a88e57b55cf79c123923cc012", size = 173398, upload-time = "2026-05-15T16:40:24.57Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/c1/7eb4676b26d5c0381af6556cda88b9a7771b7c79d4c8bc9f39dc21d7ee43/inkbox-0.4.5-py3-none-any.whl", hash = "sha256:7cd2a897139b2348fb88fe0a25a03703a01a469eb2d2d2f3651950a31b14eb01", size = 181002, upload-time = "2026-05-22T22:40:43.519Z" },
 ]
 
 [[package]]

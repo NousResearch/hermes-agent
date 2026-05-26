@@ -72,6 +72,16 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
 ]
 
+# Webhook events may originate from untrusted third-party content (for example,
+# public PR titles/comments). Keep the default webhook toolset intentionally
+# constrained to avoid local file/system execution by prompt injection.
+_HERMES_WEBHOOK_SAFE_TOOLS = [
+    "web_search",
+    "web_extract",
+    "vision_analyze",
+    "clarify",
+]
+
 
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
@@ -529,7 +539,7 @@ TOOLSETS = {
 
     "hermes-webhook": {
         "description": "Webhook toolset - receive and process external webhook events",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_WEBHOOK_SAFE_TOOLS,
         "includes": []
     },
 

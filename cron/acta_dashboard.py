@@ -33,6 +33,18 @@ from cron.acta_catalog import default_catalog_path, default_outputs_dir, import_
 from cron.html_artifacts import CSP, REPORT_END, REPORT_START, HtmlReportMetadata, render_html_report, render_report_body
 from cron.html_publish import HtmlArtifactPublishError, publish_html_artifact
 
+INTERACTIVE_HTML_CSP = (
+    "default-src 'none'; img-src data: https:; style-src 'unsafe-inline'; "
+    "script-src 'none'; frame-src data:; child-src data:; object-src 'none'; "
+    "base-uri 'none'; form-action 'none'"
+)
+
+INTERACTIVE_IFRAME_CSP = (
+    "default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
+    "script-src 'unsafe-inline'; connect-src 'none'; object-src 'none'; "
+    "base-uri 'none'; form-action 'none'; navigate-to 'none'"
+)
+
 DEFAULT_HIDDEN_JOBS = ("e9b0a041ced3", "P Morning Audio Briefing")
 
 
@@ -1847,8 +1859,19 @@ def publish_catalog_output_artifacts(
             continue
         try:
             wrapped_path = staging_dir / f"{item.id}.html"
-            wrapped_path.write_text(
-                render_acta_detail_report(
+            raw_html = resolved.read_text(encoding="utf-8", errors="replace")
+            if _is_interactive_html_artifact(raw_html):
+                rendered_html = render_interactive_html_detail_report(
+                    raw_html,
+                    HtmlReportMetadata(
+                        job_id=f"catalog:{item.id}",
+                        job_name=item.title,
+                        run_time=item.updated_at or item.created_at,
+                        source_filename=resolved.name,
+                    ),
+                )
+            else:
+                rendered_html = render_acta_detail_report(
                     _html_artifact_markdown_body(resolved, title=item.title),
                     HtmlReportMetadata(
                         job_id=f"catalog:{item.id}",
@@ -1856,9 +1879,8 @@ def publish_catalog_output_artifacts(
                         run_time=item.updated_at or item.created_at,
                         source_filename=resolved.name,
                     ),
-                ),
-                encoding="utf-8",
-            )
+                )
+            wrapped_path.write_text(rendered_html, encoding="utf-8")
             publish_html_artifact(
                 wrapped_path,
                 {"id": "acta-output"},
@@ -2213,6 +2235,131 @@ def render_archive_index(
 """
 
 
+def _is_interactive_html_artifact(raw: str) -> bool:
+    """Return whether an HTML artifact likely needs its own DOM/JS preserved."""
+    if not raw:
+        return False
+    return bool(
+        re.search(r"<script\b", raw, flags=re.IGNORECASE)
+        or re.search(r"<(?:button|input|select|textarea|dialog|form)\b", raw, flags=re.IGNORECASE)
+        or re.search(r"\s(?:on[a-z]+|data-action|data-controller)\s*=", raw, flags=re.IGNORECASE)
+    )
+
+
+_INTERACTIVE_RAW_LOG_MARKER_RE = re.compile(
+    r"(?im)(?:^|[>\n\r])\s*(?:#{1,6}\s*)?(?:prompt|system prompt|developer prompt|tool(?:\s+call|\s+output)?|terminal command|raw log|traceback|local file|secret)\s*[:#]"
+)
+
+
+def _redact_interactive_html_source(raw: str) -> str:
+    """Redact obvious secrets/local paths while preserving interactive markup."""
+    if not raw:
+        return ""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        raw = redact_sensitive_text(raw, force=True)
+    except Exception:
+        raw = "[REDACTED]"
+    raw = re.sub(r"file:///{0,2}(?:Users|home|tmp|var/folders|private/tmp|Volumes)/[^\s<>()\"']+", "[LOCAL_PATH]", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"(?<![:\w/])/(?:Users|home|tmp|var/folders|private/tmp|Volumes)/[^\s<>()\"']+", "[LOCAL_PATH]", raw)
+    raw = re.sub(r"~/(?:\.hermes|[^\s<>()\"']+)", "[LOCAL_PATH]", raw)
+    if _INTERACTIVE_RAW_LOG_MARKER_RE.search(raw):
+        return _interactive_redacted_placeholder()
+    return _inject_interactive_iframe_csp(raw)
+
+
+def _interactive_redacted_placeholder() -> str:
+    return """<!doctype html><html><head><meta charset=\"utf-8\"><title>Redacted Acta artifact</title></head><body><main><h1>Redacted interactive artifact</h1><p>This interactive source contained raw log, prompt, tool, path, or secret markers and was replaced before embedding.</p></main></body></html>"""
+
+
+def _inject_interactive_iframe_csp(raw: str) -> str:
+    """Add an inner CSP to the embedded artifact before base64/data iframe delivery."""
+    meta = f'<meta http-equiv="Content-Security-Policy" content="{html.escape(INTERACTIVE_IFRAME_CSP, quote=True)}">'
+    if re.search(r"<meta\b[^>]+http-equiv=[\"']?Content-Security-Policy", raw, flags=re.IGNORECASE):
+        raw = re.sub(r"<meta\b[^>]+http-equiv=[\"']?Content-Security-Policy[\s\S]*?>", "", raw, flags=re.IGNORECASE)
+    if re.search(r"<head\b[^>]*>", raw, flags=re.IGNORECASE):
+        return re.sub(r"(<head\b[^>]*>)", r"\1" + meta, raw, count=1, flags=re.IGNORECASE)
+    if re.search(r"<html\b[^>]*>", raw, flags=re.IGNORECASE):
+        return re.sub(r"(<html\b[^>]*>)", r"\1<head>" + meta + "</head>", raw, count=1, flags=re.IGNORECASE)
+    return f"<!doctype html><html><head>{meta}</head><body>{raw}</body></html>"
+
+
+def render_interactive_html_detail_report(
+    source_html: str,
+    metadata: HtmlReportMetadata | Mapping[str, str],
+    telegram_url: str | None = None,
+    detail_signals: Mapping[str, str] | None = None,
+) -> str:
+    """Wrap a standalone interactive HTML artifact in Acta chrome without flattening it.
+
+    The artifact runs in a sandboxed data-URL iframe so its own buttons/tabs/scripts
+    survive, while Acta still owns the outer shell, provenance, nav, and CSP boundary.
+    """
+    if isinstance(metadata, Mapping):
+        meta = HtmlReportMetadata(**{k: str(v) for k, v in metadata.items() if k in HtmlReportMetadata.__annotations__})
+    else:
+        meta = metadata
+    title = str(meta.job_name or f"Cron report {meta.job_id}")
+    job_id = str(meta.job_id or "")
+    run_time = str(meta.run_time or datetime.now(timezone.utc).isoformat())
+    source_filename = str(meta.source_filename or "")
+    safe_source = _redact_interactive_html_source(source_html)
+    frame_src = "data:text/html;base64," + base64.b64encode(safe_source.encode("utf-8", errors="replace")).decode("ascii")
+    footer_bits = [
+        f"<span><b>JOB</b> {html.escape(job_id)}</span>",
+        f"<span><b>RUN</b> {html.escape(run_time)}</span>",
+    ]
+    if source_filename:
+        footer_bits.append(f"<span><b>SOURCE</b> {html.escape(Path(source_filename).name)}</span>")
+    for label, value in (detail_signals or {}).items():
+        clean_label = re.sub(r"[^A-Za-z0-9 _/-]+", "", str(label)).strip().upper()
+        clean_value = str(value or "").strip()
+        if clean_label and clean_value:
+            footer_bits.append(f"<span><b>{html.escape(clean_label)}</b> {html.escape(clean_value)}</span>")
+    followup_link = ""
+    safe_telegram_url = telegram_url if _is_safe_telegram_url(telegram_url) else ""
+    if safe_telegram_url:
+        followup_link = (
+            f'<a class="followup" href="{html.escape(safe_telegram_url, quote=True)}" '
+            'target="_blank" rel="noopener" aria-label="Ask follow-up in Telegram" title="Ask follow-up in Telegram">Ask</a>'
+        )
+    actions = f'<div class="actions">{followup_link}<a class="back" href="/outputs">Outputs</a><a class="back" href="/">Back</a></div>'
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="{html.escape(INTERACTIVE_HTML_CSP, quote=False)}">
+<title>{html.escape(title)} · Acta Interactive Output</title>
+<style>{_acta_page_css()}
+.interactive-frame-card {{ margin-top:18px; border:1px solid rgba(255,255,255,.12); border-radius:24px; overflow:hidden; background:#03060b; box-shadow:0 24px 80px rgba(0,0,0,.34); }}
+.interactive-frame {{ display:block; width:100%; min-height:72vh; border:0; background:#03060b; }}
+.interactive-note {{ margin:12px 0 0; color:var(--muted); font:520 12px/1.4 var(--ui); letter-spacing:.02em; }}
+@media (max-width:700px) {{ .interactive-frame-card {{ border-radius:18px; margin-left:-4px; margin-right:-4px; }} .interactive-frame {{ min-height:76vh; }} }}
+</style>
+</head>
+<body>
+<header class="top"><a class="ticker" href="/"><em>ACTA</em> / INTERACTIVE</a>{actions}</header>
+<main>
+  <section class="report-shell">
+    <p class="kicker">Acta Situation Room · Interactive artifact</p>
+    <h1 class="report-title">{html.escape(title)}</h1>
+    <div class="meta">{''.join(footer_bits)}</div>
+    <p class="interactive-note">Interactive Hermes/Acta output preserved inside the current Acta shell.</p>
+    <div class="interactive-frame-card">
+      <iframe class="interactive-frame" title="{html.escape(title, quote=True)} interactive output" sandbox="allow-scripts" src="{frame_src}"></iframe>
+    </div>
+  </section>
+  <footer>Signed Acta interactive detail. Outer shell is Acta; embedded artifact keeps its own controls.</footer>
+</main>
+{_acta_mobile_module_nav('outputs')}
+</body>
+</html>
+"""
+
+
+
 def render_acta_detail_report(
     body: str,
     metadata: HtmlReportMetadata | Mapping[str, str],
@@ -2382,17 +2529,35 @@ def attach_run_artifact_urls(
             try:
                 safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{item.job_id}-{item.run_id}").strip(".-_") or "run"
                 temp_html = output_dir / f"{safe_stem}.html"
-                detail_html = render_acta_detail_report(
-                    _run_detail_body(item),
-                    HtmlReportMetadata(
-                        job_id=item.job_id,
-                        job_name=item.name,
-                        run_time=item.run_time.isoformat() if item.run_time else "",
-                        source_filename=Path(item.source_name).name,
-                    ),
-                    telegram_url=item.telegram_url,
-                    detail_signals=_run_detail_signals(item),
+                metadata = HtmlReportMetadata(
+                    job_id=item.job_id,
+                    job_name=item.name,
+                    run_time=item.run_time.isoformat() if item.run_time else "",
+                    source_filename=Path(item.source_name).name,
                 )
+                if item.md_path is None and item.html_path is not None:
+                    raw_html = item.html_path.read_text(encoding="utf-8", errors="replace")
+                    if _is_interactive_html_artifact(raw_html):
+                        detail_html = render_interactive_html_detail_report(
+                            raw_html,
+                            metadata,
+                            telegram_url=item.telegram_url,
+                            detail_signals=_run_detail_signals(item),
+                        )
+                    else:
+                        detail_html = render_acta_detail_report(
+                            _run_detail_body(item),
+                            metadata,
+                            telegram_url=item.telegram_url,
+                            detail_signals=_run_detail_signals(item),
+                        )
+                else:
+                    detail_html = render_acta_detail_report(
+                        _run_detail_body(item),
+                        metadata,
+                        telegram_url=item.telegram_url,
+                        detail_signals=_run_detail_signals(item),
+                    )
                 temp_html.write_text(detail_html, encoding="utf-8")
                 url = publish_html_artifact(
                     temp_html,
@@ -2453,21 +2618,37 @@ def attach_artifact_urls(
             temp_html.write_text(detail_html, encoding="utf-8")
             source_html = temp_html
         elif item.latest_html is not None:
-            # HTML-only outputs may carry historical CSS/copy. Wrap their
-            # visible content in the current Acta v9 shell instead of publishing
-            # raw generated-file UI as the signed click-through target.
+            # Preserve modern interactive Hermes/Acta HTML outputs. The old path
+            # flattened HTML into text, which destroyed tabs/buttons inside agent
+            # lane and specialist-agent artifacts. The signed detail shell now
+            # wraps the full artifact in a sandboxed iframe so Acta owns chrome
+            # while the output keeps its controls.
             temp_html = output_dir / f"{item.job_id}-{item.latest_html.stem}.html"
-            detail_html = render_acta_detail_report(
-                _html_detail_body(item),
-                HtmlReportMetadata(
-                    job_id=item.job_id,
-                    job_name=item.name,
-                    run_time=item.latest_time.isoformat() if item.latest_time else "",
-                    source_filename=item.latest_html.name,
-                ),
-                telegram_url=item.telegram_url,
-                detail_signals=_cron_detail_signals(item),
-            )
+            raw_html = item.latest_html.read_text(encoding="utf-8", errors="replace")
+            if _is_interactive_html_artifact(raw_html):
+                detail_html = render_interactive_html_detail_report(
+                    raw_html,
+                    HtmlReportMetadata(
+                        job_id=item.job_id,
+                        job_name=item.name,
+                        run_time=item.latest_time.isoformat() if item.latest_time else "",
+                        source_filename=item.latest_html.name,
+                    ),
+                    telegram_url=item.telegram_url,
+                    detail_signals=_cron_detail_signals(item),
+                )
+            else:
+                detail_html = render_acta_detail_report(
+                    _html_detail_body(item),
+                    HtmlReportMetadata(
+                        job_id=item.job_id,
+                        job_name=item.name,
+                        run_time=item.latest_time.isoformat() if item.latest_time else "",
+                        source_filename=item.latest_html.name,
+                    ),
+                    telegram_url=item.telegram_url,
+                    detail_signals=_cron_detail_signals(item),
+                )
             temp_html.write_text(detail_html, encoding="utf-8")
             source_html = temp_html
         if source_html is not None:

@@ -11,6 +11,7 @@ import pytest
 from cron.acta_dashboard import (
     _dashboard_inline_script,
     _feed_lane,
+    _is_interactive_html_artifact,
     _outputs_read_state_script,
     _run_browser_uat_preflight,
     acta_dashboard_config,
@@ -25,6 +26,7 @@ from cron.acta_dashboard import (
     load_release_log,
     publish_catalog_output_artifacts,
     render_acta_detail_report,
+    render_interactive_html_detail_report,
     render_archive_index,
     render_catalog_outputs_page,
     render_dashboard,
@@ -32,6 +34,12 @@ from cron.acta_dashboard import (
     render_outputs_page,
     render_runs_page,
 )
+
+
+def _interactive_frame_source(rendered: str) -> str:
+    match = re.search(r'<iframe[^>]+\ssrc="data:text/html;base64,([^"]+)"', rendered)
+    assert match, rendered
+    return base64.b64decode(match.group(1)).decode("utf-8")
 
 
 def test_collects_latest_cron_outputs_from_response_section(tmp_path: Path):
@@ -100,6 +108,143 @@ def test_detail_pages_strip_embedded_html_report_from_markdown(tmp_path: Path, m
     assert "Useful operator brief." in uploaded["html"]
     assert "HERMES_HTML_REPORT_START" not in uploaded["html"]
     assert "Duplicated report body" not in uploaded["html"]
+
+
+def test_interactive_html_detail_report_preserves_controls_inside_acta_shell():
+    source = """<!doctype html><html><body>
+<button id="run-lane">Run specialist lane</button>
+<div id="status">Idle</div>
+<script>document.getElementById('run-lane').onclick=function(){document.getElementById('status').textContent='Clicked'};</script>
+</body></html>"""
+
+    html = render_interactive_html_detail_report(
+        source,
+        {"job_id": "acta-specialists", "job_name": "Hermes Agent Lanes", "run_time": "2026-05-26T06:00:00+00:00"},
+    )
+
+    assert "ACTA</em> / INTERACTIVE" in html
+    assert "Interactive Hermes/Acta output preserved" in html
+    assert "sandbox=\"allow-scripts" in html
+    assert "src=\"data:text/html;base64," in html
+    frame_source = _interactive_frame_source(html)
+    assert '<button id="run-lane">Run specialist lane</button>' in frame_source
+    assert "document.getElementById('run-lane').onclick" in frame_source
+    assert "Hermes Agent Lanes · Acta Interactive Output" in html
+
+
+def test_interactive_html_detail_report_uses_strict_outer_csp_and_sandbox():
+    html = render_interactive_html_detail_report(
+        "<button onclick = \"window.open('/x')\">Open</button><script>window.ok=true</script>",
+        {"job_id": "daily", "job_name": "Daily", "run_time": "2026-05-26T06:00:00+00:00"},
+    )
+
+    csp_match = re.search(r'Content-Security-Policy" content="([^"]+)"', html)
+    assert csp_match
+    csp = csp_match.group(1)
+    assert "script-src 'none'" in csp
+    assert "script-src 'unsafe-inline'" not in csp
+    assert "frame-src data:" in csp
+    frame_source = _interactive_frame_source(html).replace("&#x27;", "'")
+    assert "connect-src 'none'" in frame_source
+    assert "form-action 'none'" in frame_source
+    assert "navigate-to 'none'" in frame_source
+    iframe_match = re.search(r"<iframe[^>]+>", html)
+    assert iframe_match
+    iframe = iframe_match.group(0)
+    assert 'sandbox="allow-scripts"' in iframe
+    assert "allow-forms" not in iframe
+    assert "allow-popups" not in iframe
+    assert "allow-popups-to-escape-sandbox" not in iframe
+    assert "allow-same-origin" not in iframe
+    assert "top-navigation" not in iframe
+
+
+def test_interactive_html_detail_report_redacts_raw_log_paths_and_secrets():
+    source = """<!doctype html><html><body>
+<button data-action = "run">Run</button>
+<pre>## Prompt: do not leak this raw prompt
+Tool call: terminal command: cat /Users/mozzie/.hermes/secrets.env
+OPENAI_API_KEY=sk-test-supersecretvalue
+Local file: /tmp/private/secret.md</pre>
+</body></html>"""
+
+    html = render_interactive_html_detail_report(
+        source,
+        {"job_id": "daily", "job_name": "Daily", "run_time": "2026-05-26T06:00:00+00:00"},
+    )
+    frame_source = _interactive_frame_source(html)
+
+    assert "Redacted interactive artifact" in frame_source
+    for leaked in (
+        "do not leak this raw prompt",
+        "Tool call",
+        "terminal command",
+        "/Users/mozzie",
+        "/tmp/private/secret.md",
+        "supersecretvalue",
+        "OPENAI_API_KEY",
+    ):
+        assert leaked not in html
+        assert leaked not in frame_source
+
+
+def test_interactive_html_detail_report_redacts_file_url_local_paths():
+    html = render_interactive_html_detail_report(
+        '<button>Open</button><a href="file:///Users/mozzie/.hermes/secrets.env">secret path</a>',
+        {"job_id": "daily", "job_name": "Daily", "run_time": "2026-05-26T06:00:00+00:00"},
+    )
+    frame_source = _interactive_frame_source(html)
+
+    assert "file:///Users/mozzie" not in html
+    assert "file:///Users/mozzie" not in frame_source
+    assert "[LOCAL_PATH]" in frame_source
+
+
+def test_interactive_detector_handles_event_whitespace_but_not_details_only():
+    assert _is_interactive_html_artifact('<div onclick = "go()">Go</div>')
+    assert _is_interactive_html_artifact('<section data-action = "lane#open">Open</section>')
+    assert not _is_interactive_html_artifact('<details><summary>Raw log</summary><pre>Prompt: secret</pre></details>')
+
+
+def test_html_only_cron_outputs_publish_interactive_wrapper(tmp_path: Path, monkeypatch):
+    output_dir = tmp_path / "details"
+    source_html = tmp_path / "2026-05-26_06-00-00.html"
+    source_html.write_text(
+        """<!doctype html><html><body>
+<h1>Specialist agents</h1>
+<button id="alpha">Open Alpha</button>
+<script>window.alphaReady=true;</script>
+</body></html>""",
+        encoding="utf-8",
+    )
+    item = collect_situation_items.__globals__["CronSituationItem"](
+        job_id="acta-specialists",
+        name="Acta Hermes agent lanes",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=None,
+        latest_html=source_html,
+        latest_time=None,
+        status="fresh",
+        excerpt="Interactive specialist lane artifact.",
+    )
+    uploaded = {}
+
+    def fake_publish(path, job, settings):
+        uploaded["html"] = Path(path).read_text()
+        return "https://acta.imperatr.com/r/acta-specialists/detail.html?exp=1&sig=abc"
+
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+
+    linked = attach_artifact_urls([item], {"enabled": True}, output_dir)
+
+    assert linked[0].artifact_url == "https://acta.imperatr.com/r/acta-specialists/detail.html?exp=1&sig=abc"
+    assert "ACTA</em> / INTERACTIVE" in uploaded["html"]
+    frame_source = _interactive_frame_source(uploaded["html"])
+    assert '<button id="alpha">Open Alpha</button>' in frame_source
+    assert "window.alphaReady=true" in frame_source
+    assert "<article class=\"report-body\">" not in uploaded["html"]
 
 
 def test_dashboard_escapes_content_and_links_artifact(tmp_path: Path):

@@ -1125,6 +1125,12 @@ DEFAULT_CONFIG = {
         # class of over-claim that otherwise forces users to run
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
+        # Final-response closure gate.  Off by default globally; profiles can
+        # opt in to require a compact status/proof boundary before the response
+        # leaves the runtime.  HERMES_CLOSURE_GATE overrides this value.
+        "closure_gate": {
+            "enabled": False,
+        },
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a

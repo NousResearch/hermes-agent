@@ -668,6 +668,7 @@ def run_conversation(
             user_message=user_message,
             original_user_message=original_user_message,
             messages=messages,
+            conversation_history=conversation_history,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
@@ -4056,63 +4057,20 @@ def run_conversation(
         and not failed
     )
 
-    # Save trajectory if enabled.  ``user_message`` may be a multimodal
-    # list of parts; the trajectory format wants a plain string.
-    agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
-
-    # Clean up VM and browser for this task after conversation completes
+    # Clean up VM and browser for this task after conversation completes.
     agent._cleanup_task_resources(effective_task_id)
 
-    # Persist session to both JSON log and SQLite only after private retry
-    # scaffolding has been removed. Otherwise a later user "continue" turn
-    # can replay assistant("(empty)") / recovery nudges and fall into the
-    # same empty-response loop again.
+    # Remove private retry scaffolding before final-response postprocessing and
+    # persistence. Otherwise a later user "continue" turn can replay
+    # assistant("(empty)") / recovery nudges and fall into the same
+    # empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
-    agent._persist_session(messages, conversation_history)
 
-    # ── Turn-exit diagnostic log ─────────────────────────────────────
-    # Always logged at INFO so agent.log captures WHY every turn ended.
-    # When the last message is a tool result (agent was mid-work), log
-    # at WARNING — this is the "just stops" scenario users report.
-    _last_msg_role = messages[-1].get("role") if messages else None
-    _last_tool_name = None
-    if _last_msg_role == "tool":
-        # Walk back to find the assistant message with the tool call
-        for _m in reversed(messages):
-            if _m.get("role") == "assistant" and _m.get("tool_calls"):
-                _tcs = _m["tool_calls"]
-                if _tcs and isinstance(_tcs[0], dict):
-                    _last_tool_name = _tcs[-1].get("function", {}).get("name")
-                break
-
-    _turn_tool_count = sum(
-        1 for m in messages
-        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
-    )
-    _resp_len = len(final_response) if final_response else 0
-    _budget_used = agent.iteration_budget.used if agent.iteration_budget else 0
-    _budget_max = agent.iteration_budget.max_total if agent.iteration_budget else 0
-
-    _diag_msg = (
-        "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
-        "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
-    )
-    _diag_args = (
-        _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
-        _budget_used, _budget_max,
-        _turn_tool_count, _last_msg_role, _resp_len,
-        agent.session_id or "none",
-    )
-
-    if _last_msg_role == "tool" and not interrupted:
-        # Agent was mid-work — this is the "just stops" case.
-        logger.warning(
-            "Turn ended with pending tool result (agent may appear stuck). "
-            + _diag_msg + " last_tool=%s",
-            *_diag_args, _last_tool_name,
-        )
-    else:
-        logger.info(_diag_msg, *_diag_args)
+    # Runtime-side postprocessors must run BEFORE persistence. The closure gate
+    # and file-mutation verifier are safety boundaries; if they only appear in
+    # the returned result but not in the session log / SQLite transcript, resume
+    # and gateway consumers lose the boundary.
+    _pre_postprocess_final_response = final_response
 
     # File-mutation verifier footer.
     # If one or more ``write_file`` / ``patch`` calls failed during this
@@ -4162,6 +4120,85 @@ def run_conversation(
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    # Closure gate footer.
+    # This is deliberately runtime-side rather than prompt-only: opted-in
+    # profiles get a compact status/proof boundary appended when the model's
+    # final text lacks an explicit closure record.  Apply after output
+    # transforms so plugins cannot accidentally strip the gate.
+    if final_response and not interrupted:
+        try:
+            if agent._closure_gate_enabled():
+                final_response = agent._apply_closure_gate_footer(final_response)
+        except Exception as _closure_err:
+            logger.debug("closure gate footer failed: %s", _closure_err)
+
+    if final_response and not interrupted:
+        try:
+            agent._emit_postprocessed_stream_suffix(
+                _pre_postprocess_final_response or "",
+                final_response,
+            )
+        except Exception as _stream_sync_err:
+            logger.debug("postprocessed stream suffix failed: %s", _stream_sync_err)
+        try:
+            agent._sync_final_response_to_messages(
+                messages,
+                final_response,
+                previous_response=_pre_postprocess_final_response,
+            )
+        except Exception as _message_sync_err:
+            logger.debug("final response message sync failed: %s", _message_sync_err)
+
+    # Save trajectory and persist only after postprocessed final_response has
+    # been synced back into messages, so all durable transcripts match exactly
+    # what the caller receives.
+    agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
+    agent._persist_session(messages, conversation_history)
+
+    # ── Turn-exit diagnostic log ─────────────────────────────────────
+    # Always logged at INFO so agent.log captures WHY every turn ended.
+    # When the last message is a tool result (agent was mid-work), log
+    # at WARNING — this is the "just stops" scenario users report.
+    _last_msg_role = messages[-1].get("role") if messages else None
+    _last_tool_name = None
+    if _last_msg_role == "tool":
+        # Walk back to find the assistant message with the tool call
+        for _m in reversed(messages):
+            if _m.get("role") == "assistant" and _m.get("tool_calls"):
+                _tcs = _m["tool_calls"]
+                if _tcs and isinstance(_tcs[0], dict):
+                    _last_tool_name = _tcs[-1].get("function", {}).get("name")
+                break
+
+    _turn_tool_count = sum(
+        1 for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    _resp_len = len(final_response) if final_response else 0
+    _budget_used = agent.iteration_budget.used if agent.iteration_budget else 0
+    _budget_max = agent.iteration_budget.max_total if agent.iteration_budget else 0
+
+    _diag_msg = (
+        "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
+        "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
+    )
+    _diag_args = (
+        _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
+        _budget_used, _budget_max,
+        _turn_tool_count, _last_msg_role, _resp_len,
+        agent.session_id or "none",
+    )
+
+    if _last_msg_role == "tool" and not interrupted:
+        # Agent was mid-work — this is the "just stops" case.
+        logger.warning(
+            "Turn ended with pending tool result (agent may appear stuck). "
+            + _diag_msg + " last_tool=%s",
+            *_diag_args, _last_tool_name,
+        )
+    else:
+        logger.info(_diag_msg, *_diag_args)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

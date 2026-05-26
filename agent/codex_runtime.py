@@ -21,7 +21,7 @@ import logging
 import os
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ def run_codex_app_server_turn(
     original_user_message: Any,
     messages: List[Dict[str, Any]],
     effective_task_id: str,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
     should_review_memory: bool = False,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
@@ -67,6 +68,11 @@ def run_codex_app_server_turn(
     # return reaches us. Do NOT append again — that would duplicate.
 
     try:
+        agent._reset_stream_delivery_tracking()
+    except Exception:
+        logger.debug("codex app-server stream tracking reset raised", exc_info=True)
+
+    try:
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
@@ -77,6 +83,15 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        try:
+            agent._cleanup_task_resources(effective_task_id)
+        except Exception:
+            logger.debug("codex app-server cleanup after crash raised", exc_info=True)
+        try:
+            agent._persist_session(messages, conversation_history)
+        except Exception:
+            logger.debug("codex app-server persist after crash raised", exc_info=True)
+        agent._stream_callback = None
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -111,6 +126,63 @@ def run_codex_app_server_turn(
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
 
+    final_text = turn.final_text
+    previous_final_text = final_text
+    if final_text and not turn.interrupted and turn.error is None:
+        # Keep the Codex app-server early-return path aligned with the normal
+        # conversation loop's finalization order: verifier footer → output
+        # transform hook → closure gate.  This must happen before message sync
+        # and persistence so visible, streamed, returned, and durable transcript
+        # text all describe the same final response.
+        try:
+            failed_mutations = getattr(agent, "_turn_failed_file_mutations", None) or {}
+            if failed_mutations and agent._file_mutation_verifier_enabled():
+                footer = agent._format_file_mutation_failure_footer(failed_mutations)
+                if footer:
+                    final_text = final_text.rstrip() + "\n\n" + footer
+        except Exception:
+            logger.debug("codex app-server file-mutation verifier raised", exc_info=True)
+
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            transform_results = _invoke_hook(
+                "transform_llm_output",
+                response_text=final_text,
+                session_id=agent.session_id or "",
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+            for hook_result in transform_results:
+                if isinstance(hook_result, str) and hook_result:
+                    final_text = hook_result
+                    break
+        except Exception:
+            logger.debug("codex app-server transform_llm_output hook raised", exc_info=True)
+
+        try:
+            if agent._closure_gate_enabled():
+                final_text = agent._apply_closure_gate_footer(final_text)
+        except Exception:
+            logger.debug("codex app-server closure gate raised", exc_info=True)
+
+    if final_text and final_text != previous_final_text and not turn.interrupted and turn.error is None:
+        try:
+            agent._emit_postprocessed_stream_suffix(
+                previous_final_text or "",
+                final_text,
+            )
+        except Exception:
+            logger.debug("codex app-server stream suffix raised", exc_info=True)
+        try:
+            agent._sync_final_response_to_messages(
+                messages,
+                final_text,
+                previous_response=previous_final_text,
+            )
+        except Exception:
+            logger.debug("codex app-server message sync raised", exc_info=True)
+
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
     # in the run_conversation() pre-loop block (lines ~11793-11817) so we
@@ -139,7 +211,7 @@ def run_codex_app_server_turn(
         try:
             agent._sync_external_memory_for_turn(
                 original_user_message=original_user_message,
-                final_response=turn.final_text,
+                final_response=final_text,
                 interrupted=False,
             )
         except Exception:
@@ -149,7 +221,7 @@ def run_codex_app_server_turn(
     # path (line ~15449). Only fires when a trigger actually tripped AND
     # we have a real final response.
     if (
-        turn.final_text
+        final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):
@@ -162,11 +234,26 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    completed = not turn.interrupted and turn.error is None
+    try:
+        agent._cleanup_task_resources(effective_task_id)
+    except Exception:
+        logger.debug("codex app-server cleanup raised", exc_info=True)
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.debug("codex app-server persist raised", exc_info=True)
+    try:
+        agent.clear_interrupt()
+    except Exception:
+        logger.debug("codex app-server clear_interrupt raised", exc_info=True)
+    agent._stream_callback = None
+
     return {
-        "final_response": turn.final_text,
+        "final_response": final_text,
         "messages": messages,
         "api_calls": 1,  # one app-server "turn" maps to one logical API call
-        "completed": not turn.interrupted and turn.error is None,
+        "completed": completed,
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
         "codex_thread_id": turn.thread_id,

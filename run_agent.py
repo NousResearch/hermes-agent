@@ -1976,6 +1976,50 @@ class AIAgent:
             lines.append(f"  • … and {remaining} more")
         return "\n".join(lines)
 
+    def _closure_gate_enabled(self) -> bool:
+        """Check whether the final-response closure gate is on.
+
+        Config path: ``display.closure_gate.enabled`` or legacy bool
+        ``display.closure_gate``.  ``HERMES_CLOSURE_GATE`` overrides config.
+        Default is off so only profiles that opt in receive the advisory.
+        """
+        try:
+            env = os.environ.get("HERMES_CLOSURE_GATE")
+            if env is not None:
+                return env.strip().lower() not in {"0", "false", "no", "off"}
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config() or {}
+            except Exception:
+                _cfg = {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "closure_gate" in _display:
+                _gate = _display.get("closure_gate")
+                if isinstance(_gate, dict):
+                    return bool(_gate.get("enabled", False))
+                return bool(_gate)
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _has_closure_gate_record(text: str) -> bool:
+        """Return True when the response already has status/proof closure."""
+        if not text:
+            return False
+        return bool(re.search(r"(?im)^\s*status\s*=.+\bproof\s*=", text))
+
+    def _apply_closure_gate_footer(self, final_response: str) -> str:
+        """Append a compact proof/status advisory unless one already exists."""
+        if not final_response or self._has_closure_gate_record(final_response):
+            return final_response
+        footer = (
+            "Closure gate: status=unverified "
+            "proof=missing explicit status/proof closure "
+            "boundary=do not treat this as verified completion without checked evidence"
+        )
+        return final_response.rstrip() + "\n\n" + footer
+
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Forwarder — see ``agent.agent_runtime_helpers.apply_pending_steer_to_tool_results``."""
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
@@ -3126,6 +3170,86 @@ class AIAgent:
                 getattr(self, "_current_streamed_assistant_text", "") + text
             )
 
+    def _sync_final_response_to_messages(
+        self,
+        messages: list,
+        final_response: str,
+        *,
+        previous_response: str | None = None,
+    ) -> bool:
+        """Keep the durable final assistant message aligned with postprocessing.
+
+        Runtime-side postprocessors (plugin output transforms, verifier footers,
+        closure-gate footers) run after the model's final assistant message has
+        already been appended to ``messages``.  Without this sync, callers see a
+        guarded ``final_response`` while the persisted transcript keeps the
+        unguarded text, so resume/gateway/session consumers lose the boundary.
+        """
+        if not isinstance(messages, list) or not isinstance(final_response, str):
+            return False
+        if previous_response is not None and final_response == previous_response:
+            return False
+
+        for msg in reversed(messages):
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            content = msg.get("content")
+            if previous_response is None:
+                if msg.get("tool_calls"):
+                    return False
+                msg["content"] = final_response
+                return True
+            if content == previous_response:
+                msg["content"] = final_response
+                return True
+            if isinstance(content, str) and content.strip() == previous_response.strip():
+                msg["content"] = final_response
+                return True
+            # The latest assistant message did not match the text being
+            # postprocessed; do not risk rewriting an earlier/tool-call turn.
+            return False
+        return False
+
+    def _emit_postprocessed_stream_suffix(
+        self,
+        previous_response: str,
+        final_response: str,
+    ) -> bool:
+        """Emit only newly-added postprocessing text after streamed output.
+
+        If the model already streamed ``previous_response`` to the UI and a
+        runtime footer later extends it, send just the suffix so the visible
+        stream matches the final returned text without replaying the answer.
+        """
+        if not isinstance(previous_response, str) or not isinstance(final_response, str):
+            return False
+        if not final_response or final_response == previous_response:
+            return False
+        streamed = getattr(self, "_current_streamed_assistant_text", "") or ""
+        if not streamed or streamed != previous_response:
+            return False
+        if not final_response.startswith(previous_response):
+            return False
+        suffix = final_response[len(previous_response):]
+        if not suffix:
+            return False
+        callbacks = [
+            cb for cb in (
+                getattr(self, "stream_delta_callback", None),
+                getattr(self, "_stream_callback", None),
+            ) if cb is not None
+        ]
+        delivered = False
+        for cb in callbacks:
+            try:
+                cb(suffix)
+                delivered = True
+            except Exception:
+                logger.debug("postprocessed stream suffix callback failed", exc_info=True)
+        if delivered:
+            self._record_streamed_assistant_text(suffix)
+        return delivered
+
     @staticmethod
     def _normalize_interim_visible_text(text: str) -> str:
         if not isinstance(text, str):
@@ -4185,11 +4309,12 @@ class AIAgent:
         original_user_message: Any,
         messages: List[Dict[str, Any]],
         effective_task_id: str,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
         should_review_memory: bool = False,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
-        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, conversation_history=conversation_history, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
 def main(
     query: str = None,

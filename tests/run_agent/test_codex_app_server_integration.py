@@ -12,7 +12,7 @@ Verifies that:
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -49,7 +49,7 @@ def fake_session(monkeypatch):
     )
 
 
-def _make_codex_agent():
+def _make_codex_agent(*, session_db=None, session_id=None, stream_delta_callback=None):
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
@@ -61,6 +61,9 @@ def _make_codex_agent():
         quiet_mode=True,
         skip_context_files=True,
         skip_memory=True,
+        session_db=session_db,
+        session_id=session_id or "codex-app-server-test",
+        stream_delta_callback=stream_delta_callback,
     )
 
 
@@ -83,6 +86,199 @@ class TestRunConversationCodexPath:
         assert result["api_calls"] == 1
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
+
+    def test_closure_gate_applies_on_codex_app_server_path(self, fake_session, monkeypatch):
+        """Peter uses codex_app_server, which bypasses conversation_loop footer hooks."""
+        monkeypatch.setenv("HERMES_CLOSURE_GATE", "1")
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello closure")
+
+        assert result["final_response"].startswith("echo: hello closure")
+        assert "Closure gate:" in result["final_response"]
+        assert "status=unverified" in result["final_response"]
+        assert result["messages"][-1]["content"] == result["final_response"]
+
+    def test_closure_gate_persists_codex_app_server_final_response_to_session_db(
+        self, fake_session, monkeypatch
+    ):
+        """The Codex early-return path must persist the gated assistant text."""
+        monkeypatch.setenv("HERMES_CLOSURE_GATE", "1")
+        session_db = MagicMock()
+        agent = _make_codex_agent(
+            session_db=session_db,
+            session_id="codex-app-server-db-closure-test",
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello persisted closure")
+
+        assistant_db_rows = [
+            call.kwargs
+            for call in session_db.append_message.call_args_list
+            if call.kwargs.get("role") == "assistant"
+        ]
+        assert assistant_db_rows
+        assert assistant_db_rows[-1]["content"] == result["final_response"]
+        assert "Closure gate:" in assistant_db_rows[-1]["content"]
+
+    def test_closure_gate_streams_only_footer_suffix_on_codex_app_server_path(
+        self, monkeypatch
+    ):
+        """If Codex already streamed the base answer, emit only the footer delta."""
+        deltas = []
+        base_text = "echo: streamed closure"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            # Simulate the Codex runtime having already delivered the base text
+            # through a stream before final-response postprocessing adds a gate.
+            agent._record_streamed_assistant_text(base_text)
+            return TurnResult(
+                final_text=base_text,
+                projected_messages=[{"role": "assistant", "content": base_text}],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="turn-stub-stream",
+                thread_id="thread-stub-stream",
+            )
+
+        monkeypatch.setenv("HERMES_CLOSURE_GATE", "1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-stub-stream"
+        )
+        agent = _make_codex_agent(stream_delta_callback=deltas.append)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello streamed closure")
+
+        expected_suffix = result["final_response"][len(base_text):]
+        assert expected_suffix.startswith("\n\nClosure gate:")
+        assert deltas == [expected_suffix]
+        assert deltas[0] != result["final_response"]
+        assert base_text not in deltas[0]
+
+    def test_codex_app_server_finalization_runs_verifier_before_message_sync(
+        self, monkeypatch
+    ):
+        """The early-return Codex path must keep verifier footer durable too."""
+        base_text = "echo: verifier closure"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            setattr(
+                agent,
+                "_turn_failed_file_mutations",
+                {
+                    "/tmp/not-edited.md": {
+                        "tool": "patch",
+                        "error_preview": "Could not find old_string",
+                    }
+                },
+            )
+            return TurnResult(
+                final_text=base_text,
+                projected_messages=[{"role": "assistant", "content": base_text}],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="turn-stub-verifier",
+                thread_id="thread-stub-verifier",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-stub-verifier"
+        )
+        session_db = MagicMock()
+        agent = _make_codex_agent(
+            session_db=session_db,
+            session_id="codex-app-server-verifier-test",
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello verifier")
+
+        assert result["final_response"].startswith(base_text)
+        assert "File-mutation verifier" in result["final_response"]
+        assert "/tmp/not-edited.md" in result["final_response"]
+        assert result["messages"][-1]["content"] == result["final_response"]
+
+        assistant_db_rows = [
+            call.kwargs
+            for call in session_db.append_message.call_args_list
+            if call.kwargs.get("role") == "assistant"
+        ]
+        assert assistant_db_rows[-1]["content"] == result["final_response"]
+
+    def test_codex_app_server_transform_runs_before_closure_and_stream_suffix(
+        self, monkeypatch
+    ):
+        """Codex finalization order matches normal runtime: transform, then closure."""
+        deltas = []
+        base_text = "echo: transform streamed"
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            agent._record_streamed_assistant_text(base_text)
+            return TurnResult(
+                final_text=base_text,
+                projected_messages=[{"role": "assistant", "content": base_text}],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="turn-stub-transform",
+                thread_id="thread-stub-transform",
+            )
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            if hook_name != "transform_llm_output":
+                return []
+            assert kwargs["response_text"] == base_text
+            return [kwargs["response_text"] + "\ntransformed=1"]
+
+        monkeypatch.setenv("HERMES_CLOSURE_GATE", "1")
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-stub-transform"
+        )
+        agent = _make_codex_agent(stream_delta_callback=deltas.append)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello transform")
+
+        assert result["final_response"].startswith(base_text + "\ntransformed=1")
+        assert result["final_response"].rstrip().endswith(
+            "boundary=do not treat this as verified completion without checked evidence"
+        )
+        assert "Closure gate:" in result["final_response"]
+        expected_suffix = result["final_response"][len(base_text):]
+        assert deltas == [expected_suffix]
+        assert deltas[0].startswith("\ntransformed=1\n\nClosure gate:")
+        assert result["messages"][-1]["content"] == result["final_response"]
+
+    def test_closure_gate_not_duplicated_on_codex_app_server_path(self, monkeypatch):
+        from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            text = "echo: done\n\nstatus=verified proof=fake codex test"
+            return TurnResult(
+                final_text=text,
+                projected_messages=[{"role": "assistant", "content": text}],
+                tool_iterations=0,
+                interrupted=False,
+                error=None,
+                turn_id="turn-stub-closure",
+                thread_id="thread-stub-closure",
+            )
+
+        monkeypatch.setenv("HERMES_CLOSURE_GATE", "1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-stub-closure"
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello closure")
+
+        assert result["final_response"].count("Closure gate:") == 0
+        assert result["final_response"].count("status=verified") == 1
 
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()

@@ -1210,6 +1210,17 @@ class TestNovitaProvider:
         assert float(result["prompt"]) == 2690 / 10_000 / 1_000_000
         assert float(result["completion"]) == 4000 / 10_000 / 1_000_000
 
+    def test_extract_pricing_skips_list_typed_values(self):
+        """Providers like zenmux return pricing as lists of objects (#32618)."""
+        from agent.model_metadata import _extract_pricing
+        payload = {
+            "id": "deepseek/deepseek-v4-pro",
+            "prompt": [{"value": 1, "unit": "perMTokens"}],
+            "completion": [{"value": 2, "unit": "perMTokens"}],
+        }
+        result = _extract_pricing(payload)
+        assert result == {}
+
     def test_novita_pricing_cache(self, monkeypatch):
         """_fetch_novita_pricing should cache results in _pricing_cache."""
         from hermes_cli import models as models_mod

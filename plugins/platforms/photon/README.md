@@ -61,8 +61,12 @@ hermes photon webhook register https://your-host.example.com/photon/webhook
 #    as PHOTON_WEBHOOK_SECRET=...
 #    Photon only returns it ONCE.
 
-# 5. Start the gateway
-hermes gateway start --platform photon
+# 5. Start the gateway in foreground QA mode
+hermes gateway run -v
+
+# For always-on local use, install/start the launchd service instead:
+hermes gateway install --force
+hermes gateway start
 ```
 
 ## Credentials

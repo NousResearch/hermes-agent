@@ -109,13 +109,57 @@ Problem:
 - The sidecar installed `spectrum-ts@0.1.2` from `^0.1.0`.
 - That old SDK defaulted to retired/unresolving hostnames:
   `spectrum-cloud.photon.codes` and `spectrum-imessage.photon.codes`.
+  Those endpoints no longer exist in the current hosted Photon/Spectrum
+  environment. The failure was not that Hermes could not send a message yet;
+  the SDK could not finish startup because DNS lookup for the old cloud host
+  failed with `getaddrinfo ENOTFOUND spectrum-cloud.photon.codes`.
 - After overriding DNS hostnames, the old SDK still called an obsolete token
   path and failed with `Spectrum Cloud authentication failed (404)`.
 
+What was run:
+
+- The failure came from starting the Photon gateway/sidecar, not from a
+  particular outbound message. Running the gateway:
+
+```bash
+hermes gateway run -v
+```
+
+  caused `PhotonAdapter` to spawn:
+
+```bash
+node plugins/platforms/photon/sidecar/index.mjs
+```
+
+  with `PHOTON_PROJECT_ID`, `PHOTON_PROJECT_SECRET`, `PHOTON_SIDECAR_PORT`,
+  and `PHOTON_SIDECAR_TOKEN` in the child environment. `index.mjs` then called
+  `Spectrum({ projectId, projectSecret, providers: [imessage.config()] })`.
+  With `spectrum-ts@0.1.2`, that SDK initialization path attempted to contact
+  `spectrum-cloud.photon.codes` and crashed before the sidecar health endpoint
+  was ready.
+
+- To isolate whether the problem was only DNS/default-host drift, the current
+  endpoints were also supplied via environment overrides:
+
+```bash
+SPECTRUM_CLOUD_URL=https://spectrum.photon.codes
+SPECTRUM_IMESSAGE_ADDRESS=imessage.spectrum.photon.codes:443
+```
+
+  Then the gateway/sidecar was started again. This got past the dead hostname
+  but still failed during the same SDK startup/authentication step with
+  `Spectrum Cloud authentication failed (404)`, which showed the old SDK was
+  also using an obsolete Spectrum cloud token/auth path.
+
 Change:
 
-- Updated the sidecar dependency to `spectrum-ts@^1.13.1`.
-- Installed the updated dependency.
+- Updated the sidecar dependency off the broken `0.1.x` line. The current
+  repo pins `spectrum-ts@~1.7.2`: that version starts successfully against the
+  current Spectrum service and `npm audit --omit=dev` reports zero
+  vulnerabilities. Earlier QA also proved `1.13.1` could connect, but its
+  dependency graph carried high-severity audit findings.
+- Installed the updated dependency and committed a lockfile so clean installs
+  do not drift back to the obsolete SDK line.
 
 Files:
 
@@ -213,8 +257,8 @@ Important behavior:
 - Device login worked after using the Photon-accepted client ID.
 - Existing Photon project credentials worked after being stored locally.
 - Sidecar dependencies installed successfully using a clean npm cache.
-- `spectrum-ts@^1.13.1` connected successfully with the current Spectrum
-  endpoints.
+- `spectrum-ts@~1.7.2` connected successfully with the current Spectrum
+  endpoints and produced a clean production npm audit.
 - The gateway connected successfully and reported one connected platform.
 - Focused tests passed:
 
@@ -240,8 +284,6 @@ tests/plugins/platforms/photon: 30 passed
   side and stop using `photon-cli` as a compatibility client.
 - Add `hermes photon setup` support for listing/importing an existing Photon
   project when local `credential_pool.photon_project` is missing.
-- Make `hermes photon status` validate the installed `spectrum-ts` version, not
-  just whether `node_modules` exists.
 - Consider making `hermes photon install-sidecar` use a project-local or
   temporary npm cache, or detect common npm cache permission failures and print a
   targeted fix.

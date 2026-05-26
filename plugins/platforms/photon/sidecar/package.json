@@ -12,6 +12,6 @@
     "node": ">=18.17"
   },
   "dependencies": {
-    "spectrum-ts": "^0.1.0"
+    "spectrum-ts": "~1.7.2"
   }
 }

@@ -3380,22 +3380,42 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
                     resolved = False
 
-                await query.answer(text=f"✓ {resolved_text[:60]}")
-                try:
-                    await query.edit_message_text(
-                        text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass
-
                 if resolved:
+                    await query.answer(text=f"✓ {resolved_text[:60]}")
+                    try:
+                        await query.edit_message_text(
+                            text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
                     logger.info(
                         "Telegram clarify button resolved (id=%s, choice=%r, user=%s)",
                         clarify_id, resolved_text, user_display,
                     )
                 else:
+                    # The clarify entry was already gone when the button was
+                    # tapped: the gateway restarted (in-memory clarify state
+                    # lost) or the agent's clarify_timeout evicted the entry
+                    # before the user replied.  Without this branch the
+                    # message would be edited to show the user's choice as if
+                    # accepted while the agent never receives it and stays
+                    # stuck on "running: clarify" (issue #32762).  Surface the
+                    # dead tap to the user instead of silently dropping it.
+                    await query.answer(text="⚠️ This question expired — please /retry.")
+                    try:
+                        await query.edit_message_text(
+                            text=(
+                                f"❓ {_html.escape(query.message.text or '')}\n\n"
+                                "<i>⚠️ This question expired or the session reset — "
+                                "please /retry.</i>"
+                            ),
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
                     logger.warning(
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,

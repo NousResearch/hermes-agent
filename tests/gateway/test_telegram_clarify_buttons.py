@@ -309,6 +309,46 @@ class TestTelegramClarifyCallback:
         assert "already" in query.answer.call_args[1]["text"].lower()
 
     @pytest.mark.asyncio
+    async def test_expired_entry_notifies_user(self):
+        """Tap on a button whose clarify entry is gone (timeout-evicted or
+        lost to a gateway restart) must surface an 'expired' notice instead
+        of editing the message to show the choice as accepted (issue #32762).
+        """
+        adapter = _make_adapter()
+        # The adapter still tracks the prompt (state survives a timeout
+        # eviction), but the clarify primitive entry has already been
+        # removed — so resolve_gateway_clarify returns False.
+        adapter._clarify_state["cidE"] = "sk-exp"
+
+        query = AsyncMock()
+        query.data = "cl:cidE:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "Pick"
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Tester"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, context)
+
+        # State popped, user told the prompt expired, and the message edited
+        # to the expired notice — NOT to a faux-accepted choice.
+        assert "cidE" not in adapter._clarify_state
+        query.answer.assert_called_once()
+        assert "expired" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_called_once()
+        edited_text = query.edit_message_text.call_args[1]["text"].lower()
+        assert "expired" in edited_text
+        assert "retry" in edited_text
+
+    @pytest.mark.asyncio
     async def test_unauthorized_user_rejected(self):
         from tools import clarify_gateway as cm
 

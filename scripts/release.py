@@ -505,6 +505,7 @@ AUTHOR_MAP = {
     "xiahu889889@proton.me": "xiahu88988",
     "nocoo@users.noreply.github.com": "nocoo",
     "30841158+n-WN@users.noreply.github.com": "n-WN",
+    "hiddenpuppy@users.noreply.github.com": "HiddenPuppy",
     "tsuijinglei@gmail.com": "hiddenpuppy",
     "buraysandro9@gmail.com": "ygd58",
     "jerome@clawwork.ai": "HiddenPuppy",

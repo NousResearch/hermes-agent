@@ -27,11 +27,17 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["bedrock"]
         assert pconfig.auth_type == "aws_sdk"
 
-    def test_bedrock_has_no_api_key_env_vars(self):
-        """Bedrock uses the AWS SDK credential chain, not API keys."""
+    def test_bedrock_has_aws_sdk_env_vars_in_api_key_env_vars(self):
+        """Bedrock registers AWS SDK env vars in api_key_env_vars for subprocess blocklisting."""
         from hermes_cli.auth import PROVIDER_REGISTRY
         pconfig = PROVIDER_REGISTRY["bedrock"]
-        assert pconfig.api_key_env_vars == ()
+        aws_vars = pconfig.api_key_env_vars
+        assert "AWS_ACCESS_KEY_ID" in aws_vars
+        assert "AWS_SECRET_ACCESS_KEY" in aws_vars
+        assert "AWS_SESSION_TOKEN" in aws_vars
+        assert "AWS_BEARER_TOKEN_BEDROCK" in aws_vars
+        assert "AWS_PROFILE" in aws_vars
+        assert "AWS_DEFAULT_REGION" in aws_vars
 
     def test_bedrock_base_url_env_var(self):
         from hermes_cli.auth import PROVIDER_REGISTRY

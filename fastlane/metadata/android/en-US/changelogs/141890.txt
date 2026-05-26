@@ -1,0 +1,7 @@
+Hermes Agent Fork 0.13.118
+
+- Adds Wi-Fi channel decision packets with Gemma-safe route and claim-boundary cards.
+- Adds Bluetooth nearby decision packets for passive scanner evidence and top-card summaries.
+- Adds AM, FM, and SDR radio signal decision packets for supported-device radio workflows.
+- Adds motion sensor decision packets for accelerometer, gyroscope, IMU, pose, and MediaTek-aware workflow guidance.
+- Expands diagnostic card parsing, quick actions, and chat tool compaction coverage for the signal intelligence packet set.

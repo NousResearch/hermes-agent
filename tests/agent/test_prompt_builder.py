@@ -26,6 +26,7 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    KANBAN_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -48,6 +49,11 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_kanban_guidance_completes_when_dependent_reviewer_exists(self):
+        assert "dependent reviewer" in KANBAN_GUIDANCE
+        assert "complete this implementation task" in KANBAN_GUIDANCE
+        assert "do not block waiting for review" in KANBAN_GUIDANCE
 
 
 # =========================================================================

@@ -173,6 +173,47 @@ def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_two_card_review_pipeline_completion_promotes_reviewer(kanban_home):
+    with kb.connect() as conn:
+        implementation = kb.create_task(
+            conn,
+            title="implementation",
+            assignee="factory",
+        )
+        reviewer = kb.create_task(
+            conn,
+            title="review implementation",
+            assignee="pr-reviewer",
+            parents=[implementation],
+        )
+
+        implementation_task = kb.get_task(conn, implementation)
+        reviewer_task = kb.get_task(conn, reviewer)
+        assert implementation_task is not None
+        assert reviewer_task is not None
+        assert implementation_task.status == "ready"
+        assert reviewer_task.status == "todo"
+
+        kb.claim_task(conn, implementation, claimer="factory:test")
+        kb.complete_task(
+            conn,
+            implementation,
+            summary="local commit and tests complete; reviewer owns approval",
+            metadata={"review_gate": "dependent-reviewer", "tests_passed": True},
+        )
+
+        implementation_task = kb.get_task(conn, implementation)
+        reviewer_task = kb.get_task(conn, reviewer)
+        assert implementation_task is not None
+        assert reviewer_task is not None
+        assert implementation_task.status == "done"
+        assert reviewer_task.status == "ready"
+
+        claimed = kb.claim_task(conn, reviewer, claimer="pr-reviewer:test")
+        assert claimed is not None
+        assert claimed.assignee == "pr-reviewer"
+
+
 def test_create_task_unknown_parent_errors(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="unknown parent"):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])

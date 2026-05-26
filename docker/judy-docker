@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+set -eu
+
+host="${JUDY_DOCKER_HOST:-unix:///var/run/judy-docker/docker.sock}"
+
+if [ "$#" -eq 0 ]; then
+    cat >&2 <<EOF
+Usage: judy-docker <docker arguments>
+
+Targets Judy's isolated Docker sandbox:
+  DOCKER_HOST=${host}
+
+Examples:
+  judy-docker ps
+  judy-docker run --rm --user 1001:1001 -v /workspace/projects/sandbox:/workspace/projects/sandbox alpine:3.21 id
+EOF
+    exit 64
+fi
+
+printf 'judy-docker: targeting %s\n' "${host}" >&2
+exec docker --host "${host}" "$@"

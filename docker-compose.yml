@@ -60,10 +60,12 @@ services:
       - ~/.hermes:/opt/data
       - ~/projects:/workspace/projects
       - /var/run/docker.sock:/var/run/docker.sock
+      - judy-docker-socket:/var/run/judy-docker
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
       - HERMES_KANBAN_POSTGRES_DSN=${HERMES_KANBAN_POSTGRES_DSN:-postgresql://hermes_kanban:hermes_kanban@127.0.0.1:55432/hermes_kanban}
+      - JUDY_DOCKER_HOST=unix:///var/run/judy-docker/docker.sock
       # To expose the OpenAI-compatible API server beyond localhost,
       # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
       # - API_SERVER_HOST=0.0.0.0
@@ -106,3 +108,5 @@ services:
 
 volumes:
   kanban-postgres-data:
+  judy-docker-socket:
+    name: judy-docker-socket

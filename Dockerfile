@@ -185,6 +185,7 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 # /run/service/ (tmpfs) and are reconciled on container restart by
 # /etc/cont-init.d/02-reconcile-profiles (Phase 4 Task 4.0).
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
+COPY --chmod=0755 docker/judy-docker /usr/local/bin/judy-docker
 
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
 # skills sync — all the work the old entrypoint.sh did before

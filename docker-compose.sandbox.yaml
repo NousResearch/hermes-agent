@@ -1,0 +1,43 @@
+#
+# Judy Docker sandbox.
+#
+# Lifecycle:
+#   docker compose -f docker-compose.sandbox.yaml --env-file .env up -d
+#   docker compose -f docker-compose.sandbox.yaml down -v
+#
+# The daemon is reachable only through the private judy-docker-socket volume.
+# Do not expose a TCP Docker API port for this sandbox.
+#
+name: judy-sandbox
+
+services:
+  judy-sandbox:
+    image: docker:27.5.1-dind
+    container_name: judy-sandbox
+    restart: unless-stopped
+    privileged: true
+    cpus: "2.0"
+    mem_limit: 2g
+    pids_limit: 512
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    command:
+      - --host=unix:///judy-docker/docker.sock
+      - --group=${HERMES_GID:-1001}
+    volumes:
+      - judy-docker-data:/var/lib/docker
+      - judy-docker-socket:/judy-docker
+      - ~/projects/sandbox:/workspace/projects/sandbox
+    healthcheck:
+      test: ["CMD-SHELL", "docker -H unix:///judy-docker/docker.sock info >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  judy-docker-data:
+    name: judy-docker-data
+  judy-docker-socket:
+    name: judy-docker-socket
+    external: true

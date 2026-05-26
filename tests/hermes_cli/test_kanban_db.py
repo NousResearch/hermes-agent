@@ -264,21 +264,25 @@ def test_board_stats_includes_total_counts(kanban_home):
         kb.create_task(conn, title="todo", assignee="carol", parents=[parent])
         done = kb.create_task(conn, title="done", assignee="dora")
         archived = kb.create_task(conn, title="archived", assignee="erin")
+        scheduled = kb.create_task(conn, title="scheduled", assignee="fran")
 
         kb.complete_task(conn, done)
         kb.archive_task(conn, archived)
+        assert kb.schedule_task(conn, scheduled, reason="later") is True
 
         stats = kb.board_stats(conn)
 
-    assert stats["total"] == 4
-    assert stats["open_total"] == 3
+    assert stats["total"] == 5
+    assert stats["open_total"] == 4
     assert stats["done_total"] == 1
     assert stats["archived_total"] == 1
-    assert stats["by_status"] == {"ready": 2, "todo": 1, "done": 1}
+    assert stats["scheduled_total"] == 1
+    assert stats["by_status"] == {"ready": 2, "todo": 1, "done": 1, "scheduled": 1}
     assert stats["by_assignee"]["alice"]["ready"] == 1
     assert stats["by_assignee"]["bob"]["ready"] == 1
     assert stats["by_assignee"]["carol"]["todo"] == 1
     assert stats["by_assignee"]["dora"]["done"] == 1
+    assert stats["by_assignee"]["fran"]["scheduled"] == 1
     assert "erin" not in stats["by_assignee"]
 
 

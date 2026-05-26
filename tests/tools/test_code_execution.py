@@ -469,7 +469,7 @@ class TestStubSchemaDrift(unittest.TestCase):
         # Import the registry and trigger tool registration
         from tools.registry import registry
         import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
-        import tools.web_tools  # noqa: F401 - registers web_search, web_extract
+        import tools.web_tools  # noqa: F401 - registers web_search, web_extract, web_crawl
 
         for tool_name, (func_name, sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)

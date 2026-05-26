@@ -1559,3 +1559,51 @@ registry.register(
     emoji="📄",
     max_result_size_chars=100_000,
 )
+
+WEB_CRAWL_SCHEMA = {
+    "name": "web_crawl",
+    "description": (
+        "Crawl a website starting from a seed URL with optional natural-language "
+        "instructions for what content to extract from each crawled page. "
+        "Returns one entry per crawled page with url, title, and content "
+        "(markdown). Requires a crawl-capable backend (Firecrawl or Tavily). "
+        "Use this for multi-page traversal of a single site "
+        "(catalog/docs/blog); for single-URL extraction use web_extract."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": (
+                    "Seed URL to crawl from. The crawler will follow "
+                    "links from this page."
+                ),
+            },
+            "instructions": {
+                "type": "string",
+                "description": (
+                    "Natural-language description of what to extract "
+                    "from each crawled page (e.g. 'list all product "
+                    "pages with name and price')."
+                ),
+            },
+        },
+        "required": ["url"],
+    },
+}
+
+registry.register(
+    name="web_crawl",
+    toolset="web",
+    schema=WEB_CRAWL_SCHEMA,
+    handler=lambda args, **kw: web_crawl_tool(
+        args.get("url", ""),
+        instructions=args.get("instructions"),
+    ),
+    check_fn=check_web_api_key,
+    requires_env=_web_requires_env(),
+    is_async=True,
+    emoji="🕸️",
+    max_result_size_chars=100_000,
+)

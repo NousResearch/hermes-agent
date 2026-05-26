@@ -3335,6 +3335,24 @@ class HermesCLI:
             return "class:status-bar-warn"
         return "class:status-bar-dim"
 
+    @staticmethod
+    def _reasoning_effort_label(reasoning_config: Optional[Dict[str, Any]]) -> str:
+        """Return the compact reasoning/thinking effort label for status bars."""
+        if isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                return "none"
+            effort = str(reasoning_config.get("effort") or "").strip().lower()
+            return effort or "medium"
+        # ``None`` means the provider/transport default, which Hermes documents
+        # and reports as medium for /reasoning.
+        return "medium"
+
+    @staticmethod
+    def _status_bar_model_label(model_short: str, reasoning_effort: str) -> str:
+        """Combine model + effort so the active thinking level sits beside the model."""
+        effort = (reasoning_effort or "").strip()
+        return f"{model_short}/{effort}" if effort else model_short
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -3391,10 +3409,15 @@ class HermesCLI:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        reasoning_config = getattr(agent, "reasoning_config", getattr(self, "reasoning_config", None))
+        reasoning_effort = self._reasoning_effort_label(reasoning_config)
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "reasoning_effort": reasoning_effort,
+            "model_status": self._status_bar_model_label(model_short, reasoning_effort),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -3677,12 +3700,12 @@ class HermesCLI:
 
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {snapshot['model_status']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot['model_status']}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3702,7 +3725,7 @@ class HermesCLI:
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {snapshot['model_status']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3741,7 +3764,7 @@ class HermesCLI:
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-strong", snapshot["model_status"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
@@ -3757,7 +3780,7 @@ class HermesCLI:
                     bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", snapshot["model_status"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
@@ -3788,7 +3811,7 @@ class HermesCLI:
                     bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", snapshot["model_status"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),

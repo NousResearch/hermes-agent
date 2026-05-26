@@ -9,6 +9,7 @@ from cli import HermesCLI
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
+    cli_obj.reasoning_config = None
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
@@ -36,6 +37,7 @@ def _attach_agent(
         model=cli_obj.model,
         provider=provider if provider is not None else ("anthropic" if cli_obj.model.startswith("anthropic/") else None),
         base_url=base_url,
+        reasoning_config=cli_obj.reasoning_config,
         session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
         session_cache_read_tokens=cache_read_tokens,
@@ -78,10 +80,69 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=120)
 
         assert "claude-sonnet-4-20250514" in text
+        assert "claude-sonnet-4-20250514/medium" in text
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_build_status_bar_text_includes_reasoning_effort_next_to_model(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        cli_obj = _attach_agent(
+            cli_obj,
+            provider="openai-codex",
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.5/xhigh" in text
+
+    def test_build_status_bar_text_shows_reasoning_disabled(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.reasoning_config = {"enabled": False}
+        cli_obj = _attach_agent(
+            cli_obj,
+            provider="openai-codex",
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.5/none" in text
+
+    def test_wide_fragments_include_reasoning_effort_next_to_model(self):
+        cli_obj = _make_cli(model="gpt-5.5")
+        cli_obj.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        cli_obj = _attach_agent(
+            cli_obj,
+            provider="openai-codex",
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=160)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+
+        assert ("class:status-bar-strong", "gpt-5.5/xhigh") in frags
 
     def test_build_status_bar_text_includes_native_codex_quota_when_available(self):
         cli_obj = _attach_agent(
@@ -352,7 +413,10 @@ class TestCLIStatusBar:
         )
         cli_obj._status_bar_visible = True
 
-        frags = cli_obj._get_status_bar_fragments()
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=160)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
         frag_texts = [text for _, text in frags]
 
         assert "🗜️ 7" in frag_texts

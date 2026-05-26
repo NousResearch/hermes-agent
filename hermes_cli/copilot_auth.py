@@ -64,11 +64,20 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
-def resolve_copilot_token() -> tuple[str, str]:
+def resolve_copilot_token(
+    *,
+    warn_invalid: bool = True,
+    include_gh_cli: bool = True,
+) -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use.
 
     Returns (token, source) where source describes where the token came from.
-    Raises ValueError if only a classic PAT is available.
+    Raises ValueError if only a classic PAT is available from ``gh auth token``.
+
+    ``warn_invalid=False`` is for provider-discovery/status probes: generic
+    ``GH_TOKEN`` / ``GITHUB_TOKEN`` often hold classic PATs for normal GitHub
+    workflows. Those tokens are valid for GitHub but not for Copilot, so probes
+    should not emit noisy warnings unless the user explicitly selects Copilot.
     """
     # 1. Check env vars in priority order
     for env_var in COPILOT_ENV_VARS:
@@ -76,13 +85,14 @@ def resolve_copilot_token() -> tuple[str, str]:
         if val:
             valid, msg = validate_copilot_token(val)
             if not valid:
-                logger.warning(
-                    "Token from %s is not supported: %s", env_var, msg
-                )
+                log = logger.warning if warn_invalid else logger.debug
+                log("Token from %s is not supported: %s", env_var, msg)
                 continue
             return val, env_var
 
     # 2. Fall back to gh auth token
+    if not include_gh_cli:
+        return "", ""
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)

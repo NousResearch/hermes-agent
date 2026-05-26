@@ -1,0 +1,80 @@
+# cli-config.saas.yaml — config baked into Hermes saas/cloud image.
+#
+# Differences vs cli-config.yaml.example:
+#   - model.provider: bedrock (NOT openrouter or auto-detect) — for data
+#     sovereignty, privacy, and cost control. Bedrock auth via task IAM role
+#     (boto3 picks up AWS_CONTAINER_CREDENTIALS_RELATIVE_URI on Fargate).
+#   - kanban.dispatch_in_gateway: false — cloud OOM-risk fix (per Plan 002 / 005-A:
+#     per-worker MCP fan-out exceeds Fargate's 8GB ceiling).
+#   - No base_url for model — Bedrock adapter resolves via AWS_REGION env.
+#   - Minimal: just what the cloud gateway needs. Plan 009 owns this file.
+
+model:
+  default: us.anthropic.claude-sonnet-4-6
+  provider: bedrock
+
+# No providers / fallback_providers / credential_pool_strategies needed for
+# the Bedrock direct path — boto3 handles credential resolution natively.
+providers: {}
+fallback_providers: []
+credential_pool_strategies: {}
+
+# Single platform: Slack. Other platforms (telegram, discord, whatsapp, signal)
+# are intentionally not configured in cloud — they ship with local-only auth
+# in the upstream OSS Hermes and would need their own secret wiring to enable
+# in cloud. Plan 009 followup if multi-platform-in-cloud is ever needed.
+toolsets:
+- hermes-cli
+
+agent:
+  max_turns: 60
+  gateway_timeout: 1800
+  restart_drain_timeout: 180
+  api_max_retries: 3
+  service_tier: ''
+  tool_use_enforcement: auto
+  gateway_timeout_warning: 900
+  clarify_timeout: 600
+  gateway_notify_interval: 180
+  gateway_auto_continue_freshness: 3600
+  image_input_mode: auto
+  disabled_toolsets: []
+  verbose: false
+  reasoning_effort: medium
+
+# Disable kanban dispatcher in cloud (OOM-risk per Plan 002 / 005-A notes —
+# per-worker MCP fan-out spawns N×7 processes). Cloud Hermes is Slack-only.
+# Re-enable via env var override OR mounted config when MCP-pool work lands
+# (Plan 002-C / Plan 008).
+kanban:
+  dispatch_in_gateway: false
+  max_spawn: 3
+  max_in_progress: 3
+  dispatch_stale_timeout_seconds: 1800
+
+# Bedrock-direct config. region: '' means use AWS_REGION env var.
+bedrock:
+  region: ''
+  discovery:
+    enabled: false  # Skip ListFoundationModels API call on startup (don't need IAM perm)
+  guardrail:
+    guardrail_identifier: ''
+    guardrail_version: ''
+    trace: ''
+
+# Logging — INFO so the stderr handler (attached via -v flag in entrypoint)
+# emits all the lines we want in CloudWatch.
+logging:
+  level: INFO
+  max_size_mb: 5
+  backup_count: 3
+
+# Secret redaction stays on by default (Plan 007-D depends on it).
+security:
+  redact_secrets: true
+
+# Sessions — auto_prune off in cloud (we want full conversation history in
+# Neon per Plan 007-C).
+sessions:
+  auto_prune: false
+  retention_days: 90

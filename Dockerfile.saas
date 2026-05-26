@@ -149,6 +149,18 @@ RUN mkdir -p /tmp/hermes-runtime && chown hermes:hermes /tmp/hermes-runtime
 
 USER hermes
 
+# Plan 009-E: bake permanent runtime fixes from the 2026-05-26 audit.
+# PYTHONUNBUFFERED=1: Python stdout/stderr line-buffered (Docker pipes are
+# block-buffered by default in Python; without this, INFO logs sit in a
+# buffer that never flushes in cloud Hermes).
+ENV PYTHONUNBUFFERED=1
+
+# Plan 009: cli-config.saas.yaml — cloud-canonical Bedrock-direct config
+# (no Portkey, no Rooben). entrypoint.saas.sh copies this to HERMES_HOME on
+# container start. Edit cli-config.saas.yaml at the repo root to change the
+# cloud's effective configuration; rebuild + push to deploy.
+COPY --chown=hermes:hermes cli-config.saas.yaml /app/cli-config.saas.yaml
+
 # Entrypoint: starts the health HTTP server then runs the Slack gateway.
 # docker/entrypoint.saas.sh handles HERMES_HOME bootstrap (no EFS write paths).
 COPY --chown=hermes:hermes docker/entrypoint.saas.sh /app/docker/entrypoint.saas.sh

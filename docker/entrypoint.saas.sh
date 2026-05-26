@@ -29,9 +29,17 @@ if [ ! -f "${HERMES_HOME}/.env" ] && [ -f "${INSTALL_DIR}/.env.example" ]; then
     cp "${INSTALL_DIR}/.env.example" "${HERMES_HOME}/.env"
 fi
 
-# Seed config.yaml from example if absent.
-if [ ! -f "${HERMES_HOME}/config.yaml" ] && [ -f "${INSTALL_DIR}/cli-config.yaml.example" ]; then
-    cp "${INSTALL_DIR}/cli-config.yaml.example" "${HERMES_HOME}/config.yaml"
+# Seed config.yaml from the saas-mode config (Plan 009: cli-config.saas.yaml
+# is the cloud-canonical Bedrock-direct config). Falls back to the upstream
+# cli-config.yaml.example for backward compatibility.
+if [ ! -f "${HERMES_HOME}/config.yaml" ]; then
+    if [ -f "${INSTALL_DIR}/cli-config.saas.yaml" ]; then
+        cp "${INSTALL_DIR}/cli-config.saas.yaml" "${HERMES_HOME}/config.yaml"
+        echo "[saas-entrypoint] Seeded config.yaml from cli-config.saas.yaml (Bedrock direct)"
+    elif [ -f "${INSTALL_DIR}/cli-config.yaml.example" ]; then
+        cp "${INSTALL_DIR}/cli-config.yaml.example" "${HERMES_HOME}/config.yaml"
+        echo "[saas-entrypoint] WARNING: saas config absent, fell back to cli-config.yaml.example"
+    fi
 fi
 
 # Start the health probe HTTP server in the background.
@@ -54,5 +62,10 @@ echo "[saas-entrypoint] Health server running (pid ${HEALTH_PID})"
 
 # Exec the gateway. This replaces the current shell so signals (SIGTERM from
 # ECS task stop) are delivered directly to the hermes process.
-echo "[saas-entrypoint] Starting: hermes $*"
-exec hermes "$@"
+#
+# Plan 009-E: ALWAYS pass -v so the stderr log handler is attached
+# (gateway/run.py:17970 only installs it when CLI verbosity is set). Without
+# this, all INFO logs go into the void in saas mode — caused the 5-day silent
+# zombie bug discovered 2026-05-26.
+echo "[saas-entrypoint] Starting: hermes $* -v"
+exec hermes "$@" -v

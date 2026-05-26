@@ -127,6 +127,39 @@ def _ra():
     return run_agent
 
 
+def _provider_backoff_params(
+    provider: str,
+    default_base: float = 5.0,
+    default_max: float = 120.0,
+) -> tuple[float, float]:
+    """Return (base_delay, max_delay) for jittered_backoff, using the
+    provider profile's overrides when available.  Falls back to the
+    caller-supplied defaults so each call site preserves its original
+    upstream values for providers without a profile."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        if profile is not None:
+            base = profile.backoff_base_delay if profile.backoff_base_delay is not None else default_base
+            cap = profile.backoff_max_delay if profile.backoff_max_delay is not None else default_max
+            return base, cap
+    except Exception:
+        pass
+    return default_base, default_max
+
+
+def _provider_min_request_interval(provider: str) -> float:
+    """Return the minimum seconds between requests for this provider."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        if profile is not None:
+            return profile.min_request_interval
+    except Exception:
+        pass
+    return 0.0
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -1080,6 +1113,20 @@ def run_conversation(
                     pass  # Never let rate guard break the agent loop
 
             try:
+                # ── Per-provider pre-request throttle ─────────────
+                _min_interval = _provider_min_request_interval(
+                    getattr(agent, "provider", "") or ""
+                )
+                if _min_interval > 0 and hasattr(agent, "_last_api_request_time"):
+                    _elapsed = time.time() - agent._last_api_request_time
+                    if _elapsed < _min_interval:
+                        _throttle_wait = _min_interval - _elapsed
+                        agent._vprint(
+                            f"{agent.log_prefix}⏳ Provider throttle: waiting {_throttle_wait:.1f}s",
+                        )
+                        time.sleep(_throttle_wait)
+                agent._last_api_request_time = time.time()
+
                 agent._reset_stream_delivery_tracking()
                 api_kwargs = agent._build_api_kwargs(api_messages)
                 if agent._force_ascii_payload:
@@ -1376,8 +1423,11 @@ def run_conversation(
                             "failed": True  # Mark as failure for filtering
                         }
                     
-                    # Backoff before retry — jittered exponential: 5s base, 120s cap
-                    wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                    # Backoff before retry — jittered exponential, per-provider tunable
+                    _bp_base, _bp_cap = _provider_backoff_params(
+                        getattr(agent, "provider", "") or ""
+                    )
+                    wait_time = jittered_backoff(retry_count, base_delay=_bp_base, max_delay=_bp_cap)
                     agent._vprint(f"{agent.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                     logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                     
@@ -3034,7 +3084,11 @@ def run_conversation(
                                 _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
                             except (TypeError, ValueError):
                                 pass
-                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                _eb_base, _eb_cap = _provider_backoff_params(
+                    getattr(agent, "provider", "") or "",
+                    default_base=2.0, default_max=60.0,
+                )
+                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=_eb_base, max_delay=_eb_cap)
                 if is_rate_limited:
                     agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                 else:

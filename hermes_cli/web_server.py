@@ -4688,6 +4688,10 @@ def _mount_plugin_api_routes():
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 
+# Inbox API routes (Stage E.1)
+from hermes_cli.inbox_routes import router as inbox_router
+app.include_router(inbox_router, prefix="/api/inbox")
+
 mount_spa(app)
 
 

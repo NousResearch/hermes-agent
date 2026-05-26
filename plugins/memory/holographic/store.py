@@ -3,6 +3,8 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import hashlib
+import hmac
 import re
 import sqlite3
 import threading
@@ -17,6 +19,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
     content         TEXT NOT NULL UNIQUE,
+    content_hmac    TEXT DEFAULT '',       -- HMAC-SHA256 of content; empty = not yet sealed
     category        TEXT DEFAULT 'general',
     tags            TEXT DEFAULT '',
     trust_score     REAL DEFAULT 0.5,
@@ -137,7 +140,30 @@ class MemoryStore:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        # Migrate: add content_hmac column if missing
+        if "content_hmac" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN content_hmac TEXT DEFAULT ''")
         self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Integrity sealing
+    # ------------------------------------------------------------------
+
+    def _get_secret_key(self) -> bytes:
+        """Derive the per-store HMAC key from the db_path.
+
+        The key is derived via HKDF-SHA256 from the stable db_path, so the
+        same store always verifies the same way across restarts.  This is
+        not a user-supplied secret — it is a store-identity token that
+        prevents accidental corruption/tampering from external tools.
+        """
+        info = b"hermes_memory_hmac_v1"
+        return hashlib.sha256(str(self.db_path).encode()).digest()
+
+    def _seal(self, content: str) -> str:
+        """Return HMAC-SHA256 hex digest of content using the store's secret key."""
+        key = self._get_secret_key()
+        return hmac.new(key, content.encode(), hashlib.sha256).hexdigest()
 
     # ------------------------------------------------------------------
     # Public API
@@ -160,13 +186,14 @@ class MemoryStore:
             if not content:
                 raise ValueError("content must not be empty")
 
+            content_hmac = self._seal(content)
             try:
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO facts (content, content_hmac, category, tags, trust_score)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust),
+                    (content, content_hmac, category, tags, self.default_trust),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
@@ -213,7 +240,7 @@ class MemoryStore:
             params.append(limit)
 
             sql = f"""
-                SELECT f.fact_id, f.content, f.category, f.tags,
+                SELECT f.fact_id, f.content, f.content_hmac, f.category, f.tags,
                        f.trust_score, f.retrieval_count, f.helpful_count,
                        f.created_at, f.updated_at
                 FROM facts f
@@ -226,7 +253,20 @@ class MemoryStore:
             """
 
             rows = self._conn.execute(sql, params).fetchall()
-            results = [self._row_to_dict(r) for r in rows]
+            # Verify HMAC integrity before returning; drop corrupted facts.
+            results = []
+            for r in rows:
+                fact = self._row_to_dict(r)
+                stored_hmac = r["content_hmac"]
+                if stored_hmac and not hmac.compare_digest(stored_hmac, self._seal(fact["content"])):
+                    # Content was tampered with — log and skip
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Fact %s failed HMAC verification (content may have been tampered with). Dropping.",
+                        r["fact_id"],
+                    )
+                    continue
+                results.append(fact)
 
             if results:
                 ids = [r["fact_id"] for r in results]

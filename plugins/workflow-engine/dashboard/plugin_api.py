@@ -332,6 +332,37 @@ async def approve_run(run_id: str, request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Cancel — POST /runs/{run_id}/cancel
+# ---------------------------------------------------------------------------
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str) -> JSONResponse:
+    """
+    Cancel a non-terminal workflow run.
+
+    Returns 200 on success, 404 if run not found, 409 if already terminal
+    (completed/failed/cancelled).
+
+    Note: cross-session ownership is NOT enforced — hermes-switchui is a
+    single-user dev tool. Any caller with gateway auth may cancel any run.
+    """
+    run = await _engine.get_run(run_id)
+    if run is None:
+        return _json({"error": "workflow_run not found"}, 404)
+
+    if run.get("status") in ("completed", "failed", "cancelled"):
+        return _json({"error": f"run already terminal: {run.get('status')}"}, 409)
+
+    try:
+        await _engine.cancel_run(run_id)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 404)
+
+    return _json({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Events — GET /events  (SSE)
 # ---------------------------------------------------------------------------
 

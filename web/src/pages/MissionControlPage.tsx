@@ -403,6 +403,31 @@ function describeHistoryEvent(event: OpsSocialPlatformHistoryEvent): string {
   return parts.length ? parts.join(" · ") : `${event.platform_count || 0} platform rows`;
 }
 
+function buildSocialStatusSummary(platforms: OpsSocialPlatformStatusItem[], history: OpsSocialPlatformHistory | null): string {
+  const lines = [
+    "Social platform status — local manual snapshot",
+    "Boundary: local status only; no platform API calls, token work, posting, scheduling, deletion, or privacy changes.",
+    "",
+    "Current rows:",
+  ];
+  for (const item of platforms) {
+    const checked = getSocialStaleness(item);
+    lines.push(
+      `- ${item.platform}: ${normalizeSocialStatusLabel(item.status)} | published ${item.published} | scheduled ${item.scheduled} | ${checked.label} | issues/private: ${item.issues_private}`,
+    );
+  }
+  const events = history?.events || [];
+  lines.push("", "Recent manual saves:");
+  if (events.length) {
+    for (const event of events.slice(0, 3)) {
+      lines.push(`- ${formatHistoryTime(event.timestamp)} | ${event.source || "manual-dashboard-snapshot"} | ${describeHistoryEvent(event)}`);
+    }
+  } else {
+    lines.push("- No local history records yet.");
+  }
+  return lines.join("\n");
+}
+
 function getJobTitle(job: CronJob): string {
   return (job.name || job.prompt || job.script || job.id || "Cron job").slice(0, 80);
 }
@@ -996,6 +1021,38 @@ function ManualSocialSnapshotForm({ platforms, onSaved }: { platforms: OpsSocial
   );
 }
 
+function SocialSnapshotSummaryCopy({ platforms, history }: { platforms: OpsSocialPlatformStatusItem[]; history: OpsSocialPlatformHistory | null }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const summary = useMemo(() => buildSocialStatusSummary(platforms, history), [platforms, history]);
+
+  const copySummary = async () => {
+    try {
+      await navigator.clipboard.writeText(summary);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
+
+  return (
+    <div className={cockpitPanel}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="font-semibold text-text-primary">Copy local status summary</div>
+          <div className="mt-1 text-sm leading-6 text-text-secondary">
+            Copies a Discord/WhatsApp-ready text summary from local snapshot + local history only. It does not call platform APIs.
+          </div>
+        </div>
+        <Button onClick={copySummary} className="gap-2">
+          <Clipboard className="h-4 w-4" />
+          {copyState === "copied" ? "Copied summary" : copyState === "failed" ? "Copy failed" : "Copy summary"}
+        </Button>
+      </div>
+      <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/30 p-3 text-xs leading-5 text-text-secondary">{summary}</pre>
+    </div>
+  );
+}
+
 function SocialSnapshotHistoryPanel({ history }: { history: OpsSocialPlatformHistory | null }) {
   const events = history?.events || [];
   return (
@@ -1401,6 +1458,7 @@ export default function MissionControlPage() {
                 <H2 className="text-xl">Manual status snapshot</H2>
               </div>
               <ManualSocialSnapshotForm key={socialStatus?.updated_at || "default-social-status"} platforms={socialPlatforms} onSaved={handleSocialSnapshotSaved} />
+              <SocialSnapshotSummaryCopy platforms={socialPlatforms} history={socialHistory} />
               <SocialSnapshotHistoryPanel history={socialHistory} />
               <div className={cockpitPanel}>
                 <div className="font-semibold text-text-primary">Gate line</div>

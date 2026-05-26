@@ -20,6 +20,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _embedded_profile_env_matches,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -272,6 +273,18 @@ class TestConfig:
         })
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    def test_embedded_profile_env_match_treats_missing_zero_idle_timeout_as_default(self):
+        saved = {
+            "HINDSIGHT_API_LLM_PROVIDER": "groq",
+            "HINDSIGHT_API_LLM_API_KEY": "key",
+            "HINDSIGHT_API_LLM_MODEL": "openai/gpt-oss-120b",
+            "HINDSIGHT_API_LOG_LEVEL": "info",
+        }
+        expected = dict(saved)
+        expected["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = "0"
+
+        assert _embedded_profile_env_matches(saved, expected) is True
 
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}

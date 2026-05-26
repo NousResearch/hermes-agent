@@ -35,9 +35,12 @@ import json
 import logging
 import os
 import queue
+import signal
 import threading
+import time
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
@@ -455,6 +458,88 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
         encoding="utf-8",
     )
     return profile_env
+
+
+def _embedded_profile_env_matches(saved: dict[str, str], expected: dict[str, str]) -> bool:
+    normalized = dict(saved)
+    if (
+        "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT" not in normalized
+        and expected.get("HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT") == "0"
+    ):
+        normalized["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = "0"
+    return normalized == expected
+
+
+def _proc_ppid(pid: int) -> int | None:
+    try:
+        for line in (Path("/proc") / str(pid) / "status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("PPid:"):
+                return int(line.split()[1])
+    except Exception:
+        return None
+    return None
+
+
+def _hindsight_child_pids(port: int, *, exclude_pid: int | None = None) -> list[int]:
+    parent_pid = os.getpid()
+    pids: list[int] = []
+    proc = Path("/proc")
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == exclude_pid or _proc_ppid(pid) != parent_pid:
+            continue
+        try:
+            parts = [part.decode(errors="ignore") for part in (entry / "cmdline").read_bytes().split(b"\0") if part]
+        except Exception:
+            continue
+        if not any(part.endswith("hindsight-api") for part in parts):
+            continue
+        if "--port" in parts:
+            idx = parts.index("--port")
+            if idx + 1 < len(parts) and parts[idx + 1] == str(port):
+                pids.append(pid)
+    return pids
+
+
+def _wait_child_exit(pid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            waited, _ = os.waitpid(pid, os.WNOHANG)
+            if waited == pid:
+                return True
+        except ChildProcessError:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return True
+        except OSError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _terminate_hindsight_children(port: int, *, exclude_pid: int | None = None, timeout: float = 10.0) -> list[int]:
+    pids = _hindsight_child_pids(port, exclude_pid=exclude_pid)
+    if not pids:
+        return []
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    remaining = [pid for pid in pids if not _wait_child_exit(pid, timeout)]
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    for pid in remaining:
+        try:
+            os.kill(pid, sigkill)
+        except OSError:
+            pass
+    for pid in remaining:
+        _wait_child_exit(pid, 2.0)
+    return pids
 
 def _sanitize_bank_segment(value: str) -> str:
     """Sanitize a bank_id_template placeholder value.
@@ -1236,7 +1321,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    config_changed = not _embedded_profile_env_matches(saved, expected_env)
 
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)
@@ -1244,9 +1329,21 @@ class HindsightMemoryProvider(MemoryProvider):
                             with open(log_path, "a", encoding="utf-8") as f:
                                 f.write("\n=== Config changed, restarting daemon ===\n")
                             client._manager.stop(profile)
+                            stopped = _terminate_hindsight_children(client._manager._profile_manager.resolve_profile_paths(profile).port)
+                            if stopped:
+                                with open(log_path, "a", encoding="utf-8") as f:
+                                    f.write(f"Cleaned stale hindsight-api children: {stopped}\n")
 
                     client._ensure_started()
+                    _materialize_embedded_profile_env(self._config)
+                    active_pid = client._manager._find_pid_on_port(client._manager._profile_manager.resolve_profile_paths(profile).port)
+                    stopped = _terminate_hindsight_children(
+                        client._manager._profile_manager.resolve_profile_paths(profile).port,
+                        exclude_pid=active_pid,
+                    )
                     with open(log_path, "a", encoding="utf-8") as f:
+                        if stopped:
+                            f.write(f"Cleaned stale hindsight-api children: {stopped}\n")
                         f.write("\n=== Daemon started successfully ===\n")
                 except Exception as e:
                     with open(log_path, "a", encoding="utf-8") as f:

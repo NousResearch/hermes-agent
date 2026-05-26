@@ -26,7 +26,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, List, Optional, Tuple
 
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -315,8 +315,26 @@ class CDPSupervisor:
 
         # Dialog auto-dismiss watchdog handles (per dialog id).
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
+        # Background tasks created via _track_task().  Cancelled on stop()
+        # so that fire-and-forget dialog handlers don't outlive the supervisor.
+        self._tracked_tasks: List[asyncio.Task] = []
         # Monotonic id generator for dialogs (human-readable in snapshots).
         self._dialog_seq = 0
+
+    # ── Internal task management ───────────────────────────────────────────────
+
+    def _track_task(self, coro):  # type: (Awaitable) -> asyncio.Task
+        """Create and register a background task that will be cancelled on stop().
+
+        All fire-and-forget asyncio.create_task() calls must go through here
+        so that stop() can cancel outstanding work when the supervisor shuts
+        down. Without tracking, a slow _auto_handle_dialog that runs just
+        before stop() would outlive the supervisor's WebSocket/CDP session.
+        """
+        task = asyncio.create_task(coro)  # type: ignore[arg-type]
+        self._tracked_tasks.append(task)
+        task.add_done_callback(self._tracked_tasks.remove)
+        return task
 
     # ── Public sync API ──────────────────────────────────────────────────────
 
@@ -353,6 +371,11 @@ class CDPSupervisor:
     def stop(self, timeout: float = 5.0) -> None:
         """Cancel the supervisor task and join the thread."""
         self._stop_requested = True
+        # Cancel all outstanding fire-and-forget background tasks (dialog
+        # handlers, domain-enabling tasks) so they don't outlive the session.
+        for task in self._tracked_tasks:
+            task.cancel()
+        self._tracked_tasks.clear()
         loop = self._loop
         if loop is not None and loop.is_running():
             # Close the WebSocket from inside the loop — this makes ``async for
@@ -862,13 +885,13 @@ class CDPSupervisor:
             # re-archive it as "remote".
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            self._track_task(
                 self._auto_handle_dialog(dialog, accept=False, prompt_text="")
             )
         elif self.dialog_policy == DIALOG_POLICY_AUTO_ACCEPT:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            self._track_task(
                 self._auto_handle_dialog(
                     dialog, accept=True, prompt_text=dialog.default_prompt
                 )
@@ -880,7 +903,7 @@ class CDPSupervisor:
             loop = asyncio.get_running_loop()
             handle = loop.call_later(
                 self.dialog_timeout_s,
-                lambda: asyncio.create_task(self._dialog_timeout_expired(dialog.id)),
+                lambda: self._track_task(self._dialog_timeout_expired(dialog.id)),
             )
             self._dialog_watchdogs[dialog.id] = handle
 
@@ -1082,13 +1105,13 @@ class CDPSupervisor:
         if self.dialog_policy == DIALOG_POLICY_AUTO_DISMISS:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            self._track_task(
                 self._fulfill_bridge_request(dialog, accept=False, prompt_text="")
             )
         elif self.dialog_policy == DIALOG_POLICY_AUTO_ACCEPT:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
-            asyncio.create_task(
+            self._track_task(
                 self._fulfill_bridge_request(
                     dialog, accept=True, prompt_text=default_prompt
                 )
@@ -1100,7 +1123,7 @@ class CDPSupervisor:
             loop = asyncio.get_running_loop()
             handle = loop.call_later(
                 self.dialog_timeout_s,
-                lambda: asyncio.create_task(self._dialog_timeout_expired(dialog.id)),
+                lambda: self._track_task(self._dialog_timeout_expired(dialog.id)),
             )
             self._dialog_watchdogs[dialog.id] = handle
 
@@ -1236,7 +1259,7 @@ class CDPSupervisor:
         # Enable domains on the child off-loop so the reader keeps pumping.
         # Awaiting the CDP replies here would deadlock because only the
         # reader can resolve those replies' Futures.
-        asyncio.create_task(self._enable_child_domains(sid))
+        self._track_task(self._enable_child_domains(sid))
 
     async def _enable_child_domains(self, sid: str) -> None:
         """Enable Page+Runtime (+nested setAutoAttach) on a child CDP session.

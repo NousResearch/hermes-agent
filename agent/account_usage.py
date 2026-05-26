@@ -436,20 +436,53 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return normalized + "/api/codex/usage"
 
 
-def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
-    creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+def _resolve_codex_usage_credentials(
+    base_url: Optional[str],
+    api_key: Optional[str],
+) -> tuple[str, str, Optional[str]]:
+    """Resolve Codex quota credentials from the native runtime path.
+
+    Prefer explicit live-agent credentials, then the legacy singleton OAuth
+    state, then the credential pool.  Hermes's native OAuth setup now stores
+    device-code logins in the pool, so quota diagnostics must not depend only
+    on the older singleton store.
+    """
+    explicit_key = str(api_key or "").strip()
+    if explicit_key:
+        return explicit_key, str(base_url or "").strip(), None
+
+    try:
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        token_data = _read_codex_tokens()
+        tokens = token_data.get("tokens") or {}
+        account_id = str(tokens.get("account_id", "") or "").strip() or None
+        return creds["api_key"], str(creds.get("base_url", "") or "").strip(), account_id
+    except Exception:
+        pass
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    if entry is None:
+        raise RuntimeError("No available openai-codex credential in credential pool")
+    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+
+
+def _fetch_codex_account_usage(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     headers = {
-        "Authorization": f"Bearer {creds['api_key']}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "User-Agent": "codex-cli",
     }
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
     with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
+        response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
@@ -628,7 +661,7 @@ def fetch_account_usage(
         return None
     try:
         if normalized == "openai-codex":
-            return _fetch_codex_account_usage()
+            return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":

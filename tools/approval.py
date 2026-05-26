@@ -21,6 +21,15 @@ from hermes_cli.config import cfg_get
 
 from utils import env_var_enabled, is_truthy_value
 
+# Delayed i18n import — agent.i18n may not be available at module load time
+# in all contexts (tests, bootstrap), so we import on first use.
+_i18n_t = None
+def _t(key: str, **kwargs) -> str:
+    global _i18n_t
+    if _i18n_t is None:
+        from agent.i18n import t as _i18n_t
+    return _i18n_t(key, **kwargs)
+
 logger = logging.getLogger(__name__)
 
 # Freeze YOLO mode at module import time. Reading os.environ on every call
@@ -1104,13 +1113,7 @@ def check_all_command_guards(command: str, env_type: str,
                 if is_dangerous:
                     return {
                         "approved": False,
-                        "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
-                            "but cron jobs run without a user present to approve it. "
-                            "Find an alternative approach that avoids this command. "
-                            "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
-                        ),
+                        "message": _t("approval.blocked_cron", desc=description),
                     }
         return {"approved": True, "message": None}
 
@@ -1175,8 +1178,7 @@ def check_all_command_guards(command: str, env_type: str,
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
             return {
                 "approved": False,
-                "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
+                "message": _t("approval.blocked_smart", desc=combined_desc_for_llm),
                 "smart_denied": True,
             }
         # verdict == "escalate" → fall through to manual prompt
@@ -1238,7 +1240,7 @@ def check_all_command_guards(command: str, env_type: str,
                         _gateway_queues.pop(session_key, None)
                 return {
                     "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "message": _t("approval.blocked_send_failed"),
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }

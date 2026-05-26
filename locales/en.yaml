@@ -24,10 +24,17 @@ approval:
   denied:          "      ✗ Denied"
   cancelled:       "      ✗ Cancelled"
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
+  # Gateway text-fallback approval prompt — shown on platforms without button UI
+  blocked_smart: "⚠️ BLOCKED by smart approval: {desc}. The command was assessed as genuinely dangerous. Do NOT retry."
+  blocked_cron: "⚠️ BLOCKED: Command flagged as dangerous ({desc}) but cron jobs run without a user present to approve it. Find an alternative approach that avoids this command. To allow dangerous commands in cron jobs, set approvals.cron_mode: approve in config.yaml."
+  blocked_send_failed: "⚠️ BLOCKED: Failed to send approval request to user. Do NOT retry."
+  command_denied: "⚠️ Command denied: {desc}. Use the approval prompt to allow it, or rephrase the command."
 
 gateway:
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
+  approval:
+    dangerous_prompt: "⚠️ **Dangerous command requires approval:**\n```\n{cmd}\n```\nReason: {desc}\n\nReply `/approve` to execute, `/approve session` to approve this pattern for the session, `/approve always` to approve permanently, or `/deny` to cancel."
   draining:         "⏳ Draining {count} active agent(s) before restart..."
   goal_cleared:     "✓ Goal cleared."
   no_active_goal:   "No active goal."

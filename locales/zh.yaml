@@ -14,9 +14,15 @@ approval:
   denied:          "      ✗ 已拒绝"
   cancelled:       "      ✗ 已取消"
   blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
+  blocked_smart: "⚠️ 智能审批已拦截：{desc}。该命令被评估为确实危险。请勿重试。"
+  blocked_cron: "⚠️ 被拦截：命令被标记为危险（{desc}），但定时任务在无人值守时运行，无法等待审批。请改用其他方式。如需允许定时任务执行危险命令，请在 config.yaml 中设置 approvals.cron_mode: approve。"
+  blocked_send_failed: "⚠️ 被拦截：无法发送审批请求给用户。请勿重试。"
+  command_denied: "⚠️ 命令被拒绝：{desc}。请使用审批提示允许它，或修改命令。"
 
 gateway:
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
+  approval:
+    dangerous_prompt: "⚠️ **危险命令需要审批：**\n```\n{cmd}\n```\n原因：{desc}\n\n回复 `/approve` 执行，`/approve session` 本次会话内允许，`/approve always` 永久允许，或 `/deny` 取消。"
   draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
   goal_cleared:     "✓ 目标已清除。"
   no_active_goal:   "当前没有活跃的目标。"

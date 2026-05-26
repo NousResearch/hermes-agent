@@ -69,8 +69,16 @@ from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — r
 
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
+
+# Lazy i18n — import on first use to avoid circular deps at module load
+_i18n_t = None
+def _t(key, **kwargs):
+    global _i18n_t
+    if _i18n_t is None:
+        from agent.i18n import t as _i18n_t
+    return _i18n_t(key, **kwargs)
+
 from tools.tool_backend_helpers import (
-    coerce_modal_mode,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
     resolve_modal_backend_state,
@@ -1876,10 +1884,7 @@ def terminal_tool(
                     }, ensure_ascii=False)
                 # Command was blocked
                 desc = approval.get("description", "command flagged")
-                fallback_msg = (
-                    f"Command denied: {desc}. "
-                    "Use the approval prompt to allow it, or rephrase the command."
-                )
+                fallback_msg = _t("approval.command_denied", desc=desc)
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,

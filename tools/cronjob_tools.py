@@ -22,8 +22,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
+    cancel_operator_directive,
     create_job,
+    create_operator_directive,
     get_job,
+    inspect_operator_directive,
+    list_directive_events,
     list_jobs,
     parse_schedule,
     pause_job,
@@ -439,6 +443,12 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    directive_text: Optional[str] = None,
+    expires_at: Optional[str] = None,
+    ttl_seconds: Optional[int] = None,
+    created_by: Optional[str] = None,
+    event_type: Optional[str] = None,
+    limit: Optional[int] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -528,6 +538,21 @@ def cronjob(
             jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
+        if normalized in {"directive_events", "events", "audit_directives"}:
+            events = list_directive_events(
+                job_id=job_id,
+                event_type=event_type,
+                limit=limit or 50,
+            )
+            return json.dumps(
+                {
+                    "success": True,
+                    "count": len(events),
+                    "events": events,
+                },
+                indent=2,
+            )
+
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
@@ -557,6 +582,26 @@ def cronjob(
             )
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
+
+        if normalized in {"directive_set", "set_directive"}:
+            if not directive_text:
+                return tool_error("directive_text is required for directive_set", success=False)
+            directive = create_operator_directive(
+                job_id,
+                directive_text,
+                created_by=created_by or "operator",
+                expires_at=expires_at,
+                ttl_seconds=ttl_seconds,
+            )
+            return json.dumps({"success": True, "directive": directive}, indent=2)
+
+        if normalized in {"directive_inspect", "inspect_directive"}:
+            state = inspect_operator_directive(job_id)
+            return json.dumps({"success": True, **state}, indent=2)
+
+        if normalized in {"directive_cancel", "cancel_directive"}:
+            directive = cancel_operator_directive(job_id)
+            return json.dumps({"success": True, "directive": directive}, indent=2)
 
         if normalized == "remove":
             removed = remove_job(job_id)
@@ -689,6 +734,7 @@ CRONJOB_SCHEMA = {
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
+Use action='directive_set', 'directive_inspect', 'directive_cancel', or 'directive_events' to manage one-time operator directives.
 
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
@@ -706,7 +752,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run"
+                "description": "One of: create, list, update, pause, resume, remove, run, directive_set, directive_inspect, directive_cancel, directive_events"
             },
             "job_id": {
                 "type": "string",
@@ -800,6 +846,30 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
             },
+            "directive_text": {
+                "type": "string",
+                "description": "For directive_set: one-time operator directive text for the next supervised run of this job. A valid pending directive is consumed before prompt finalization and injected before autonomous slice selection."
+            },
+            "expires_at": {
+                "type": "string",
+                "description": "For directive_set: optional ISO-8601 expiry timestamp. Must be in the future. If omitted, ttl_seconds is used."
+            },
+            "ttl_seconds": {
+                "type": "integer",
+                "description": "For directive_set: optional directive TTL in seconds. Defaults to 3600 when expires_at is omitted."
+            },
+            "created_by": {
+                "type": "string",
+                "description": "For directive_set: operator/session identifier recorded in the directive audit trail. Defaults to 'operator'."
+            },
+            "event_type": {
+                "type": "string",
+                "description": "For directive_events: optional event type filter such as created, consumed, expired, cancelled, invalid, mismatch, parse-failed, or consumed-but-runner-failed."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "For directive_events: maximum recent events to return. Defaults to 50."
+            },
         },
         "required": ["action"]
     }
@@ -856,6 +926,12 @@ registry.register(
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),
+        directive_text=args.get("directive_text"),
+        expires_at=args.get("expires_at"),
+        ttl_seconds=args.get("ttl_seconds"),
+        created_by=args.get("created_by"),
+        event_type=args.get("event_type"),
+        limit=args.get("limit"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

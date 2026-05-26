@@ -6,6 +6,7 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
 import copy
+from contextlib import contextmanager
 import json
 import logging
 import shutil
@@ -14,7 +15,7 @@ import threading
 import os
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
@@ -37,11 +38,14 @@ except ImportError:
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+DIRECTIVES_FILE = CRON_DIR / "directives.json"
+DIRECTIVE_EVENTS_FILE = CRON_DIR / "directive_events.jsonl"
 
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
 _jobs_file_lock = threading.Lock()
+_directives_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -50,6 +54,7 @@ ONESHOT_GRACE_SECONDS = 120
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+_DIRECTIVE_STATUSES = frozenset({"pending", "consumed", "expired", "cancelled", "invalid"})
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -179,6 +184,441 @@ def ensure_dirs():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     _secure_dir(CRON_DIR)
     _secure_dir(OUTPUT_DIR)
+
+
+class CronDirectiveError(RuntimeError):
+    """Fail-closed directive handoff error raised before a cron runner starts."""
+
+    def __init__(self, message: str, event_type: str = "invalid", directive: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.event_type = event_type
+        self.directive = directive or {}
+
+
+def _utcnow() -> datetime:
+    return _hermes_now().astimezone(timezone.utc)
+
+
+def _iso_now() -> str:
+    return _utcnow().isoformat()
+
+
+def _parse_directive_time(value: Any, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"directive field {field!r} must be an ISO timestamp")
+    parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+@contextmanager
+def _directive_store_lock():
+    """Cross-process lock for directive load/modify/save cycles."""
+    ensure_dirs()
+    lock_path = CRON_DIR / ".directives.lock"
+    with _directives_file_lock:
+        with open(lock_path, "a+", encoding="utf-8") as lock_fd:
+            try:
+                if os.name != "nt":
+                    import fcntl
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                else:
+                    import msvcrt
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
+            except (ImportError, OSError):
+                pass
+            try:
+                yield
+            finally:
+                try:
+                    if os.name != "nt":
+                        import fcntl
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    else:
+                        import msvcrt
+                        msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (ImportError, OSError):
+                    pass
+
+
+def append_directive_event(
+    event_type: str,
+    job_id: Optional[str],
+    directive_id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Append one directive audit event with O_APPEND semantics."""
+    ensure_dirs()
+    event = {
+        "timestamp": _iso_now(),
+        "directive_id": directive_id,
+        "job_id": job_id,
+        "event_type": event_type,
+        "context": context or {},
+    }
+    payload = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    fd = os.open(str(DIRECTIVE_EVENTS_FILE), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _secure_file(DIRECTIVE_EVENTS_FILE)
+    return event
+
+
+def _load_directive_store_unlocked() -> Dict[str, Any]:
+    ensure_dirs()
+    if not DIRECTIVES_FILE.exists():
+        return {"directives": [], "updated_at": None}
+    try:
+        with open(DIRECTIVES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as exc:
+        append_directive_event(
+            "parse-failed",
+            None,
+            None,
+            {"path": str(DIRECTIVES_FILE), "error": str(exc)},
+        )
+        raise CronDirectiveError(
+            f"Directive store is unparseable: {exc}",
+            event_type="parse-failed",
+        ) from exc
+    if not isinstance(data, dict) or not isinstance(data.get("directives"), list):
+        append_directive_event(
+            "parse-failed",
+            None,
+            None,
+            {"path": str(DIRECTIVES_FILE), "error": "store root must contain directives list"},
+        )
+        raise CronDirectiveError(
+            "Directive store is unparseable: expected object with directives list",
+            event_type="parse-failed",
+        )
+    return data
+
+
+def load_directive_store() -> Dict[str, Any]:
+    with _directive_store_lock():
+        return copy.deepcopy(_load_directive_store_unlocked())
+
+
+def _save_directive_store_unlocked(store: Dict[str, Any]) -> None:
+    ensure_dirs()
+    store["updated_at"] = _iso_now()
+    fd, tmp_path = tempfile.mkstemp(dir=str(DIRECTIVES_FILE.parent), suffix=".tmp", prefix=".directives_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(store, f, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, DIRECTIVES_FILE)
+        _secure_file(DIRECTIVES_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _validate_directive_record(record: Any) -> Dict[str, Any]:
+    if not isinstance(record, dict):
+        raise ValueError("directive record must be an object")
+    directive_id = str(record.get("directive_id") or "").strip()
+    job_id = str(record.get("job_id") or "").strip()
+    directive_text = record.get("directive_text")
+    created_by = str(record.get("created_by") or "").strip()
+    status = str(record.get("status") or "").strip()
+    version = record.get("version")
+    if not directive_id:
+        raise ValueError("directive_id is required")
+    if not job_id:
+        raise ValueError("job_id is required")
+    if not isinstance(directive_text, str) or not directive_text.strip():
+        raise ValueError("directive_text is required")
+    if not created_by:
+        raise ValueError("created_by is required")
+    if status not in _DIRECTIVE_STATUSES:
+        raise ValueError(f"invalid directive status: {status!r}")
+    if not isinstance(version, int) or version < 1:
+        raise ValueError("version must be a positive integer")
+    _parse_directive_time(record.get("created_at"), "created_at")
+    _parse_directive_time(record.get("expires_at"), "expires_at")
+    return record
+
+
+def _latest_directive_for_job(store: Dict[str, Any], job_id: str) -> Optional[Dict[str, Any]]:
+    matches = [d for d in store.get("directives", []) if isinstance(d, dict) and d.get("job_id") == job_id]
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def _latest_unconsumed_directive_for_job(store: Dict[str, Any], job_id: str) -> Optional[Dict[str, Any]]:
+    matches = [
+        d for d in store.get("directives", [])
+        if isinstance(d, dict) and d.get("job_id") == job_id and d.get("status") != "consumed"
+    ]
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def _find_directive(store: Dict[str, Any], directive_id: str) -> Optional[Dict[str, Any]]:
+    for directive in store.get("directives", []):
+        if isinstance(directive, dict) and directive.get("directive_id") == directive_id:
+            return directive
+    return None
+
+
+def _expire_pending_directives_unlocked(store: Dict[str, Any], now: Optional[datetime] = None) -> None:
+    now_dt = now or _utcnow()
+    for directive in store.get("directives", []):
+        if not isinstance(directive, dict) or directive.get("status") != "pending":
+            continue
+        try:
+            if _parse_directive_time(directive.get("expires_at"), "expires_at") <= now_dt:
+                directive["status"] = "expired"
+                directive["version"] = int(directive.get("version") or 1) + 1
+                append_directive_event(
+                    "expired",
+                    directive.get("job_id"),
+                    directive.get("directive_id"),
+                    {"reason": "ttl_expired"},
+                )
+        except Exception as exc:
+            directive["status"] = "invalid"
+            directive["version"] = int(directive.get("version") or 1) + 1
+            append_directive_event(
+                "invalid",
+                directive.get("job_id"),
+                directive.get("directive_id"),
+                {"reason": str(exc)},
+            )
+
+
+def create_operator_directive(
+    job_id: str,
+    directive_text: str,
+    created_by: str,
+    *,
+    expires_at: Optional[str] = None,
+    ttl_seconds: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Create one pending operator directive for a cron job."""
+    canonical_job_id = str(job_id or "").strip()
+    text = str(directive_text or "").strip()
+    actor = str(created_by or "").strip()
+    if not canonical_job_id:
+        raise ValueError("job_id is required")
+    if not text:
+        raise ValueError("directive_text is required")
+    if not actor:
+        raise ValueError("created_by is required")
+    now = _utcnow()
+    if expires_at:
+        expiry = _parse_directive_time(expires_at, "expires_at")
+    else:
+        ttl = int(ttl_seconds if ttl_seconds is not None else 3600)
+        if ttl <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        expiry = now + timedelta(seconds=ttl)
+    if expiry <= now:
+        raise ValueError("expires_at must be in the future")
+
+    with _directive_store_lock():
+        store = _load_directive_store_unlocked()
+        _expire_pending_directives_unlocked(store, now)
+        existing = _latest_directive_for_job(store, canonical_job_id)
+        if existing and existing.get("status") == "pending":
+            raise ValueError(f"job_id {canonical_job_id!r} already has a pending directive")
+        directive = {
+            "directive_id": str(uuid.uuid4()),
+            "job_id": canonical_job_id,
+            "directive_text": text,
+            "created_at": now.isoformat(),
+            "created_by": actor,
+            "expires_at": expiry.isoformat(),
+            "status": "pending",
+            "consumed_at": None,
+            "consumed_run_id": None,
+            "version": 1,
+        }
+        store.setdefault("directives", []).append(directive)
+        _save_directive_store_unlocked(store)
+    append_directive_event(
+        "created",
+        canonical_job_id,
+        directive["directive_id"],
+        {"created_by": actor, "expires_at": directive["expires_at"]},
+    )
+    return directive
+
+
+def inspect_operator_directive(job_id: str) -> Dict[str, Any]:
+    canonical_job_id = str(job_id or "").strip()
+    with _directive_store_lock():
+        store = _load_directive_store_unlocked()
+        _expire_pending_directives_unlocked(store)
+        _save_directive_store_unlocked(store)
+        directives = [
+            copy.deepcopy(d)
+            for d in store.get("directives", [])
+            if isinstance(d, dict) and d.get("job_id") == canonical_job_id
+        ]
+    return {
+        "job_id": canonical_job_id,
+        "current": directives[-1] if directives else None,
+        "directives": directives,
+    }
+
+
+def cancel_operator_directive(job_id: str) -> Dict[str, Any]:
+    canonical_job_id = str(job_id or "").strip()
+    with _directive_store_lock():
+        store = _load_directive_store_unlocked()
+        _expire_pending_directives_unlocked(store)
+        directive = _latest_directive_for_job(store, canonical_job_id)
+        if not directive:
+            raise ValueError(f"No directive found for job_id {canonical_job_id!r}")
+        _validate_directive_record(directive)
+        if directive.get("status") != "pending":
+            append_directive_event(
+                "cancelled",
+                canonical_job_id,
+                directive.get("directive_id"),
+                {"reason": f"cannot_cancel_status_{directive.get('status')}"},
+            )
+            raise CronDirectiveError(
+                f"Directive is not pending: {directive.get('status')}",
+                event_type="cancelled",
+                directive=directive,
+            )
+        directive["status"] = "cancelled"
+        directive["version"] = int(directive.get("version") or 1) + 1
+        _save_directive_store_unlocked(store)
+    append_directive_event("cancelled", canonical_job_id, directive.get("directive_id"), {"reason": "operator_cancelled"})
+    return copy.deepcopy(directive)
+
+
+def list_directive_events(
+    job_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    ensure_dirs()
+    if not DIRECTIVE_EVENTS_FILE.exists():
+        return []
+    events: List[Dict[str, Any]] = []
+    with open(DIRECTIVE_EVENTS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if job_id and event.get("job_id") != job_id:
+                continue
+            if event_type and event.get("event_type") != event_type:
+                continue
+            events.append(event)
+    return events[-max(1, int(limit or 50)):]
+
+
+def consume_operator_directive_for_run(
+    job_id: str,
+    run_id: str,
+    *,
+    directive_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return and atomically consume a valid pending directive, or None if absent."""
+    canonical_job_id = str(job_id or "").strip()
+    with _directive_store_lock():
+        store = _load_directive_store_unlocked()
+        now = _utcnow()
+        if directive_id:
+            directive = _find_directive(store, directive_id)
+        else:
+            directive = _latest_unconsumed_directive_for_job(store, canonical_job_id)
+        if directive is None:
+            if directive_id:
+                append_directive_event(
+                    "missing-in-supervised-context",
+                    canonical_job_id,
+                    directive_id,
+                    {"reason": "directive_id_not_found"},
+                )
+                raise CronDirectiveError(
+                    "Supervised operator directive was requested but not found",
+                    event_type="missing-in-supervised-context",
+                )
+            return None
+        try:
+            _validate_directive_record(directive)
+        except Exception as exc:
+            append_directive_event(
+                "invalid",
+                canonical_job_id,
+                directive.get("directive_id") if isinstance(directive, dict) else None,
+                {"reason": str(exc)},
+            )
+            raise CronDirectiveError(f"Invalid operator directive: {exc}", event_type="invalid", directive=directive if isinstance(directive, dict) else None) from exc
+        if directive.get("job_id") != canonical_job_id:
+            append_directive_event(
+                "mismatch",
+                canonical_job_id,
+                directive.get("directive_id"),
+                {"expected_job_id": directive.get("job_id"), "actual_job_id": canonical_job_id},
+            )
+            raise CronDirectiveError(
+                "Operator directive job_id does not match runner job_id",
+                event_type="mismatch",
+                directive=directive,
+            )
+        if directive.get("status") != "pending":
+            append_directive_event(
+                directive.get("status") if directive.get("status") in {"expired", "cancelled", "invalid"} else "invalid",
+                canonical_job_id,
+                directive.get("directive_id"),
+                {"reason": f"directive_status_{directive.get('status')}"},
+            )
+            raise CronDirectiveError(
+                f"Operator directive is not pending: {directive.get('status')}",
+                event_type=str(directive.get("status") or "invalid"),
+                directive=directive,
+            )
+        if _parse_directive_time(directive.get("expires_at"), "expires_at") <= now:
+            directive["status"] = "expired"
+            directive["version"] = int(directive.get("version") or 1) + 1
+            _save_directive_store_unlocked(store)
+            append_directive_event("expired", canonical_job_id, directive.get("directive_id"), {"reason": "ttl_expired"})
+            raise CronDirectiveError("Operator directive is expired", event_type="expired", directive=directive)
+
+        observed_version = int(directive["version"])
+        current = _find_directive(store, directive["directive_id"])
+        if current is None or current.get("version") != observed_version or current.get("status") != "pending":
+            append_directive_event(
+                "invalid",
+                canonical_job_id,
+                directive.get("directive_id"),
+                {"reason": "version_conflict", "observed_version": observed_version},
+            )
+            raise CronDirectiveError("Operator directive changed before consumption", event_type="invalid", directive=directive)
+        current["status"] = "consumed"
+        current["consumed_at"] = now.isoformat()
+        current["consumed_run_id"] = str(run_id or "")
+        current["version"] = observed_version + 1
+        consumed = copy.deepcopy(current)
+        _save_directive_store_unlocked(store)
+    append_directive_event(
+        "consumed",
+        canonical_job_id,
+        consumed.get("directive_id"),
+        {"run_id": run_id, "version": consumed.get("version")},
+    )
+    return consumed
 
 
 # =============================================================================

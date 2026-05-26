@@ -213,6 +213,8 @@ class TestUnifiedCronjobTool:
         monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
         monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
         monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        monkeypatch.setattr("cron.jobs.DIRECTIVES_FILE", tmp_path / "cron" / "directives.json")
+        monkeypatch.setattr("cron.jobs.DIRECTIVE_EVENTS_FILE", tmp_path / "cron" / "directive_events.jsonl")
 
     def test_create_and_list(self):
         created = json.loads(
@@ -230,6 +232,37 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_directive_tooling_round_trip(self):
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+
+        directive_set = json.loads(
+            cronjob(
+                action="directive_set",
+                job_id=job_id,
+                directive_text="Slice source: Operator-named dry check.",
+                ttl_seconds=600,
+                created_by="pytest",
+            )
+        )
+        assert directive_set["success"] is True
+        assert directive_set["directive"]["job_id"] == job_id
+
+        inspected = json.loads(cronjob(action="directive_inspect", job_id=job_id))
+        assert inspected["success"] is True
+        assert inspected["current"]["status"] == "pending"
+
+        cancelled = json.loads(cronjob(action="directive_cancel", job_id=job_id))
+        assert cancelled["success"] is True
+        assert cancelled["directive"]["status"] == "cancelled"
+
+        events = json.loads(cronjob(action="directive_events", job_id=job_id))
+        assert events["success"] is True
+        assert [event["event_type"] for event in events["events"]] == [
+            "created",
+            "cancelled",
+        ]
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs

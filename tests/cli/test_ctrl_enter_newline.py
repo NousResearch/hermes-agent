@@ -63,6 +63,20 @@ def test_ghostty_tmux_session_preserves_ctrl_j_newline():
             assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
+def test_local_wezterm_preserves_newline():
+    import cli as cli_mod
+    with patch.object(sys, "platform", "linux"):
+        with patch.dict(os.environ, {"TERM_PROGRAM": "WezTerm"}, clear=True):
+            assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
+def test_local_kitty_preserves_newline():
+    import cli as cli_mod
+    with patch.object(sys, "platform", "linux"):
+        with patch.dict(os.environ, {"KITTY_WINDOW_ID": "1"}, clear=True):
+            assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
 def test_pure_local_linux_does_not_preserve():
     """A bare local Linux TTY (no SSH/WSL/WT/Ghostty) keeps c-j → submit so docker exec
     style Enter-as-LF stays usable."""

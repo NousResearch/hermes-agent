@@ -3133,16 +3133,19 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 )
 
 
-def _preserve_ctrl_enter_newline() -> bool:
-    """Detect environments where Ctrl+Enter must produce a newline, not submit.
+_RAW_LF_NEWLINE_TERM_PROGRAMS = {"WezTerm", "WarpTerminal"}
 
-    Windows Terminal, WSL, SSH sessions, Ghostty, and some modern terminals
-    deliver Ctrl+Enter/Ctrl+J as bare LF (c-j). On those terminals c-j must
-    NOT be bound to submit;
-    binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
-    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
-    some thin PTYs without SSH) still need c-j bound to submit, so we keep
-    that binding for those.
+
+def _preserve_ctrl_enter_newline() -> bool:
+    """Detect environments where Ctrl+Enter/Ctrl+J must produce a newline, not submit.
+
+    Native Windows, WSL, SSH sessions, Windows Terminal, Ghostty, and several
+    modern local terminals (including WezTerm, Warp, and Kitty) send
+    Ctrl+Enter/Ctrl+J as bare LF (c-j). On those terminals c-j must NOT be
+    bound to submit; binding it to submit makes Ctrl+J / Ctrl+Enter (intended
+    as 'newline like Alt+Enter') submit instead. Local POSIX TTYs that deliver
+    Enter as LF (docker exec, some thin PTYs without SSH) still need c-j bound
+    to submit, so we keep that binding for unrecognized bare local terminals.
 
     See issue #22379.
     """
@@ -3157,6 +3160,10 @@ def _preserve_ctrl_enter_newline() -> bool:
     if os.environ.get("TERM", "").lower() == "xterm-ghostty":
         return True
     if os.environ.get("TERM_PROGRAM", "").lower() == "ghostty":
+        return True
+    if os.environ.get("TERM_PROGRAM") in _RAW_LF_NEWLINE_TERM_PROGRAMS:
+        return True
+    if os.environ.get("KITTY_WINDOW_ID"):
         return True
     if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
         return True

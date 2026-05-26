@@ -3021,3 +3021,116 @@ class TestFTS5ToolCallMigration:
         finally:
             session_db.close()
 
+
+
+# =========================================================================
+# Issue #28841 — explicit message timestamps preserved across fork/compress
+# =========================================================================
+
+class TestMessageTimestampPreservation:
+    """Regression coverage for #28841.
+
+    ``messages.timestamp`` used to be unconditionally ``time.time()`` at
+    INSERT, so /branch, /compress, /retry and /undo silently rewrote
+    wall-clock times to the rewrite moment. ``append_message`` now accepts
+    an explicit ``timestamp`` and ``replace_messages`` reads
+    ``msg['timestamp']`` per row.
+    """
+
+    def _new_session(self, db, sid="s_ts"):
+        db.create_session(session_id=sid, source="cli", model="m")
+        return sid
+
+    def test_append_message_uses_explicit_timestamp(self, db):
+        sid = self._new_session(db)
+        ts = 1_600_000_000.0
+        db.append_message(sid, role="user", content="hi", timestamp=ts)
+        msgs = db.get_messages(sid)
+        assert msgs[0]["timestamp"] == ts
+
+    def test_append_message_defaults_to_now_when_omitted(self, db):
+        sid = self._new_session(db)
+        before = time.time()
+        db.append_message(sid, role="user", content="hi")
+        after = time.time()
+        ts = db.get_messages(sid)[0]["timestamp"]
+        assert before <= ts <= after
+
+    def test_append_message_accepts_zero_timestamp(self, db):
+        # 0.0 is a legal epoch — must not fall back to now.
+        sid = self._new_session(db)
+        db.append_message(sid, role="user", content="x", timestamp=0.0)
+        assert db.get_messages(sid)[0]["timestamp"] == 0.0
+
+    def test_replace_messages_preserves_explicit_timestamps(self, db):
+        sid = self._new_session(db)
+        # Seed with three messages whose original timestamps span an hour.
+        for i, ts in enumerate([1000.0, 1500.0, 3600.0]):
+            db.append_message(sid, role="user", content=f"m{i}", timestamp=ts)
+        loaded = db.get_messages(sid)
+        # Round-trip back through replace_messages (simulates /compress).
+        db.replace_messages(sid, loaded)
+        rewritten = db.get_messages(sid)
+        assert [m["timestamp"] for m in rewritten] == [1000.0, 1500.0, 3600.0]
+
+    def test_replace_messages_falls_back_when_timestamp_missing(self, db):
+        sid = self._new_session(db)
+        before = time.time()
+        db.replace_messages(
+            sid,
+            [
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": "b"},
+            ],
+        )
+        after = time.time()
+        ts = [m["timestamp"] for m in db.get_messages(sid)]
+        assert all(before <= t <= after + 1 for t in ts)
+        # Distinct values so ORDER BY id still matches insertion order.
+        assert ts[0] != ts[1]
+
+    def test_replace_messages_mixed_explicit_and_missing(self, db):
+        sid = self._new_session(db)
+        before = time.time()
+        db.replace_messages(
+            sid,
+            [
+                {"role": "user", "content": "old", "timestamp": 500.0},
+                {"role": "assistant", "content": "new"},  # no timestamp
+                {"role": "user", "content": "older", "timestamp": 100.0},
+            ],
+        )
+        after = time.time()
+        out = db.get_messages(sid)
+        assert out[0]["timestamp"] == 500.0
+        assert before <= out[1]["timestamp"] <= after + 1
+        assert out[2]["timestamp"] == 100.0
+
+    def test_fork_chain_preserves_original_timestamps(self, db):
+        """Simulate /branch: copy messages from parent to child via
+        append_message, forwarding the original timestamps."""
+        parent = self._new_session(db, sid="parent")
+        for i, ts in enumerate([10.0, 20.0, 30.0]):
+            db.append_message(parent, role="user", content=f"m{i}", timestamp=ts)
+
+        child = "child"
+        db.create_session(session_id=child, source="cli", model="m")
+        for msg in db.get_messages(parent):
+            db.append_message(
+                child,
+                role=msg["role"],
+                content=msg["content"],
+                timestamp=msg.get("timestamp"),
+            )
+
+        assert [m["timestamp"] for m in db.get_messages(child)] == [10.0, 20.0, 30.0]
+
+    def test_repeated_compress_does_not_drift_timestamps(self, db):
+        sid = self._new_session(db)
+        originals = [100.0, 200.0, 300.0]
+        for i, ts in enumerate(originals):
+            db.append_message(sid, role="user", content=f"m{i}", timestamp=ts)
+        # Round-trip three times — used to drift to the latest time.time().
+        for _ in range(3):
+            db.replace_messages(sid, db.get_messages(sid))
+        assert [m["timestamp"] for m in db.get_messages(sid)] == originals

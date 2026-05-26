@@ -1692,6 +1692,8 @@ DEFAULT_CONFIG = {
         "subagent_auto_approve": False,
     },
 
+    "agent_profiles": {},   # named child agent profile definitions
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
@@ -3974,6 +3976,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
+    "agent_profiles",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates",
 }

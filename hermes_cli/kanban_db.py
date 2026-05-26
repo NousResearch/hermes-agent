@@ -4258,6 +4258,30 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     return ("unknown", None)
 
 
+def reap_worker_zombies() -> "list[int]":
+    """Reap all zombie children of this process without blocking.
+
+    Returns the list of reaped PIDs. Safe to call when there are no
+    children (returns []). No-op on Windows.
+    """
+    if os.name == "nt":
+        return []
+    reaped: "list[int]" = []
+    try:
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                break
+            _record_worker_exit(pid, status)
+            reaped.append(pid)
+    except Exception:
+        pass
+    return reaped
+
+
 def _pid_alive(pid: Optional[int]) -> bool:
     """Return True if ``pid`` is still running on this host.
 
@@ -5222,38 +5246,9 @@ def dispatch_once(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
-    # Reap zombie children from previously spawned workers.
-    # The gateway-embedded dispatcher is the parent of every worker spawned
-    # via _default_spawn (start_new_session=True only detaches the
-    # controlling tty, not the parent). Without an explicit waitpid, each
-    # completed worker becomes a <defunct> entry that lingers until gateway
-    # exit. WNOHANG keeps this non-blocking; ChildProcessError means no
-    # children to reap. Bounded: at most one tick's worth of completions
-    # can be in <defunct> at once.
-    #
-    # We also record the exit status keyed by pid, so
-    # ``detect_crashed_workers`` can distinguish a worker that exited
-    # cleanly without calling ``kanban_complete`` / ``kanban_block``
-    # (protocol violation — auto-block) from a real crash (OOM killer,
-    # SIGKILL, non-zero exit — existing counter behavior).
-    #
-    # Windows has no zombies / no os.WNOHANG — subprocess.Popen handles
-    # are freed when the Python object is garbage-collected or .wait() is
-    # called explicitly.  The kanban dispatcher discards the Popen handle
-    # after spawn (``_default_spawn`` → abandon), so on Windows there's
-    # nothing to reap here — skip the whole block.
-    if os.name != "nt":
-        try:
-            while True:
-                try:
-                    _pid, _status = os.waitpid(-1, os.WNOHANG)
-                except ChildProcessError:
-                    break
-                if _pid == 0:
-                    break
-                _record_worker_exit(_pid, _status)
-        except Exception:
-            pass
+    # Reap zombie children from previously spawned workers. See
+    # reap_worker_zombies() for the full rationale.
+    reap_worker_zombies()
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)

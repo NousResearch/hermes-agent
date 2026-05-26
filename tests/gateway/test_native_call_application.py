@@ -117,6 +117,51 @@ async def test_incoming_native_call_rejects_unauthorized_contact(caplog):
     )
 
 
+@pytest.mark.parametrize(
+    ("chat_type", "authorized", "expected_code"),
+    [
+        ("group", True, "call_private_chat_required"),
+        ("dm", False, "call_auth_denied"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_incoming_native_call_returns_rejection_when_reject_signal_fails(
+    chat_type,
+    authorized,
+    expected_code,
+    caplog,
+):
+    signaling = FakeSignaling(fail_reject=True)
+    media = FakeMedia(NativeMediaStartResult(ok=True))
+    app = NativeCallApplication(
+        signaling=signaling,
+        media=media,
+        is_authorized=lambda _s: authorized,
+    )
+
+    caplog.set_level("INFO", logger="gateway.calls.native.application")
+
+    result = await app.handle_incoming_invitation(
+        _source(chat_type=chat_type),
+        NativeCallInvitation(contact_id="42", media="audio", encrypted=False),
+    )
+
+    assert result.ok is False
+    assert result.code == expected_code
+    assert signaling.rejected == []
+    assert not media.requests
+    assert any(
+        record.reason_code == expected_code
+        for record in caplog.records
+        if record.message == "SimpleX native call rejected"
+    )
+    assert any(
+        record.reason_code == expected_code
+        for record in caplog.records
+        if record.message == "SimpleX native call reject failed"
+    )
+
+
 @pytest.mark.asyncio
 async def test_incoming_native_call_sends_offer_and_connecting_status():
     offer = NativeMediaOffer(

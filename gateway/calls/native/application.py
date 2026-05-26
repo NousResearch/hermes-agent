@@ -62,14 +62,15 @@ class NativeCallApplication:
             )
 
         if not _is_dm(source):
-            await self.signaling.reject(contact_id, "call_private_chat_required")
+            code = "call_private_chat_required"
             logger.info(
                 "SimpleX native call rejected",
-                extra={"contact_id": contact_id, "reason_code": "call_private_chat_required"},
+                extra={"contact_id": contact_id, "reason_code": code},
             )
+            await _reject_if_possible(self.signaling, contact_id, code)
             return NativeCallResult(
                 ok=False,
-                code="call_private_chat_required",
+                code=code,
                 message="Calls are private-only. DM me /call to create a private room.",
             )
 
@@ -80,14 +81,15 @@ class NativeCallApplication:
             authorized = False
 
         if not authorized:
-            await self.signaling.reject(contact_id, "call_auth_denied")
+            code = "call_auth_denied"
             logger.info(
                 "SimpleX native call rejected",
-                extra={"contact_id": contact_id, "reason_code": "call_auth_denied"},
+                extra={"contact_id": contact_id, "reason_code": code},
             )
+            await _reject_if_possible(self.signaling, contact_id, code)
             return NativeCallResult(
                 ok=False,
-                code="call_auth_denied",
+                code=code,
                 message="SimpleX-native call rejected.",
             )
 

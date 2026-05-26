@@ -264,3 +264,20 @@ def test_credential_summary_returns_only_display_strings(
     assert summary["device_token"].startswith("✓")
     assert summary["project_key"].startswith("✓")
     assert summary["project_id"] == "proj-uuid"
+
+
+def test_print_credential_summary_emits_only_display_strings(
+    tmp_hermes_home: Path,
+) -> None:
+    """The emit callback must never receive raw credential bytes."""
+    photon_auth.store_photon_token("token-aaaaaaaaaaaaaaaa")
+    photon_auth.store_project_credentials("proj-uuid", "secret-bbbbbbbbbbb")
+    lines: list = []
+    photon_auth.print_credential_summary(lines.append)
+    blob = "\n".join(lines)
+    assert "token-aaaa" not in blob
+    assert "secret-bbbb" not in blob
+    assert "✓ stored" in blob   # device token line
+    assert "proj-uuid" in blob   # project id is intentionally surfaced
+    # Header is always emitted
+    assert any("Photon iMessage status" in line for line in lines)

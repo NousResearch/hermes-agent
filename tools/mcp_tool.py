@@ -2309,13 +2309,13 @@ def _cua_driver_preflight(tool_name: str, args: dict) -> Optional[dict]:
     Card kn716mkjxbyzzxgsnf0a7hvexn87dbc4. SOUL.md Rule #2 stays as the
     discipline patch; this is the structural guard.
 
-    Covers ``launch_app``:
-      - ``urls`` entries that are local paths must exist on disk
-        (``http(s)://`` URLs and any other scheme are passed through).
+    Covers ``launch_app`` and ``focus_app``:
+      - ``urls`` entries on ``launch_app`` that are local paths must exist
+        on disk (``http(s)://`` URLs and any other scheme are passed through).
       - ``bundle_id`` must resolve via ``mdfind``; ``name`` must resolve
         against /Applications, /System/Applications, ~/Applications.
     """
-    if tool_name != "launch_app":
+    if tool_name not in {"launch_app", "focus_app"}:
         return None
     if not isinstance(args, dict):
         return None
@@ -2353,7 +2353,7 @@ def _cua_driver_preflight(tool_name: str, args: dict) -> Optional[dict]:
                     "error": "APP_NOT_INSTALLED",
                     "bundle_id": bundle_id,
                     "message": (
-                        f"cua-driver launch_app pre-flight: no app with "
+                        f"cua-driver {tool_name} pre-flight: no app with "
                         f"bundle_id {bundle_id!r} is installed. Skipped to "
                         "avoid NSWorkspace launch failure."
                     ),
@@ -2376,7 +2376,7 @@ def _cua_driver_preflight(tool_name: str, args: dict) -> Optional[dict]:
                 "error": "APP_NOT_INSTALLED",
                 "name": name,
                 "message": (
-                    f"cua-driver launch_app pre-flight: no app named "
+                    f"cua-driver {tool_name} pre-flight: no app named "
                     f"{name!r} found under /Applications, /System/Applications, "
                     "or ~/Applications. Skipped to avoid NSWorkspace failure."
                 ),

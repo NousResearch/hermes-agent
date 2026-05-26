@@ -134,6 +134,54 @@ def test_launch_app_bogus_bundle_id_returns_structured_error(monkeypatch, tmp_pa
         _cleanup(mcp_tool, "cua-driver")
 
 
+def test_focus_app_bogus_bundle_id_returns_structured_error(monkeypatch, tmp_path):
+    """focus_app(bundle_id='com.nonexistent.fake') must short-circuit
+    before reaching the MCP server.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    call_count = {"n": 0}
+
+    async def _call_tool_should_not_run(*a, **kw):  # pragma: no cover
+        call_count["n"] += 1
+        result = MagicMock()
+        result.isError = False
+        result.content = []
+        result.structuredContent = None
+        return result
+
+    class _FakeResult:
+        def __init__(self):
+            self.returncode = 0
+            self.stdout = ""
+            self.stderr = ""
+
+    def _fake_run(cmd, *a, **kw):
+        assert cmd[0] == "mdfind"
+        return _FakeResult()
+
+    monkeypatch.setattr(mcp_tool.subprocess, "run", _fake_run)
+
+    _install_stub_server(mcp_tool, "cua-driver", _call_tool_should_not_run)
+    mcp_tool._ensure_mcp_loop()
+
+    try:
+        handler = _make_tool_handler("cua-driver", "focus_app", 10.0)
+        result = handler({"bundle_id": "com.nonexistent.hermes-test"})
+        parsed = json.loads(result)
+        assert parsed.get("error") == "APP_NOT_INSTALLED", parsed
+        assert parsed.get("bundle_id") == "com.nonexistent.hermes-test", parsed
+        assert call_count["n"] == 0, (
+            "MCP server must NOT be invoked when focus_app pre-flight "
+            "catches an uninstalled bundle_id."
+        )
+    finally:
+        _cleanup(mcp_tool, "cua-driver")
+
+
 def test_launch_app_http_urls_pass_through(monkeypatch, tmp_path):
     """URLs (http/https) must bypass the path-existence check and
     dispatch to the MCP server normally — that's the happy browser path.

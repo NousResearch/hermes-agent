@@ -12,6 +12,7 @@ from tools.skills_hub import (
     GitHubSource,
     LobeHubSource,
     SkillsShSource,
+    UrlSource,
     WellKnownSkillSource,
     OptionalSkillSource,
     SkillMeta,
@@ -100,7 +101,7 @@ class TestTrustLevelFor:
         src = self._source()
         result = src.trust_level_for("owner/repo")
         # No path part — still resolves repo correctly
-        assert result in ("trusted", "community")
+        assert result in {"trusted", "community"}
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +560,11 @@ class TestFindSkillInRepoTree:
 
 
 class TestWellKnownSkillSource:
+    @pytest.fixture(autouse=True)
+    def _allow_public_skill_fetches(self, monkeypatch):
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
     def _source(self):
         return WellKnownSkillSource()
 
@@ -673,6 +679,241 @@ class TestWellKnownSkillSource:
         assert bundle is None
 
 
+class TestUrlSource:
+    @pytest.fixture(autouse=True)
+    def _allow_public_skill_fetches(self, monkeypatch):
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
+    def _source(self):
+        return UrlSource()
+
+    # ── _matches ────────────────────────────────────────────────────────
+    def test_matches_bare_md_url(self):
+        assert self._source()._matches("https://example.com/path/SKILL.md") is True
+
+    def test_matches_http_scheme(self):
+        assert self._source()._matches("http://example.com/SKILL.md") is True
+
+    def test_rejects_non_md_url(self):
+        assert self._source()._matches("https://example.com/path/") is False
+        assert self._source()._matches("https://example.com/skills.json") is False
+
+    def test_rejects_well_known_url(self):
+        # Leave these for WellKnownSkillSource.
+        assert self._source()._matches(
+            "https://example.com/.well-known/skills/git-workflow/SKILL.md"
+        ) is False
+        assert self._source()._matches(
+            "https://example.com/.well-known/skills/index.json"
+        ) is False
+
+    def test_rejects_wrapped_identifiers(self):
+        assert self._source()._matches("github:owner/repo/skill") is False
+        assert self._source()._matches("well-known:https://example.com/x") is False
+        assert self._source()._matches("official/security/1password") is False
+
+    def test_rejects_non_string(self):
+        assert self._source()._matches(None) is False  # type: ignore[arg-type]
+        assert self._source()._matches(123) is False   # type: ignore[arg-type]
+
+    def test_search_returns_empty(self):
+        # Direct-URL source is not searchable.
+        assert self._source().search("anything") == []
+
+    # ── inspect ─────────────────────────────────────────────────────────
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_reads_frontmatter_from_url(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text=(
+                "---\n"
+                "name: sharethis-chat\n"
+                "description: Share agent conversations.\n"
+                "metadata:\n"
+                "  hermes:\n"
+                "    tags: [sharing, chat]\n"
+                "---\n\n# Body\n"
+            ),
+        )
+        meta = self._source().inspect("https://sharethis.chat/SKILL.md")
+        assert meta is not None
+        assert meta.name == "sharethis-chat"
+        assert meta.description == "Share agent conversations."
+        assert meta.source == "url"
+        assert meta.identifier == "https://sharethis.chat/SKILL.md"
+        assert meta.trust_level == "community"
+        assert meta.tags == ["sharing", "chat"]
+        assert meta.extra["awaiting_name"] is False
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_returns_none_when_url_not_md(self, mock_get):
+        # _matches filters first — no HTTP call.
+        meta = self._source().inspect("https://example.com/not-a-skill")
+        assert meta is None
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_returns_none_on_404(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=404)
+        assert self._source().inspect("https://example.com/SKILL.md") is None
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_returns_none_on_http_error(self, mock_get):
+        mock_get.side_effect = httpx.HTTPError("boom")
+        assert self._source().inspect("https://example.com/SKILL.md") is None
+
+    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url", return_value=False)
+    def test_inspect_blocks_private_url(self, _mock_safe, _mock_policy, mock_get):
+        assert self._source().inspect("http://127.0.0.1/SKILL.md") is None
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_flags_awaiting_name_when_unresolvable(self, mock_get):
+        # No frontmatter name + a URL path that can't produce a valid slug
+        # (``SKILL`` isn't a valid skill name).
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: unnamed.\n---\n",
+        )
+        meta = self._source().inspect("https://example.com/SKILL.md")
+        assert meta is not None
+        assert meta.name == ""
+        assert meta.extra["awaiting_name"] is True
+
+    # ── fetch ───────────────────────────────────────────────────────────
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_builds_single_file_bundle(self, mock_get):
+        skill_md = (
+            "---\n"
+            "name: sharethis-chat\n"
+            "description: Share.\n"
+            "---\n\n# Body\n"
+        )
+        mock_get.return_value = MagicMock(status_code=200, text=skill_md)
+
+        bundle = self._source().fetch("https://sharethis.chat/SKILL.md")
+
+        assert bundle is not None
+        assert bundle.name == "sharethis-chat"
+        assert bundle.source == "url"
+        assert bundle.identifier == "https://sharethis.chat/SKILL.md"
+        assert bundle.trust_level == "community"
+        assert bundle.files == {"SKILL.md": skill_md}
+        assert bundle.metadata["url"] == "https://sharethis.chat/SKILL.md"
+        assert bundle.metadata["awaiting_name"] is False
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_falls_back_to_url_directory_name(self, mock_get):
+        # Frontmatter has no ``name:`` — we slug from the URL directory.
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: No name.\n---\n\n# Body\n",
+        )
+        bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+        assert bundle.metadata["awaiting_name"] is False
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_falls_back_to_filename_when_no_parent_dir(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: Bare file.\n---\n",
+        )
+        bundle = self._source().fetch("https://example.com/my-skill.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+        assert bundle.metadata["awaiting_name"] is False
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_awaiting_name_when_unresolvable(self, mock_get):
+        # Bare ``SKILL.md`` at the domain root with no frontmatter name.
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: Bare.\n---\n\n# Body\n",
+        )
+        bundle = self._source().fetch("https://example.com/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == ""
+        assert bundle.metadata["awaiting_name"] is True
+        # File content still present — CLI will reuse it after picking a name.
+        assert bundle.files["SKILL.md"].startswith("---\n")
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_awaiting_name_rejects_sentinel_slug(self, mock_get):
+        # Frontmatter has no name AND the URL filename slug is ``README`` —
+        # our valid-name check rejects it, so we flag awaiting_name.
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: no name.\n---\n",
+        )
+        bundle = self._source().fetch("https://example.com/README.md")
+        assert bundle is not None
+        assert bundle.name == ""
+        assert bundle.metadata["awaiting_name"] is True
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_ignores_unsafe_frontmatter_name_and_falls_through_to_slug(self, mock_get):
+        # Traversal / unsafe names are rejected by ``_is_valid_skill_name``;
+        # resolver falls through to URL slug (``my-skill`` here) and succeeds.
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\nname: ../evil\ndescription: Bad.\n---\n",
+        )
+        bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_returns_none_on_404(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=404)
+        assert self._source().fetch("https://example.com/SKILL.md") is None
+
+    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url", side_effect=[True, False])
+    def test_fetch_blocks_redirect_to_private_url(self, _mock_safe, _mock_policy, mock_get):
+        redirect = MagicMock(status_code=302)
+        redirect.headers = {"location": "http://127.0.0.1/private/SKILL.md"}
+        mock_get.return_value = redirect
+
+        assert self._source().fetch("https://example.com/SKILL.md") is None
+        assert mock_get.call_count == 1
+
+    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url", return_value=False)
+    def test_fetch_blocks_private_url(self, _mock_safe, _mock_policy, mock_get):
+        assert self._source().fetch("http://127.0.0.1/SKILL.md") is None
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_skips_non_matching_identifier(self, mock_get):
+        assert self._source().fetch("owner/repo/skill") is None
+        mock_get.assert_not_called()
+
+    # ── _is_valid_skill_name ────────────────────────────────────────────
+    def test_is_valid_skill_name_accepts_identifiers(self):
+        valid = ["my-skill", "my_skill", "sharethis-chat", "a", "skill-1", "s1"]
+        for name in valid:
+            assert UrlSource._is_valid_skill_name(name), f"should accept {name!r}"
+
+    def test_is_valid_skill_name_rejects_sentinel_and_garbage(self):
+        invalid = [
+            "",
+            "SKILL", "skill", "README", "readme", "INDEX", "index",
+            "unnamed-skill",
+            "../evil", "a/b", "has space", "has.dot",
+            "-leading-dash", "1-leading-digit",
+            None, 123, ["list"],
+        ]
+        for name in invalid:
+            assert not UrlSource._is_valid_skill_name(name), f"should reject {name!r}"
+
+
 class TestCheckForSkillUpdates:
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
         from tools.skills_guard import content_hash
@@ -690,6 +931,69 @@ class TestCheckForSkillUpdates:
         skill_dir = tmp_path / "demo-skill"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
+    def test_bundle_content_hash_accepts_binary_files(self):
+        bundle = SkillBundle(
+            name="demo-binary-skill",
+            files={
+                "SKILL.md": "# Demo\n",
+                "assets/logo.png": b"\x89PNG\r\n\x1a\nbinary",
+            },
+            source="github",
+            identifier="owner/repo/demo-binary-skill",
+            trust_level="community",
+        )
+
+        digest = bundle_content_hash(bundle)
+
+        assert digest.startswith("sha256:")
+
+    def test_bundle_content_hash_bytes_matches_str_equivalent(self):
+        """Bytes content must hash identically to its str-decoded form."""
+        text_bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "references/checklist.md": "- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        bytes_bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"same content",
+                "references/checklist.md": b"- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+
+        assert bundle_content_hash(bytes_bundle) == bundle_content_hash(text_bundle)
+
+    def test_bundle_content_hash_mixed_matches_on_disk(self, tmp_path):
+        """In-memory bundle hash must equal on-disk content_hash for mixed bytes+str."""
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"# Demo Skill\n",
+                "references/checklist.md": "- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_bytes(b"# Demo Skill\n")
         (skill_dir / "references").mkdir()
         (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
 
@@ -754,6 +1058,17 @@ class TestCreateSourceRouter:
     def test_includes_well_known_source(self):
         sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
         assert any(isinstance(src, WellKnownSkillSource) for src in sources)
+
+    def test_includes_url_source(self):
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        assert any(isinstance(src, UrlSource) for src in sources)
+
+    def test_url_source_runs_before_github_source(self):
+        # UrlSource must win over GitHubSource when both could claim a URL.
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        url_idx = next(i for i, src in enumerate(sources) if isinstance(src, UrlSource))
+        gh_idx = next(i for i, src in enumerate(sources) if isinstance(src, GitHubSource))
+        assert url_idx < gh_idx
 
 
 # ---------------------------------------------------------------------------
@@ -964,10 +1279,11 @@ class TestUnifiedSearchDedup:
         return src
 
     def test_dedup_keeps_first_seen(self):
+        # Same identifier from two sources — only the first (community) is kept when equal trust.
         s1 = SkillMeta(name="skill", description="from A", source="a",
-                        identifier="a/skill", trust_level="community")
+                        identifier="shared/skill", trust_level="community")
         s2 = SkillMeta(name="skill", description="from B", source="b",
-                        identifier="b/skill", trust_level="community")
+                        identifier="shared/skill", trust_level="community")
         src_a = self._make_source("a", [s1])
         src_b = self._make_source("b", [s2])
         results = unified_search("skill", [src_a, src_b])
@@ -975,10 +1291,11 @@ class TestUnifiedSearchDedup:
         assert results[0].description == "from A"
 
     def test_dedup_prefers_trusted_over_community(self):
+        # Same identifier — trusted wins over community.
         community = SkillMeta(name="skill", description="community", source="a",
-                               identifier="a/skill", trust_level="community")
+                               identifier="shared/skill", trust_level="community")
         trusted = SkillMeta(name="skill", description="trusted", source="b",
-                             identifier="b/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         src_a = self._make_source("a", [community])
         src_b = self._make_source("b", [trusted])
         results = unified_search("skill", [src_a, src_b])
@@ -988,9 +1305,9 @@ class TestUnifiedSearchDedup:
     def test_dedup_prefers_builtin_over_trusted(self):
         """Regression: builtin must not be overwritten by trusted."""
         builtin = SkillMeta(name="skill", description="builtin", source="a",
-                             identifier="a/skill", trust_level="builtin")
+                             identifier="shared/skill", trust_level="builtin")
         trusted = SkillMeta(name="skill", description="trusted", source="b",
-                             identifier="b/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         src_a = self._make_source("a", [builtin])
         src_b = self._make_source("b", [trusted])
         results = unified_search("skill", [src_a, src_b])
@@ -999,13 +1316,30 @@ class TestUnifiedSearchDedup:
 
     def test_dedup_trusted_not_overwritten_by_community(self):
         trusted = SkillMeta(name="skill", description="trusted", source="a",
-                             identifier="a/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         community = SkillMeta(name="skill", description="community", source="b",
-                               identifier="b/skill", trust_level="community")
+                               identifier="shared/skill", trust_level="community")
         src_a = self._make_source("a", [trusted])
         src_b = self._make_source("b", [community])
         results = unified_search("skill", [src_a, src_b])
         assert results[0].trust_level == "trusted"
+
+    def test_browse_sh_same_name_different_site_not_deduped(self):
+        # Browse.sh skills from different hostnames share task names (e.g. "search-listings")
+        # but have unique identifiers. They must NOT be collapsed into one result.
+        airbnb = SkillMeta(
+            name="search-listings", description="Airbnb search", source="browse-sh",
+            identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
+        )
+        booking = SkillMeta(
+            name="search-listings", description="Booking.com search", source="browse-sh",
+            identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
+        )
+        src = self._make_source("browse-sh", [airbnb, booking])
+        results = unified_search("search-listings", [src])
+        assert len(results) == 2, (
+            "browse-sh skills with the same name but different sites must not be deduplicated"
+        )
 
     def test_source_filter(self):
         s1 = SkillMeta(name="s1", description="d", source="a",
@@ -1359,3 +1693,270 @@ class TestDownloadDirectoryRecursive:
 
         assert "SKILL.md" in files
         assert "scripts/run.py" not in files  # lost due to rate limit
+
+
+# ---------------------------------------------------------------------------
+# Install-path safety (lock-file → uninstall rmtree boundary)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallPathSafety:
+    """Guard the lock-file → ``uninstall_skill`` rmtree path.
+
+    The destructive boundary is ``shutil.rmtree(SKILLS_DIR / install_path)``.
+    Lock-file ``install_path`` values that are absolute, contain ``..``,
+    point at the skills root itself, or are redirected via a symlink/junction
+    inside ``skills/`` must be rejected before they reach rmtree.
+    """
+
+    @pytest.fixture
+    def isolated_skills_dir(self, tmp_path, monkeypatch):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        monkeypatch.setattr("tools.skills_hub.SKILLS_DIR", skills_dir)
+        return skills_dir
+
+    @pytest.fixture
+    def patch_lock_file(self, monkeypatch):
+        """Redirect HubLockFile's default path to a test-controlled file.
+
+        HubLockFile.__init__ captures LOCK_FILE as a default arg at class
+        definition time, so monkeypatching the module-level LOCK_FILE doesn't
+        affect later HubLockFile() calls. Patch __defaults__ instead.
+        """
+        def _apply(lock_path):
+            monkeypatch.setattr(HubLockFile.__init__, "__defaults__", (lock_path,))
+        return _apply
+
+    @pytest.mark.parametrize(
+        "bad_install_path",
+        [
+            "",
+            ".",
+            "..",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "skills/../../tmp",
+            "C:/Windows/System32",
+        ],
+    )
+    def test_record_install_rejects_unsafe_paths(self, tmp_path, bad_install_path):
+        """record_install must reject malformed install_path values at write time."""
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        with pytest.raises(ValueError, match="Unsafe"):
+            lock.record_install(
+                name="evil",
+                source="github",
+                identifier="x",
+                trust_level="trusted",
+                scan_verdict="pass",
+                skill_hash="h1",
+                install_path=bad_install_path,
+                files=["SKILL.md"],
+            )
+
+    def test_record_install_rejects_mismatched_last_component(self, tmp_path):
+        """The final component of install_path MUST equal the skill name."""
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        with pytest.raises(ValueError, match="Unsafe install path"):
+            lock.record_install(
+                name="legit-skill",
+                source="github",
+                identifier="x",
+                trust_level="trusted",
+                scan_verdict="pass",
+                skill_hash="h1",
+                install_path="legit-skill/evil-suffix",
+                files=["SKILL.md"],
+            )
+
+    def test_record_install_accepts_bare_name(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="good", source="github", identifier="x",
+            trust_level="trusted", scan_verdict="pass",
+            skill_hash="h", install_path="good", files=["SKILL.md"],
+        )
+        assert lock.get_installed("good")["install_path"] == "good"
+
+    def test_record_install_accepts_category_and_name(self, tmp_path):
+        lock = HubLockFile(path=tmp_path / "lock.json")
+        lock.record_install(
+            name="good", source="github", identifier="x",
+            trust_level="trusted", scan_verdict="pass",
+            skill_hash="h", install_path="devops/good", files=["SKILL.md"],
+        )
+        assert lock.get_installed("good")["install_path"] == "devops/good"
+
+    def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        """Hand-edited lock.json with absolute install_path must not delete anything."""
+        from tools.skills_hub import uninstall_skill
+
+        lock_path = tmp_path / "lock.json"
+        target = tmp_path / "victim"
+        target.mkdir()
+        (target / "file.txt").write_text("important")
+
+        # Bypass record_install's validator to simulate a poisoned lock file.
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "evil": {
+                    "source": "github",
+                    "identifier": "x",
+                    "trust_level": "trusted",
+                    "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": str(target),
+                    "files": [],
+                    "metadata": {},
+                    "installed_at": "now",
+                    "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        ok, msg = uninstall_skill("evil")
+        assert ok is False
+        assert "Unsafe" in msg or "Refusing" in msg
+        assert target.exists()
+        assert (target / "file.txt").read_text() == "important"
+
+    def test_uninstall_rejects_traversal(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        from tools.skills_hub import uninstall_skill
+
+        lock_path = tmp_path / "lock.json"
+        sibling = tmp_path / "sibling"
+        sibling.mkdir()
+        (sibling / "data").write_text("nope")
+
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "evil": {
+                    "source": "github", "identifier": "x",
+                    "trust_level": "trusted", "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": "../sibling",
+                    "files": [], "metadata": {},
+                    "installed_at": "now", "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        ok, msg = uninstall_skill("evil")
+        assert ok is False
+        assert sibling.exists()
+        assert (sibling / "data").read_text() == "nope"
+
+    def test_uninstall_rejects_empty_install_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
+        """Empty install_path resolves to SKILLS_DIR itself — must be refused."""
+        from tools.skills_hub import uninstall_skill
+
+        # Put a sibling skill alongside to prove rmtree doesn't fire.
+        (isolated_skills_dir / "bystander").mkdir()
+        (isolated_skills_dir / "bystander" / "SKILL.md").write_text("safe")
+
+        lock_path = tmp_path / "lock.json"
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "evil": {
+                    "source": "github", "identifier": "x",
+                    "trust_level": "trusted", "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": "",
+                    "files": [], "metadata": {},
+                    "installed_at": "now", "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        ok, msg = uninstall_skill("evil")
+        assert ok is False
+        assert (isolated_skills_dir / "bystander" / "SKILL.md").read_text() == "safe"
+
+    def test_uninstall_rejects_symlink_redirect_inside_skills(
+        self, tmp_path, isolated_skills_dir, patch_lock_file
+    ):
+        """A symlinked skill dir that points outside skills/ must not be followed."""
+        from tools.skills_hub import uninstall_skill
+
+        # Outside-tree victim
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "important").write_text("don't delete me")
+
+        # Symlink in skills/ pointing to the victim
+        link = isolated_skills_dir / "evil"
+        try:
+            link.symlink_to(victim, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation unsupported on this platform")
+
+        lock_path = tmp_path / "lock.json"
+        lock_path.write_text(json.dumps({
+            "installed": {
+                "evil": {
+                    "source": "github", "identifier": "x",
+                    "trust_level": "trusted", "scan_verdict": "pass",
+                    "content_hash": "h",
+                    "install_path": "evil",
+                    "files": [], "metadata": {},
+                    "installed_at": "now", "updated_at": "now",
+                }
+            }
+        }))
+
+        patch_lock_file(lock_path)
+        ok, msg = uninstall_skill("evil")
+        assert ok is False
+        assert victim.exists()
+        assert (victim / "important").read_text() == "don't delete me"
+
+    def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
+        """Skill install must not follow symlinks that leak file contents
+        from outside the quarantine directory."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: bad-skill\n---\n")
+
+        secret = tmp_path / "secret.txt"
+        secret.write_text("data exfiltration payload\n")
+
+        leak = q_dir / "leak.txt"
+        try:
+            leak.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation unsupported on this platform")
+
+        bundle = hub.SkillBundle(
+            name="bad-skill",
+            files={"SKILL.md": "---\nname: bad-skill\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="bad-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="symlink"):
+                hub.install_from_quarantine(
+                    q_dir, "bad-skill", "", bundle, scan_result,
+                )
+
+        assert not (skills_dir / "bad-skill" / "leak.txt").exists()
+        assert secret.read_text() == "data exfiltration payload\n"

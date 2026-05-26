@@ -37,6 +37,7 @@ import logging
 import mimetypes
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -142,6 +143,7 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    SUPPORTS_MESSAGE_EDITING = False
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
@@ -206,7 +208,11 @@ class WeComAdapter(BasePlatformAdapter):
             return False
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
+            )
             await self._open_connection()
             self._mark_connected()
             self._listen_task = asyncio.create_task(self._listen_loop())
@@ -289,7 +295,7 @@ class WeComAdapter(BasePlatformAdapter):
 
         auth_payload = await self._wait_for_handshake(req_id)
         errcode = auth_payload.get("errcode", 0)
-        if errcode not in (0, None):
+        if errcode not in {0, None}:
             errmsg = auth_payload.get("errmsg", "authentication failed")
             raise RuntimeError(f"{errmsg} (errcode={errcode})")
 
@@ -314,7 +320,7 @@ class WeComAdapter(BasePlatformAdapter):
                 if self._payload_req_id(payload) == req_id:
                     return payload
                 logger.debug("[%s] Ignoring pre-auth payload: %s", self.name, payload.get("cmd"))
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WeCom websocket closed during authentication")
 
     async def _listen_loop(self) -> None:
@@ -339,6 +345,7 @@ class WeComAdapter(BasePlatformAdapter):
                 try:
                     await self._open_connection()
                     backoff_idx = 0
+                    self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
                     logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
@@ -354,7 +361,7 @@ class WeComAdapter(BasePlatformAdapter):
                 payload = self._parse_json(msg.data)
                 if payload:
                     await self._dispatch_payload(payload)
-            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
                 raise RuntimeError("WeCom websocket closed")
 
     async def _heartbeat_loop(self) -> None:
@@ -508,6 +515,11 @@ class WeComAdapter(BasePlatformAdapter):
         self._remember_chat_req_id(chat_id, self._payload_req_id(payload))
 
         text, reply_text = self._extract_text(body)
+        # Strip leading @mention in group chats so slash commands like
+        # "@BotName /approve" are correctly recognized as "/approve".
+        # Mirrors what the Telegram adapter does (re.sub @botname).
+        if is_group and text:
+            text = re.sub(r"^@\S+\s*", "", text).strip()
         media_urls, media_types = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
         has_reply_context = bool(reply_text and (text or media_urls))
@@ -604,6 +616,18 @@ class WeComAdapter(BasePlatformAdapter):
             else:
                 delay = self._text_batch_delay_seconds
             await asyncio.sleep(delay)
+            # Guard against the cancel-delivery race: when the sleep timer
+            # fires just before cancel() is called, CPython sets
+            # Task._must_cancel but cannot cancel the already-done sleep
+            # future, so CancelledError is delivered at the *next* await
+            # (handle_message) rather than here.  By that point this task
+            # has already popped the merged event, so the superseding task
+            # sees an empty batch and silently drops the message.
+            # This check is synchronous — no await between the sleep and
+            # the pop — so no other coroutine can modify the task registry
+            # in between.
+            if self._pending_text_batch_tasks.get(key) is not current_task:
+                return
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
@@ -624,13 +648,16 @@ class WeComAdapter(BasePlatformAdapter):
         msgtype = str(body.get("msgtype") or "").lower()
 
         if msgtype == "mixed":
-            mixed = body.get("mixed") if isinstance(body.get("mixed"), dict) else {}
-            items = mixed.get("msg_item") if isinstance(mixed.get("msg_item"), list) else []
+            _raw_mixed = body.get("mixed")
+            mixed = _raw_mixed if isinstance(_raw_mixed, dict) else {}
+            _raw_items = mixed.get("msg_item")
+            items = _raw_items if isinstance(_raw_items, list) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 if str(item.get("msgtype") or "").lower() == "text":
-                    text_block = item.get("text") if isinstance(item.get("text"), dict) else {}
+                    _raw_text = item.get("text")
+                    text_block = _raw_text if isinstance(_raw_text, dict) else {}
                     content = str(text_block.get("content") or "").strip()
                     if content:
                         text_parts.append(content)
@@ -672,8 +699,10 @@ class WeComAdapter(BasePlatformAdapter):
         msgtype = str(body.get("msgtype") or "").lower()
 
         if msgtype == "mixed":
-            mixed = body.get("mixed") if isinstance(body.get("mixed"), dict) else {}
-            items = mixed.get("msg_item") if isinstance(mixed.get("msg_item"), list) else []
+            _raw_mixed = body.get("mixed")
+            mixed = _raw_mixed if isinstance(_raw_mixed, dict) else {}
+            _raw_items = mixed.get("msg_item")
+            items = _raw_items if isinstance(_raw_items, list) else []
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -982,7 +1011,7 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _response_error(response: Dict[str, Any]) -> Optional[str]:
         errcode = response.get("errcode", 0)
-        if errcode in (0, None):
+        if errcode in {0, None}:
             return None
         errmsg = str(response.get("errmsg") or "unknown error")
         return f"WeCom errcode {errcode}: {errmsg}"
@@ -1000,6 +1029,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
+        # WeCom doesn't pad base64 keys; add padding if needed
+        aes_key = aes_key + '=' * ((4 - len(aes_key) % 4) % 4)
         key = base64.b64decode(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
@@ -1459,3 +1490,133 @@ class WeComAdapter(BasePlatformAdapter):
             "name": chat_id,
             "type": "group" if chat_id and chat_id.lower().startswith("group") else "dm",
         }
+
+
+# ------------------------------------------------------------------
+# QR code scan flow for obtaining bot credentials
+# ------------------------------------------------------------------
+
+_QR_GENERATE_URL = "https://work.weixin.qq.com/ai/qc/generate"
+_QR_QUERY_URL = "https://work.weixin.qq.com/ai/qc/query_result"
+_QR_CODE_PAGE = "https://work.weixin.qq.com/ai/qc/gen?source=hermes&scode="
+_QR_POLL_INTERVAL = 3  # seconds
+_QR_POLL_TIMEOUT = 300  # 5 minutes
+
+
+def qr_scan_for_bot_info(
+    *,
+    timeout_seconds: int = _QR_POLL_TIMEOUT,
+) -> Optional[Dict[str, str]]:
+    """Run the WeCom QR scan flow to obtain bot_id and secret.
+
+    Fetches a QR code from WeCom, renders it in the terminal, and polls
+    until the user scans it or the timeout expires.
+
+    Returns ``{"bot_id": ..., "secret": ...}`` on success, ``None`` on
+    failure or timeout.
+
+    Note: the ``work.weixin.qq.com/ai/qc/{generate,query_result}`` endpoints
+    used here are not part of WeCom's public developer API — they back the
+    admin-console web UI's bot-creation flow and may change without notice.
+    The same pattern is used by the feishu/dingtalk QR setup wizards.
+    """
+    try:
+        import urllib.request
+        import urllib.parse
+    except ImportError:  # pragma: no cover
+        logger.error("urllib is required for WeCom QR scan")
+        return None
+
+    generate_url = f"{_QR_GENERATE_URL}?source=hermes"
+
+    # ── Step 1: Fetch QR code ──
+    print("  Connecting to WeCom...", end="", flush=True)
+    try:
+        req = urllib.request.Request(generate_url, headers={"User-Agent": "HermesAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("WeCom QR: failed to fetch QR code: %s", exc)
+        print(f" failed: {exc}")
+        return None
+
+    data = raw.get("data") or {}
+    scode = str(data.get("scode") or "").strip()
+    auth_url = str(data.get("auth_url") or "").strip()
+
+    if not scode or not auth_url:
+        logger.error("WeCom QR: unexpected response format: %s", raw)
+        print(" failed: unexpected response format")
+        return None
+
+    print(" done.")
+
+    # ── Step 2: Render QR code in terminal ──
+    print()
+    qr_rendered = False
+    try:
+        import qrcode as _qrcode
+        qr = _qrcode.QRCode()
+        qr.add_data(auth_url)
+        qr.make(fit=True)
+        qr.print_ascii(invert=True)
+        qr_rendered = True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    page_url = f"{_QR_CODE_PAGE}{urllib.parse.quote(scode)}"
+    if qr_rendered:
+        print(f"\n  Scan the QR code above, or open this URL directly:\n  {page_url}")
+    else:
+        print(f"  Open this URL in WeCom on your phone:\n\n  {page_url}\n")
+        print("  Tip: pip install qrcode  to display a scannable QR code here next time")
+    print()
+    print("  Fetching configuration results...", end="", flush=True)
+
+    # ── Step 3: Poll for result ──
+    deadline = time.monotonic() + timeout_seconds
+    query_url = f"{_QR_QUERY_URL}?scode={urllib.parse.quote(scode)}"
+    poll_count = 0
+
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(query_url, headers={"User-Agent": "HermesAgent/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.debug("WeCom QR poll error: %s", exc)
+            time.sleep(_QR_POLL_INTERVAL)
+            continue
+
+        poll_count += 1
+        # Print a dot on every poll so progress is visible within 3s.
+        print(".", end="", flush=True)
+
+        result_data = result.get("data") or {}
+        status = str(result_data.get("status") or "").lower()
+
+        if status == "success":
+            print()  # newline after "Fetching configuration results..." dots
+            bot_info = result_data.get("bot_info") or {}
+            bot_id = str(bot_info.get("botid") or bot_info.get("bot_id") or "").strip()
+            secret = str(bot_info.get("secret") or "").strip()
+            if bot_id and secret:
+                return {"bot_id": bot_id, "secret": secret}
+            logger.warning(
+                "WeCom QR: scan reported success but bot_info missing or incomplete: %s",
+                result_data,
+            )
+            print(
+                "  QR scan reported success but no bot credentials were returned.\n"
+                "  This usually means the bot was not actually created on the WeCom side.\n"
+                "  Falling back to manual credential entry."
+            )
+            return None
+
+        time.sleep(_QR_POLL_INTERVAL)
+
+    print()  # newline after dots
+    print(f"  QR scan timed out ({timeout_seconds // 60} minutes). Please try again.")
+    return None

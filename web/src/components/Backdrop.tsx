@@ -1,5 +1,7 @@
 import { useGpuTier } from "@nous-research/ui/hooks/use-gpu-tier";
 
+import fillerBgUrl from "@nous-research/ui/assets/filler-bg0.webp";
+
 /**
  * Replicates the visual layer stack of `<Overlays dark />` from
  * `@nous-research/ui` without pulling in its leva / gsap / three peer deps.
@@ -10,7 +12,7 @@ import { useGpuTier } from "@nous-research/ui/hooks/use-gpu-tier";
  * `ThemeProvider` can repaint the stack without remounting.
  *
  *   z-1   bg = `var(--background-base)`, mix-blend-mode: difference
- *   z-2   filler-bg jpeg, inverted, opacity 0.033, difference
+ *   z-2   bundled filler-bg WebP, inverted, opacity 0.033, difference
  *   z-99  warm top-left vignette (`var(--warm-glow)`), opacity 0.22, lighten
  *   z-101 noise grain (SVG, ~55% opacity × `--noise-opacity-mul`,
  *         color-dodge) — gated on GPU tier
@@ -38,13 +40,27 @@ export function Backdrop() {
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-[2]"
-        style={{ mixBlendMode: "difference", opacity: 0.033 }}
+        style={
+          {
+            // Themes can override the filler background by setting
+            // `assets.bg` — the <img> hides itself when a CSS bg is set
+            // so the two don't double-darken. CSS var fallbacks keep the
+            // default behaviour unchanged when no theme customises these.
+            mixBlendMode:
+              "var(--component-backdrop-filler-blend-mode, difference)",
+            opacity: "var(--component-backdrop-filler-opacity, 0.033)",
+            backgroundImage: "var(--theme-asset-bg)",
+            backgroundSize: "var(--component-backdrop-background-size, cover)",
+            backgroundPosition:
+              "var(--component-backdrop-background-position, center)",
+          } as unknown as React.CSSProperties
+        }
       >
         <img
           alt=""
-          className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left invert"
+          className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left invert theme-default-filler"
           fetchPriority="low"
-          src="/ds-assets/filler-bg0.jpg"
+          src={fillerBgUrl}
         />
       </div>
 

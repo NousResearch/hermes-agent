@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 # Gemini's ``FunctionDeclaration.parameters`` field accepts the ``Schema``
 # object, which is only a subset of OpenAPI 3.0 / JSON Schema.  Strip fields
@@ -73,6 +73,20 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
             ]
             continue
         cleaned[key] = value
+
+    # Gemini's Schema validator requires every ``enum`` entry to be a string,
+    # even when the parent ``type`` is ``integer`` / ``number`` / ``boolean``.
+    # OpenAI / OpenRouter / Anthropic accept typed enums (e.g. Discord's
+    # ``auto_archive_duration: {type: integer, enum: [60, 1440, 4320, 10080]}``),
+    # so we only drop the ``enum`` when it would collide with Gemini's rule.
+    # Keeping ``type: integer`` plus the human-readable description gives the
+    # model enough guidance; the tool handler still validates the value.
+    enum_val = cleaned.get("enum")
+    type_val = cleaned.get("type")
+    if isinstance(enum_val, list) and type_val in {"integer", "number", "boolean"}:
+        if any(not isinstance(item, str) for item in enum_val):
+            cleaned.pop("enum", None)
+
     return cleaned
 
 

@@ -110,8 +110,8 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch("tools.process_registry.process_registry") as mock_registry, \
-                 patch("tools.terminal_tool.cleanup_vm") as mock_cleanup_vm, \
-                 patch("tools.browser_tool.cleanup_browser") as mock_cleanup_browser:
+                 patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
+                 patch("run_agent.cleanup_browser") as mock_cleanup_browser:
                 agent.close()
 
                 mock_registry.kill_all.assert_called_once_with(
@@ -172,9 +172,9 @@ class TestAgentCloseMethod:
             with patch(
                 "tools.process_registry.process_registry"
             ) as mock_reg, patch(
-                "tools.terminal_tool.cleanup_vm"
+                "run_agent.cleanup_vm"
             ) as mock_vm, patch(
-                "tools.browser_tool.cleanup_browser"
+                "run_agent.cleanup_browser"
             ) as mock_browser:
                 mock_reg.kill_all.side_effect = RuntimeError("boom")
 
@@ -213,7 +213,7 @@ class TestGatewayCleanupWiring:
         runner._restart_task_started = False
         runner._restart_detached = False
         runner._restart_via_service = False
-        runner._restart_drain_timeout = 5.0
+        runner._restart_drain_timeout = 0.1
         runner._voice_mode = {}
         runner._session_model_overrides = {}
         runner._update_prompt_pending = {}

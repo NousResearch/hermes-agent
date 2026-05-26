@@ -71,17 +71,17 @@ class TestMinimaxThinkingSupport:
 
 
 class TestMinimaxAuxModel:
-    """Verify auxiliary model is standard (not highspeed)."""
+    """Verify auxiliary model is standard (not highspeed) — now reads from profiles."""
 
     def test_minimax_aux_is_standard(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert _API_KEY_PROVIDER_AUX_MODELS["minimax"] == "MiniMax-M2.7"
-        assert _API_KEY_PROVIDER_AUX_MODELS["minimax-cn"] == "MiniMax-M2.7"
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert _get_aux_model_for_provider("minimax") == "MiniMax-M2.7"
+        assert _get_aux_model_for_provider("minimax-cn") == "MiniMax-M2.7"
 
     def test_minimax_aux_not_highspeed(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert "highspeed" not in _API_KEY_PROVIDER_AUX_MODELS["minimax"]
-        assert "highspeed" not in _API_KEY_PROVIDER_AUX_MODELS["minimax-cn"]
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert "highspeed" not in _get_aux_model_for_provider("minimax")
+        assert "highspeed" not in _get_aux_model_for_provider("minimax-cn")
 
 
 class TestMinimaxBetaHeaders:
@@ -308,10 +308,15 @@ class TestMinimaxPreserveDots:
         from agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name("MiniMax-M2.7", preserve_dots=True) == "MiniMax-M2.7"
 
-    def test_normalize_converts_without_preserve(self):
+    def test_normalize_preserves_non_anthropic_dots_without_preserve(self):
         from agent.anthropic_adapter import normalize_model_name
-        # Without preserve_dots, dots become hyphens (broken for MiniMax)
-        assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2-7"
+        # Non-Anthropic model families use dots as canonical version separators;
+        # only Claude/Anthropic names are hyphen-normalized by default.
+        assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2.7"
+
+    def test_normalize_still_converts_claude_dots_without_preserve(self):
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name("claude-opus-4.6", preserve_dots=False) == "claude-opus-4-6"
 
 
 class TestMinimaxSwitchModelCredentialGuard:
@@ -341,6 +346,7 @@ class TestMinimaxSwitchModelCredentialGuard:
             agent._client_kwargs = {}
             agent.client = None
             agent._anthropic_client = MagicMock()
+            agent._fallback_chain = []
 
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-leaked") as mock_resolve, \

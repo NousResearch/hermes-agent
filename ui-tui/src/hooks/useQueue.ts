@@ -1,5 +1,17 @@
 import { useCallback, useRef, useState } from 'react'
 
+// Mutates `arr` in place; returned reference is the same input array, kept
+// so callers can chain. Use `Array.prototype.toSpliced` if you need a copy.
+export function removeAtInPlace<T>(arr: T[], i: number): T[] {
+  if (i < 0 || i >= arr.length) {
+    return arr
+  }
+
+  arr.splice(i, 1)
+
+  return arr
+}
+
 export function useQueue() {
   const queueRef = useRef<string[]>([])
   const [queuedDisplay, setQueuedDisplay] = useState<string[]>([])
@@ -36,6 +48,19 @@ export function useQueue() {
     [syncQueue]
   )
 
+  const removeQ = useCallback(
+    (i: number) => {
+      const before = queueRef.current.length
+
+      removeAtInPlace(queueRef.current, i)
+
+      if (queueRef.current.length !== before) {
+        syncQueue()
+      }
+    },
+    [syncQueue]
+  )
+
   return {
     dequeue,
     enqueue,
@@ -43,6 +68,7 @@ export function useQueue() {
     queueEditRef,
     queueRef,
     queuedDisplay,
+    removeQ,
     replaceQ,
     setQueueEdit,
     syncQueue

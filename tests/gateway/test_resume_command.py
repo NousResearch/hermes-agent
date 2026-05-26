@@ -4,7 +4,7 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -53,9 +53,6 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     mock_store.switch_session.return_value = mock_session_entry
     runner.session_store = mock_store
 
-    # Stub out memory flushing
-    runner._async_flush_memories = AsyncMock()
-
     return runner
 
 
@@ -91,6 +88,9 @@ class TestHandleResumeCommand:
         assert "Research" in result
         assert "Coding" in result
         assert "Named Sessions" in result
+        assert "1." in result
+        assert "2." in result
+        assert "/resume 1" in result
         db.close()
 
     @pytest.mark.asyncio
@@ -105,6 +105,47 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
         assert "No named sessions" in result
         assert "/title" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_index(self, tmp_path):
+        """Numeric argument resumes the indexed titled session from the list."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.create_session("sess_002", "telegram")
+        db.set_session_title("sess_001", "Research")
+        db.set_session_title("sess_002", "Coding")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume 2")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_001"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_index_out_of_range(self, tmp_path):
+        """Out-of-range numeric arguments show a helpful error."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.set_session_title("sess_001", "Research")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume 9")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "out of range" in result.lower()
+        assert "/resume" in result
+        runner.session_store.switch_session.assert_not_called()
         db.close()
 
     @pytest.mark.asyncio
@@ -180,6 +221,40 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_follows_compression_continuation(self, tmp_path):
+        """Gateway /resume should reopen the live descendant after compression."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("compressed_root", "telegram")
+        db.set_session_title("compressed_root", "Compressed Work")
+        db.end_session("compressed_root", "compression")
+        db.create_session("compressed_child", "telegram", parent_session_id="compressed_root")
+        db.append_message("compressed_child", "user", "hello from continuation")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Compressed Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        runner.session_store.load_transcript.side_effect = (
+            lambda session_id: [{"role": "user", "content": "hello from continuation"}]
+            if session_id == "compressed_child"
+            else []
+        )
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed session" in result
+        assert "(1 message)" in result
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "compressed_child"
+        runner.session_store.load_transcript.assert_called_with("compressed_child")
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_running_agent(self, tmp_path):
         """Switching sessions clears any cached running agent."""
         from hermes_state import SessionDB
@@ -201,26 +276,85 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
-    async def test_resume_flushes_memories(self, tmp_path):
-        """Resume should flush memories from the current session before switching."""
+    async def test_resume_evicts_cached_agent(self, tmp_path):
+        """Gateway /resume evicts the cached AIAgent so the next message
+        rebuilds with the correct session_id end-to-end — mirrors /branch
+        and /reset. Without this, the cached agent's memory provider keeps
+        writing into the wrong session. See #6672.
+        """
+        import threading
         from hermes_state import SessionDB
-
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("old_session", "telegram")
         db.set_session_title("old_session", "Old Work")
         db.create_session("current_session_001", "telegram")
 
         event = _make_event(text="/resume Old Work")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        # Seed the cache with a fake agent
+        real_key = _session_key_for_event(event)
+        runner._agent_cache = {real_key: (MagicMock(), object())}
+        runner._agent_cache_lock = threading.RLock()
+
+        await runner._handle_resume_command(event)
+
+        assert real_key not in runner._agent_cache
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_strips_outer_brackets(self, tmp_path):
+        """Users may copy `<session_id>` from the usage hint literally.
+
+        The gateway should strip outer ``<>``, ``[]``, ``""``, and ``''``
+        before lookup so ``/resume <abc123>`` works the same as
+        ``/resume abc123``.
+        """
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("abc123", "telegram")
+        db.set_session_title("abc123", "Bracketed")
+        db.create_session("current_session_001", "telegram")
+
+        for raw in ("<abc123>", "[abc123]", '"abc123"', "'abc123'"):
+            event = _make_event(text=f"/resume {raw}")
+            runner = _make_runner(
+                session_db=db,
+                current_session_id="current_session_001",
+                event=event,
+            )
+            result = await runner._handle_resume_command(event)
+            # Either the session was resumed (and we get a "Resumed" / "Already on" reply)
+            # or it was found-then-redirected. Failure mode = "No session found matching '<abc123>'".
+            assert "abc123" not in str(result) or "not found" not in str(result).lower(), (
+                f"bracket stripping failed for {raw!r}: gateway returned {result!r}"
+            )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_resolves_by_session_id(self, tmp_path):
+        """The gateway should accept a bare session ID, not just a title.
+
+        Before this fix, /resume in the gateway only called
+        ``resolve_session_by_title``, so ``/resume <session_id>`` always
+        returned "Session not found" even for valid IDs.
+        """
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("unnamed_session_xyz", "telegram")
+        # Deliberately no title set — this session can ONLY be resolved by ID.
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume unnamed_session_xyz")
         runner = _make_runner(
             session_db=db,
             current_session_id="current_session_001",
             event=event,
         )
+        result = await runner._handle_resume_command(event)
 
-        await runner._handle_resume_command(event)
-
-        runner._async_flush_memories.assert_called_once_with(
-            "current_session_001",
-            "agent:main:telegram:dm:67890",
+        # Should NOT be the not-found error.
+        assert "not found" not in str(result).lower(), (
+            f"session-id lookup failed: {result!r}"
         )
         db.close()

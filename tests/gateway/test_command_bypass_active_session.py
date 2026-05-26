@@ -47,6 +47,7 @@ def _make_adapter():
     """Create a minimal adapter for testing the active-session guard."""
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = _StubAdapter(config, Platform.TELEGRAM)
+    adapter._busy_text_mode = ""
     adapter.sent_responses = []
 
     async def _mock_handler(event):
@@ -272,7 +273,7 @@ class TestCommandBypassActiveSession:
 # Tests: non-bypass-set commands (no dedicated Level-2 handler) also bypass
 # instead of interrupting + being discarded.  Regression for the Discord
 # ghost-slash-command bug where /model, /reasoning, /voice, /insights, /title,
-# /resume, /retry, /undo, /compress, /usage, /provider, /reload-mcp,
+# /resume, /retry, /undo, /compress, /usage, /reload-mcp,
 # /sethome, /reset silently interrupted the running agent.
 # ---------------------------------------------------------------------------
 
@@ -298,7 +299,6 @@ class TestAllResolvableCommandsBypassGuard:
             ("/undo", "undo"),
             ("/compress", "compress"),
             ("/usage", "usage"),
-            ("/provider", "provider"),
             ("/reload-mcp", "reload-mcp"),
             ("/sethome", "sethome"),
         ],
@@ -326,7 +326,7 @@ class TestAllResolvableCommandsBypassGuard:
 
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
-            "resume", "retry", "undo", "compress", "usage", "provider",
+            "resume", "retry", "undo", "compress", "usage",
             "reload-mcp", "sethome", "reset",
         ):
             assert should_bypass_active_session(cmd) is True, (

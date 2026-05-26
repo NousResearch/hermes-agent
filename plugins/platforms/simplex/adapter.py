@@ -482,14 +482,23 @@ class SimplexAdapter(BasePlatformAdapter):
 
     async def _send_ws(self, payload: dict) -> None:
         """Send a JSON payload over the WebSocket, queuing if not yet connected."""
-        import websockets as _wsexc
         ws = self._ws
         if not ws:
             logger.debug("SimpleX: WS not connected, dropping outbound command")
             return
+
+        connection_closed: tuple[type[BaseException], ...] = ()
+        try:
+            import websockets as _wsexc
+            connection_closed = (_wsexc.ConnectionClosed,)
+        except ImportError:
+            # The plugin is gated by check_requirements() in normal runtime, but
+            # unit tests may instantiate the adapter directly with a mocked socket.
+            connection_closed = ()
+
         try:
             await ws.send(json.dumps(payload))
-        except _wsexc.ConnectionClosed:
+        except connection_closed:
             logger.warning("SimpleX: WS closed while sending")
         except Exception as e:
             logger.warning("SimpleX: WS send error: %s", e)

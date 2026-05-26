@@ -85,6 +85,18 @@ MAX_TIMEOUT_SECONDS = 300
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
 _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 
+# Slow-hook watchdog (#32460).  A ``pre_tool_call`` hook is on the hot
+# path between an LLM response and tool execution, so a hook that hangs
+# for the full ``DEFAULT_TIMEOUT_SECONDS = 60`` window manifests to the
+# user as a silent 50-65s wall-clock gap with no log line at all — only
+# a single ``shell hook timed out`` WARNING fires after the timer
+# expires.  These thresholds make the hang visible immediately: a
+# WARNING is emitted while the hook is *still running* once it crosses
+# the threshold, then repeated at the interval so the user can identify
+# the offending script without waiting for the full timeout.
+_SLOW_HOOK_THRESHOLD_SECONDS = 5.0
+_SLOW_HOOK_REPEAT_SECONDS = 10.0
+
 # (event, matcher, command) triples that have been wired to the plugin
 # manager in the current process.  Matcher is part of the key because
 # the same script can legitimately register for different matchers under
@@ -361,6 +373,43 @@ def _parse_single_entry(
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
 
+def _watch_slow_hook(
+    spec: ShellHookSpec,
+    started_at: float,
+    stop_event: threading.Event,
+) -> None:
+    """Emit a WARNING while a shell hook is still running past the threshold.
+
+    Runs in a daemon thread spawned by :func:`_spawn`.  The first warning
+    fires once the hook has been running for ``_SLOW_HOOK_THRESHOLD_SECONDS``
+    and is repeated every ``_SLOW_HOOK_REPEAT_SECONDS`` until the hook
+    returns or its own timeout elapses.  Without this, a hook that hangs
+    for the full ``spec.timeout`` window manifests as a silent ~60s wall
+    clock gap between an LLM response and the resulting tool execution —
+    the symptom reported in #32460.
+    """
+    if not stop_event.wait(_SLOW_HOOK_THRESHOLD_SECONDS):
+        # Hook still hasn't returned at the threshold — log once.
+        logger.warning(
+            "shell hook still running after %.1fs "
+            "(event=%s command=%s timeout=%ss); "
+            "this stalls every tool call dispatch until the hook returns",
+            time.monotonic() - started_at,
+            spec.event,
+            spec.command,
+            spec.timeout,
+        )
+    while not stop_event.wait(_SLOW_HOOK_REPEAT_SECONDS):
+        logger.warning(
+            "shell hook still running after %.1fs "
+            "(event=%s command=%s timeout=%ss)",
+            time.monotonic() - started_at,
+            spec.event,
+            spec.command,
+            spec.timeout,
+        )
+
+
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     """Run ``spec.command`` as a subprocess with ``stdin_json`` on stdin.
 
@@ -370,6 +419,11 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     subprocess is actually invoked — both the live callback path
     (:func:`_make_callback`) and the CLI test helper (:func:`run_once`)
     go through it.
+
+    While the subprocess is running, a watchdog thread emits a WARNING
+    if the hook crosses ``_SLOW_HOOK_THRESHOLD_SECONDS`` so a hanging
+    script becomes visible immediately instead of after the full
+    ``spec.timeout`` window (see #32460).
     """
     result: Dict[str, Any] = {
         "returncode": None,
@@ -389,34 +443,51 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         return result
 
     t0 = time.monotonic()
+    # Slow-hook watchdog (#32460) — fire a WARNING while the hook is
+    # still running once it crosses ``_SLOW_HOOK_THRESHOLD_SECONDS``, so
+    # a hanging script is surfaced immediately instead of after the full
+    # ``spec.timeout`` window.  The watchdog is a daemon thread that
+    # stops as soon as the subprocess returns (success, timeout, or
+    # spawn error — all paths go through ``finally``).
+    _watchdog_stop = threading.Event()
+    _watchdog = threading.Thread(
+        target=_watch_slow_hook,
+        args=(spec, t0, _watchdog_stop),
+        daemon=True,
+        name=f"shell-hook-watchdog[{spec.event}]",
+    )
+    _watchdog.start()
     try:
-        proc = subprocess.run(
-            argv,
-            input=stdin_json,
-            capture_output=True,
-            timeout=spec.timeout,
-            text=True,
-            shell=False,
-        )
-    except subprocess.TimeoutExpired:
-        result["timed_out"] = True
+        try:
+            proc = subprocess.run(
+                argv,
+                input=stdin_json,
+                capture_output=True,
+                timeout=spec.timeout,
+                text=True,
+                shell=False,
+            )
+        except subprocess.TimeoutExpired:
+            result["timed_out"] = True
+            result["elapsed_seconds"] = round(time.monotonic() - t0, 3)
+            return result
+        except FileNotFoundError:
+            result["error"] = "command not found"
+            return result
+        except PermissionError:
+            result["error"] = "command not executable"
+            return result
+        except Exception as exc:  # pragma: no cover — defensive
+            result["error"] = str(exc)
+            return result
+
+        result["returncode"] = proc.returncode
+        result["stdout"] = proc.stdout or ""
+        result["stderr"] = proc.stderr or ""
         result["elapsed_seconds"] = round(time.monotonic() - t0, 3)
         return result
-    except FileNotFoundError:
-        result["error"] = "command not found"
-        return result
-    except PermissionError:
-        result["error"] = "command not executable"
-        return result
-    except Exception as exc:  # pragma: no cover — defensive
-        result["error"] = str(exc)
-        return result
-
-    result["returncode"] = proc.returncode
-    result["stdout"] = proc.stdout or ""
-    result["stderr"] = proc.stderr or ""
-    result["elapsed_seconds"] = round(time.monotonic() - t0, 3)
-    return result
+    finally:
+        _watchdog_stop.set()
 
 
 def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]]]:

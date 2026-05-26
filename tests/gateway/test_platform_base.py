@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import os
+import time
 from unittest.mock import patch
 
 import pytest
@@ -367,6 +368,10 @@ class TestMediaDeliveryPathValidation:
             "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             tuple(roots),
         )
+        # Disable recency-based trust by default so the original allowlist
+        # tests continue to exercise the strict-allowlist path. Tests that
+        # specifically cover recency trust re-enable it themselves.
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
 
     def test_allows_existing_file_inside_safe_root(self, tmp_path, monkeypatch):
         root = tmp_path / "media-cache"
@@ -425,6 +430,110 @@ class TestMediaDeliveryPathValidation:
         monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(extra_root))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_recency_trust_allows_freshly_produced_file(self, tmp_path, monkeypatch):
+        """A PDF the agent just wrote to /tmp should be deliverable.
+
+        Covers the natural case: agent runs ``pandoc -o /tmp/report.pdf`` or
+        ``write_file('/home/user/report.pdf', ...)`` and asks the gateway to
+        send the result. With recency trust on, fresh files outside the cache
+        allowlist are accepted because the file's mtime is within the window.
+        """
+        self._patch_roots(monkeypatch)  # zero cache allowlist
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fresh = tmp_path / "scratch" / "report.pdf"
+        fresh.parent.mkdir(parents=True)
+        fresh.write_bytes(b"%PDF-1.4")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(fresh)) == str(fresh.resolve())
+
+    def test_recency_trust_rejects_old_file(self, tmp_path, monkeypatch):
+        """A pre-existing host file (~/.bashrc, /etc/passwd shape) is rejected.
+
+        Recency trust is the load-bearing anti-injection signal: prompt-injected
+        paths point at files that have existed for days or months, well outside
+        the trust window.
+        """
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "60")
+
+        stale = tmp_path / "stale.pdf"
+        stale.write_bytes(b"%PDF-1.4")
+        old_mtime = time.time() - 7200  # 2 hours ago
+        os.utime(stale, (old_mtime, old_mtime))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(stale)) is None
+
+    def test_recency_trust_disabled_falls_back_to_pure_allowlist(self, tmp_path, monkeypatch):
+        """Setting trust_recent_files=false reverts to pre-existing strict behavior."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        fresh = tmp_path / "report.pdf"
+        fresh.write_bytes(b"%PDF-1.4")  # mtime = now
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(fresh)) is None
+
+    def test_recency_trust_denies_system_paths_even_when_fresh(self, tmp_path, monkeypatch):
+        """A freshly-touched file under /etc must NOT be uploaded.
+
+        Belt-and-braces: even if an attacker rewrites the file's mtime
+        (e.g. via a separately compromised tool result that touches a system
+        file), the denylist refuses to deliver paths under /etc, /proc, /sys,
+        ~/.ssh, ~/.aws, etc.
+        """
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        # Simulate $HOME so ~/.ssh resolves into our tmp dir.
+        fake_home = tmp_path / "home"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        secret = ssh_dir / "id_rsa.txt"
+        secret.write_bytes(b"-----BEGIN ...")  # mtime = now
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    def test_recency_trust_allows_pdf_in_project_dir(self, tmp_path, monkeypatch):
+        """The motivating case: agent produces a PDF in a project directory.
+
+        Reproduces the Discord-PDF-not-delivered bug. Before recency trust,
+        files outside ~/.hermes/cache/* were silently dropped, leaving the
+        user with a raw filepath in chat instead of an attachment.
+        """
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        project = tmp_path / "my-project"
+        report = project / "build" / "weekly-report.pdf"
+        report.parent.mkdir(parents=True)
+        report.write_bytes(b"%PDF-1.4")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(report)) == str(report.resolve())
+
+    def test_filter_keeps_recently_produced_files(self, tmp_path, monkeypatch):
+        """End-to-end: filter_local_delivery_paths routes a fresh PDF through."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fresh = tmp_path / "report.pdf"
+        fresh.write_bytes(b"%PDF-1.4")
+
+        out = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
+        assert out == [str(fresh.resolve())]
 
 
 # ---------------------------------------------------------------------------

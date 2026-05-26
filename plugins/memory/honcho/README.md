@@ -160,6 +160,8 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 - **Multi-user gateway** — `pinUserPeer: false`, optional `runtimePeerPrefix`. Each runtime user → own peer. Recommended for bots serving many humans.
 - **Hybrid** — `pinUserPeer: false`, `userPeerAliases` mapping the operator's runtime IDs to `peerName`. Multi-user gateway where YOU are routed but others stay distinct.
 
+**Migrating single → multi.** Flipping `pinUserPeer` from `true` to `false` does not migrate data. Memory accumulated under `peerName` while pinned stays there; runtime users now resolve to fresh, empty peers. To preserve your own continuity, use the **hybrid** shape — alias your runtime IDs back to `peerName` so your turns keep landing on the pooled history while other users get their own peers. The setup wizard offers this path automatically when it detects a single → multi transition.
+
 ### Memory & Recall
 
 | Key | Type | Default | Description |

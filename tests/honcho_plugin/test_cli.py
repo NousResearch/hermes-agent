@@ -387,3 +387,49 @@ class TestSetupWizardDeploymentShape:
         assert host["pinPeerName"] is True
         assert host["userPeerAliases"] == {"keep": "me"}
         assert host["runtimePeerPrefix"] == "keep_"
+
+    def test_single_to_multi_steers_to_hybrid_by_default(self, monkeypatch, tmp_path):
+        """Flipping single → multi triggers a warning that auto-steers the
+        operator to ``hybrid`` (default), so their own runtime IDs keep
+        landing on peerName instead of orphaning the pinned-pool history.
+        """
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"pinPeerName": True, "peerName": "eri"}},
+        }
+        answers = [
+            "cloud",           # deployment
+            "",                # api key (keep)
+            "eri",             # peer name
+            "hermetika",       # ai peer
+            "hermes",          # workspace
+            "multi",           # deployment shape — triggers the guard
+            "hybrid",          # guard response: accept the steer
+            "86701400",        # telegram uid
+            "",                # discord (skip)
+            "",                # slack (skip)
+            "",                # matrix (skip)
+            "",                # runtime prefix (skip)
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinPeerName"] is False
+        assert host["userPeerAliases"] == {"86701400": "eri"}
+
+    def test_single_to_multi_yes_override_keeps_multi(self, monkeypatch, tmp_path):
+        """Operator can override the steer by answering ``yes`` and accept
+        the orphaning consequences.  This is the explicit undo-the-pin path.
+        """
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"pinPeerName": True, "peerName": "eri"}},
+        }
+        answers = [
+            "cloud", "", "eri", "hermetika", "hermes",
+            "multi",           # deployment shape — triggers the guard
+            "yes",             # guard response: confirm multi
+            "telegram_",       # runtime peer prefix
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinPeerName"] is False
+        assert host["userPeerAliases"] == {}
+        assert host["runtimePeerPrefix"] == "telegram_"

@@ -681,3 +681,189 @@ class TestPinUserPeerAlias:
         }))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.pin_peer_name is True
+
+
+class TestPinTransition:
+    """Behavior when honcho.json flips ``pinPeerName`` true → false.
+
+    Covers two contracts:
+      1. A freshly-built manager picks up the flipped config and resolves
+         the same runtime ID to a new peer (no resolver staleness).
+      2. The gateway's agent-cache signature reflects honcho identity-mapping
+         changes, so a config edit busts the cached AIAgent on the next turn.
+    """
+
+    def _pinned(self) -> HonchoClientConfig:
+        return HonchoClientConfig(
+            api_key="k",
+            peer_name="Igor",
+            pin_peer_name=True,
+            enabled=False,
+            write_frequency="turn",
+        )
+
+    def _unpinned(self) -> HonchoClientConfig:
+        return HonchoClientConfig(
+            api_key="k",
+            peer_name="Igor",
+            pin_peer_name=False,
+            enabled=False,
+            write_frequency="turn",
+        )
+
+    def test_fresh_manager_after_flip_resolves_to_runtime(self):
+        pinned_mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._pinned(),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(pinned_mgr)
+        before = pinned_mgr.get_or_create("telegram:86701400")
+        assert before.user_peer_id == "Igor"
+
+        unpinned_mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._unpinned(),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(unpinned_mgr)
+        after = unpinned_mgr.get_or_create("telegram:86701400")
+        assert after.user_peer_id == "86701400", (
+            "After flipping pinPeerName off, the same runtime ID must resolve "
+            "to its own peer — otherwise multi-user mode silently merges users."
+        )
+
+    def test_cached_session_survives_config_flip_in_same_manager(self):
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._pinned(),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(mgr)
+        first = mgr.get_or_create("telegram:86701400")
+        assert first.user_peer_id == "Igor"
+
+        mgr._config = self._unpinned()
+        second = mgr.get_or_create("telegram:86701400")
+        assert second.user_peer_id == "Igor", (
+            "The per-key session cache is keyed by session-key, not by "
+            "resolved peer.  In-process flips don't invalidate it — the "
+            "gateway cache must bust the whole manager instead."
+        )
+
+    def test_cache_busting_signature_reflects_pin_peer_name(self, tmp_path, monkeypatch):
+        """Gateway agent cache must bust when honcho.json's pinPeerName flips."""
+        from gateway.run import GatewayRunner
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": True}))
+        sig_pinned = GatewayRunner._extract_cache_busting_config({})
+
+        cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": False}))
+        sig_unpinned = GatewayRunner._extract_cache_busting_config({})
+
+        assert sig_pinned["honcho.pin_peer_name"] != sig_unpinned["honcho.pin_peer_name"]
+
+    def test_cache_busting_signature_reflects_user_peer_aliases(self, tmp_path, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor"}))
+        sig_no_aliases = GatewayRunner._extract_cache_busting_config({})
+
+        cfg_path.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "Igor",
+            "userPeerAliases": {"86701400": "Igor"},
+        }))
+        sig_with_aliases = GatewayRunner._extract_cache_busting_config({})
+
+        assert sig_no_aliases["honcho.user_peer_aliases"] != sig_with_aliases["honcho.user_peer_aliases"]
+
+    def test_cache_busting_signature_reflects_runtime_peer_prefix(self, tmp_path, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor"}))
+        sig_no_prefix = GatewayRunner._extract_cache_busting_config({})
+
+        cfg_path.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "Igor",
+            "runtimePeerPrefix": "telegram_",
+        }))
+        sig_with_prefix = GatewayRunner._extract_cache_busting_config({})
+
+        assert sig_no_prefix["honcho.runtime_peer_prefix"] != sig_with_prefix["honcho.runtime_peer_prefix"]
+
+
+class TestProfilePeerUniqueness:
+    """Each Hermes profile can pin to its own unique peerName.
+
+    Profile cloning copies host blocks, but operators routinely diverge them
+    afterwards (e.g. `hermes -p partner` pinned to a different person's peer).
+    The resolver must honor host-level ``peerName`` so two profiles in the
+    same workspace stay scoped to different Honcho peers.
+    """
+
+    def _pinned_to(self, name: str) -> HonchoClientConfig:
+        return HonchoClientConfig(
+            api_key="k",
+            peer_name=name,
+            pin_peer_name=True,
+            enabled=False,
+            write_frequency="turn",
+        )
+
+    def test_two_profiles_pinned_to_different_peer_names_resolve_distinctly(self):
+        mgr_a = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._pinned_to("alice"),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(mgr_a)
+        sess_a = mgr_a.get_or_create("telegram:86701400")
+
+        mgr_b = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._pinned_to("bob"),
+            runtime_user_peer_name="86701400",
+        )
+        _patch_manager_for_resolution_test(mgr_b)
+        sess_b = mgr_b.get_or_create("telegram:86701400")
+
+        assert sess_a.user_peer_id == "alice"
+        assert sess_b.user_peer_id == "bob"
+        assert sess_a.user_peer_id != sess_b.user_peer_id, (
+            "Profiles pinned to distinct peer names must not collapse to "
+            "the same Honcho peer — otherwise profile isolation is fictional."
+        )
+
+    def test_host_peer_name_overrides_root_when_pinned(self, tmp_path, monkeypatch):
+        """Host-level peerName wins so each profile can pin uniquely while
+        sharing a single root-level apiKey and workspace.
+        """
+        config_file = tmp_path / "honcho.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "k",
+            "peerName": "default-user",
+            "hosts": {
+                "hermes.partner": {
+                    "peerName": "partner-user",
+                    "pinPeerName": True,
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "isolated"))
+
+        cfg = HonchoClientConfig.from_global_config(
+            host="hermes.partner", config_path=config_file,
+        )
+        assert cfg.peer_name == "partner-user"
+        assert cfg.pin_peer_name is True

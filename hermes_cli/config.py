@@ -3359,6 +3359,34 @@ def get_compatible_custom_providers(
     for entry in providers_dict_to_custom_providers(config.get("providers")):
         _append_if_new(entry)
 
+    # --- Cross-reference model_aliases into custom providers missing model info ---
+    # Users often define endpoint credentials in custom_providers and model mappings
+    # in model_aliases separately.  When a custom provider has no model, check
+    # model_aliases for any entry pointing at the same base_url and inject it.
+    _model_aliases = config.get("model_aliases") if config else None
+    if isinstance(_model_aliases, dict):
+        for entry in compatible:
+            if entry.get("model") or entry.get("models"):
+                continue
+            entry_url = str(entry.get("base_url", "")).strip().rstrip("/").lower()
+            entry_name = str(entry.get("name", "")).strip().lower()
+            entry_key = str(entry.get("provider_key", "")).strip().lower()
+            for alias_name, alias_def in _model_aliases.items():
+                if not isinstance(alias_def, dict):
+                    continue
+                alias_url = str(alias_def.get("base_url", "")).strip().rstrip("/").lower()
+                alias_model = alias_def.get("model", "")
+                alias_name_lower = str(alias_name).strip().lower()
+                # Match by base_url, or by alias name == provider name/key
+                matched = False
+                if alias_url and alias_url == entry_url:
+                    matched = True
+                elif alias_name_lower and (alias_name_lower == entry_name or alias_name_lower == entry_key):
+                    matched = True
+                if matched and alias_model:
+                    entry["model"] = str(alias_model).strip()
+                    break
+
     return compatible
 
 

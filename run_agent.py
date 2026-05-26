@@ -846,7 +846,7 @@ class AIAgent:
             url = str(base_url).lower()
         else:
             url = getattr(self, "_base_url_lower", "") or ""
-        return "openai.azure.com" in url
+        return "openai.azure.com" in url or "azure-api.net" in url
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
@@ -2968,6 +2968,31 @@ class AIAgent:
             self._client_kwargs["default_headers"] = _codex_cloudflare_headers(
                 self._client_kwargs.get("api_key", "")
             )
+        elif base_url_host_matches(base_url, "azure-api.net") or base_url_host_matches(base_url, "openai.azure.com"):
+            # Azure OpenAI — both direct resources and APIM gateways —
+            # authenticate with an ``api-key`` header rather than Bearer.
+            # The standard OpenAI SDK only sends Bearer, so inject the
+            # header explicitly. Required for APIM gateways (401 on Bearer);
+            # harmless for direct ``*.openai.azure.com``.
+            self._client_kwargs["default_headers"] = {"api-key": self._client_kwargs.get("api_key", "")}
+            # Azure URLs often contain ``?api-version=...`` query params.
+            # The standard OpenAI client treats ``base_url`` as a prefix and
+            # appends ``/chat/completions`` via ``urljoin``, which silently
+            # drops the query string and can corrupt the deployment path.
+            # Extract query params into ``default_query`` so every request
+            # still carries them on a clean base URL.
+            try:
+                from urllib.parse import parse_qs, urlsplit
+                raw_base = str(self._client_kwargs.get("base_url", base_url) or "")
+                parsed = urlsplit(raw_base)
+                if parsed.query:
+                    self._client_kwargs["base_url"] = raw_base.split("?", 1)[0]
+                    self._client_kwargs["default_query"] = {
+                        k: v[0] if len(v) == 1 else v
+                        for k, v in parse_qs(parsed.query).items()
+                    }
+            except Exception:
+                pass
         else:
             # No URL-specific headers — check profile.default_headers before clearing.
             _ph_headers = None

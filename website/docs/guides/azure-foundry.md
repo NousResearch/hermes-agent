@@ -229,6 +229,24 @@ Important behaviour:
 - **`max_completion_tokens` is used automatically.** Azure OpenAI (like direct OpenAI) requires `max_completion_tokens` for gpt-4o, o-series, and gpt-5.x models. Hermes sends the right parameter based on the endpoint.
 - **Pre-v1 endpoints that require `api-version`.** If you have a legacy base URL like `https://<resource>.openai.azure.com/openai?api-version=2025-04-01-preview`, Hermes extracts the query string and forwards it via `default_query` on every request (the OpenAI SDK otherwise drops it when joining paths).
 
+### Behind an Azure API Management gateway (`*.azure-api.net`)
+
+Corporate Azure OpenAI deployments are often fronted by Azure API Management. APIM gateways differ from direct Azure OpenAI resources in two ways:
+
+- **They require `api-key:` header auth**, not `Authorization: Bearer`. Sending Bearer returns `401 "Access denied due to missing subscription key"`. Hermes detects `*.azure-api.net` hosts and switches the OpenAI client to the `api-key` header automatically.
+- **They may only expose `/chat/completions`** — the Responses API path can be filtered out by the gateway. In that case set `provider: custom` and bake the deployment into the base URL so Hermes' `azure-foundry` auto-routing doesn't flip GPT-5.x to the unavailable Responses API:
+
+```yaml
+model_aliases:
+  azure-gpt5:
+    model: gpt-5-2025-12-11
+    provider: custom
+    base_url: https://corp-apim01.azure-api.net/openai/deployments/gpt-5-2025-12-11?api-version=2024-02-15-preview
+    api_key: ${AZURE_FOUNDRY_API_KEY}
+```
+
+`max_completion_tokens` is still rewritten correctly for GPT-5 deployments behind APIM — `*.azure-api.net` participates in the same Azure detection as direct resources.
+
 ## Anthropic-style endpoints (Claude via Microsoft Foundry)
 
 For Claude deployments, use the Anthropic-style route:

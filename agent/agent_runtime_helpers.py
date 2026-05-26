@@ -1431,6 +1431,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
         if _sm_timeout is not None:
             agent._client_kwargs["timeout"] = _sm_timeout
+        # Re-inject provider-specific default_headers (Azure api-key, OpenRouter
+        # attribution, etc.) after the kwargs reset above.
+        agent._apply_client_headers_for_base_url(str(effective_base or ""))
         agent.client = agent._create_openai_client(
             dict(agent._client_kwargs),
             reason="switch_model",

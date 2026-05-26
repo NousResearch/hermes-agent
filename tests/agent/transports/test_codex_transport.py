@@ -513,3 +513,62 @@ class TestCodexTransportTimeout:
             request_overrides={"timeout": 450.0},
         )
         assert kw.get("timeout") == 450.0
+
+
+class TestCodexBackendGpt55Compatibility:
+    """gpt-5.5 on chatgpt.com/backend-api/codex needs a stricter payload."""
+
+    def test_preflight_strips_responses_reasoning_replay_for_gpt55_codex_backend(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            reasoning_config={"effort": "high"},
+            session_id="session-123",
+            is_codex_backend=True,
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        assert kw.get("reasoning") == {"effort": "high", "summary": "auto"}
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+        assert kw.get("store") is False
+
+        sanitized = transport.preflight_kwargs(kw)
+
+        assert "reasoning" not in sanitized
+        assert "include" not in sanitized
+        assert sanitized["store"] is False
+        assert sanitized["model"] == "gpt-5.5"
+        assert sanitized["extra_headers"]["session_id"] == "session-123"
+
+    def test_preflight_keeps_reasoning_for_gpt55_on_non_codex_backend(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            reasoning_config={"effort": "high"},
+            session_id="session-123",
+            is_codex_backend=False,
+        )
+
+        sanitized = transport.preflight_kwargs(kw)
+
+        assert sanitized["reasoning"] == {"effort": "high", "summary": "auto"}
+        assert sanitized["include"] == ["reasoning.encrypted_content"]
+        assert sanitized["store"] is False
+
+    def test_preflight_keeps_reasoning_for_non_gpt55_codex_backend(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            reasoning_config={"effort": "high"},
+            session_id="session-123",
+            is_codex_backend=True,
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+
+        sanitized = transport.preflight_kwargs(kw)
+
+        assert sanitized["reasoning"] == {"effort": "high", "summary": "auto"}
+        assert sanitized["include"] == ["reasoning.encrypted_content"]
+        assert sanitized["store"] is False

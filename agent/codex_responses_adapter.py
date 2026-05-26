@@ -741,11 +741,13 @@ def _preflight_codex_api_kwargs(
     if store is not False:
         raise ValueError("Codex Responses contract requires 'store' to be false.")
 
+    strip_reasoning_replay = api_kwargs.get("_strip_reasoning_replay") is True
+
     allowed_keys = {
         "model", "instructions", "input", "tools", "store",
         "reasoning", "include", "max_output_tokens", "temperature",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
-        "extra_headers", "extra_body", "timeout",
+        "extra_headers", "extra_body", "timeout", "_strip_reasoning_replay",
     }
     normalized: Dict[str, Any] = {
         "model": model,
@@ -830,6 +832,13 @@ def _preflight_codex_api_kwargs(
         raise ValueError(
             f"Codex Responses request has unsupported field(s): {', '.join(unexpected)}."
         )
+
+    if strip_reasoning_replay:
+        # chatgpt.com/backend-api/codex sometimes stalls gpt-5.5 when sent
+        # generic Responses reasoning replay knobs. Keep store=false, but omit
+        # these optional replay fields instead of waiting for a timeout.
+        normalized.pop("reasoning", None)
+        normalized.pop("include", None)
 
     return normalized
 

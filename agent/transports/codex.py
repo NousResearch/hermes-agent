@@ -11,6 +11,17 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
+def _should_strip_reasoning_replay_for_codex_backend(
+    model: str,
+    is_codex_backend: bool,
+) -> bool:
+    """Return True when the ChatGPT Codex backend needs reasoning replay omitted."""
+    if not is_codex_backend:
+        return False
+    normalized_model = str(model or "").strip().lower()
+    return normalized_model == "gpt-5.5" or normalized_model.startswith("gpt-5.5-")
+
+
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -175,6 +186,11 @@ class ResponsesApiTransport(ProviderTransport):
                 merged_extra_headers["session_id"] = cache_scope_id
                 merged_extra_headers["x-client-request-id"] = cache_scope_id
                 kwargs["extra_headers"] = merged_extra_headers
+            if _should_strip_reasoning_replay_for_codex_backend(
+                model,
+                bool(is_codex_backend),
+            ):
+                kwargs["_strip_reasoning_replay"] = True
 
         max_tokens = params.get("max_tokens")
         if max_tokens is not None and not is_codex_backend:

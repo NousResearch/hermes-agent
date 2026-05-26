@@ -29,7 +29,13 @@ def test_copilot_picker_keeps_curated_copilot_models_when_live_catalog_unavailab
 def test_copilot_picker_uses_live_catalog_when_available():
     live_models = ["gpt-5.4", "claude-sonnet-4.6", "gemini-3.1-pro-preview"]
 
-    with patch("agent.models_dev.fetch_models_dev", return_value={}), \
+    # Include the models.dev provider row so this exercises the first
+    # PROVIDER_TO_MODELS_DEV loop, not only the Hermes-overlay fallback path.
+    # Regression: that earlier loop used the checked-in static list directly,
+    # causing the Copilot row to be emitted before the later live-catalog branch
+    # could run.
+    models_dev = {"github-copilot": {"env": ["GH_TOKEN"]}}
+    with patch("agent.models_dev.fetch_models_dev", return_value=models_dev), \
          patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
          patch("hermes_cli.models._fetch_github_models", return_value=live_models):
         providers = list_authenticated_providers(current_provider="openrouter", max_models=50)

@@ -1052,11 +1052,13 @@ def list_authenticated_providers(
     max_models: int = 8,
     current_model: str = "",
 ) -> List[dict]:
-    """Detect which providers have credentials and list their curated models.
+    """Detect which providers have credentials and list their model catalogs.
 
-    Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
-    agentic models that work well as agent backends.
+    Most providers use curated model lists from hermes_cli/models.py
+    (OPENROUTER_MODELS, _PROVIDER_MODELS) — hand-picked agentic models that
+    work well as agent backends. Providers whose catalog is account/tier
+    dependent (Codex/Copilot) use live authenticated discovery with curated
+    fallback.
 
     Returns a list of dicts, each with:
       - slug: str — the --provider value to use
@@ -1239,13 +1241,22 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list, falling back to models.dev if no curated list.
-        # For preferred providers, merge models.dev entries into the curated
-        # catalog so newly released models (e.g. mimo-v2.5-pro on opencode-go)
-        # show up in the picker without requiring a Hermes release.
-        model_ids = curated.get(hermes_id, [])
-        if hermes_id in _MODELS_DEV_PREFERRED:
-            model_ids = _merge_with_models_dev(hermes_id, model_ids)
+        if hermes_id in {"openai-codex", "copilot", "copilot-acp"}:
+            # Prefer the live authenticated catalog for backends whose model
+            # set changes by account/tier. ``provider_model_ids()`` already
+            # falls back to the curated static list when the live endpoint is
+            # unavailable, so the picker stays useful offline while surfacing
+            # newly-enabled Copilot/Codex models as soon as the backend lists
+            # them.
+            model_ids = provider_model_ids(hermes_id)
+        else:
+            # Use curated list, falling back to models.dev if no curated list.
+            # For preferred providers, merge models.dev entries into the curated
+            # catalog so newly released models (e.g. mimo-v2.5-pro on opencode-go)
+            # show up in the picker without requiring a Hermes release.
+            model_ids = curated.get(hermes_id, [])
+            if hermes_id in _MODELS_DEV_PREFERRED:
+                model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 

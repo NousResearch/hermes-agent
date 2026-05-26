@@ -21,6 +21,7 @@ from gateway.calls.native.ports import (
     NativeMediaOffer,
 )
 from gateway.platforms.base import MessageType
+from gateway.run import GatewayRunner
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _simplex = load_plugin_adapter("simplex")
@@ -974,6 +975,57 @@ async def test_handle_new_chat_item_handler_failure_sends_loud_message_without_d
     adapter.send.assert_awaited_once()
     assert "sidecar failure" in adapter.send.await_args.args[1]
     adapter._mark_chat_items_read.assert_awaited_once_with("4", [15])
+
+
+@pytest.mark.asyncio
+async def test_handle_new_chat_item_rejects_missing_sidecar_preflight_once():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "ws_url": "ws://localhost:5225",
+            "native_calls": {"enabled": True},
+        },
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.handle_message = AsyncMock()  # type: ignore[method-assign]
+    adapter.reject_native_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    adapter.send = AsyncMock()  # type: ignore[method-assign]
+    adapter._mark_chat_items_read = AsyncMock()  # type: ignore[method-assign]
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._is_user_authorized.return_value = True
+
+    runner = object.__new__(GatewayRunner)
+    runner._is_user_authorized = lambda _source: True
+    runner._configure_native_call_handler(adapter)
+
+    await adapter._handle_new_chat_item(
+        {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": 17, "itemStatus": {"type": "rcvNew"}},
+                "content": {
+                    "type": "rcvCall",
+                    "status": "pending",
+                    "duration": 0,
+                    "callType": {"media": "audio"},
+                },
+            },
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.reject_native_call.assert_awaited_once_with(
+        "4",
+        "call_simplex_native_sidecar_not_configured",
+    )
+    adapter.send.assert_awaited_once()
+    assert "sidecar is not configured" in adapter.send.await_args.args[1]
+    adapter._mark_chat_items_read.assert_awaited_once_with("4", [17])
 
 
 @pytest.mark.asyncio

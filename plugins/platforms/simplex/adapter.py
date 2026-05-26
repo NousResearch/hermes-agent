@@ -880,6 +880,9 @@ class SimplexAdapter(BasePlatformAdapter):
                     await self._mark_chat_items_read(chat_id, [item_id])
                 return
 
+            if result is not None and getattr(result, "reject_pending_call", False):
+                await self.reject_native_call(chat_id, getattr(result, "code", ""))
+
             note = getattr(result, "message", "") if result is not None else ""
             if not note:
                 note = (

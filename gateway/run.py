@@ -10349,6 +10349,7 @@ class GatewayRunner:
                     "SimpleX-native call setup failed: native WebRTC sidecar is not configured."
                 ),
                 call_id=None,
+                reject_pending_call=True,
             )
 
         app = NativeCallApplication(

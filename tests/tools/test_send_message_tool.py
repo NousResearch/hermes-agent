@@ -1092,6 +1092,20 @@ class TestParseTargetRefDiscord:
         assert thread_id == "789"
         assert is_explicit is True
 
+    def test_discord_channel_prefix_without_thread(self):
+        """OpenClaw-style channel:<id> Discord targets are explicit."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("discord", "channel:1476302380520837355")
+        assert chat_id == "1476302380520837355"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_discord_channel_prefix_with_thread(self):
+        """OpenClaw-style channel:<id>:<thread> Discord targets preserve thread ID."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("discord", "channel:1476302380520837355:1476302380520837356")
+        assert chat_id == "1476302380520837355"
+        assert thread_id == "1476302380520837356"
+        assert is_explicit is True
+
 
 class TestParseTargetRefMatrix:
     """_parse_target_ref correctly handles Matrix room IDs and user MXIDs."""

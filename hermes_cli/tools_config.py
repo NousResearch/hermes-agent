@@ -753,8 +753,15 @@ def _run_post_setup(post_setup_key: str):
             # execute npm.cmd on Windows (CreateProcessW otherwise rejects
             # batch shims).  On POSIX npm_bin is the plain path — same
             # behaviour as before.
+            #
+            # safe_subprocess_argv wraps the call so cmd.exe's re-parse on
+            # the .cmd shim can't reinterpret metacharacters in the cwd
+            # (``str(PROJECT_ROOT)`` is fine today but future install
+            # locations may include ``Program Files (x86)`` etc.).
+            # No-op on POSIX.  Issue #31419.
+            from hermes_cli._subprocess_compat import safe_subprocess_argv
             result = subprocess.run(
-                [npm_bin, "install", "--silent"],
+                safe_subprocess_argv([npm_bin, "install", "--silent"]),
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
@@ -827,9 +834,14 @@ def _run_post_setup(post_setup_key: str):
             if local_ab.exists()
             else [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
         )
+        # ``local_ab`` may be ``...agent-browser.cmd`` on Windows, and
+        # ``npx_bin`` is always ``npx.cmd``.  Pass through
+        # safe_subprocess_argv so cmd.exe's re-parse can't see argv
+        # metacharacters as shell operators.  No-op on POSIX.  #31419.
+        from hermes_cli._subprocess_compat import safe_subprocess_argv
         try:
             result = subprocess.run(
-                install_cmd,
+                safe_subprocess_argv(install_cmd),
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
             )
             if result.returncode == 0:

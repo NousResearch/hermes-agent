@@ -356,15 +356,18 @@ function WorkspaceRail({ activeJobs, recentSessions }: { activeJobs: CronJob[]; 
               <Bot className="h-4 w-4" />
               <div className="text-sm font-semibold uppercase tracking-[0.12em]">Recent trace</div>
             </div>
-            <div className="min-h-0 flex-1 space-y-2 overflow-hidden">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
               {recentSessions.slice(0, 4).map((session) => (
                 <Link
                   key={session.id}
                   to={`/sessions?session=${encodeURIComponent(session.id)}`}
                   className="block rounded-lg border border-[#284848] bg-black/25 p-3 transition hover:border-emerald-400/40"
                 >
-                  <div className="line-clamp-2 text-sm font-medium leading-5 text-text-primary">{session.title || session.preview || session.id}</div>
-                  <div className="mt-1 text-xs text-text-secondary">{session.source || "session"}</div>
+                  <div className="line-clamp-3 text-sm font-medium leading-5 text-text-primary">{session.title || session.preview || session.id}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.72rem] leading-4 text-text-secondary">
+                    <span className="rounded-full border border-[#284848] bg-black/25 px-2 py-0.5">{session.source || "session"}</span>
+                    <span>{formatTime(session.last_active)}</span>
+                  </div>
                 </Link>
               ))}
               {!recentSessions.length && <div className="rounded-lg border border-[#284848] bg-black/25 p-3 text-sm text-text-secondary">No sessions loaded.</div>}
@@ -723,17 +726,17 @@ export default function MissionControlPage() {
         <WorkspaceRail activeJobs={activeJobs} recentSessions={recentSessions} />
 
         <div className="flex min-w-0 flex-col gap-5">
-        <section className="font-readable-ui overflow-hidden rounded-3xl border border-emerald-400/20 bg-[radial-gradient(circle_at_top_right,rgba(47,214,161,0.18),transparent_32%),linear-gradient(135deg,rgba(6,31,31,0.98),rgba(3,12,12,0.96))] p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04),0_24px_80px_rgba(0,0,0,0.38)] lg:p-7">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+        <section className="font-readable-ui overflow-hidden rounded-3xl border border-emerald-400/20 bg-[radial-gradient(circle_at_top_right,rgba(47,214,161,0.16),transparent_30%),linear-gradient(135deg,rgba(6,31,31,0.98),rgba(3,12,12,0.96))] p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04),0_24px_80px_rgba(0,0,0,0.38)] lg:p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="max-w-3xl">
-              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-emerald-200 shadow-[0_0_18px_rgba(47,214,161,0.12)]">
+              <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs uppercase tracking-[0.2em] text-emerald-200 shadow-[0_0_18px_rgba(47,214,161,0.12)]">
                 <Sparkles className="h-3.5 w-3.5" /> Jenny Command Center
               </div>
-              <H2 className="text-4xl font-semibold leading-none tracking-[-0.04em] text-emerald-300 lg:text-6xl">
-                Operations Dashboard
+              <H2 className="text-3xl font-semibold leading-none tracking-[-0.035em] text-emerald-300 lg:text-5xl">
+                Jenny Ops Center
               </H2>
-              <Typography className="mt-3 max-w-2xl text-base leading-7 text-text-secondary lg:text-lg">
-                A practical Obsidian-style operating cockpit for Jenny: focus, approvals, live status, project routing, run traces, and durable AI Ops Brain records — without hidden execution.
+              <Typography className="mt-2 max-w-2xl text-sm leading-6 text-text-secondary lg:text-base">
+                Operator console for approvals, live status, project routing, traces, and durable AI Ops Brain records. No hidden execution.
               </Typography>
             </div>
             <div className="grid w-full gap-2 text-sm sm:min-w-72 lg:w-auto">

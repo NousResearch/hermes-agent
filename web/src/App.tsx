@@ -569,7 +569,7 @@ export default function App() {
             </div>
 
             <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-1.5"
+              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-1"
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
@@ -592,8 +592,8 @@ export default function App() {
                 >
                   <span
                     className={cn(
-                      "px-5 pt-2 pb-1",
-                      "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+                      "px-5 pt-1.5 pb-0.5",
+                      "font-mondwest text-display text-[0.72rem] tracking-[0.1em] text-text-tertiary",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
                   >
@@ -620,7 +620,7 @@ export default function App() {
             <div
               className={cn(
                 "flex shrink-0 items-center justify-between gap-2",
-                "px-3 py-2",
+                "px-3 py-1.5",
                 "border-t border-current/20",
               )}
             >
@@ -723,8 +723,8 @@ function SidebarNavLink({ closeMobile, item, pendingApprovalCount, t }: SidebarN
         className={({ isActive }) =>
           cn(
             "group relative flex items-center gap-3",
-            "px-5 py-1.5",
-            "font-mondwest text-display uppercase text-[0.8125rem] tracking-[0.11em]",
+            "px-5 py-[0.32rem]",
+            "font-mondwest text-display uppercase text-[0.78rem] tracking-[0.09em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
             isActive
@@ -809,8 +809,8 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
     >
       <span
         className={cn(
-          "px-5 pt-0.5 pb-0.5",
-          "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+          "px-5 pt-0.5 pb-0",
+          "font-mondwest text-display text-[0.72rem] tracking-[0.1em] text-text-tertiary",
         )}
       >
         {t.app.system}
@@ -835,8 +835,8 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 aria-busy={busy}
                 active={busy}
                 className={cn(
-                  "gap-3 px-5 py-1.5 whitespace-nowrap",
-                  "font-mondwest text-display text-xs tracking-[0.1em]",
+                  "gap-3 px-5 py-[0.32rem] whitespace-nowrap",
+                  "font-mondwest text-display text-[0.72rem] tracking-[0.08em]",
                   "transition-colors",
                   busy
                     ? "text-midground"

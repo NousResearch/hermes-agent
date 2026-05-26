@@ -258,6 +258,27 @@ class TestTelegramBotCommands:
         assert "codex_runtime" in names
         assert "codex-runtime" not in names
 
+    def test_builtin_telegram_menu_descriptions_are_russian(self):
+        """The Telegram bot menu should be localized for Russian-speaking users."""
+        descriptions = dict(telegram_bot_commands())
+        assert descriptions["new"] == "Новая сессия"
+        assert descriptions["background"] == "Запустить задачу в фоне"
+        assert descriptions["codex_runtime"] == "Режим runtime для Codex"
+        assert descriptions["help"] == "Показать команды"
+        assert descriptions["restart"] == "Перезапустить шлюз"
+
+    def test_every_gateway_builtin_has_russian_telegram_description(self):
+        """Any built-in command exposed in Telegram must have an explicit Russian label."""
+        from hermes_cli.commands import RUSSIAN_TELEGRAM_COMMAND_DESCRIPTIONS
+
+        for cmd in COMMAND_REGISTRY:
+            if cmd.cli_only and not cmd.gateway_config_gate:
+                continue
+            tg_name = cmd.name.replace("-", "_")
+            assert tg_name in RUSSIAN_TELEGRAM_COMMAND_DESCRIPTIONS, (
+                f"/{cmd.name} is exposed in Telegram but lacks a Russian menu description"
+            )
+
 
 class TestSlackSubcommandMap:
     def test_returns_dict(self):

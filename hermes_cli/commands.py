@@ -221,6 +221,79 @@ COMMAND_REGISTRY: list[CommandDef] = [
 ]
 
 
+RUSSIAN_TELEGRAM_COMMAND_DESCRIPTIONS: dict[str, str] = {
+    "new": "Новая сессия",
+    "topic": "Темы Telegram",
+    "clear": "Очистить экран",
+    "redraw": "Перерисовать интерфейс",
+    "history": "История диалога",
+    "save": "Сохранить диалог",
+    "retry": "Повторить последнее сообщение",
+    "undo": "Удалить последний обмен",
+    "title": "Назвать текущую сессию",
+    "handoff": "Передать сессию в мессенджер",
+    "branch": "Ответвить текущую сессию",
+    "compress": "Сжать контекст диалога",
+    "rollback": "Откатить файловый снимок",
+    "snapshot": "Снимки состояния Hermes",
+    "stop": "Остановить фоновые процессы",
+    "approve": "Одобрить ожидающую команду",
+    "deny": "Отклонить ожидающую команду",
+    "background": "Запустить задачу в фоне",
+    "agents": "Показать активные агенты",
+    "queue": "Поставить запрос в очередь",
+    "steer": "Вставить подсказку после tool-call",
+    "goal": "Задать постоянную цель",
+    "subgoal": "Добавить подцель",
+    "status": "Информация о сессии",
+    "whoami": "Показать права команд",
+    "profile": "Активный профиль",
+    "sethome": "Сделать этот чат домашним",
+    "resume": "Возобновить сессию",
+    "sessions": "Просмотр прошлых сессий",
+    "config": "Показать конфигурацию",
+    "model": "Сменить модель",
+    "codex_runtime": "Режим runtime для Codex",
+    "gquota": "Квота Google Gemini",
+    "personality": "Сменить личность",
+    "statusbar": "Переключить строку статуса",
+    "verbose": "Подробность вывода инструментов",
+    "footer": "Футер с метаданными шлюза",
+    "yolo": "Режим без подтверждений",
+    "reasoning": "Настроить рассуждения",
+    "fast": "Быстрый режим",
+    "skin": "Тема интерфейса",
+    "indicator": "Индикатор занятости",
+    "voice": "Голосовой режим",
+    "busy": "Поведение Enter при работе",
+    "tools": "Управление инструментами",
+    "toolsets": "Список наборов инструментов",
+    "skills": "Управление навыками",
+    "bundles": "Наборы навыков",
+    "cron": "Планировщик задач",
+    "curator": "Обслуживание навыков",
+    "kanban": "Доска задач Kanban",
+    "reload": "Перезагрузить переменные .env",
+    "reload_mcp": "Перезагрузить MCP-серверы",
+    "reload_skills": "Пересканировать навыки",
+    "browser": "Подключить браузер через CDP",
+    "plugins": "Список плагинов",
+    "commands": "Список команд и навыков",
+    "help": "Показать команды",
+    "restart": "Перезапустить шлюз",
+    "usage": "Расход токенов и лимиты",
+    "insights": "Аналитика использования",
+    "platforms": "Статус платформ",
+    "platform": "Управление платформой шлюза",
+    "copy": "Скопировать последний ответ",
+    "paste": "Прикрепить изображение из буфера",
+    "image": "Прикрепить локальное изображение",
+    "update": "Обновить Hermes Agent",
+    "debug": "Отправить debug-отчёт",
+    "quit": "Выйти из CLI",
+}
+
+
 # ---------------------------------------------------------------------------
 # Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
 # ---------------------------------------------------------------------------
@@ -498,7 +571,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            description = RUSSIAN_TELEGRAM_COMMAND_DESCRIPTIONS.get(tg_name, cmd.description)
+            result.append((tg_name, description))
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue

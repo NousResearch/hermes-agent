@@ -712,6 +712,84 @@ class TestNonStringContent:
         assert "Treat the conversation turns below as source material" in prompt
         assert "structured checkpoint summary" in prompt
 
+    def test_multimodal_list_content_serializes_as_text_not_python_repr(self):
+        """_serialize_for_summary must not pass list content through str().
+
+        When a user message contains multimodal blocks (text + image parts),
+        the raw list must not be coerced to a Python repr string like
+        "[{'type': 'image_url', 'image_url': {'url': 'data:image/png;...'}}]"
+        — the summarizer would see unreadable garbage instead of the user's
+        actual words.  The fix extracts text parts and appends a placeholder
+        for images.
+        """
+        captured: list = []
+
+        def fake_call_llm(**kwargs):
+            captured.append(kwargs["messages"][0]["content"])
+            r = MagicMock()
+            r.choices = [MagicMock()]
+            r.choices[0].message.content = "summary"
+            return r
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        multimodal_user_msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What do you see in this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAAAA=="}},
+            ],
+        }
+        turns = [multimodal_user_msg, {"role": "assistant", "content": "I see a cat."}]
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            c._generate_summary(turns)
+
+        assert captured, "call_llm was not called"
+        prompt = captured[0]
+        # The user's actual text must appear in the summarizer prompt
+        assert "What do you see in this image?" in prompt
+        # An image placeholder must appear
+        assert "[Attached image(s)" in prompt
+        # The base64 payload and Python list repr must NOT appear
+        assert "AAAAAA==" not in prompt
+        assert "image_url" not in prompt
+        assert "[{'type'" not in prompt
+
+    def test_multimodal_text_only_list_serializes_cleanly(self):
+        """A content list with only text blocks (no images) should serialize
+        to plain text without any image placeholder."""
+        captured: list = []
+
+        def fake_call_llm(**kwargs):
+            captured.append(kwargs["messages"][0]["content"])
+            r = MagicMock()
+            r.choices = [MagicMock()]
+            r.choices[0].message.content = "summary"
+            return r
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        text_only_msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Hello"},
+                {"type": "text", "text": "World"},
+            ],
+        }
+        turns = [text_only_msg, {"role": "assistant", "content": "Hi there."}]
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            c._generate_summary(turns)
+
+        assert captured
+        prompt = captured[0]
+        assert "Hello" in prompt
+        assert "World" in prompt
+        assert "[Attached image" not in prompt
+
     def test_summary_call_passes_live_main_runtime(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

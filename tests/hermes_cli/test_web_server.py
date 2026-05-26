@@ -2917,6 +2917,74 @@ class TestConfigRoundTrip:
         web_config["agent"]["max_turns"] = original_turns
         self.client.put("/api/config", json={"config": web_config})
 
+    def test_round_trip_preserves_custom_providers(self):
+        """``custom_providers`` is not in the dashboard schema, so the
+        frontend never sends it in PUT bodies. Saving must still preserve
+        it on disk — otherwise every dashboard click that saves silently
+        wipes the user's custom endpoints."""
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "model": {"default": "test/model", "provider": "custom:myprov"},
+            "custom_providers": [
+                {
+                    "name": "myprov",
+                    "base_url": "https://example.invalid/v1",
+                    "key_env": "MYPROV_API_KEY",
+                    "api_mode": "chat_completions",
+                    "model": "test/model",
+                },
+            ],
+        })
+
+        # Frontend behaviour: GET full config, then PUT without keys the
+        # schema doesn't know about (custom_providers is the prime example).
+        web_config = self.client.get("/api/config").json()
+        web_config.pop("custom_providers", None)
+        resp = self.client.put("/api/config", json={"config": web_config})
+        assert resp.status_code == 200
+
+        after = load_config()
+        cps = after.get("custom_providers")
+        assert isinstance(cps, list) and len(cps) == 1, \
+            f"custom_providers wiped by lossy PUT: {cps!r}"
+        assert cps[0].get("name") == "myprov"
+        assert cps[0].get("base_url") == "https://example.invalid/v1"
+
+    def test_round_trip_preserves_schema_invisible_nested_keys(self):
+        """Nested keys that aren't in CONFIG_SCHEMA must also survive a
+        round-trip. Deep-merge is required — a shallow merge would drop
+        ``agent.<custom_key>`` when the frontend sends a partial ``agent``
+        dict containing only schema-known sub-fields."""
+        from hermes_cli.config import load_config, read_raw_config, save_config
+
+        # Seed config with a key under `agent` that isn't in the schema.
+        # Use a sentinel name to avoid colliding with future schema fields.
+        save_config({
+            "agent": {
+                "max_turns": 50,
+                "x_dashboard_invisible_test_key": {"nested": "value"},
+            },
+        })
+
+        # PUT only schema-known agent fields, exactly like the dashboard.
+        web_config = self.client.get("/api/config").json()
+        web_config.setdefault("agent", {})
+        web_config["agent"]["max_turns"] = 75
+        # Strip our sentinel so we're sending what the schema-driven form
+        # would send.
+        web_config["agent"].pop("x_dashboard_invisible_test_key", None)
+
+        resp = self.client.put("/api/config", json={"config": web_config})
+        assert resp.status_code == 200
+
+        on_disk = read_raw_config()
+        assert on_disk.get("agent", {}).get("max_turns") == 75
+        assert on_disk.get("agent", {}).get("x_dashboard_invisible_test_key") \
+            == {"nested": "value"}, \
+            "Shallow-merge regression: agent.x_dashboard_invisible_test_key " \
+            "was wiped when the frontend sent a partial agent dict."
+
     def test_schema_types_match_config_values(self):
         """Every schema field should have a matching-type value in the config."""
         config = self.client.get("/api/config").json()

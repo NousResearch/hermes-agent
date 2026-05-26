@@ -204,6 +204,40 @@ class TestGoalManager:
         assert "active" in mgr.status_line().lower()
         assert "port the thing" in mgr.status_line()
 
+    def test_simple_goal_uses_historical_20_turn_budget_under_high_cap(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="test-simple-budget", default_max_turns=250)
+        state = mgr.set("summarize the docs")
+        assert state.max_turns == 20
+
+    def test_complex_goal_prompt_scales_to_cap(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="test-complex-budget", default_max_turns=250)
+        state = mgr.set(
+            "execute the following implementation plan to all specs; "
+            "test 20 different ways; you have infinite turns to accomplish the goal"
+        )
+        assert state.max_turns == 250
+
+    def test_explicit_goal_turns_are_capped_at_250(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="test-explicit-budget", default_max_turns=500)
+        state = mgr.set("run this for 999 turns if needed")
+        assert state.max_turns == 250
+
+    def test_long_plan_prompt_scales_but_respects_configured_cap(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="test-config-cap", default_max_turns=80)
+        long_plan = "Implementation plan\n" + "\n".join(
+            f"- Phase {i}: do verified work" for i in range(1, 10)
+        )
+        state = mgr.set(long_plan)
+        assert state.max_turns == 80
+
     def test_set_rejects_empty(self, hermes_home):
         from hermes_cli.goals import GoalManager
 

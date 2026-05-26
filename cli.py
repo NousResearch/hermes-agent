@@ -9186,9 +9186,11 @@ class HermesCLI:
             return existing
 
         try:
+            from hermes_cli.goals import _coerce_goal_turn_cap
+
             cfg = load_config() or {}
             goals_cfg = cfg.get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            max_turns = _coerce_goal_turn_cap(goals_cfg.get("max_turns", 20))
         except Exception:
             max_turns = 20
 

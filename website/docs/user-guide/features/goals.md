@@ -29,11 +29,11 @@ Tasks where the agent does one turn and stops don't need `/goal`. Tasks where *y
 
 What you'll see:
 
-1. **Goal accepted** — `⊙ Goal set (20-turn budget): <your goal>`
+1. **Goal accepted** — `⊙ Goal set (<budget>-turn budget): <your goal>`
 2. **Turn 1 runs** — Hermes starts working as if you'd sent the goal as a normal message.
 3. **Judge runs** — after the turn, the judge model decides `done` or `continue`.
-4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Hermes takes the next step automatically.
-5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/20 turns used`.
+4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/<budget>): <judge's reason>` and Hermes takes the next step automatically.
+5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/<budget> turns used`.
 
 ## Commands
 
@@ -80,7 +80,7 @@ If the judge errors (network blip, malformed response, unavailable aux client), 
 
 ### Turn budget
 
-Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
+Default simple goals use 20 continuation turns. `goals.max_turns` in `config.yaml` is a ceiling (default/max 250): complex plan-style prompts automatically scale their budget from the goal text, up to that cap. When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
 
 ```
 ⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
@@ -102,7 +102,7 @@ Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That me
 
 ### Prompt cache
 
-The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Hermes' prompt cache. Running a 20-turn goal costs the same cache-wise as 20 turns of normal conversation.
+The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Hermes' prompt cache. Running a multi-turn goal costs the same cache-wise as the same number of normal conversation turns.
 
 ## Configuration
 
@@ -110,10 +110,10 @@ Add to `~/.hermes/config.yaml`:
 
 ```yaml
 goals:
-  # Max continuation turns before Hermes auto-pauses and asks you to
-  # /goal resume. Default 20. Lower this if you want tighter loops;
-  # raise it for long-running refactors.
-  max_turns: 20
+  # Ceiling for auto-continuation turns before Hermes auto-pauses and asks
+  # you to /goal resume. Simple goals still use 20 turns; complex plan-style
+  # prompts scale automatically from the goal text, capped here. Default/max 250.
+  max_turns: 250
 ```
 
 ### Choosing the judge model

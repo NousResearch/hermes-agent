@@ -1353,8 +1353,10 @@ DEFAULT_CONFIG = {
         # Max continuation turns before Hermes auto-pauses the goal and
         # asks the user to /goal resume. Protects against judge false
         # negatives (goal actually done but judge says continue) and
-        # unbounded model spend on fuzzy / unachievable goals.
-        "max_turns": 20,
+        # unbounded model spend on fuzzy / unachievable goals. This is a
+        # ceiling: simple goals still default to 20 turns, while complex
+        # plan-style prompts automatically scale up, capped at 250.
+        "max_turns": 250,
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.

@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────
 
 DEFAULT_MAX_TURNS = 20
+MAX_GOAL_TURNS = 250
 DEFAULT_JUDGE_TIMEOUT = 30.0
 # Judge output budget. The freeform judge returns a one-line JSON verdict, but
 # reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning
@@ -66,6 +67,103 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 # exhausted with every reply shaped like `judge returned empty response` or
 # `judge reply was not JSON`.
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
+
+
+def _coerce_goal_turn_cap(value: Any, default: int = DEFAULT_MAX_TURNS) -> int:
+    """Return a positive /goal turn cap, clamped to ``MAX_GOAL_TURNS``.
+
+    ``goals.max_turns`` is the user's safety ceiling, not necessarily the
+    budget every goal should consume. Keep malformed/non-positive values safe,
+    and never allow a standing goal to silently exceed the hard upper bound.
+    """
+    try:
+        turns = int(value)
+    except Exception:
+        turns = int(default or DEFAULT_MAX_TURNS)
+    if turns <= 0:
+        turns = int(default or DEFAULT_MAX_TURNS)
+    return max(1, min(turns, MAX_GOAL_TURNS))
+
+
+def infer_goal_turn_budget(goal: str, *, cap: int = MAX_GOAL_TURNS) -> int:
+    """Infer a per-goal turn budget from the user's goal prompt.
+
+    The configured ``goals.max_turns`` is now treated as the ceiling. Short,
+    simple goals keep the historical 20-turn budget; long implementation plans
+    and prompts that explicitly ask for persistence ("infinite turns", "all
+    specs", many tests/phases, etc.) scale up automatically, capped at 250.
+    """
+    text = (goal or "").strip()
+    if not text:
+        return min(DEFAULT_MAX_TURNS, _coerce_goal_turn_cap(cap))
+
+    cap = _coerce_goal_turn_cap(cap, MAX_GOAL_TURNS)
+    lower = text.lower()
+
+    # Explicit turn requests in the goal text win, but stay within the cap.
+    explicit_turns = re.findall(r"\b(\d{1,4})\s*(?:turn|turns|iterations?)\b", lower)
+    if explicit_turns:
+        return max(1, min(max(int(n) for n in explicit_turns), cap))
+
+    if any(phrase in lower for phrase in (
+        "infinite turns",
+        "as many turns",
+        "however many turns",
+        "until complete",
+        "don't stop",
+        "do not stop",
+        "keep working until",
+    )):
+        return cap
+
+    budget = DEFAULT_MAX_TURNS
+    length = len(text)
+    if length >= 4000:
+        budget = max(budget, 200)
+    elif length >= 2000:
+        budget = max(budget, 150)
+    elif length >= 1000:
+        budget = max(budget, 100)
+    elif length >= 500:
+        budget = max(budget, 60)
+
+    # Multi-phase implementation plans and hard verification requirements need
+    # more runway than a short Q&A, even when the prompt itself is not huge.
+    high_runway_markers = (
+        "all specs",
+        "implementation plan",
+        "execute the plan",
+        "test 20",
+        "20 different ways",
+        "adversarial",
+        "sandbox",
+        "broad rollout",
+        "production rollout",
+        "definition of done",
+        "non-negotiable",
+    )
+    if any(marker in lower for marker in high_runway_markers):
+        budget = max(budget, 150)
+
+    phase_count = len(re.findall(r"\bphase\s+\d+\b", lower))
+    if phase_count >= 6:
+        budget = max(budget, 200)
+    elif phase_count >= 3:
+        budget = max(budget, 120)
+
+    # Scale for concrete checklist density.
+    checklist_lines = sum(
+        1 for line in text.splitlines()
+        if re.match(r"\s*(?:[-*]|\d+[.)])\s+\S", line)
+    )
+    if checklist_lines >= 30:
+        budget = max(budget, 200)
+    elif checklist_lines >= 15:
+        budget = max(budget, 120)
+    elif checklist_lines >= 8:
+        budget = max(budget, 80)
+
+    return max(1, min(budget, cap))
 
 
 CONTINUATION_PROMPT_TEMPLATE = (
@@ -487,7 +585,7 @@ class GoalManager:
 
     def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
         self.session_id = session_id
-        self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        self.default_max_turns = _coerce_goal_turn_cap(default_max_turns)
         self._state: Optional[GoalState] = load_goal(session_id)
 
     # --- introspection ------------------------------------------------
@@ -527,7 +625,11 @@ class GoalManager:
             goal=goal,
             status="active",
             turns_used=0,
-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            max_turns=(
+                _coerce_goal_turn_cap(max_turns, self.default_max_turns)
+                if max_turns
+                else infer_goal_turn_budget(goal, cap=self.default_max_turns)
+            ),
             created_at=time.time(),
             last_turn_at=0.0,
         )

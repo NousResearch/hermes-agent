@@ -108,6 +108,15 @@ class TestAgentsInlineDetector:
         cli._agent_running = True
         assert cli._should_handle_agents_command_inline("/agents", has_images=True) is False
 
+    def test_ignores_agents_with_trailing_args(self):
+        """/agents takes no args, so '/agents foo' must fall through to the
+        normal path where _handle_agents_command can surface a usage error
+        rather than silently swallowing the argument on the busy path."""
+        cli = _make_cli()
+        cli._agent_running = True
+        assert cli._should_handle_agents_command_inline("/agents foo") is False
+        assert cli._should_handle_agents_command_inline("/tasks something") is False
+
 
 class TestAgentsBusyPathDispatch:
     """When the detector fires, /agents dispatch through process_command must

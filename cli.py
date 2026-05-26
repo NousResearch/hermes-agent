@@ -7835,9 +7835,15 @@ class HermesCLI:
             return False
         if not getattr(self, "_agent_running", False):
             return False
+        # /agents takes no args (unlike /steer which carries a payload).
+        # Inputs like "/agents foo" should fall through to the normal path
+        # where _handle_agents_command can surface a usage error.
+        parts = text.split()
+        if len(parts) != 1:
+            return False
         try:
             from hermes_cli.commands import resolve_command
-            base = text.split(None, 1)[0].lower().lstrip('/')
+            base = parts[0].lower().lstrip('/')
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "agents")
         except Exception:
@@ -12734,7 +12740,6 @@ class HermesCLI:
                 # makes it useless: the user sees "nothing happens" until the
                 # whole delegation chain finishes.  See #32477.
                 if self._should_handle_agents_command_inline(text, has_images=has_images):
-                    _cprint(f"\n⚙️  {text}")
                     self.process_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return

@@ -2458,6 +2458,13 @@ _SGR_MOUSE_VISIBLE_RE = re.compile(r"\^\[\[<\d+;\d+;\d+[Mm]")
 # these fragments are extremely unlikely to be intentional user input, and
 # stripping them is better than sending corrupted prompts.
 _SGR_MOUSE_BARE_RE = re.compile(r"<\d+;\d+;\d+[Mm]")
+
+# Bracketed paste mode markers — terminals wrap pasted content in
+# ``\x1b[200~`` (begin) / ``\x1b[201~`` (end) when bracketed paste mode is
+# active. prompt_toolkit normally consumes these on entry; when raw mode
+# degrades on WSL + Windows Terminal they leak into the input buffer as
+# visible ``^[[200~``/``^[[201~`` text (Hermes issue #22976, #19280).
+_BRACKETED_PASTE_ESC_RE = re.compile(r"\x1b\[20[01]~")
 _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[?1006l"  # disable SGR mouse
     "\x1b[?1003l"  # disable any-motion tracking
@@ -2561,6 +2568,7 @@ def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
         text = _DSR_CPR_ESC_RE.sub("", text)
         text, count = _SGR_MOUSE_ESC_RE.subn("", text)
         had_mouse_reports = had_mouse_reports or count > 0
+        text = _BRACKETED_PASTE_ESC_RE.sub("", text)
 
     if has_visible:
         text = _DSR_CPR_VISIBLE_RE.sub("", text)

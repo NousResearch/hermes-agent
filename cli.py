@@ -8311,7 +8311,7 @@ class HermesCLI:
                 "The current conversation history will be discarded.",
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.new_session(silent=True)
             _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -8445,7 +8445,7 @@ class HermesCLI:
                 "The current conversation history will be discarded.",
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
@@ -8472,7 +8472,7 @@ class HermesCLI:
                 "This removes the last user/assistant exchange from history.",
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.undo_last()
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
@@ -10214,13 +10214,14 @@ class HermesCLI:
         # Render a prompt_toolkit-native confirmation panel.  This keeps option
         # labels visible above the composer and avoids raw input()/EOF races with
         # the running TUI.  In terminal multiplexers/background-style sessions
-        # the modal can be visually easy to miss, so print a plain-text hint
-        # before opening it; the inline-skip remains the reliable escape hatch.
+        # the modal can stall while swallowing subsequent input, so fail closed
+        # and point users to the inline-skip escape hatch instead of blocking.
         if os.environ.get("TMUX") or os.environ.get("STY"):
             print(
-                f"⚠️  /{command} requires confirmation. "
-                f"Choose an option in the prompt, or rerun as /{command} --yes to proceed immediately."
+                f"⚠️  /{command} requires confirmation, but confirmation prompts can stall in tmux/screen. "
+                f"Action cancelled; rerun as /{command} --yes to proceed immediately."
             )
+            return None
         choices = [
             ("once", "Approve Once", "proceed this time only"),
             ("always", "Always Approve", "proceed and silence this prompt permanently"),

@@ -1810,6 +1810,7 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
+    model_override: Optional[str] = None,
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
@@ -1838,8 +1839,15 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``model_override`` optionally pins the dispatched worker to a model
+    different from the assignee profile default. Blank strings are
+    treated as ``None`` so callers can omit/clear the override without
+    changing dispatch semantics.
     """
     assignee = _canonical_assignee(assignee)
+    if model_override is not None:
+        model_override = str(model_override).strip() or None
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -1975,8 +1983,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, model_override, max_retries, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1994,6 +2002,7 @@ def create_task(
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
+                        model_override,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
                     ),

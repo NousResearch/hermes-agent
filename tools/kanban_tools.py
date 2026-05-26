@@ -682,6 +682,7 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    model_override = args.get("model_override")
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -720,6 +721,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                model_override=model_override,
             )
             new_task = kb.get_task(conn, new_tid)
             task_status = new_task.status if new_task else None
@@ -1213,6 +1215,15 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "model_override": {
+                "type": "string",
+                "description": (
+                    "Optional model identifier to override the assignee profile's "
+                    "default model for this task. Examples: 'deepseek/deepseek-v4-flash:free', "
+                    "'deepseek-v4-pro', 'gpt-5.5'. The dispatcher passes it to the worker "
+                    "as the model argument. Leave empty to use the profile default."
                 ),
             },
             "board": _board_schema_prop(),

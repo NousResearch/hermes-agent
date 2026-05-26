@@ -768,6 +768,48 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_schema_exposes_model_override():
+    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
+
+    props = KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert "model_override" in props
+    assert props["model_override"]["type"] == "string"
+
+
+def test_create_persists_model_override(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "cheap worker",
+        "assignee": "peer",
+        "model_override": "deepseek/deepseek-v4-flash:free",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, d["task_id"])
+    assert task is not None
+    assert task.model_override == "deepseek/deepseek-v4-flash:free"
+
+
+def test_create_blank_model_override_uses_profile_default(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "default model",
+        "assignee": "peer",
+        "model_override": "   ",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, d["task_id"])
+    assert task is not None
+    assert task.model_override is None
+
+
 def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``

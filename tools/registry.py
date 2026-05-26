@@ -207,6 +207,17 @@ class ToolRegistry:
             the fn defensively (``def fn(name, args, **kwargs): ...``) so
             new fields don't break it.
 
+        Invocation timing:
+            The fn fires *before* tool lookup, so it is called for every
+            name passed to ``dispatch()`` — including unregistered tool
+            names.  An allowing fn still receives the standard
+            ``"Unknown tool: ..."`` error response.  A denying fn's message
+            replaces the "Unknown tool" error.  This is deliberate:
+            enforcement observes every attempted dispatch, including
+            probes for tools that do not exist, so an audit log captures
+            the model's intent rather than only the calls that would have
+            succeeded.
+
         Caveats:
         - The fn runs **synchronously on the dispatch thread** — keep it fast
           or dispatch will block.

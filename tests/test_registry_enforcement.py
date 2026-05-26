@@ -113,6 +113,41 @@ class TestEnforcementFn:
         assert "error" in result
         assert "Unknown tool" in result["error"]
 
+    def test_enforcement_fn_fires_for_unknown_tool(self):
+        """The fn is invoked BEFORE tool lookup, so unknown names still call it.
+
+        Enforcement is the audit point — every dispatch attempt must be
+        observed, including probes for tools that do not exist.  Locks
+        in the "Invocation timing" guarantee in the docstring.
+        """
+        received = []
+        def capture(name, args, **kw):
+            received.append(name)
+
+        r = _make_registry_with_tool()
+        r.set_enforcement_fn(capture)
+        json.loads(r.dispatch("test_tool", {}))
+        json.loads(r.dispatch("nonexistent_tool", {}))
+        assert received == ["test_tool", "nonexistent_tool"]
+
+    def test_enforcement_fn_denial_takes_precedence_over_unknown_tool(self):
+        """A denial replaces the "Unknown tool" fallback.
+
+        An enforcement policy that doesn't trust the registry's default
+        error response (e.g. wants every unauthorized call to look like
+        a policy denial regardless of whether the tool exists) can rely
+        on EnforcementDenied short-circuiting before lookup.
+        """
+        r = _make_registry_with_tool()
+        r.set_enforcement_fn(
+            lambda n, a, **kw: (_ for _ in ()).throw(
+                EnforcementDenied("not in capability list")
+            )
+        )
+        result = json.loads(r.dispatch("nonexistent_tool", {}))
+        assert "not in capability list" in result["error"]
+        assert "Unknown tool" not in result["error"]
+
     # -----------------------------------------------------------------------
     # New: async fn rejection, return value contract, re-entrancy
     # -----------------------------------------------------------------------

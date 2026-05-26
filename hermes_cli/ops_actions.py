@@ -56,6 +56,46 @@ _FORBIDDEN_ACTION_NAMES = {
 }
 
 
+_BLOCKED_ACTION_CLASSES = [
+    "arbitrary_shell",
+    "gateway_restart",
+    "cron_mutation",
+    "credential_change",
+    "public_or_payment_action",
+    "messaging_outreach",
+]
+
+
+def action_registry_status(config: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    """Return dashboard-safe fixed-action registry and live config status.
+
+    This endpoint-facing helper is intentionally informational. It does not
+    execute, dry-run, create approvals, mutate config, inspect secrets, or call
+    service controls.
+    """
+    ops_cfg = _ops_center_config(config)
+    execution_enabled = bool(ops_cfg.get("action_execution_enabled", False))
+    allowed_raw = ops_cfg.get("allowed_actions", [])
+    allowed_actions = [str(item).strip() for item in allowed_raw] if isinstance(allowed_raw, list) else []
+    actions: list[dict[str, Any]] = []
+    for action in ACTIONS.values():
+        configured_allowed = action.name in allowed_actions
+        executable = bool(execution_enabled and configured_allowed and action.name == "read_only_status_probe")
+        actions.append({
+            **action.to_dict(),
+            "configured_allowed": configured_allowed,
+            "executable": executable,
+            "mutation_scope": "audit_log_only" if executable else "none",
+        })
+    return {
+        "execution_enabled": execution_enabled,
+        "allowed_actions": allowed_actions,
+        "actions": actions,
+        "blocked_action_classes": list(_BLOCKED_ACTION_CLASSES),
+        "message": "Only named fixed actions are visible here; arbitrary commands and high-risk action classes remain blocked.",
+    }
+
+
 def get_action(name: str) -> OpsAction:
     action_name = str(name or "").strip()
     if action_name in _FORBIDDEN_ACTION_NAMES:

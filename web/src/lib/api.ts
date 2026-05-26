@@ -167,6 +167,7 @@ export const api = {
     return fetchJSON<OpsApprovalAuditEvent[]>(`/api/ops/approvals/audit${qs}`);
   },
   getOpsApprovalSummary: () => fetchJSON<OpsApprovalSummary>("/api/ops/approvals/summary"),
+  getOpsActionRegistryStatus: () => fetchJSON<OpsActionRegistryStatus>("/api/ops/actions"),
   dryRunOpsApprovalAction: (id: string, actionName: string) =>
     fetchJSON<OpsActionDryRun>(`/api/ops/approvals/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionName)}/dry-run`, {
       method: "POST",
@@ -683,6 +684,18 @@ export interface OpsActionDryRun {
   };
   execution_allowed: false;
   would_execute: false;
+  message: string;
+}
+
+export interface OpsActionRegistryStatus {
+  execution_enabled: boolean;
+  allowed_actions: string[];
+  actions: Array<OpsActionDryRun["action"] & {
+    configured_allowed: boolean;
+    executable: boolean;
+    mutation_scope: "audit_log_only" | "none";
+  }>;
+  blocked_action_classes: string[];
   message: string;
 }
 

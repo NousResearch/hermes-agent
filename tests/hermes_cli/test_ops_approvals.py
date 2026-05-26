@@ -279,6 +279,37 @@ def test_approval_api_lists_audit_events(_isolate_hermes_home):
     assert all(event["approval_id"] == created["id"] for event in events)
 
 
+def test_ops_actions_status_api_reports_probe_only_execution_boundary(_isolate_hermes_home, monkeypatch):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    import hermes_cli.ops_actions as ops_actions
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    monkeypatch.setattr(
+        ops_actions,
+        "_load_runtime_config",
+        lambda: {"ops_center": {"action_execution_enabled": True, "allowed_actions": ["read_only_status_probe"]}},
+    )
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    resp = client.get("/api/ops/actions")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["execution_enabled"] is True
+    assert body["allowed_actions"] == ["read_only_status_probe"]
+    assert [action["name"] for action in body["actions"]] == ["read_only_status_probe"]
+    assert body["actions"][0]["configured_allowed"] is True
+    assert body["actions"][0]["executable"] is True
+    assert "gateway_restart" in body["blocked_action_classes"]
+    assert "shell" not in body["allowed_actions"]
+
+
 def test_approval_summary_counts_pending_and_generates_review_text(_isolate_hermes_home):
     from hermes_cli.ops_approvals import ApprovalStore
 

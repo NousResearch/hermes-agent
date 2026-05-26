@@ -26,6 +26,27 @@ def test_action_registry_lists_only_fixed_actions():
     assert get_action("read_only_status_probe").risk_label == "Read-only"
 
 
+def test_action_registry_status_reports_config_without_expanding_execution():
+    from hermes_cli.ops_actions import action_registry_status
+
+    status = action_registry_status({"ops_center": {"action_execution_enabled": True, "allowed_actions": ["read_only_status_probe"]}})
+
+    assert status["execution_enabled"] is True
+    assert status["allowed_actions"] == ["read_only_status_probe"]
+    assert status["blocked_action_classes"] == [
+        "arbitrary_shell",
+        "gateway_restart",
+        "cron_mutation",
+        "credential_change",
+        "public_or_payment_action",
+        "messaging_outreach",
+    ]
+    assert [action["name"] for action in status["actions"]] == ["read_only_status_probe"]
+    assert status["actions"][0]["configured_allowed"] is True
+    assert status["actions"][0]["executable"] is True
+    assert status["actions"][0]["mutation_scope"] == "audit_log_only"
+
+
 def test_unknown_fixed_action_is_rejected():
     from hermes_cli.ops_actions import ActionError, get_action
 

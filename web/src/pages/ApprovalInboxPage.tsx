@@ -20,7 +20,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsActionDryRun, OpsActionExecute, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, OpsApprovalSummary, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsActionDryRun, OpsActionExecute, OpsActionRegistryStatus, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, OpsApprovalSummary, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -204,6 +204,7 @@ export default function ApprovalInboxPage() {
   const [approvals, setApprovals] = useState<OpsApproval[]>([]);
   const [auditEvents, setAuditEvents] = useState<OpsApprovalAuditEvent[]>([]);
   const [approvalSummary, setApprovalSummary] = useState<OpsApprovalSummary | null>(null);
+  const [actionRegistry, setActionRegistry] = useState<OpsActionRegistryStatus | null>(null);
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>("all");
   const [approvalQuery, setApprovalQuery] = useState("");
   const [approvalRiskFilter, setApprovalRiskFilter] = useState("all");
@@ -219,13 +220,14 @@ export default function ApprovalInboxPage() {
 
   const load = useCallback(() => {
     setError(null);
-    Promise.allSettled([api.getStatus(), api.getCronJobs("all"), api.getOpsApprovals(), api.getOpsApprovalAudit(), api.getOpsApprovalSummary()]).then(([statusResult, jobsResult, approvalsResult, auditResult, summaryResult]) => {
+    Promise.allSettled([api.getStatus(), api.getCronJobs("all"), api.getOpsApprovals(), api.getOpsApprovalAudit(), api.getOpsApprovalSummary(), api.getOpsActionRegistryStatus()]).then(([statusResult, jobsResult, approvalsResult, auditResult, summaryResult, actionRegistryResult]) => {
       if (statusResult.status === "fulfilled") setStatus(statusResult.value);
       if (jobsResult.status === "fulfilled") setJobs(jobsResult.value);
       if (approvalsResult.status === "fulfilled") setApprovals(approvalsResult.value);
       if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value);
       if (summaryResult.status === "fulfilled") setApprovalSummary(summaryResult.value);
-      if (statusResult.status === "rejected" || jobsResult.status === "rejected" || approvalsResult.status === "rejected" || auditResult.status === "rejected" || summaryResult.status === "rejected") {
+      if (actionRegistryResult.status === "fulfilled") setActionRegistry(actionRegistryResult.value);
+      if (statusResult.status === "rejected" || jobsResult.status === "rejected" || approvalsResult.status === "rejected" || auditResult.status === "rejected" || summaryResult.status === "rejected" || actionRegistryResult.status === "rejected") {
         setError("Some approval-context sources could not refresh.");
       }
     });
@@ -278,6 +280,8 @@ export default function ApprovalInboxPage() {
     if (!q) return STANDING_APPROVALS;
     return STANDING_APPROVALS.filter((item) => `${item.title} ${item.project} ${item.risk} ${item.target} ${item.preview}`.toLowerCase().includes(q));
   }, [query]);
+  const executableActions = actionRegistry?.actions.filter((action) => action.executable) ?? [];
+  const registryActionNames = actionRegistry?.actions.map((action) => action.name).join(", ") || "registry unavailable";
 
   const createSampleApproval = useCallback(() => {
     setActioningId("new");
@@ -429,7 +433,7 @@ export default function ApprovalInboxPage() {
           <Card className="border-white/10 bg-white/[0.03]"><CardContent className="p-4"><div className="text-xs uppercase tracking-wide text-text-secondary">Standing gates</div><div className="mt-3 text-3xl font-semibold text-text-primary">{STANDING_APPROVALS.length}</div><div className="mt-1 text-xs text-text-secondary">Problem runs: {problems.length}</div></CardContent></Card>
           <Card className="border-white/10 bg-white/[0.03]"><CardContent className="p-4"><div className="text-xs uppercase tracking-wide text-text-secondary">Pending approvals</div><div className="mt-3 text-3xl font-semibold text-amber-200">{pendingApprovals.length}</div></CardContent></Card>
           <Card className="border-white/10 bg-white/[0.03]"><CardContent className="p-4"><div className="text-xs uppercase tracking-wide text-text-secondary">Gateway</div><div className={cn("mt-3 text-xl font-semibold", status?.gateway_running ? "text-emerald-300" : "text-red-300")}>{status?.gateway_running ? "Running" : "Unknown"}</div></CardContent></Card>
-          <Card className="border-white/10 bg-white/[0.03]"><CardContent className="p-4"><div className="text-xs uppercase tracking-wide text-text-secondary">Execution hooks</div><div className="mt-3 text-xl font-semibold text-cyan-200">Probe only</div><div className="mt-1 text-xs text-text-secondary">read_only_status_probe</div></CardContent></Card>
+          <Card className="border-white/10 bg-white/[0.03]"><CardContent className="p-4"><div className="text-xs uppercase tracking-wide text-text-secondary">Execution hooks</div><div className={cn("mt-3 text-xl font-semibold", executableActions.length ? "text-cyan-200" : "text-amber-200")}>{executableActions.length ? "Probe enabled" : "Blocked"}</div><div className="mt-1 text-xs text-text-secondary">{registryActionNames}</div></CardContent></Card>
         </section>
 
         <section className="rounded-2xl border border-amber-400/20 bg-amber-500/[0.06] p-4">

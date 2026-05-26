@@ -2661,6 +2661,16 @@ async def summarize_ops_approvals():
         raise _approval_error(exc) from exc
 
 
+@app.get("/api/ops/actions")
+async def get_ops_action_registry_status():
+    try:
+        from hermes_cli.ops_actions import action_registry_status
+
+        return action_registry_status()
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.post("/api/ops/approvals/{approval_id}/actions/{action_name}/dry-run")
 async def dry_run_ops_approval_action(approval_id: str, action_name: str):
     try:

@@ -34,3 +34,9 @@
 - 🏷️ **printf percent gotcha** — `printf` failed while WAL-appending text containing `%` (`100%`, `-41.2%`). Use Python append or `printf %s` with quoted payload for user text containing percent signs.
 
 - 🏷️ **Evening brief here.now timeout local-link leak** — `daily-evening-report` delivered `local file: /Users/.../davie-evening-brief.html` because the 183-file/62MB here.now publish exceeded the sender’s 120s timeout. Fix: retry publish from the persistent here.now state dir, update `brief-state.json` with returned URL/slug, raise recurring publish timeout to 360s, and never use local file paths as Telegram brief links.
+
+- 🏷️ **Bash printf dash header repeat** — `printf "--- header ---\n"` failed again because leading dashes are parsed as options. Use `printf "%s\n" "--- header ---"` for section headers.
+
+- 🏷️ **Native memory capacity full** — `memory(add)` for CodeGraph benchmark failed because compact memory store was 2,158/2,200 chars. Fix: save detailed durable lesson to agentmemory instead; only replace/remove compact memory when the fact is higher-priority than existing entries.
+
+- 🏷️ **Git author auto-used informal name** — Git commits initially used `Davie Lam` and one host-local email because global `user.name/user.email` were unset. Fix: set global git author to `Diet Lam <duclamvan@gmail.com>`, amend affected commits, and force-push updated heads.

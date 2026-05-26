@@ -84,7 +84,7 @@ function SnippetHighlight({ snippet }: { snippet: string }) {
     parts.push(snippet.slice(last));
   }
   return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">
+    <p className="font-mondwest normal-case mt-1 min-w-0 max-w-full truncate text-sm text-text-secondary">
       {parts}
     </p>
   );
@@ -297,7 +297,7 @@ function SessionRow({
 
   const actionButtons = (
     <>
-      <Badge tone="outline" className="text-xs">
+      <Badge tone="outline" className="text-sm">
         {session.source ?? "local"}
       </Badge>
 
@@ -341,18 +341,18 @@ function SessionRow({
       }`}
     >
       <div
-        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
+        className="flex cursor-pointer items-start gap-4 p-4 transition-colors hover:bg-secondary/30"
         onClick={onToggle}
       >
         <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
-          <SourceIcon className="h-4 w-4" />
+          <SourceIcon className="h-5 w-5" />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <div className="flex min-w-0 items-center gap-2">
                 <span
-                  className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                  className={`font-mondwest normal-case min-w-0 flex-1 truncate text-base ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
                 >
                   {hasTitle
                     ? session.title
@@ -361,13 +361,13 @@ function SessionRow({
                       : t.sessions.untitledSession}
                 </span>
                 {session.is_active && (
-                  <Badge tone="success" className="shrink-0 text-xs">
-                    <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                  <Badge tone="success" className="shrink-0 text-sm">
+                    <span className="mr-1 inline-block h-2 w-2 animate-pulse rounded-full bg-current" />
                     {t.common.live}
                   </Badge>
                 )}
               </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
                 <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
                   {(session.model ?? t.common.unknown).split("/").pop()}
                 </span>
@@ -772,7 +772,7 @@ export default function SessionsPage() {
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
             {showOverviewTab && !isSearching && (
               <Segmented
-                className="w-fit shrink-0"
+                className="w-fit shrink-0 text-base"
                 size="md"
                 value={view}
                 onChange={setView}
@@ -875,7 +875,7 @@ export default function SessionsPage() {
               <CardHeader className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
+                  <CardTitle className="min-w-0 truncate text-lg">
                     {t.status.recentSessions}
                   </CardTitle>
                 </div>
@@ -885,14 +885,14 @@ export default function SessionsPage() {
                 {recentSessions.map((s) => (
                   <div
                     key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
+                    className="flex min-w-0 max-w-full flex-col gap-3 border border-border p-4 sm:flex-row sm:items-center sm:justify-between"
                   >
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 truncate text-sm font-medium">
+                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      <span className="font-mondwest normal-case min-w-0 truncate text-base font-medium">
                         {s.title ?? t.common.untitled}
                       </span>
 
-                      <span className="min-w-0 break-words text-xs text-muted-foreground">
+                      <span className="min-w-0 break-words text-sm text-muted-foreground">
                         <span className="font-mono-ui">
                           {(s.model ?? t.common.unknown).split("/").pop()}
                         </span>{" "}
@@ -901,7 +901,7 @@ export default function SessionsPage() {
                       </span>
 
                       {s.preview && (
-                        <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
+                        <p className="font-mondwest normal-case min-w-0 max-w-full text-sm leading-6 text-text-tertiary [overflow-wrap:anywhere]">
                           {s.preview}
                         </p>
                       )}
@@ -909,9 +909,9 @@ export default function SessionsPage() {
 
                     <Badge
                       tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
+                      className="shrink-0 self-start text-sm sm:self-center"
                     >
-                      <Database className="mr-1 h-3 w-3" />
+                      <Database className="mr-1 h-4 w-4" />
                       {s.source ?? "local"}
                     </Badge>
                   </div>

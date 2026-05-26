@@ -182,7 +182,7 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
 
-        app = web.Application()
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
 
@@ -372,9 +372,26 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Payload too large"}, status=413
             )
 
-        # Read body (must be done before any validation)
+        # Read body with bounded streaming. Chunked/no-Content-Length
+        # requests must not bypass the size cap before HMAC validation.
         try:
-            raw_body = await request.read()
+            chunks: List[bytes] = []
+            total_size = 0
+            while True:
+                chunk = await request.content.read(8192)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > self._max_body_bytes:
+                    return web.json_response(
+                        {"error": "Payload too large"}, status=413
+                    )
+                chunks.append(chunk)
+            raw_body = b"".join(chunks)
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)

@@ -70,6 +70,7 @@ new locking.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import json
 import os
@@ -955,6 +956,161 @@ _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
+# Singleton connection pool — one sqlite3.Connection per process+board.
+# Pattern mirrors hermes_state.py:SessionDB: persistent connection,
+# check_same_thread=False, lives for process lifetime, cleaned up via atexit.
+_connection_pool: dict[str, sqlite3.Connection] = {}
+_pool_lock = threading.Lock()
+
+
+def _try_stat(path: Path) -> Optional[os.stat_result]:
+    """Return ``path.stat()`` or ``None`` on any OSError (missing file, etc.)."""
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
+def _open_connection(
+    *,
+    board: Optional[str] = None,
+    db_path: Optional[Path] = None,
+    pooled: bool = False,
+) -> sqlite3.Connection:
+    """Open and initialise a kanban DB connection (shared by connect + get_connection).
+
+    When *pooled* is True, the caller (``get_connection``) is responsible for
+    pool lookup/insertion and for holding ``_pool_lock`` — this function only
+    creates the raw connection and runs schema init.
+    """
+    if db_path is not None:
+        path = db_path
+    else:
+        path = kanban_db_path(board=board)
+    resolved = str(path.resolve())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _validate_sqlite_header(path)
+    # For existing non-empty files, run integrity check BEFORE WAL setup
+    # so corrupt files are caught with KanbanDbCorruptError (not a raw
+    # DatabaseError from apply_wal_with_fallback).
+    _stat = _try_stat(path)
+    existing_nonempty = _stat is not None and _stat.st_size > 0
+    conn = sqlite3.connect(
+        str(path),
+        check_same_thread=False,
+        timeout=30,
+        isolation_level=None,
+    )
+    conn.row_factory = sqlite3.Row
+    try:
+        with _INIT_LOCK:
+            needs_init = resolved not in _INITIALIZED_PATHS
+            if existing_nonempty and needs_init:
+                # Integrity check on the MAIN connection BEFORE WAL setup —
+                # no separate probe connection. Catches genuinely corrupt
+                # files early and raises KanbanDbCorruptError.
+                _check_db_health(conn, path)
+            from hermes_state import apply_wal_with_fallback
+            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=30000")
+            if needs_init:
+                if not existing_nonempty:
+                    # New or empty file — health check after WAL setup.
+                    _check_db_health(conn, path)
+                conn.executescript(SCHEMA_SQL)
+                _migrate_add_optional_columns(conn)
+                _INITIALIZED_PATHS.add(resolved)
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def get_connection(
+    board: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> sqlite3.Connection:
+    """Return a persistent, thread-safe connection for this process+board.
+
+    On first call for a given DB path, opens the connection, enables WAL,
+    applies pragmas, and runs schema init. Subsequent calls return the same
+    connection — no per-call open/close churn, no transient WAL-index races.
+
+    Prefer this over ``connect()`` for long-running processes (gateway,
+    dispatcher, worker).
+    """
+    # Resolve the path without opening the connection so we can do pool lookup.
+    if db_path is not None:
+        path = db_path
+    else:
+        path = kanban_db_path(board=board)
+    resolved = str(path.resolve())
+    with _pool_lock:
+        if resolved in _connection_pool:
+            conn = _connection_pool[resolved]
+            # Defensive: if a caller closed the pooled connection (e.g. test
+            # teardown via conn.close()), rebuild it transparently.
+            try:
+                conn.execute("SELECT 1")
+            except sqlite3.ProgrammingError:
+                # Connection closed — remove stale entry and rebuild.
+                del _connection_pool[resolved]
+            else:
+                return conn
+        conn = _open_connection(board=board, db_path=db_path, pooled=True)
+        _connection_pool[resolved] = conn
+        return conn
+
+
+def _check_db_health(conn: sqlite3.Connection, db_path: Path) -> None:
+    """Run ``PRAGMA integrity_check`` on the given connection.
+
+    No separate probe connection — eliminates the false-positive corruption
+    detection path where a second connection with a different timeout sees
+    transient WAL states during checkpointing.
+
+    Raises :class:`KanbanDbCorruptError` if the integrity check fails.
+    """
+    try:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.DatabaseError as exc:
+        backup = _backup_corrupt_db(db_path)
+        raise KanbanDbCorruptError(
+            db_path, backup,
+            f"sqlite refused integrity check: {exc}",
+        )
+    if not row or (row[0] or "").lower() != "ok":
+        backup = _backup_corrupt_db(db_path)
+        raise KanbanDbCorruptError(
+            db_path, backup,
+            f"integrity_check returned {row[0] if row else '<no row>'!r}",
+        )
+
+
+def _cleanup_connections() -> None:
+    """Graceful shutdown: PASSIVE checkpoint + close all pooled connections.
+
+    Registered via ``atexit`` so normal gateway shutdowns drain the WAL before
+    closing. SIGKILL skips this (no atexit hooks run), which is acceptable —
+    WAL recovery on next open handles it.
+    """
+    with _pool_lock:
+        for conn in _connection_pool.values():
+            try:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _connection_pool.clear()
+
+
+atexit.register(_cleanup_connections)
+
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
@@ -1074,62 +1230,7 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     return candidate
 
 
-def _guard_existing_db_is_healthy(path: Path) -> None:
-    """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
-    Opens the probe in read/write mode so SQLite can recover or
-    checkpoint a healthy WAL/hot-journal DB before we declare it
-    corrupt. If the file is malformed, copy it (and any WAL/SHM
-    sidecars) to a timestamped backup and raise
-    :class:`KanbanDbCorruptError` so callers cannot silently recreate
-    the schema on top of a damaged DB.
-
-    Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
-    treated as corruption; they propagate raw so the caller sees a
-    normal lock failure and no spurious ``.corrupt`` backup is made.
-
-    No-op for missing files, zero-byte files (treated as fresh), and
-    paths already proven healthy this process (cache hit).
-
-    Path-trust note: ``path`` arrives via :func:`connect`, which itself
-    resolves it from an explicit ``db_path`` argument, the
-    :func:`kanban_db_path` env-var chain, or the kanban-home default —
-    all sources Hermes treats as user-controlled-but-trusted on the
-    user's own machine. We additionally resolve the path here and
-    confine all filesystem writes to its parent directory so any
-    accidental ``..`` segments are collapsed before any I/O happens.
-    """
-    # Resolve before any I/O. ``Path.resolve()`` normalizes ``..`` and
-    # symlinks, giving us a canonical path whose parent dir we can pin.
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return
-    try:
-        if not resolved.exists() or resolved.stat().st_size == 0:
-            return
-    except OSError:
-        return
-    if str(resolved) in _INITIALIZED_PATHS:
-        return
-    reason: Optional[str] = None
-    try:
-        probe = sqlite3.connect(str(resolved), timeout=5, isolation_level=None)
-        try:
-            row = probe.execute("PRAGMA integrity_check").fetchone()
-        finally:
-            probe.close()
-        if not row or (row[0] or "").lower() != "ok":
-            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
-    except sqlite3.OperationalError:
-        # Lock contention, busy, transient IO — not corruption. Let it propagate.
-        raise
-    except sqlite3.DatabaseError as exc:
-        reason = f"sqlite refused to open file: {exc}"
-    if reason is None:
-        return
-    backup = _backup_corrupt_db(resolved)
-    raise KanbanDbCorruptError(resolved, backup, reason)
 
 
 def connect(
@@ -1139,11 +1240,15 @@ def connect(
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
+    Legacy wrapper — delegates to :func:`_open_connection` for a fresh
+    (non-pooled) connection. For persistent, pooled connections in
+    long-running processes, use :func:`get_connection`.
+
     WAL mode is enabled on every connection; it's a no-op after the first
     time but keeps the code robust if the DB file is ever re-created.
 
     The first connection to a given path auto-runs :func:`init_db` so
-    fresh installs and test harnesses that construct `connect()`
+    fresh installs and test harnesses that construct ``connect()``
     directly don't have to remember a separate init step. Subsequent
     connections skip the schema check via a module-level path cache.
 
@@ -1155,48 +1260,7 @@ def connect(
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
     """
-    if db_path is not None:
-        path = db_path
-    else:
-        path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
-    # and other invalid-header cases without opening a sqlite connection.
-    _validate_sqlite_header(path)
-    # Full integrity probe — catches corruption past the header (malformed
-    # pages, broken internal metadata). Cached per-path after first success
-    # via _INITIALIZED_PATHS so it only runs once per process per path.
-    _guard_existing_db_is_healthy(path)
-    resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
-    try:
-        conn.row_factory = sqlite3.Row
-        with _INIT_LOCK:
-            # WAL activation can take an exclusive lock while SQLite creates the
-            # sidecar files for a fresh database. Keep it in the same process-local
-            # critical section as schema initialization so concurrent gateway
-            # startup threads do not race before _INITIALIZED_PATHS is populated.
-            # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-            # falls back to DELETE with one WARNING so kanban stays usable there.
-            # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-            from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            needs_init = resolved not in _INITIALIZED_PATHS
-            if needs_init:
-                # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
-                # migrations. Cached so subsequent connect() calls in the same
-                # process are cheap. The lock prevents same-process dispatcher
-                # threads from racing through the additive ALTER TABLE pass with
-                # stale PRAGMA snapshots during gateway startup.
-                conn.executescript(SCHEMA_SQL)
-                _migrate_add_optional_columns(conn)
-                _INITIALIZED_PATHS.add(resolved)
-    except Exception:
-        conn.close()
-        raise
-    return conn
+    return _open_connection(board=board, db_path=db_path)
 
 
 def init_db(
@@ -1224,8 +1288,8 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
-    with contextlib.closing(connect(path)):
-        pass
+    # connect() now returns a pooled connection — do NOT close it.
+    connect(path)
     return path
 
 

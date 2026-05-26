@@ -11,9 +11,12 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import sys
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -28,6 +31,8 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _load_profiles,
+    _resolve_profile,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -2664,6 +2669,179 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+class TestAgentProfiles(unittest.TestCase):
+    """Tests for named agent_profiles resolution (#9459)."""
+
+    def test_unknown_profile_raises_value_error(self):
+        """_resolve_profile raises ValueError for unknown profile name."""
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_profile("nope", {"researcher": {"model": "x"}})
+        self.assertIn("Unknown agent profile", str(ctx.exception))
+        self.assertIn("researcher", str(ctx.exception))
+
+    def test_resolve_profile_returns_model(self):
+        """Profile model field is returned."""
+        out = _resolve_profile(
+            "researcher", {"researcher": {"model": "anthropic/claude-haiku"}}
+        )
+        self.assertEqual(out["model"], "anthropic/claude-haiku")
+
+    def test_resolve_profile_returns_toolsets(self):
+        """Profile toolsets field is returned."""
+        out = _resolve_profile(
+            "coder", {"coder": {"toolsets": ["terminal", "file"]}}
+        )
+        self.assertEqual(out["toolsets"], ["terminal", "file"])
+
+    def test_resolve_profile_inline_system_prompt(self):
+        """system_prompt: inline string becomes system_prompt_text."""
+        out = _resolve_profile(
+            "p", {"p": {"system_prompt": "You are a focused worker."}}
+        )
+        self.assertEqual(out["system_prompt_text"], "You are a focused worker.")
+        # The raw 'system_prompt' key is consumed, not leaked.
+        self.assertNotIn("system_prompt", out)
+
+    def test_resolve_profile_system_prompt_file(self):
+        """system_prompt_file: path is read into system_prompt_text."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spf = Path(tmp) / "prompt.txt"
+            spf.write_text("Prompt from file.", encoding="utf-8")
+            out = _resolve_profile(
+                "p", {"p": {"system_prompt_file": str(spf)}}
+            )
+            self.assertEqual(out["system_prompt_text"], "Prompt from file.")
+            # system_prompt_file is consumed during resolution.
+            self.assertNotIn("system_prompt_file", out)
+
+    def test_resolve_profile_missing_file_raises(self):
+        """system_prompt_file pointing to nonexistent file raises ValueError."""
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does_not_exist.txt"
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_profile(
+                    "p", {"p": {"system_prompt_file": str(missing)}}
+                )
+            self.assertIn("Cannot read system_prompt_file", str(ctx.exception))
+
+    def test_resolve_profile_max_iterations(self):
+        """Profile max_iterations field is returned."""
+        out = _resolve_profile("p", {"p": {"max_iterations": 25}})
+        self.assertEqual(out["max_iterations"], 25)
+
+    def test_profile_in_schema_properties(self):
+        """DELEGATE_TASK_SCHEMA contains 'profile' property."""
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("profile", props)
+        self.assertEqual(props["profile"]["type"], "string")
+
+    def test_load_profiles_returns_empty_on_error(self):
+        """_load_profiles returns {} if config load fails."""
+        with patch(
+            "hermes_cli.config.load_config", side_effect=RuntimeError("boom")
+        ):
+            self.assertEqual(_load_profiles(), {})
+
+    @patch("tools.delegate_tool._load_profiles")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_profile_drives_child_model_and_prompt(
+        self, mock_creds, mock_cfg, mock_profiles
+    ):
+        """profile= sets the child's model and ephemeral system prompt end-to-end."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        # No delegation.model configured → profile model is the baseline.
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_profiles.return_value = {
+            "fast": {
+                "model": "anthropic/claude-haiku",
+                "system_prompt": "You are the fast profile worker.",
+            }
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+            with patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "ok",
+                    "api_calls": 1,
+                    "duration_seconds": 1.0,
+                }
+                result = json.loads(
+                    delegate_task(goal="do it", profile="fast", parent_agent=parent)
+                )
+
+            self.assertIn("results", result)
+            _, kwargs = MockAgent.call_args
+            # Profile model is used as the baseline when config sets none.
+            self.assertEqual(kwargs["model"], "anthropic/claude-haiku")
+            # Inline system_prompt overrides the generated child prompt.
+            self.assertEqual(
+                mock_child.ephemeral_system_prompt,
+                "You are the fast profile worker.",
+            )
+
+    @patch("tools.delegate_tool._load_profiles")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_explicit_toolsets_override_profile(
+        self, mock_creds, mock_cfg, mock_profiles
+    ):
+        """Explicit toolsets= wins over the profile's toolsets baseline."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_profiles.return_value = {"p": {"toolsets": ["web"]}}
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_build.return_value = MagicMock()
+            with patch("tools.delegate_tool._run_single_child") as mock_run:
+                mock_run.return_value = {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "ok",
+                    "api_calls": 1,
+                    "duration_seconds": 1.0,
+                }
+                delegate_task(
+                    goal="g",
+                    toolsets=["terminal"],
+                    profile="p",
+                    parent_agent=parent,
+                )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["toolsets"], ["terminal"])
+
+    def test_unknown_profile_returns_error_json(self):
+        """delegate_task with an unknown profile returns a clean error, not a crash."""
+        parent = _make_mock_parent(depth=0)
+        with patch(
+            "tools.delegate_tool._load_profiles", return_value={"known": {}}
+        ):
+            result = json.loads(
+                delegate_task(goal="g", profile="missing", parent_agent=parent)
+            )
+        self.assertIn("error", result)
+        self.assertIn("Unknown agent profile", result["error"])
 
 
 if __name__ == "__main__":

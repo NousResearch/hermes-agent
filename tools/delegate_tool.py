@@ -1924,6 +1924,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1971,6 +1972,21 @@ def delegate_task(
             }
         )
 
+    # Resolve named profile (baseline values; explicit call params override profile)
+    _profile_overrides: dict = {}
+    if profile:
+        _all_profiles = _load_profiles()
+        try:
+            _profile_overrides = _resolve_profile(profile, _all_profiles)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
+    # Apply profile baselines (explicit call params override profile values).
+    # toolsets baseline from profile when the caller didn't pass any.
+    toolsets = toolsets or _profile_overrides.get("toolsets")
+    # max_iterations baseline from profile when the caller didn't pass one.
+    max_iterations = max_iterations or _profile_overrides.get("max_iterations")
+
     # Load config
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
@@ -1996,6 +2012,12 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    # Profile model is a baseline: used only when delegation config did not
+    # set an explicit model (creds["model"]). The child still inherits the
+    # parent model when neither config nor profile specify one.
+    if not creds.get("model") and _profile_overrides.get("model"):
+        creds["model"] = _profile_overrides["model"]
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2034,6 +2056,26 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Pre-resolve per-task profiles so an unknown profile name surfaces as a
+    # clean tool_error before any child is constructed (and we only load the
+    # profiles block once for the whole batch). Per-task profile beats the
+    # top-level profile; tasks without one inherit the top-level overrides.
+    _task_profile_overrides: List[dict] = []
+    _profiles_cache: Optional[dict] = None
+    for t in task_list:
+        task_profile = t.get("profile")
+        if not task_profile:
+            _task_profile_overrides.append(_profile_overrides)
+            continue
+        if _profiles_cache is None:
+            _profiles_cache = _load_profiles()
+        try:
+            _task_profile_overrides.append(
+                _resolve_profile(task_profile, _profiles_cache)
+            )
+        except ValueError as exc:
+            return tool_error(str(exc))
+
     overall_start = time.monotonic()
     results = []
 
@@ -2058,13 +2100,29 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Per-task profile (pre-resolved above) beats the top-level profile;
+            # tasks without one carry the top-level overrides.
+            task_overrides = _task_profile_overrides[i]
+
+            # Explicit per-task value > task profile > top-level toolsets baseline.
+            task_toolsets = t.get("toolsets") or task_overrides.get("toolsets") or toolsets
+            # Config delegation.model wins; otherwise fall back to the task profile model.
+            task_model = creds["model"] or task_overrides.get("model")
+            # Config max_iterations is authoritative; the task profile only
+            # supplies a baseline when the config default is in effect.
+            task_max_iter = effective_max_iter
+            _profile_max_iter = task_overrides.get("max_iterations")
+            if _profile_max_iter and effective_max_iter == default_max_iter:
+                task_max_iter = _profile_max_iter
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
+                toolsets=task_toolsets,
+                model=task_model,
+                max_iterations=task_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
                 override_provider=creds["provider"],
@@ -2081,6 +2139,13 @@ def delegate_task(
                 ),
                 role=effective_role,
             )
+            # Profile system prompt override: replace the child's ephemeral
+            # system prompt (read at runtime by the conversation loop) when the
+            # resolved profile supplies one. _build_child_agent's signature is
+            # intentionally left untouched — the override is applied here.
+            _profile_prompt = task_overrides.get("system_prompt_text")
+            if _profile_prompt:
+                child.ephemeral_system_prompt = _profile_prompt
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
@@ -2481,6 +2546,46 @@ def _load_config() -> dict:
         return {}
 
 
+def _load_profiles() -> dict:
+    """Read agent_profiles block from full config."""
+    try:
+        from hermes_cli.config import load_config
+        full_config = load_config()
+        return full_config.get("agent_profiles", {})
+    except Exception:
+        return {}
+
+
+def _resolve_profile(name: str, profiles: dict) -> dict:
+    """Validate profile name and resolve system_prompt_file -> system_prompt_text.
+
+    Returns a dict with zero or more of: model, toolsets, max_iterations,
+    system_prompt_text. Unknown keys are preserved for forward-compatibility.
+    """
+    if name not in profiles:
+        available = list(profiles)
+        raise ValueError(
+            f"Unknown agent profile {name!r}. "
+            f"Available profiles: {available if available else '(none configured)'}"
+        )
+    raw = dict(profiles[name])
+    # Resolve system_prompt_file -> system_prompt_text
+    spf = raw.pop("system_prompt_file", None)
+    if spf:
+        import os
+        from pathlib import Path
+        path = Path(os.path.expanduser(os.path.expandvars(str(spf))))
+        try:
+            raw["system_prompt_text"] = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(
+                f"Cannot read system_prompt_file {spf!r} for profile {name!r}: {exc}"
+            ) from exc
+    elif "system_prompt" in raw:
+        raw["system_prompt_text"] = raw.pop("system_prompt")
+    return raw
+
+
 # ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
@@ -2736,6 +2841,13 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "profile": {
+                            "type": "string",
+                            "description": (
+                                "Per-task profile override. Beats the top-level 'profile'. "
+                                "See top-level 'profile' for semantics."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2748,6 +2860,14 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Name of a profile defined in agent_profiles config. "
+                    "Sets default model, toolsets, max_iterations, and system prompt "
+                    "for this delegation. Explicit call parameters override profile values."
+                ),
             },
             "acp_command": {
                 "type": "string",
@@ -2793,6 +2913,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        profile=args.get("profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

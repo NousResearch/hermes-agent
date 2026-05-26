@@ -488,7 +488,14 @@ class SignalAdapter(BasePlatformAdapter):
                         is_note_to_self = True
                         envelope_data = {**envelope_data, "dataMessage": sent_msg}
             if not is_note_to_self:
-                return
+                # Check if the syncMessage contains a top-level groupV2 field
+                # (founding-member group creation). If so, promote it to the
+                # envelope level so the existing group invite handler picks it up.
+                sync_group_v2 = sync_msg.get("groupV2") if sync_msg else None
+                if sync_group_v2 and isinstance(sync_group_v2, dict) and sync_group_v2.get("groupId"):
+                    envelope_data = {**envelope_data, "groupV2": sync_group_v2}
+                else:
+                    return
 
         # Extract sender info
         sender = (

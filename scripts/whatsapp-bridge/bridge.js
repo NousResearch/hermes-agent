@@ -25,7 +25,7 @@ import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
@@ -49,6 +49,7 @@ const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cac
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
+const SAVE_QR_TO = getArg('save-qr-to', '');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
@@ -207,6 +208,25 @@ async function startSocket() {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
       console.log('\nWaiting for scan...\n');
+      if (SAVE_QR_TO) {
+        try {
+          const py = `
+import qrcode, sys
+qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+qr.add_data(sys.argv[1])
+qr.make(fit=True)
+qr.make_image(fill_color='black', back_color='white').save(sys.argv[2])
+`.trim();
+          const result = spawnSync('python3', ['-c', py, qr, SAVE_QR_TO], { encoding: 'utf8' });
+          if (result.status === 0) {
+            console.log(`[bridge] QR PNG saved to ${SAVE_QR_TO}`);
+          } else {
+            console.error(`[bridge] QR PNG failed: ${result.stderr}`);
+          }
+        } catch (e) {
+          console.error(`[bridge] QR PNG error: ${e.message}`);
+        }
+      }
     }
 
     if (connection === 'close') {

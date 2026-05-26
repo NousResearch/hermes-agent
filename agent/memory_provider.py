@@ -111,6 +111,22 @@ class MemoryProvider(ABC):
         that do background prefetching should override this.
         """
 
+    def recall_sync(self, query: str, *, session_id: str = "") -> str:
+        """Recall relevant context synchronously using the current turn's query.
+
+        Unlike prefetch(), which returns a background result queued for the
+        *previous* turn, recall_sync() performs a fresh lookup for the
+        *current* query. This guarantees relevance at the cost of added latency.
+
+        Default: fires queue_prefetch() with the current query then immediately
+        calls prefetch() which joins the background thread. This is correct for
+        all providers that join their thread inside prefetch() (honcho, hindsight,
+        mem0, openviking). Providers whose prefetch() reads shared state without
+        joining (retaindb) should override this method.
+        """
+        self.queue_prefetch(query, session_id=session_id)
+        return self.prefetch(query, session_id=session_id)
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Persist a completed turn to the backend.
 

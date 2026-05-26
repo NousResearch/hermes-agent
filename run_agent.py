@@ -2143,10 +2143,11 @@ class AIAgent:
                 original_user_message, final_response,
                 session_id=self.session_id or "",
             )
-            self._memory_manager.queue_prefetch_all(
-                original_user_message,
-                session_id=self.session_id or "",
-            )
+            if not getattr(self, "_memory_sync_recall", False):
+                self._memory_manager.queue_prefetch_all(
+                    original_user_message,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 

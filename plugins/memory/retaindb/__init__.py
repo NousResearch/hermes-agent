@@ -539,6 +539,17 @@ class RetainDBMemoryProvider(MemoryProvider):
 
     # ── Background prefetch (fires at turn-end, consumed next turn-start) ──
 
+    def recall_sync(self, query: str, *, session_id: str = "") -> str:
+        """RetainDB override: prefetch() reads shared state without joining threads,
+        so the base queue_prefetch+prefetch pattern would race. Run the three
+        fetchers synchronously instead."""
+        if not self._client:
+            return ""
+        self._prefetch_context(query)
+        self._prefetch_dialectic(query)
+        self._prefetch_agent_model()
+        return self.prefetch(query, session_id=session_id)
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire context + dialectic + agent model prefetches in background."""
         if not self._client:

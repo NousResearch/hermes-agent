@@ -645,16 +645,25 @@ def run_conversation(
         except Exception:
             pass
 
-    # External memory provider: prefetch once before the tool loop.
+    # External memory provider: recall once before the tool loop.
     # Reuse the cached result on every iteration to avoid re-calling
-    # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
+    # provider recall on each tool call (10 tool calls = 10x latency + cost).
     # Use original_user_message (clean input) — user_message may contain
     # injected skill content that bloats / breaks provider queries.
     _ext_prefetch_cache = ""
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
-            _ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            if getattr(agent, "_memory_sync_recall", False):
+                _ext_prefetch_cache = agent._memory_manager.recall_sync_all(
+                    _query,
+                    session_id=agent.session_id or "",
+                ) or ""
+            else:
+                _ext_prefetch_cache = agent._memory_manager.prefetch_all(
+                    _query,
+                    session_id=agent.session_id or "",
+                ) or ""
         except Exception:
             pass
 

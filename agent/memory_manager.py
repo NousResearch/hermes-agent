@@ -366,6 +366,25 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def recall_sync_all(self, query: str, *, session_id: str = "") -> str:
+        """Synchronously recall context from all providers using the current query.
+
+        Use in place of prefetch_all() when memory.sync_recall is enabled.
+        Slower but always returns context relevant to the current message.
+        """
+        parts = []
+        for provider in self._providers:
+            try:
+                result = provider.recall_sync(query, session_id=session_id)
+                if result and result.strip():
+                    parts.append(result)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' recall_sync failed (non-fatal): %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts)
+
     # -- Sync ----------------------------------------------------------------
 
     def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:

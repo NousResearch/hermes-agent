@@ -65,6 +65,27 @@ from utils import base_url_host_matches, base_url_hostname
 logger = logging.getLogger(__name__)
 
 
+_CONTENT_FILTER_STREAM_ERROR_PATTERNS = (
+    "new_sensitive",
+    "content_filter",
+    "content filtered",
+    "guardrail_intervened",
+    "safety filter",
+    "safety",
+    "output sensitive",
+    "recitation",
+    "refusal",
+)
+
+
+def is_content_filter_stream_error(error: Any) -> bool:
+    """Return True when a stream error looks like provider output filtering."""
+    message = str(error).lower()
+    return "1027" in message or any(
+        pattern in message for pattern in _CONTENT_FILTER_STREAM_ERROR_PATTERNS
+    )
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -2284,7 +2305,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,
             )
-            return SimpleNamespace(
+            # Detect content-filter termination: when the provider's output
+            # safety filter (e.g. MiniMax "new_sensitive", Azure/Gemini
+            # content_filter, Bedrock guardrail_intervened) kills the stream
+            # mid-delivery, the error message contains distinctive keywords.
+            # Tagging the stub lets the conversation loop trigger fallback
+            # instead of futile continuation retries against the same provider.
+            _content_filter_terminated = is_content_filter_stream_error(result["error"])
+
+            _stub = SimpleNamespace(
                 id=PARTIAL_STREAM_STUB_ID,
                 model=getattr(agent, "model", "unknown"),
                 choices=[SimpleNamespace(
@@ -2293,6 +2322,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage=None,
                 _dropped_tool_names=_partial_names or None,
             )
+            if _content_filter_terminated:
+                _stub._content_filter_terminated = True
+            return _stub
         raise result["error"]
     return result["response"]
 

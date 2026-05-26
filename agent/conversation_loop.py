@@ -1556,6 +1556,39 @@ def run_conversation(
                                     response, "_dropped_tool_names", None
                                 )
 
+                                # ── Content-filter termination → fallback ──────
+                                # When the provider's output safety filter (e.g.
+                                # MiniMax "new_sensitive", Azure "content_filter")
+                                # killed the stream, continuation retries against
+                                # the SAME provider are futile — the same content
+                                # will hit the same filter.  Trigger fallback
+                                # immediately instead of burning retries.
+                                if _is_partial_stream_stub and getattr(
+                                    response, "_content_filter_terminated", False
+                                ):
+                                    agent._vprint(
+                                        f"{agent.log_prefix}🛡️  Content filter "
+                                        f"terminated stream — activating fallback "
+                                        f"provider...",
+                                        force=True,
+                                    )
+                                    if agent._try_activate_fallback():
+                                        retry_count = 0
+                                        compression_attempts = 0
+                                        primary_recovery_attempted = False
+                                        # Continue the outer loop with the new
+                                        # provider — don't restart the continuation
+                                        # retry chain.
+                                        continue
+                                    # No fallback available — fall through to
+                                    # normal continuation (best-effort retry).
+                                    agent._vprint(
+                                        f"{agent.log_prefix}⚠️  No fallback "
+                                        f"provider configured — retrying with "
+                                        f"same provider (may loop)...",
+                                        force=True,
+                                    )
+
                                 if _is_partial_stream_stub and _dropped_tools:
                                     _tool_list = ", ".join(_dropped_tools[:3])
                                     agent._vprint(

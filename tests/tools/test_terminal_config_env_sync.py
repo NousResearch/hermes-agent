@@ -224,3 +224,22 @@ def test_docker_env_is_bridged_everywhere():
     assert "docker_env" in _gateway_env_map_keys()
     assert "docker_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_ENV" in _terminal_tool_env_var_names()
+
+
+def test_per_turn_reload_rebridges_terminal_config():
+    """``_reload_runtime_env_preserving_config_authority`` must re-bridge
+    terminal config after reloading ``.env``, otherwise
+    ``load_hermes_dotenv(override=True)`` can clobber config-bridged
+    ``TERMINAL_*`` vars with stale ``.env`` values (#32588).
+
+    Verify by source inspection that ``_bridge_terminal_config`` is called
+    inside the reload function.
+    """
+    import gateway.run as gr
+    source = inspect.getsource(gr._reload_runtime_env_preserving_config_authority)
+    assert "_bridge_terminal_config" in source, (
+        "_reload_runtime_env_preserving_config_authority must call "
+        "_bridge_terminal_config to re-bridge terminal config after "
+        ".env reload — otherwise stale .env values override config.yaml "
+        "(see #32588)."
+    )

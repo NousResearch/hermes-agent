@@ -761,8 +761,8 @@ def _reload_runtime_env_preserving_config_authority() -> None:
 
     Gateway processes are long-lived, so per-turn code reloads ~/.hermes/.env to
     pick up rotated API keys. config.yaml remains authoritative for agent budget
-    settings such as agent.max_turns; otherwise a stale HERMES_MAX_ITERATIONS in
-    .env can replace the startup bridge on later turns.
+    settings such as agent.max_turns and ALL terminal settings; otherwise stale
+    .env values (loaded with override=True) silently replace the startup bridge.
     """
     load_hermes_dotenv(
         hermes_home=_hermes_home,
@@ -785,9 +785,66 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
 
+    _bridge_terminal_config(cfg)
+
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
+
+# Canonical mapping from terminal config keys → TERMINAL_* env vars.
+# Shared by the module-load bridge AND the per-turn reload so that
+# config.yaml stays authoritative even after .env is re-read.
+_terminal_env_map = {
+    "backend": "TERMINAL_ENV",
+    "cwd": "TERMINAL_CWD",
+    "timeout": "TERMINAL_TIMEOUT",
+    "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+    "docker_image": "TERMINAL_DOCKER_IMAGE",
+    "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+    "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+    "modal_image": "TERMINAL_MODAL_IMAGE",
+    "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
+    "ssh_host": "TERMINAL_SSH_HOST",
+    "ssh_user": "TERMINAL_SSH_USER",
+    "ssh_port": "TERMINAL_SSH_PORT",
+    "ssh_key": "TERMINAL_SSH_KEY",
+    "container_cpu": "TERMINAL_CONTAINER_CPU",
+    "container_memory": "TERMINAL_CONTAINER_MEMORY",
+    "container_disk": "TERMINAL_CONTAINER_DISK",
+    "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+    "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+    "docker_env": "TERMINAL_DOCKER_ENV",
+    "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+    "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+    "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+}
+
+
+def _bridge_terminal_config(cfg: dict) -> None:
+    """Bridge ``terminal.*`` config values into ``TERMINAL_*`` env vars.
+
+    Called both at module load and on every per-turn ``.env`` reload so that
+    ``config.yaml`` stays authoritative for terminal settings even when
+    ``load_hermes_dotenv(override=True)`` clobbers previously-bridged values.
+    """
+    terminal_cfg = cfg.get("terminal", {})
+    if not terminal_cfg or not isinstance(terminal_cfg, dict):
+        return
+    for cfg_key, env_var in _terminal_env_map.items():
+        if cfg_key not in terminal_cfg:
+            continue
+        val = terminal_cfg[cfg_key]
+        if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
+            continue
+        if cfg_key == "cwd" and isinstance(val, str):
+            val = os.path.expanduser(val)
+        if isinstance(val, (list, dict)):
+            os.environ[env_var] = json.dumps(val)
+        else:
+            os.environ[env_var] = str(val)
+
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
@@ -806,51 +863,7 @@ if _config_path.exists():
                 os.environ[_key] = str(_val)
         # Terminal config is nested — bridge to TERMINAL_* env vars.
         # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "docker_env": "TERMINAL_DOCKER_ENV",
-                "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-                "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
-                    _val = _terminal_cfg[_cfg_key]
-                    # Skip cwd placeholder values (".", "auto", "cwd") — the
-                    # gateway resolves these to Path.home() later (line ~255).
-                    # Writing the raw placeholder here would just be noise.
-                    # Only bridge explicit absolute paths from config.yaml.
-                    if _cfg_key == "cwd" and str(_val) in {".", "auto", "cwd"}:
-                        continue
-                    # Expand shell tilde in cwd so subprocess.Popen never
-                    # receives a literal "~/" which the kernel rejects.
-                    if _cfg_key == "cwd" and isinstance(_val, str):
-                        _val = os.path.expanduser(_val)
-                    if isinstance(_val, (list, dict)):
-                        os.environ[_env_var] = json.dumps(_val)
-                    else:
-                        os.environ[_env_var] = str(_val)
+        _bridge_terminal_config(_cfg)
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract,

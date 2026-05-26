@@ -98,6 +98,32 @@ def _load_hermes_env_vars() -> dict[str, str]:
         return {}
 
 
+_DOCKER_IMAGE_RE = re.compile(
+    r"^(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?(?::[0-9]+)?/)?)"
+    r"[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[a-zA-Z0-9._-]+)?(?:@sha256:[0-9a-f]{64})?$"
+)
+
+
+def _validate_docker_image(image: str) -> None:
+    """Reject obviously invalid Docker image references before ``docker run``.
+
+    Catches corruption where a shell command (e.g. ``export PATH=...``) or
+    other non-image string ends up in the image variable — see #32588.
+    """
+    if not image or not image.strip():
+        raise ValueError(
+            "Docker image is empty. Set terminal.docker_image in config.yaml "
+            "or the TERMINAL_DOCKER_IMAGE environment variable."
+        )
+    if not _DOCKER_IMAGE_RE.match(image):
+        raise ValueError(
+            f"Invalid Docker image reference: {image!r}. "
+            f"Expected a Docker image name (e.g. 'ubuntu:24.04'). "
+            f"Check terminal.docker_image in config.yaml and ensure "
+            f"TERMINAL_DOCKER_IMAGE is not set to a non-image value in .env."
+        )
+
+
 def find_docker() -> Optional[str]:
     """Locate the docker (or podman) CLI binary.
 
@@ -305,6 +331,7 @@ class DockerEnvironment(BaseEnvironment):
         run_as_host_user: bool = False,
         extra_args: list = None,
     ):
+        _validate_docker_image(image)
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)

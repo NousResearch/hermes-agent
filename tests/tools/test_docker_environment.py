@@ -514,3 +514,37 @@ def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog)
         "does not expose POSIX uid/gid" in rec.getMessage()
         for rec in caplog.records
     ), "expected a warning when POSIX ids are unavailable"
+
+
+class TestValidateDockerImage:
+    """Guard against corrupted image names reaching ``docker run`` (#32588)."""
+
+    def test_valid_images_pass(self):
+        for img in [
+            "ubuntu:24.04",
+            "python:3.11",
+            "nikolaik/python-nodejs:python3.11-nodejs20",
+            "ghcr.io/nousresearch/hermes-agent:latest",
+            "registry.example.com:5000/myimage:v1",
+            "alpine",
+            "myimage@sha256:" + "a" * 64,
+        ]:
+            docker_env._validate_docker_image(img)
+
+    def test_shell_command_rejected(self):
+        with pytest.raises(ValueError, match="Invalid Docker image reference"):
+            docker_env._validate_docker_image(
+                'export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"'
+            )
+
+    def test_empty_image_rejected(self):
+        with pytest.raises(ValueError, match="Docker image is empty"):
+            docker_env._validate_docker_image("")
+
+    def test_whitespace_only_rejected(self):
+        with pytest.raises(ValueError, match="Docker image is empty"):
+            docker_env._validate_docker_image("   ")
+
+    def test_path_string_rejected(self):
+        with pytest.raises(ValueError, match="Invalid Docker image reference"):
+            docker_env._validate_docker_image("/usr/local/bin/docker")

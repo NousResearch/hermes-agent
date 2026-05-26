@@ -13018,6 +13018,24 @@ Examples:
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
 
+    # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
+    mcp_sub.add_parser(
+        "picker",
+        help="Interactive catalog picker (also the default for `hermes mcp`)",
+    )
+    mcp_sub.add_parser(
+        "catalog",
+        help="List Nous-approved MCPs available for one-click install",
+    )
+    mcp_install_p = mcp_sub.add_parser(
+        "install",
+        help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)",
+    )
+    mcp_install_p.add_argument(
+        "identifier",
+        help="Catalog entry name (or `official/<name>`)",
+    )
+
     _add_accept_hooks_flag(mcp_parser)
 
     def cmd_mcp(args):

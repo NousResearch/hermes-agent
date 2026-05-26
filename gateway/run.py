@@ -506,8 +506,45 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
     "finish_reason",
 )
 
+_PROVIDER_OPAQUE_REPLAY_FIELDS: tuple[str, ...] = (
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+)
 
-def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[str, Any]:
+
+def _should_preserve_provider_opaque_state(
+    msg: Dict[str, Any],
+    provider_state_boundary_ts: Optional[float],
+) -> bool:
+    """Return whether provider-specific opaque replay fields are still valid.
+
+    ``/model`` can switch a gateway session from one Responses provider/model
+    to another while preserving visible transcript continuity. Opaque fields
+    such as encrypted reasoning blobs are minted by a specific provider/model;
+    replaying older blobs into the new runtime can produce provider-side
+    decrypt errors. A boundary timestamp means: preserve opaque fields only
+    for assistant messages written after the boundary. Legacy messages with
+    no parseable timestamp are treated as pre-boundary and stripped.
+    """
+    if provider_state_boundary_ts is None:
+        return True
+    timestamp = _coerce_gateway_timestamp(msg.get("timestamp"))
+    return timestamp is not None and timestamp >= provider_state_boundary_ts
+
+
+def _strip_provider_opaque_replay_fields(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``msg`` without provider/model-specific opaque replay fields."""
+    return {k: v for k, v in msg.items() if k not in _PROVIDER_OPAQUE_REPLAY_FIELDS}
+
+
+def _build_replay_entry(
+    role: str,
+    content: Any,
+    msg: Dict[str, Any],
+    *,
+    preserve_provider_opaque_state: bool = True,
+) -> Dict[str, Any]:
     """Build a replay entry for a non-tool-calling message, preserving the
     assistant fields the agent's API builders rely on for multi-turn fidelity.
 
@@ -528,6 +565,8 @@ def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[st
     if role == "assistant":
         for _rkey in _ASSISTANT_REPLAY_FIELDS:
             if _rkey not in msg:
+                continue
+            if not preserve_provider_opaque_state and _rkey in _PROVIDER_OPAQUE_REPLAY_FIELDS:
                 continue
             _rval = msg.get(_rkey)
             if _rkey == "reasoning_content":
@@ -563,6 +602,7 @@ def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
     channel_prompt: Optional[str] = None,
+    provider_state_boundary_ts: Optional[float] = None,
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
@@ -601,16 +641,27 @@ def _build_gateway_agent_history(
         has_tool_calls = "tool_calls" in msg
         has_tool_call_id = "tool_call_id" in msg
         is_tool_message = role == "tool"
+        preserve_provider_opaque_state = _should_preserve_provider_opaque_state(
+            msg,
+            provider_state_boundary_ts,
+        )
 
         if has_tool_calls or has_tool_call_id or is_tool_message:
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
+            if role == "assistant" and not preserve_provider_opaque_state:
+                clean_msg = _strip_provider_opaque_replay_fields(clean_msg)
             agent_history.append(clean_msg)
         elif content:
             # Simple text message - just need role and content.
             if msg.get("mirror"):
                 mirror_src = msg.get("mirror_source", "another session")
                 content = f"[Delivered from {mirror_src}] {content}"
-            entry = _build_replay_entry(role, content, msg)
+            entry = _build_replay_entry(
+                role,
+                content,
+                msg,
+                preserve_provider_opaque_state=preserve_provider_opaque_state,
+            )
             agent_history.append(entry)
 
     observed_context = "\n".join(observed_group_context).strip() or None
@@ -1752,6 +1803,10 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Per-session timestamp boundaries after /model switches. History rows
+        # before the boundary keep visible text/tool continuity but drop opaque
+        # provider/model-specific replay state such as encrypted reasoning blobs.
+        self._session_model_replay_boundaries: Dict[str, float] = {}
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -8165,6 +8220,8 @@ class GatewayRunner:
             # inherit the previous conversation's model/reasoning overrides
             # or a queued "/model switched" note.
             self._session_model_overrides.pop(session_key, None)
+            if hasattr(self, "_session_model_replay_boundaries"):
+                self._session_model_replay_boundaries.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
@@ -8942,6 +8999,8 @@ class GatewayRunner:
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
+                if hasattr(self, "_session_model_replay_boundaries"):
+                    self._session_model_replay_boundaries.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
@@ -9318,6 +9377,8 @@ class GatewayRunner:
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
+        if hasattr(self, "_session_model_replay_boundaries"):
+            self._session_model_replay_boundaries.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
@@ -10268,7 +10329,13 @@ class GatewayRunner:
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
 
-                        # Store model note + session override
+                        # Store model note + session override.  The switch also
+                        # becomes a replay boundary for provider/model-specific
+                        # opaque state (encrypted reasoning, message IDs, etc.)
+                        # minted by the previous runtime.
+                        if not hasattr(_self, "_session_model_replay_boundaries"):
+                            _self._session_model_replay_boundaries = {}
+                        _self._session_model_replay_boundaries[_session_key] = time.time()
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
                         _self._pending_model_notes[_session_key] = (
@@ -10406,7 +10473,12 @@ class GatewayRunner:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
 
         # Store a note to prepend to the next user message so the model
-        # knows about the switch (avoids system messages mid-history).
+        # knows about the switch (avoids system messages mid-history).  The
+        # switch also becomes a replay boundary for provider/model-specific
+        # opaque state minted by the previous runtime.
+        if not hasattr(self, "_session_model_replay_boundaries"):
+            self._session_model_replay_boundaries = {}
+        self._session_model_replay_boundaries[session_key] = time.time()
         if not hasattr(self, "_pending_model_notes"):
             self._pending_model_notes = {}
         self._pending_model_notes[session_key] = (
@@ -16805,6 +16877,11 @@ class GatewayRunner:
             agent_history, observed_group_context = _build_gateway_agent_history(
                 history,
                 channel_prompt=channel_prompt,
+                provider_state_boundary_ts=getattr(
+                    self,
+                    "_session_model_replay_boundaries",
+                    {},
+                ).get(session_key),
             )
             
             # Collect MEDIA paths already in history so we can exclude them

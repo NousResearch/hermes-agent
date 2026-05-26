@@ -35,12 +35,50 @@ Design reference:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _cross_process_oauth_lock(server_name: str):
+    """Serialize OAuth refresh/auth flows across Hermes processes.
+
+    OAuth refresh tokens are commonly single-use. When gateway, CLI, and
+    specialist Hermes processes cold-load the same expired token, concurrent
+    refresh attempts leave one process with a consumed refresh token. That
+    loser falls through to full browser OAuth, which can reopen Chrome even
+    after a successful login. A per-server advisory lock makes each process
+    reload disk after the previous process has written fresh tokens.
+    """
+    try:
+        import fcntl  # POSIX/macOS/Linux only
+        from tools.mcp_oauth import _get_token_dir, _safe_filename
+
+        token_dir = _get_token_dir()
+        token_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = token_dir / f"{_safe_filename(server_name)}.lock"
+        with open(lock_path, "a+") as fh:
+            try:
+                os.chmod(lock_path, 0o600)
+            except OSError:
+                pass
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except Exception as exc:  # pragma: no cover - defensive/platform fallback
+        logger.debug(
+            "MCP OAuth '%s': cross-process lock unavailable; continuing unlocked: %s",
+            server_name, exc,
+        )
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -285,44 +323,48 @@ def _make_hermes_provider_class() -> Optional[type]:
                 storage.save_oauth_metadata(meta)
 
         async def async_auth_flow(self, request):  # type: ignore[override]
-            # Pre-flow hook: ask the manager to refresh from disk if needed.
-            # Any failure here is non-fatal — we just log and proceed with
-            # whatever state the SDK already has.
-            try:
-                await get_manager().invalidate_if_disk_changed(
-                    self._hermes_server_name
-                )
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.debug(
-                    "MCP OAuth '%s': pre-flow disk-watch failed (non-fatal): %s",
-                    self._hermes_server_name, exc,
-                )
+            with _cross_process_oauth_lock(self._hermes_server_name):
+                # Pre-flow hook: ask the manager to refresh from disk if needed.
+                # Do this *after* taking the file lock so a competing Hermes
+                # process that just refreshed the token wins and we reload its
+                # fresh token instead of trying the now-consumed refresh token.
+                # Any failure here is non-fatal — we just log and proceed with
+                # whatever state the SDK already has.
+                try:
+                    await get_manager().invalidate_if_disk_changed(
+                        self._hermes_server_name
+                    )
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.debug(
+                        "MCP OAuth '%s': pre-flow disk-watch failed (non-fatal): %s",
+                        self._hermes_server_name, exc,
+                    )
 
-            # Manually bridge the bidirectional generator protocol. httpx's
-            # auth_flow driver (httpx._client._send_handling_auth) calls
-            # ``auth_flow.asend(response)`` to feed HTTP responses back into
-            # the generator. A naive wrapper using ``async for item in inner:
-            # yield item`` DISCARDS those .asend(response) values and resumes
-            # the inner generator with None, so the SDK's
-            # ``response = yield request`` branch in
-            # mcp/client/auth/oauth2.py sees response=None and crashes at
-            # ``if response.status_code == 401`` with AttributeError.
-            #
-            # The bridge below forwards each .asend() value into the inner
-            # generator via inner.asend(incoming), preserving the bidirectional
-            # contract. Regression from PR #11383 caught by
-            # tests/tools/test_mcp_oauth_bidirectional.py.
-            inner = super().async_auth_flow(request)
-            try:
-                outgoing = await inner.__anext__()
-                while True:
-                    incoming = yield outgoing
-                    outgoing = await inner.asend(incoming)
-            except StopAsyncIteration:
-                # Persist any metadata the SDK discovered lazily during the
-                # 401 branch so a subsequent cold-load skips discovery.
-                self._persist_oauth_metadata_if_changed()
-                return
+                # Manually bridge the bidirectional generator protocol. httpx's
+                # auth_flow driver (httpx._client._send_handling_auth) calls
+                # ``auth_flow.asend(response)`` to feed HTTP responses back into
+                # the generator. A naive wrapper using ``async for item in inner:
+                # yield item`` DISCARDS those .asend(response) values and resumes
+                # the inner generator with None, so the SDK's
+                # ``response = yield request`` branch in
+                # mcp/client/auth/oauth2.py sees response=None and crashes at
+                # ``if response.status_code == 401`` with AttributeError.
+                #
+                # The bridge below forwards each .asend() value into the inner
+                # generator via inner.asend(incoming), preserving the bidirectional
+                # contract. Regression from PR #11383 caught by
+                # tests/tools/test_mcp_oauth_bidirectional.py.
+                inner = super().async_auth_flow(request)
+                try:
+                    outgoing = await inner.__anext__()
+                    while True:
+                        incoming = yield outgoing
+                        outgoing = await inner.asend(incoming)
+                except StopAsyncIteration:
+                    # Persist any metadata the SDK discovered lazily during the
+                    # 401 branch so a subsequent cold-load skips discovery.
+                    self._persist_oauth_metadata_if_changed()
+                    return
 
     return HermesMCPOAuthProvider
 

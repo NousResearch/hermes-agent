@@ -40,6 +40,7 @@ from tools.skills_hub import (
     ClawHubSource,
     ClaudeMarketplaceSource,
     LobeHubSource,
+    BrowseShSource,
     SkillMeta,
 )
 import httpx
@@ -260,6 +261,7 @@ def main():
         "clawhub": ClawHubSource(),
         "claude-marketplace": ClaudeMarketplaceSource(auth=auth),
         "lobehub": LobeHubSource(),
+        "browse-sh": BrowseShSource(),
     }
 
     all_skills: list[dict] = []
@@ -292,7 +294,7 @@ def main():
     # Sort
     source_order = {"official": 0, "skills-sh": 1, "skills.sh": 1,
                     "github": 2, "well-known": 3, "clawhub": 4,
-                    "claude-marketplace": 5, "lobehub": 6}
+                    "browse-sh": 5, "claude-marketplace": 6, "lobehub": 7}
     deduped.sort(key=lambda s: (source_order.get(s["source"], 99), s["name"]))
 
     # Build index

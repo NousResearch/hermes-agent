@@ -618,3 +618,7 @@ def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
         "browse_skills() must not deduplicate browse-sh skills with the same name "
         "but different identifiers"
     )
+    assert {item["identifier"] for item in result["items"]} == {
+        "browse-sh/airbnb.com/search-listings-ddgioa",
+        "browse-sh/booking.com/search-listings-xyzab",
+    }

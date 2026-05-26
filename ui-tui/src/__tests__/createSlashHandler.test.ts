@@ -201,6 +201,54 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('shows Skills Hub browse identifiers returned by the gateway', async () => {
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        items: [
+          {
+            description: 'Airbnb search',
+            identifier: 'browse-sh/airbnb.com/search-listings-ddgioa',
+            name: 'search-listings',
+            trust: 'community'
+          },
+          {
+            description: 'Booking search',
+            identifier: 'browse-sh/booking.com/search-listings-xyzab',
+            name: 'search-listings',
+            trust: 'community'
+          }
+        ],
+        page: 1,
+        total: 2,
+        total_pages: 1
+      })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/skills browse')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.panel).toHaveBeenCalledWith(
+        'Browse Skills',
+        expect.arrayContaining([
+          expect.objectContaining({
+            rows: [
+              [
+                'search-listings · community',
+                'browse-sh/airbnb.com/search-listings-ddgioa - Airbnb search'
+              ],
+              [
+                'search-listings · community',
+                'browse-sh/booking.com/search-listings-xyzab - Booking search'
+              ]
+            ]
+          })
+        ])
+      )
+    })
+  })
+
   it('delegates non-native /skills subcommands to slash.exec', () => {
     const ctx = buildCtx()
 

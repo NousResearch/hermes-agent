@@ -7129,6 +7129,9 @@ class GatewayRunner:
             source.chat_id or "unknown", _msg_preview,
         )
 
+        # Heartbeat: record this event so healthcheck.py knows the gateway is alive.
+        _touch_heartbeat()
+
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -16569,6 +16572,26 @@ class GatewayRunner:
         return response
 
 
+def _touch_heartbeat() -> None:
+    """Touch the gateway heartbeat file so health checks can detect zombie sessions.
+
+    Written on every inbound message AND every cron tick so the file is always
+    fresh on a live gateway.  The healthcheck.py HEALTHCHECK_STALE_SECONDS
+    threshold (300 s / 5 min) should be comfortably larger than the cron
+    interval (60 s) so idle-but-healthy gateways never false-alarm.
+
+    Path is configurable via the HERMES_HEARTBEAT_FILE env var; defaults to
+    /tmp/hermes-heartbeat so it works inside Docker containers without any
+    host-side setup.
+    """
+    heartbeat_path = os.environ.get("HERMES_HEARTBEAT_FILE", "/tmp/hermes-heartbeat")
+    try:
+        with open(heartbeat_path, "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass  # Never let heartbeat writes crash the gateway
+
+
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """
     Background thread that ticks the cron scheduler at a regular interval.
@@ -16599,6 +16622,11 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
+
+        # Heartbeat: keep the file fresh so healthcheck.py can detect zombie sessions.
+        # This fires every 60 s so idle gateways (no inbound messages) don't
+        # false-alarm the 5-min staleness check.
+        _touch_heartbeat()
 
         tick_count += 1
 

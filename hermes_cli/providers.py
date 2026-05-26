@@ -338,12 +338,11 @@ ALIASES: Dict[str, str] = {
     "novita-ai": "novita",
     "novitaai": "novita",
 
-# xiaomi
+    # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
     "xiaomi-token": "xiaomi-token-plan",
     "mimo-token": "xiaomi-token-plan",
-    "xiaomi-token-plan-europe": "xiaomi-token-plan",
 
     # tencent
     "tencent": "tencent-tokenhub",

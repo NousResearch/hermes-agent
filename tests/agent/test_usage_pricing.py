@@ -250,3 +250,92 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+# --- normalize_usage coverage gaps (PR-0 groundwork for prompt-cache refactor) ---
+
+def test_normalize_usage_codex_responses_subtracts_cache_tokens():
+    """Codex Responses API: input_tokens is the gross total; cache tokens
+    must be subtracted out of input_tokens to get the net non-cached input.
+
+    Shape: input_tokens_details.cached_tokens (read) and .cache_creation_tokens (write).
+    """
+    usage = SimpleNamespace(
+        input_tokens=2500,
+        output_tokens=300,
+        input_tokens_details=SimpleNamespace(
+            cached_tokens=1500,
+            cache_creation_tokens=200,
+        ),
+    )
+
+    normalized = normalize_usage(usage, provider="openai-codex", api_mode="codex_responses")
+
+    assert normalized.cache_read_tokens == 1500
+    assert normalized.cache_write_tokens == 200
+    # 2500 - 1500 - 200 = 800
+    assert normalized.input_tokens == 800
+    assert normalized.output_tokens == 300
+
+
+def test_normalize_usage_codex_responses_no_details_treats_input_as_all_net():
+    """When Codex returns no input_tokens_details, all input is net (no cache)."""
+    usage = SimpleNamespace(input_tokens=1000, output_tokens=200)
+
+    normalized = normalize_usage(usage, provider="openai-codex", api_mode="codex_responses")
+
+    assert normalized.cache_read_tokens == 0
+    assert normalized.cache_write_tokens == 0
+    assert normalized.input_tokens == 1000
+
+
+def test_normalize_usage_gemini_native_shape_goes_through_openai_branch():
+    """Gemini native adapter normalizes its response to an OpenAI-like
+    SimpleNamespace (prompt_tokens + prompt_tokens_details.cached_tokens).
+    normalize_usage with provider='gemini' / api_mode='chat_completions'
+    must read those fields the same way as any other OpenAI-wire response.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=19914,
+        completion_tokens=9,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=16266),
+    )
+
+    normalized = normalize_usage(usage, provider="gemini", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 16266
+    # 19914 - 16266 = 3648 net input
+    assert normalized.input_tokens == 3648
+    assert normalized.output_tokens == 9
+
+
+def test_normalize_usage_anthropic_no_cache_fields_returns_zero_defaults():
+    """Anthropic response without any cache fields set: cache_read/write_tokens
+    must default to 0, not None / not raise. Regression guard against AttributeError
+    when the Anthropic adapter omits cache fields on uncached turns.
+    """
+    usage = SimpleNamespace(input_tokens=500, output_tokens=200)
+
+    normalized = normalize_usage(usage, provider="anthropic", api_mode="anthropic_messages")
+
+    assert normalized.input_tokens == 500
+    assert normalized.output_tokens == 200
+    assert normalized.cache_read_tokens == 0
+    assert normalized.cache_write_tokens == 0
+
+
+def test_normalize_usage_extracts_reasoning_tokens_from_output_details():
+    """When the response includes output_tokens_details.reasoning_tokens
+    (o-series / GPT-5 / DeepSeek-R variants), normalize_usage must propagate
+    the count into CanonicalUsage.reasoning_tokens.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=500,
+        output_tokens_details=SimpleNamespace(reasoning_tokens=320),
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.reasoning_tokens == 320
+    assert normalized.output_tokens == 500

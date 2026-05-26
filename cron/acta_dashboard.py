@@ -798,6 +798,18 @@ def _is_safe_catalog_href(value: str | None) -> bool:
     return bool(value and re.fullmatch(r"/outputs/[a-z0-9][a-z0-9-]*/?", value))
 
 
+def _catalog_output_open_href(item: ActaOutputItem, local_artifact_base: str | None = None) -> str:
+    href = item.href if _is_safe_catalog_href(item.href) else ""
+    if (
+        href
+        and local_artifact_base
+        and Path(item.source_name).name == item.source_name
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.html", item.source_name)
+    ):
+        return f"{local_artifact_base.rstrip('/')}/{item.source_name}"
+    return href
+
+
 def collect_catalog_outputs(hermes_home: Path | None = None) -> list[ActaOutputItem]:
     """Load persistent Acta outputs, importing static artifacts once when needed."""
     home = hermes_home or get_hermes_home()
@@ -1673,9 +1685,16 @@ main { width:min(1180px, calc(100vw - 28px)); margin:0 auto; padding:18px 0 88px
 h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 var(--ui); letter-spacing:-.035em; }
 .lede { max-width:820px; margin:0 0 14px; color:var(--body); font:14px/1.4 var(--ui); }
 .stats, .quick-nav { display:flex; flex-wrap:wrap; gap:7px; margin:12px 0; }
-.stat, .archive-card, .job-row, .output-row, .report-shell, .detail-card { border:1px solid var(--line-soft); background:rgba(255,255,255,.032); border-radius:14px; box-shadow:0 12px 34px rgba(0,0,0,.22); }
+.stat, .archive-card, .job-row, .output-row, .latest-artifact, .report-shell, .detail-card { border:1px solid var(--line-soft); background:rgba(255,255,255,.032); border-radius:14px; box-shadow:0 12px 34px rgba(0,0,0,.22); }
 .stat { padding:6px 8px; color:var(--muted); font:10px var(--mono); text-transform:uppercase; letter-spacing:.06em; }
 .stat b { color:#fff; font-size:13px; margin-left:5px; }
+.latest-artifact { margin:10px 0 8px; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; gap:12px; position:relative; overflow:hidden; }
+.latest-artifact:before { content:""; width:2px; height:38px; border-radius:999px; background:linear-gradient(180deg,var(--acta),var(--acta2)); position:absolute; left:0; top:50%; transform:translateY(-50%); }
+.latest-artifact > div { min-width:0; }
+.latest-artifact strong { display:block; margin-top:3px; color:#fff; font:720 15px/1.14 var(--ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.latest-label { color:var(--acta2); font:800 9.5px var(--mono); letter-spacing:.13em; text-transform:uppercase; }
+.latest-artifact a { flex:0 0 auto; color:#fff; text-decoration:none; border:1px solid rgba(117,108,255,.42); border-radius:999px; background:rgba(117,108,255,.22); padding:7px 9px; font:760 10px var(--mono); text-transform:uppercase; white-space:nowrap; }
+.latest-artifact a:hover { border-color:rgba(35,167,255,.55); box-shadow:0 0 18px rgba(35,167,255,.10); }
 .jobs-panel { margin-top:12px; border-top:1px solid var(--line-soft); }
 .jobs-head { display:flex; align-items:flex-end; gap:12px; padding:12px 0 7px; border-bottom:1px solid var(--line-soft); }
 .jobs-head h2 { margin:0; font:800 12px var(--mono); letter-spacing:.12em; text-transform:uppercase; color:#fff; }
@@ -2001,15 +2020,32 @@ def render_catalog_outputs_page(
     rows: list[str] = []
     pinned = sum(1 for item in outputs if item.pinned)
     unread = sum(1 for item in outputs if not item.read and _is_safe_catalog_href(item.href))
+    latest_candidates = [(item, _catalog_output_open_href(item, local_artifact_base)) for item in outputs]
+    latest_candidates = [(item, href) for item, href in latest_candidates if href]
+    latest_callout = ""
+    if latest_candidates:
+        latest_item, latest_href = max(
+            latest_candidates,
+            key=lambda candidate: _parse_iso_datetime(candidate[0].updated_at)
+            or _parse_iso_datetime(candidate[0].created_at)
+            or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        latest_dt = _parse_iso_datetime(latest_item.updated_at) or _parse_iso_datetime(latest_item.created_at)
+        latest_age = _age_label(latest_dt, now) if latest_dt else "catalog"
+        latest_source = Path(latest_item.source_name).name or "catalog"
+        latest_state = "READ" if latest_item.read else "UNREAD"
+        latest_pinned = "<span>PINNED</span>" if latest_item.pinned else ""
+        latest_callout = f"""
+  <section class="latest-artifact">
+    <div>
+      <span class="latest-label">LATEST ARTIFACT</span>
+      <strong>{_safe_text(latest_item.title)}</strong>
+      <div class="output-meta"><span>{_safe_text(latest_age)}</span><span>SOURCE {_safe_text(latest_source)}</span><span>ID {_safe_text(latest_item.id)}</span><span>{latest_state}</span>{latest_pinned}</div>
+    </div>
+    <a href="{html.escape(latest_href, quote=True)}">Open latest artifact</a>
+  </section>"""
     for index, item in enumerate(outputs, start=1):
-        href = item.href if _is_safe_catalog_href(item.href) else ""
-        if (
-            href
-            and local_artifact_base
-            and Path(item.source_name).name == item.source_name
-            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.html", item.source_name)
-        ):
-            href = f"{local_artifact_base.rstrip('/')}/{item.source_name}"
+        href = _catalog_output_open_href(item, local_artifact_base)
         escaped_href = html.escape(href, quote=True) if href else ""
         updated = _parse_iso_datetime(item.updated_at)
         age = _age_label(updated, now) if updated else "catalog"
@@ -2063,6 +2099,7 @@ def render_catalog_outputs_page(
   <h1>Persistent catalog.</h1>
   <p class="lede">Durable Acta outputs imported from the persistent catalog, separate from run history.</p>
   <nav class="quick-nav"><a href="/">Today</a><a class="active" href="/outputs">Outputs</a><a href="/runs">Runs</a><a href="/jobs">Jobs</a><a href="/archive">Archive</a></nav>
+{latest_callout}
   <section class="stats"><div class="stat">Outputs <b>{len(rows)}</b></div><div class="stat">Pinned <b>{pinned}</b></div><div class="stat">Unread <b data-unread-count="{unread}">{unread}</b></div></section>
   <section class="outputs-panel">
     {''.join(rows) or '<p class="prompt">No persistent Acta outputs yet.</p>'}

@@ -2667,6 +2667,93 @@ def test_catalog_outputs_unread_stat_and_read_toggle_only_for_safe_rows():
     assert "data-unread-count" not in unsafe_row
 
 
+def test_catalog_outputs_latest_callout_chooses_newest_safe_not_unsafe():
+    item_cls = collect_catalog_outputs.__globals__["ActaOutputItem"]
+    catalog_items = [
+        item_cls(
+            id="newest-unsafe",
+            title="Newest Unsafe",
+            href="javascript:alert(1)",
+            summary="Unsafe catalog output.",
+            tags=(),
+            source_name="unsafe.html",
+            created_at="2026-05-24T16:00:00+00:00",
+            updated_at="2026-05-24T16:10:00+00:00",
+        ),
+        item_cls(
+            id="older-safe",
+            title="Older Safe Artifact",
+            href="/outputs/older-safe",
+            summary="Safe catalog output.",
+            tags=("acta",),
+            source_name="older-safe.html",
+            created_at="2026-05-24T15:00:00+00:00",
+            updated_at="2026-05-24T16:00:00+00:00",
+            pinned=True,
+            read=True,
+        ),
+        item_cls(
+            id="created-fallback-safe",
+            title="Created Fallback Safe",
+            href="/outputs/created-fallback-safe",
+            summary="Updated-at missing; created-at should be usable.",
+            tags=(),
+            source_name="created-fallback-safe.html",
+            created_at="2026-05-24T15:30:00+00:00",
+            updated_at="",
+        ),
+    ]
+
+    html = render_catalog_outputs_page(catalog_items, generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc))
+    match = re.search(r"<section class=\"latest-artifact\">.*?</section>", html, re.S)
+    assert match is not None
+    callout = match.group(0)
+
+    assert "LATEST ARTIFACT" in callout
+    assert "Open latest artifact" in callout
+    assert "Older Safe Artifact" in callout
+    assert 'href="/outputs/older-safe"' in callout
+    assert "60m ago" in callout
+    assert "SOURCE older-safe.html" in callout
+    assert "ID older-safe" in callout
+    assert "READ" in callout
+    assert "PINNED" in callout
+    assert "Newest Unsafe" not in callout
+    assert "javascript:alert" not in html
+
+
+def test_catalog_outputs_latest_callout_omitted_when_no_safe_href():
+    item_cls = collect_catalog_outputs.__globals__["ActaOutputItem"]
+    catalog_items = [
+        item_cls(
+            id="unsafe-js",
+            title="Unsafe JS Output",
+            href="javascript:alert(1)",
+            summary="Unsafe href must not produce a latest callout.",
+            tags=(),
+            source_name="unsafe.html",
+            created_at="2026-05-24T16:00:00+00:00",
+            updated_at="2026-05-24T16:00:00+00:00",
+        ),
+        item_cls(
+            id="missing-href",
+            title="Missing Href Output",
+            href="",
+            summary="Missing href must not produce a latest callout.",
+            tags=(),
+            source_name="missing.html",
+            created_at="2026-05-24T16:01:00+00:00",
+            updated_at="2026-05-24T16:01:00+00:00",
+        ),
+    ]
+
+    html = render_catalog_outputs_page(catalog_items, generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc))
+
+    assert '<section class="latest-artifact">' not in html
+    assert "LATEST ARTIFACT" not in html
+    assert "Open latest artifact" not in html
+
+
 def test_catalog_outputs_local_artifact_base_uses_file_clickable_html_sources():
     item_cls = collect_catalog_outputs.__globals__["ActaOutputItem"]
     catalog_items = [
@@ -2701,6 +2788,50 @@ def test_catalog_outputs_local_artifact_base_uses_file_clickable_html_sources():
     assert 'href="../../../artifacts/acta-outputs/decision-tree.html"' in html
     assert 'data-open-url="../../../artifacts/acta-outputs/decision-tree.html"' in html
     assert '<a class="output-open-overlay" href="../../../artifacts/acta-outputs/decision-tree.html"' in html
+    assert "../../../artifacts/acta-outputs/%2e%2e%2fsecret.html" not in html
+    assert 'href="/outputs/encoded-traversal"' in html
+
+
+def test_catalog_outputs_latest_callout_local_artifact_base_uses_safe_relative_file_url():
+    item_cls = collect_catalog_outputs.__globals__["ActaOutputItem"]
+    catalog_items = [
+        item_cls(
+            id="encoded-traversal",
+            title="Encoded Traversal",
+            href="/outputs/encoded-traversal",
+            summary="Encoded path separators must not enter local file URLs.",
+            tags=(),
+            source_name="%2e%2e%2fsecret.html",
+            created_at="2026-05-24T16:02:00+00:00",
+            updated_at="2026-05-24T16:02:00+00:00",
+        ),
+        item_cls(
+            id="decision-tree",
+            title="Decision Tree",
+            href="/outputs/decision-tree",
+            summary="Openable local artifact.",
+            tags=("acta",),
+            source_name="decision-tree.html",
+            created_at="2026-05-24T16:03:00+00:00",
+            updated_at="2026-05-24T16:03:00+00:00",
+            read=False,
+        ),
+    ]
+
+    html = render_catalog_outputs_page(
+        catalog_items,
+        generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc),
+        local_artifact_base="../../../artifacts/acta-outputs",
+    )
+    match = re.search(r"<section class=\"latest-artifact\">.*?</section>", html, re.S)
+    assert match is not None
+    callout = match.group(0)
+
+    assert "Decision Tree" in callout
+    assert 'href="../../../artifacts/acta-outputs/decision-tree.html"' in callout
+    assert "SOURCE decision-tree.html" in callout
+    assert "ID decision-tree" in callout
+    assert "UNREAD" in callout
     assert "../../../artifacts/acta-outputs/%2e%2e%2fsecret.html" not in html
     assert 'href="/outputs/encoded-traversal"' in html
 

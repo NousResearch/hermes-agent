@@ -225,6 +225,136 @@ class TestAdapterSessionCancellation:
         assert call_order.index("original:cancelled") < call_order.index("followup:processed")
         assert sk not in adapter._pending_messages
 
+    @pytest.mark.asyncio
+    async def test_stop_follow_up_waits_when_original_finishes_during_command(self):
+        """/stop owns queued follow-ups even if the old task finishes naturally.
+
+        Regression for #31884: while /stop is still running, the old
+        _process_message_background task can reach its pending-drain block.
+        It must not steal the post-/stop user message and start a follow-up
+        turn before the command handler has finished and cancelled/handed off
+        the old task.
+        """
+        adapter = _make_adapter()
+        sk = _session_key()
+        processing_started = asyncio.Event()
+        command_started = asyncio.Event()
+        allow_original_finish = asyncio.Event()
+        allow_command_finish = asyncio.Event()
+        follow_up_processed = asyncio.Event()
+        call_order = []
+
+        async def _handler(event):
+            cmd = event.get_command()
+            if cmd == "stop":
+                call_order.append("command:start")
+                command_started.set()
+                await allow_command_finish.wait()
+                call_order.append("command:end")
+                return "handled:stop"
+
+            if event.text == "hello world":
+                processing_started.set()
+                await allow_original_finish.wait()
+                call_order.append("original:end")
+                return "handled:text:hello"
+
+            if event.text == "after stop":
+                call_order.append("followup:processed")
+                follow_up_processed.set()
+                return "handled:text:after"
+
+            return f"handled:text:{event.text}"
+
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("hello world"))
+        await processing_started.wait()
+        original_task = adapter._session_tasks[sk]
+
+        command_task = asyncio.create_task(adapter.handle_message(_make_event("/stop")))
+        await command_started.wait()
+        await asyncio.sleep(0)
+
+        await adapter.handle_message(_make_event("after stop"))
+        await asyncio.sleep(0)
+
+        assert sk in adapter._pending_messages
+        assert not follow_up_processed.is_set()
+
+        allow_original_finish.set()
+        await asyncio.wait_for(asyncio.shield(original_task), timeout=1.0)
+
+        assert not follow_up_processed.is_set(), (
+            "old processing task stole the queued post-/stop follow-up before "
+            "the /stop command completed"
+        )
+
+        allow_command_finish.set()
+        await command_task
+        await asyncio.wait_for(follow_up_processed.wait(), timeout=1.0)
+
+        assert call_order.index("command:end") < call_order.index("followup:processed")
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_stop_failure_drains_follow_up_after_original_finishes(self):
+        """/stop failure must not strand queued follow-ups after the old task exits."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        processing_started = asyncio.Event()
+        command_started = asyncio.Event()
+        allow_original_finish = asyncio.Event()
+        allow_command_raise = asyncio.Event()
+        follow_up_processed = asyncio.Event()
+        call_order = []
+
+        async def _handler(event):
+            cmd = event.get_command()
+            if cmd == "stop":
+                call_order.append("command:start")
+                command_started.set()
+                await allow_command_raise.wait()
+                call_order.append("command:raise")
+                raise RuntimeError("boom")
+
+            if event.text == "hello world":
+                processing_started.set()
+                await allow_original_finish.wait()
+                call_order.append("original:end")
+                return "handled:text:hello"
+
+            if event.text == "after stop":
+                call_order.append("followup:processed")
+                follow_up_processed.set()
+                return "handled:text:after"
+
+            return f"handled:text:{event.text}"
+
+        adapter._message_handler = _handler
+
+        await adapter.handle_message(_make_event("hello world"))
+        await processing_started.wait()
+        original_task = adapter._session_tasks[sk]
+
+        command_task = asyncio.create_task(adapter.handle_message(_make_event("/stop")))
+        await command_started.wait()
+
+        await adapter.handle_message(_make_event("after stop"))
+        assert sk in adapter._pending_messages
+
+        allow_original_finish.set()
+        await asyncio.wait_for(asyncio.shield(original_task), timeout=1.0)
+
+        assert not follow_up_processed.is_set()
+
+        allow_command_raise.set()
+        await command_task
+        await asyncio.wait_for(follow_up_processed.wait(), timeout=1.0)
+
+        assert call_order.index("command:raise") < call_order.index("followup:processed")
+        assert sk not in adapter._pending_messages
+
 
 # ===========================================================================
 # Layer 2: Adapter-side on-entry self-heal for stale session locks

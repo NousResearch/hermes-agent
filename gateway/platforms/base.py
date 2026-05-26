@@ -3265,12 +3265,18 @@ class BasePlatformAdapter(ABC):
             )
         except Exception:
             # On failure, restore the original guard if one still exists so
-            # we don't leave the session in a half-reset state.
+            # we don't leave the session in a half-reset state. If the original
+            # task already finished while the command guard was installed,
+            # there is no owner left to drain queued text, so the command guard
+            # must perform the same pending handoff before the error is logged.
             if self._active_sessions.get(session_key) is command_guard:
                 if session_key in self._session_tasks and current_guard is not None:
                     self._active_sessions[session_key] = current_guard
                 else:
-                    self._release_session_guard(session_key, guard=command_guard)
+                    await self._drain_pending_after_session_command(
+                        session_key,
+                        command_guard,
+                    )
             raise
 
         await self._drain_pending_after_session_command(session_key, command_guard)
@@ -3809,8 +3815,15 @@ class BasePlatformAdapter(ABC):
             # this task hand off the follow-up.
             await self._flush_text_debounce_now(session_key)
 
-            # Check if there's a pending message that was queued during our processing
-            if session_key in self._pending_messages:
+            # Check if there's a pending message that was queued during our processing.
+            # Only the task that still owns the adapter guard may drain it.  Reset-like
+            # commands (/stop, /new, /reset) replace the guard while they run; if this
+            # old task stole pending text during that window, the follow-up would run
+            # before the command finished cleaning up the interrupted turn.
+            if (
+                self._active_sessions.get(session_key) is interrupt_event
+                and session_key in self._pending_messages
+            ):
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 # Keep the _active_sessions entry live across the turn chain
@@ -3924,7 +3937,10 @@ class BasePlatformAdapter(ABC):
             # busy-handler path.  Without this block, we would delete the
             # active-session entry and the queued message would be silently
             # dropped (user never gets a reply).
-            late_pending = self._pending_messages.pop(session_key, None)
+            if self._active_sessions.get(session_key) is interrupt_event:
+                late_pending = self._pending_messages.pop(session_key, None)
+            else:
+                late_pending = None
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)

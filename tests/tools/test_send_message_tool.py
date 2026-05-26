@@ -1545,6 +1545,82 @@ class TestSendMatrixUrlEncoding:
         assert "!HLOQwxYGgFPMPJUSNR:matrix.org" not in put_url
 
 
+class TestSendMatrixFormattedBody:
+    """_send_matrix renders markdown to formatted_body in the cron delivery
+    path, with a regex fallback when the optional ``markdown`` library is
+    not installed (default Docker image case — issue #32486)."""
+
+    @staticmethod
+    def _build_session_mock():
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"event_id": "$evt"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.put = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        return mock_session
+
+    def test_markdown_lib_path_sets_formatted_body(self):
+        """When ``markdown`` is installed, the rendered HTML lands in
+        ``formatted_body`` and ``format`` is set to the Matrix custom-HTML
+        content type."""
+        pytest.importorskip("markdown")
+        from tools.send_message_tool import _send_matrix
+
+        mock_session = self._build_session_mock()
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_matrix(
+                    "tok",
+                    {"homeserver": "https://matrix.example.org"},
+                    "!room:matrix.org",
+                    "## Heading\n\n- bullet\n- bullet",
+                )
+            )
+
+        assert result["success"] is True
+        payload = mock_session.put.call_args.kwargs["json"]
+        assert payload["format"] == "org.matrix.custom.html"
+        # Element X compatibility: headings collapse to <strong>, not <h1-6>.
+        assert "<strong>Heading</strong>" in payload["formatted_body"]
+        assert "<h1>" not in payload["formatted_body"]
+        # List rendering survives.
+        assert "<li>bullet</li>" in payload["formatted_body"]
+
+    def test_fallback_path_sets_formatted_body_without_markdown_lib(self):
+        """When ``markdown`` is missing (default Docker image), the regex
+        fallback shared with ``MatrixAdapter`` still produces HTML — the
+        client no longer sees raw ``##`` / ``-`` / ``|...|`` source."""
+        from tools.send_message_tool import _send_matrix
+
+        mock_session = self._build_session_mock()
+        # Hide the markdown library to force the ImportError branch.
+        with patch.dict(sys.modules, {"markdown": None}):
+            with patch("aiohttp.ClientSession", return_value=mock_session):
+                result = asyncio.run(
+                    _send_matrix(
+                        "tok",
+                        {"homeserver": "https://matrix.example.org"},
+                        "!room:matrix.org",
+                        "## Heading\n\n- bullet\n- bullet",
+                    )
+                )
+
+        assert result["success"] is True
+        payload = mock_session.put.call_args.kwargs["json"]
+        assert payload["format"] == "org.matrix.custom.html"
+        # Element X compatibility carries through the fallback too.
+        assert "<strong>Heading</strong>" in payload["formatted_body"]
+        assert "<h1>" not in payload["formatted_body"]
+        # Raw markdown source must NOT survive into formatted_body.
+        assert "## Heading" not in payload["formatted_body"]
+        assert "<li>bullet</li>" in payload["formatted_body"]
+
+
 # ---------------------------------------------------------------------------
 # Tests for _derive_forum_thread_name
 # ---------------------------------------------------------------------------

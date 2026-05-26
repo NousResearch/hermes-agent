@@ -1375,17 +1375,24 @@ async def _send_matrix(token, extra, chat_id, message):
         url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        # Build message payload with optional HTML formatted_body.
+        # Build message payload with HTML formatted_body. Prefer the
+        # ``markdown`` library (ships with the ``[matrix]`` extra); fall
+        # back to the regex converter shared with the gateway adapter so
+        # cron deliveries still get formatted_body when the lib isn't
+        # installed. The official Docker image installs ``[all]`` +
+        # ``[messaging]`` only — neither pulls Markdown, so this branch
+        # is the default path inside the container.
         payload = {"msgtype": "m.text", "body": message}
         try:
             import markdown as _md
             html = _md.markdown(message, extensions=["fenced_code", "tables"])
-            # Convert h1-h6 to bold for Element X compatibility.
-            html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
-            payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = html
         except ImportError:
-            pass
+            from gateway.platforms.matrix import MatrixAdapter
+            html = MatrixAdapter._markdown_to_html_fallback(message)
+        # Convert h1-h6 to bold for Element X compatibility.
+        html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
+        payload["format"] = "org.matrix.custom.html"
+        payload["formatted_body"] = html
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.put(url, headers=headers, json=payload) as resp:

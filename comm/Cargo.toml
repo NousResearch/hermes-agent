@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Matrix client library
 ruma = { version = "0.10", default-features = false, features = ["client-reqwest", "jwt"] }
-ruma-client = { version = "0.10", default-features = false, features = ["native-tls"] }
+ruma-client = { version = "0.10", default-features = false, features = ["reqwest-native-tls"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

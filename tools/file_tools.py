@@ -61,6 +61,13 @@ def _get_max_read_chars() -> int:
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
 _LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
+_READ_COMPACT_CHAR_THRESHOLD = 20_000
+_READ_COMPACT_TARGET_LINES = 120
+_SEARCH_COMPACT_CHAR_THRESHOLD = 12_000
+_SEARCH_COMPACT_MATCH_LIMIT = 12
+_SEARCH_COMPACT_CONTENT_CHARS = 180
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+_DISABLE_RESULT_COMPACTION_ENV = "HERMES_DISABLE_RESULT_COMPACTION"
 
 # ---------------------------------------------------------------------------
 # Device path blocklist — reading these hangs the process (infinite output
@@ -253,43 +260,6 @@ _file_ops_cache: dict = {}
 #                      by the same task don't trigger false warnings.
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
-
-# Track consecutive patch failures per (task_id, resolved_path).  Used to
-# escalate the hint when the model repeatedly fails to patch the same file
-# (typical cause: stale view of file contents, ambiguous old_string, or
-# the file was modified externally between the agent's read and patch
-# attempt).  Reset on a successful patch to that path.
-_patch_failure_lock = threading.Lock()
-_patch_failure_tracker: dict = {}  # {task_id: {resolved_path: count}}
-
-
-def _record_patch_failure(task_id: str, resolved_path: str) -> int:
-    """Increment and return the consecutive-failure count for this path."""
-    with _patch_failure_lock:
-        task_failures = _patch_failure_tracker.setdefault(task_id, {})
-        # Cap dict size per task to avoid unbounded growth in long sessions
-        # where the agent fails on many distinct files.  64 distinct
-        # failing files per task is generous; older entries get evicted.
-        if len(task_failures) >= 64 and resolved_path not in task_failures:
-            try:
-                first_key = next(iter(task_failures))
-                del task_failures[first_key]
-            except StopIteration:
-                pass
-        task_failures[resolved_path] = task_failures.get(resolved_path, 0) + 1
-        return task_failures[resolved_path]
-
-
-def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
-    """Clear consecutive-failure counts for the given paths."""
-    if not resolved_paths:
-        return
-    with _patch_failure_lock:
-        task_failures = _patch_failure_tracker.get(task_id)
-        if not task_failures:
-            return
-        for rp in resolved_paths:
-            task_failures.pop(rp, None)
 
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
@@ -531,10 +501,118 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def _normalize_result_mode(value: str | None) -> str:
+    if isinstance(value, str) and value.lower() in {"auto", "full", "preview"}:
+        return value.lower()
+    return "auto"
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def _result_compaction_disabled() -> bool:
+    return _env_truthy(_DISABLE_RESULT_COMPACTION_ENV)
+
+
+def _compact_read_result(result_dict: dict, *, path: str, offset: int,
+                         limit: int, result_mode: str) -> dict:
+    """Return a progressive-disclosure preview for large read_file results."""
+    if _result_compaction_disabled() or result_mode == "full" or "content" not in result_dict:
+        return result_dict
+
+    content = result_dict.get("content")
+    if not isinstance(content, str):
+        return result_dict
+
+    targeted_read = limit <= 200
+    should_compact = result_mode == "preview" or (
+        not targeted_read and len(content) > _READ_COMPACT_CHAR_THRESHOLD
+    )
+    if not should_compact:
+        return result_dict
+
+    lines = content.splitlines()
+    preview_lines = lines[:_READ_COMPACT_TARGET_LINES]
+    preview = "\n".join(preview_lines)
+    total_returned = len(lines)
+    hidden_from_window = max(total_returned - len(preview_lines), 0)
+    next_offset = offset + len(preview_lines)
+
+    compacted = dict(result_dict)
+    compacted["content"] = preview
+    compacted["compacted"] = True
+    compacted["content_preview_lines"] = len(preview_lines)
+    compacted["omitted_lines_from_window"] = hidden_from_window
+    compacted["omitted_chars_from_window"] = max(len(content) - len(preview), 0)
+    compacted["_hint"] = (
+        "Large read_file output compacted. "
+        f"Use result_mode='full' with path={path!r}, offset={offset}, limit={limit} "
+        "for the exact full window, or read a narrower range with offset and limit. "
+        f"Use offset={next_offset} to continue after this preview."
+    )
+    return compacted
+
+
+def _compact_search_result(result_dict: dict, *, pattern: str, path: str,
+                           limit: int, offset: int, output_mode: str,
+                           context: int, result_mode: str) -> dict:
+    """Return a compact preview for large search_files content results."""
+    if _result_compaction_disabled() or result_mode == "full" or output_mode != "content":
+        return result_dict
+    matches = result_dict.get("matches")
+    if not isinstance(matches, list) or not matches:
+        return result_dict
+
+    encoded_len = len(json.dumps(result_dict, ensure_ascii=False))
+    should_compact = result_mode == "preview" or encoded_len > _SEARCH_COMPACT_CHAR_THRESHOLD
+    if not should_compact:
+        return result_dict
+
+    preview_matches = []
+    files_seen: list[str] = []
+    for match in matches[:_SEARCH_COMPACT_MATCH_LIMIT]:
+        if not isinstance(match, dict):
+            continue
+        path_value = str(match.get("path", ""))
+        if path_value and path_value not in files_seen:
+            files_seen.append(path_value)
+        content = match.get("content", "")
+        if isinstance(content, str) and len(content) > _SEARCH_COMPACT_CONTENT_CHARS:
+            content = content[:_SEARCH_COMPACT_CONTENT_CHARS] + "... [truncated]"
+        preview_matches.append({
+            "path": path_value,
+            "line": match.get("line"),
+            "content": content,
+        })
+
+    total_count = int(result_dict.get("total_count") or len(matches))
+    omitted = max(total_count - len(preview_matches), 0)
+    next_offset = offset + len(preview_matches)
+
+    compacted = dict(result_dict)
+    compacted["matches"] = preview_matches
+    compacted["compacted"] = True
+    compacted["match_preview_count"] = len(preview_matches)
+    compacted["omitted_matches"] = omitted
+    compacted["files_with_preview_matches"] = files_seen[:25]
+    compacted["_hint"] = (
+        "Large search_files output compacted. "
+        f"Use result_mode='full' with pattern={pattern!r}, path={path!r}, "
+        f"limit={limit}, offset={offset}, output_mode='content', context={context} "
+        "for exact full match detail. Use output_mode='files_only' or 'count' "
+        "to inspect broad searches cheaply, or narrow pattern/file_glob. "
+        f"Use offset={next_offset} to page forward."
+    )
+    return compacted
+
+
+def read_file_tool(path: str, offset: int = 1, limit: int = 500,
+                   task_id: str = "default", result_mode: str = "auto") -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+        result_mode = _normalize_result_mode(result_mode)
 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
@@ -576,7 +654,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
         resolved_str = str(_resolved)
-        dedup_key = (resolved_str, offset, limit)
+        dedup_key = (resolved_str, offset, limit, result_mode)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
@@ -677,7 +755,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             ))
 
         # ── Track for consecutive-loop detection ──────────────────────
-        read_key = ("read", path, offset, limit)
+        read_key = ("read", path, offset, limit, result_mode)
         with _read_tracker_lock:
             # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
             # old tracker state from pre-dedup-guard sessions).
@@ -689,7 +767,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # reset its hit counter.  (File either changed or stat failed
             # earlier and we fell through.)
             task_data["dedup_hits"].pop(dedup_key, None)
-            task_data["read_history"].add((path, offset, limit))
+            task_data["read_history"].add((path, offset, limit, result_mode))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
             else:
@@ -712,19 +790,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
             _cap_read_tracker_data(task_data)
 
-        # Cross-agent file-state registry (separate from per-task read
-        # tracker above): records that THIS agent has read this path so
-        # write/patch can detect sibling-subagent writes that happened
-        # after our read.  Partial read when offset>1 or the read was
-        # truncated (large file with more content than limit covered).
-        # Outside the _read_tracker_lock so the registry's own locking
-        # isn't nested under ours.
-        try:
-            _partial = (offset > 1) or bool(result_dict.get("truncated"))
-            file_state.record_read(task_id, resolved_str, partial=_partial)
-        except Exception:
-            logger.debug("file_state.record_read failed", exc_info=True)
-
         if count >= 4:
             # Hard block: stop returning content to break the loop
             return json.dumps({
@@ -743,6 +808,26 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
+        result_dict = _compact_read_result(
+            result_dict,
+            path=path,
+            offset=offset,
+            limit=limit,
+            result_mode=result_mode,
+        )
+        # Cross-agent file-state registry (separate from per-task read
+        # tracker above): records that THIS agent has read this path so
+        # write/patch can detect sibling-subagent writes that happened
+        # after our read. Partial includes compacted model-visible output.
+        try:
+            _partial = (
+                (offset > 1)
+                or bool(result_dict.get("truncated"))
+                or bool(result_dict.get("compacted"))
+            )
+            file_state.record_read(task_id, resolved_str, partial=_partial)
+        except Exception:
+            logger.debug("file_state.record_read failed", exc_info=True)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -1057,43 +1142,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _r = _path_to_resolved.get(_p)
                     if _r:
                         file_state.note_write(task_id, _r)
-                # Successful patch: clear any prior consecutive-failure
-                # counters for the touched paths so a future failure on
-                # the same path starts the escalation cycle fresh.
-                _reset_patch_failures(task_id, [
-                    _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
-                ])
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"
         # snippet (which is strictly more useful than the generic hint).
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            # Track per-file consecutive failures for replace mode.  The
-            # ``path`` arg only exists for replace mode; for V4A patches
-            # we'd need to walk the headers, but in practice V4A failures
-            # are far rarer and the existing _hint covers them adequately.
-            failure_count = 0
-            if mode == "replace" and path:
-                resolved = _path_to_resolved.get(path) or path
-                failure_count = _record_patch_failure(task_id, resolved)
-
-            if failure_count >= 3:
-                # Escalating hint after multiple consecutive failures on the
-                # same path.  Most common cause is a stale view of the file —
-                # the model is retrying with the same old_string against
-                # content that has since changed.  Surface the failure count
-                # so the model recognises it's in a loop and breaks out by
-                # re-reading or falling back to write_file.
-                result_dict["_hint"] = (
-                    f"This is failure #{failure_count} patching {path!r}. "
-                    "Stop retrying with variations of the same old_string. "
-                    "Either: (1) re-read the file fresh to verify current "
-                    "content, (2) use a longer / more unique old_string with "
-                    "surrounding context lines, or (3) use write_file to "
-                    "replace the entire file if the targeted region is hard "
-                    "to anchor."
-                )
-            elif "Did you mean one of these sections?" not in str(result_dict["error"]):
+            if "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."
@@ -1106,10 +1160,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
-                task_id: str = "default") -> str:
+                task_id: str = "default", result_mode: str = "auto") -> str:
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
+        result_mode = _normalize_result_mode(result_mode)
 
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
@@ -1120,6 +1175,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             target,
             str(path),
             file_glob or "",
+            output_mode,
+            context,
+            result_mode,
             limit,
             offset,
         )
@@ -1162,10 +1220,20 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "The results have not changed. Use the information you already have."
             )
 
+        result_dict = _compact_search_result(
+            result_dict,
+            pattern=pattern,
+            path=path,
+            limit=limit,
+            offset=offset,
+            output_mode=output_mode,
+            context=context,
+            result_mode=result_mode,
+        )
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when results were truncated — explicit next offset is clearer
         # than relying on the model to infer it from total_count vs match count.
-        if result_dict.get("truncated"):
+        if result_dict.get("truncated") and not result_dict.get("compacted"):
             next_offset = offset + limit
             result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
         return result_json
@@ -1188,13 +1256,14 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Large default windows may be compacted with continuation hints; pass result_mode='full' for exact full detail. Set HERMES_DISABLE_RESULT_COMPACTION to 1/true/yes/on to globally disable result compaction. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "result_mode": {"type": "string", "enum": ["auto", "full", "preview"], "description": "Result detail level. auto keeps small/targeted reads exact and compacts only large outputs; full returns the exact requested window; preview requests compact output unless HERMES_DISABLE_RESULT_COMPACTION is truthy.", "default": "auto"}
         },
         "required": ["path"]
     }
@@ -1271,7 +1340,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts. Large content-match outputs may be compacted with expansion hints; pass result_mode='full' for exact full detail. Set HERMES_DISABLE_RESULT_COMPACTION to 1/true/yes/on to globally disable result compaction.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1282,7 +1351,8 @@ SEARCH_FILES_SCHEMA = {
             "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
+            "result_mode": {"type": "string", "enum": ["auto", "full", "preview"], "description": "Result detail level for content searches. auto keeps small results exact and compacts only large outputs; full returns exact full match detail; preview requests compact output unless HERMES_DISABLE_RESULT_COMPACTION is truthy.", "default": "auto"}
         },
         "required": ["pattern"]
     }
@@ -1291,7 +1361,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+        result_mode=args.get("result_mode", "auto"),
+    )
 
 
 def _handle_write_file(args, **kw):
@@ -1338,7 +1414,11 @@ def _handle_search_files(args, **kw):
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        output_mode=args.get("output_mode", "content"),
+        context=args.get("context", 0),
+        task_id=tid,
+        result_mode=args.get("result_mode", "auto"),
+    )
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)

@@ -1537,6 +1537,18 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
 
+        # Cron jobs may pin their own fallback chain. Do not implicitly pass the
+        # default profile's global fallback_providers into scheduled jobs: the
+        # default profile is allowed to use opencode-zen for same-model
+        # continuity, but routine crons must only use explicit job-local
+        # fallback routes.
+        _job_fallback_raw = job.get("fallback_providers") or job.get("fallback_model") or None
+        fallback_model = (
+            _expand_env_vars(_job_fallback_raw)
+            if isinstance(_job_fallback_raw, (dict, list))
+            else None
+        )
+
         # Provider routing
         pr = _cfg.get("provider_routing", {})
 
@@ -1560,8 +1572,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
-            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
-            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+            fb_list = (fallback_model if isinstance(fallback_model, list) else [fallback_model]) if fallback_model else []
             runtime = None
             for entry in fb_list:
                 if not isinstance(entry, dict):
@@ -1583,7 +1594,6 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
-        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
         if runtime_provider:

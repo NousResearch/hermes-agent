@@ -1532,16 +1532,45 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} was not expanded in the cron execution path."
         )
 
-    def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
-        """${VAR} in config.yaml fallback_providers model: is expanded."""
+    def test_config_fallback_providers_are_not_inherited_by_cron_jobs(self, tmp_path, monkeypatch):
+        """Cron jobs must not implicitly inherit the default profile fallback chain."""
         (tmp_path / "config.yaml").write_text(
             "fallback_providers:\n"
-            "  - provider: openrouter\n"
-            "    model: ${_HERMES_TEST_CRON_FALLBACK}\n"
+            "  - provider: opencode-zen\n"
+            "    model: gpt-5.5\n"
         )
-        monkeypatch.setenv("_HERMES_TEST_CRON_FALLBACK", "gpt-4o-fallback-test")
 
         job = {"id": "fb-job", "name": "fallback test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs.get("fallback_model") is None
+
+    def test_job_fallback_model_env_ref_is_expanded(self, tmp_path, monkeypatch):
+        """${VAR} in a job-local fallback_providers model is expanded."""
+        (tmp_path / "config.yaml").write_text("model: gpt-4o-mini-cron-test\n")
+        monkeypatch.setenv("_HERMES_TEST_CRON_FALLBACK", "gpt-4o-fallback-test")
+
+        job = {
+            "id": "fb-job",
+            "name": "fallback test",
+            "prompt": "hi",
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "${_HERMES_TEST_CRON_FALLBACK}"}
+            ],
+        }
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
@@ -1561,8 +1590,7 @@ class TestRunJobConfigEnvVarExpansion:
         fb_list = fb if isinstance(fb, list) else [fb]
         expanded = [e.get("model") for e in fb_list if isinstance(e, dict)]
         assert "gpt-4o-fallback-test" in expanded, (
-            f"Expected expanded fallback model in {expanded!r}. "
-            "config.yaml ${VAR} in fallback_providers was not expanded."
+            f"Expected expanded job-local fallback model in {expanded!r}."
         )
 
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):

@@ -35,6 +35,7 @@ def _run_terminal(
     invoke_hook=_UNSET,
     approval=None,
     command="echo hello",
+    result_mode="auto",
 ):
     mock_env = MagicMock()
     mock_env.execute.return_value = {"output": output, "returncode": returncode}
@@ -54,7 +55,10 @@ def _run_terminal(
     if invoke_hook is not _UNSET:
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
 
-    result = json.loads(terminal_tool_module.terminal_tool(command=command))
+    result = json.loads(terminal_tool_module.terminal_tool(
+        command=command,
+        result_mode=result_mode,
+    ))
     return result, mock_env
 
 
@@ -99,7 +103,7 @@ def test_terminal_output_uses_first_valid_string_from_hooks(monkeypatch, tmp_pat
     assert result["output"] == "first"
 
 
-def test_terminal_output_transform_still_truncates_long_replacement(monkeypatch, tmp_path):
+def test_terminal_output_transform_compacts_long_replacement(monkeypatch, tmp_path):
     transformed_output = "PLUGIN-HEAD\n" + ("A" * 60000) + "\nPLUGIN-TAIL"
     result, _mock_env = _run_terminal(
         monkeypatch,
@@ -110,8 +114,40 @@ def test_terminal_output_transform_still_truncates_long_replacement(monkeypatch,
 
     assert "PLUGIN-HEAD" in result["output"]
     assert "PLUGIN-TAIL" in result["output"]
-    assert "[OUTPUT TRUNCATED" in result["output"]
+    assert "[OUTPUT COMPACTED" in result["output"]
+    assert result["compacted"] is True
+    assert result["output_omitted_chars"] > 0
+    assert "result_mode='full'" in result["_hint"]
     assert transformed_output != result["output"]
+
+
+def test_terminal_result_mode_full_keeps_existing_hard_cap(monkeypatch, tmp_path):
+    transformed_output = "PLUGIN-HEAD\n" + ("A" * 60000) + "\nPLUGIN-TAIL"
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output="short output",
+        invoke_hook=lambda hook_name, **kwargs: [transformed_output],
+        result_mode="full",
+    )
+
+    assert "PLUGIN-HEAD" in result["output"]
+    assert "PLUGIN-TAIL" in result["output"]
+    assert "[OUTPUT TRUNCATED" in result["output"]
+    assert "compacted" not in result
+
+
+def test_terminal_compaction_env_opt_out(monkeypatch, tmp_path):
+    long_output = "HEAD\n" + ("A" * 30000) + "\nTAIL"
+    monkeypatch.setenv("HERMES_DISABLE_RESULT_COMPACTION", "true")
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output=long_output,
+    )
+
+    assert result["output"] == long_output
+    assert "compacted" not in result
 
 
 def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_path):
@@ -206,4 +242,4 @@ def test_terminal_output_transform_integration_with_real_plugin(monkeypatch, tmp
 
     assert "PLUGIN-HEAD" in result["output"]
     assert "PLUGIN-TAIL" in result["output"]
-    assert "[OUTPUT TRUNCATED" in result["output"]
+    assert "[OUTPUT COMPACTED" in result["output"]

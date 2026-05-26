@@ -1666,6 +1666,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    result_mode: str = "auto",
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -1680,6 +1681,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        result_mode: Output detail level: auto compacts large foreground output, full preserves exact output subject to hard safety caps, preview forces compaction when possible.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2125,9 +2127,30 @@ def terminal_tool(
             except Exception:
                 pass
             
-            # Truncate output if too long, keeping both head and tail
+            # Strip ANSI escape sequences so the model never sees terminal
+            # formatting — prevents it from copying escapes into file writes.
+            from tools.ansi_strip import strip_ansi
+            output = strip_ansi(output)
+
+            from tools.result_shaping import compact_text_output
             from tools.tool_output_limits import get_max_bytes
             MAX_OUTPUT_CHARS = get_max_bytes()
+            shaped = compact_text_output(
+                output,
+                result_mode=result_mode,
+                field_name="output",
+                threshold_chars=min(20_000, MAX_OUTPUT_CHARS),
+                preview_chars=min(8_000, max(200, MAX_OUTPUT_CHARS)),
+                hint=(
+                    "Large terminal output compacted. Use result_mode='full' "
+                    "to request the exact foreground output, subject to the "
+                    "terminal hard safety cap, or set "
+                    "HERMES_DISABLE_RESULT_COMPACTION=1 to disable result compaction."
+                ),
+            )
+            output = shaped.text
+
+            # Final hard cap remains as a safety net, especially for full mode.
             if len(output) > MAX_OUTPUT_CHARS:
                 head_chars = int(MAX_OUTPUT_CHARS * 0.4)  # 40% head (error messages often appear early)
                 tail_chars = MAX_OUTPUT_CHARS - head_chars  # 60% tail (most recent/relevant output)
@@ -2137,11 +2160,6 @@ def terminal_tool(
                     f"out of {len(output)} total] ...\n\n"
                 )
                 output = output[:head_chars] + truncated_notice + output[-tail_chars:]
-
-            # Strip ANSI escape sequences so the model never sees terminal
-            # formatting — prevents it from copying escapes into file writes.
-            from tools.ansi_strip import strip_ansi
-            output = strip_ansi(output)
 
             # Redact secrets from command output (catches env/printenv leaking keys)
             from agent.redact import redact_sensitive_text
@@ -2156,6 +2174,7 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            result_dict.update(shaped.metadata)
             if approval_note:
                 result_dict["approval"] = approval_note
             if exit_note:
@@ -2374,6 +2393,12 @@ TERMINAL_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Strings to watch for in background process output. HARD RATE LIMIT: at most 1 notification per 15 seconds per process — matches arriving inside the cooldown are dropped. After 3 consecutive 15-second windows with dropped matches, watch_patterns is automatically disabled for that process and promoted to notify_on_complete behavior (one notification on exit, no more mid-process spam). USE ONLY for truly rare, one-shot mid-process signals on LONG-LIVED processes that will never exit on their own — e.g. ['Application startup complete'] on a server so you know when to hit its endpoint, or ['migration done'] on a daemon. DO NOT use for: (1) end-of-run markers like 'DONE'/'PASS' — use notify_on_complete instead; (2) error patterns like 'ERROR'/'Traceback' in loops or multi-item batch jobs — they fire on every iteration and you'll hit the strike limit fast; (3) anything you'd ever combine with notify_on_complete. When in doubt, choose notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both."
+            },
+            "result_mode": {
+                "type": "string",
+                "enum": ["auto", "full", "preview"],
+                "description": "Foreground output detail level. auto compacts large outputs with head/tail preview; full requests exact output subject to the terminal hard safety cap; preview compacts whenever possible. HERMES_DISABLE_RESULT_COMPACTION=1/true/yes/on disables compaction.",
+                "default": "auto"
             }
         },
         "required": ["command"]
@@ -2391,6 +2416,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        result_mode=args.get("result_mode", "auto"),
     )
 
 

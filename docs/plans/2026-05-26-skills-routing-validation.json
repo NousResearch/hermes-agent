@@ -1,0 +1,619 @@
+{
+  "case_count": 21,
+  "errors": [],
+  "min_pass_rate": 0.9,
+  "owner_count": 15,
+  "pass_rate": 1.0,
+  "passed": 21,
+  "results": [
+    {
+      "expected_owner": "hermes-agent",
+      "id": "hermes-background-spam",
+      "ok": true,
+      "predicted_owner": "hermes-agent",
+      "score": 17,
+      "top": [
+        [
+          "hermes-agent",
+          17
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ],
+        [
+          "exceptional-engineering-discipline",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "hermes-agent",
+      "id": "hermes-profile-token",
+      "ok": true,
+      "predicted_owner": "hermes-agent",
+      "score": 25,
+      "top": [
+        [
+          "hermes-agent",
+          25
+        ],
+        [
+          "mj-shipping-workflow",
+          5
+        ],
+        [
+          "exceptional-engineering-discipline",
+          5
+        ],
+        [
+          "subagent-driven-development",
+          5
+        ],
+        [
+          "claude-code",
+          5
+        ]
+      ]
+    },
+    {
+      "expected_owner": "hermes-agent",
+      "id": "hermes-skill-create-warning",
+      "ok": true,
+      "predicted_owner": "hermes-agent",
+      "score": 3,
+      "top": [
+        [
+          "hermes-agent",
+          3
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ],
+        [
+          "exceptional-engineering-discipline",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "storage-audit-cleanup",
+      "id": "storage-claude-vm",
+      "ok": true,
+      "predicted_owner": "storage-audit-cleanup",
+      "score": 12,
+      "top": [
+        [
+          "storage-audit-cleanup",
+          12
+        ],
+        [
+          "subagent-driven-development",
+          3
+        ],
+        [
+          "claude-code",
+          3
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "storage-audit-cleanup",
+      "id": "storage-xcode",
+      "ok": true,
+      "predicted_owner": "storage-audit-cleanup",
+      "score": 3,
+      "top": [
+        [
+          "storage-audit-cleanup",
+          3
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ],
+        [
+          "exceptional-engineering-discipline",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "openclaw-lifecycle-daemon",
+      "id": "openclaw-pending-proposal",
+      "ok": true,
+      "predicted_owner": "openclaw-lifecycle-daemon",
+      "score": 37,
+      "top": [
+        [
+          "openclaw-lifecycle-daemon",
+          37
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ],
+        [
+          "exceptional-engineering-discipline",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "openclaw-lifecycle-daemon",
+      "id": "openclaw-quarantine-spike",
+      "ok": true,
+      "predicted_owner": "openclaw-lifecycle-daemon",
+      "score": 25,
+      "top": [
+        [
+          "openclaw-lifecycle-daemon",
+          25
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ],
+        [
+          "exceptional-engineering-discipline",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "mj-shipping-workflow",
+      "id": "shipping-approved",
+      "ok": true,
+      "predicted_owner": "mj-shipping-workflow",
+      "score": 6,
+      "top": [
+        [
+          "mj-shipping-workflow",
+          6
+        ],
+        [
+          "writing-plans",
+          3
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "mj-shipping-workflow",
+      "id": "shipping-rollback",
+      "ok": true,
+      "predicted_owner": "mj-shipping-workflow",
+      "score": 9,
+      "top": [
+        [
+          "mj-shipping-workflow",
+          9
+        ],
+        [
+          "test-driven-development",
+          3
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "exceptional-engineering-discipline",
+      "id": "exceptional-plan",
+      "ok": true,
+      "predicted_owner": "exceptional-engineering-discipline",
+      "score": 22,
+      "top": [
+        [
+          "exceptional-engineering-discipline",
+          22
+        ],
+        [
+          "writing-plans",
+          3
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "exceptional-engineering-discipline",
+      "id": "exceptional-kill-criteria",
+      "ok": true,
+      "predicted_owner": "exceptional-engineering-discipline",
+      "score": 12,
+      "top": [
+        [
+          "exceptional-engineering-discipline",
+          12
+        ],
+        [
+          "writing-plans",
+          6
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "subagent-driven-development",
+      "id": "subagent-route",
+      "ok": true,
+      "predicted_owner": "subagent-driven-development",
+      "score": 22,
+      "top": [
+        [
+          "subagent-driven-development",
+          22
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "claude-code",
+      "id": "claude-max",
+      "ok": true,
+      "predicted_owner": "claude-code",
+      "score": 30,
+      "top": [
+        [
+          "claude-code",
+          30
+        ],
+        [
+          "subagent-driven-development",
+          11
+        ],
+        [
+          "mj-shipping-workflow",
+          7
+        ],
+        [
+          "storage-audit-cleanup",
+          3
+        ],
+        [
+          "hermes-agent",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "codex",
+      "id": "codex-oauth",
+      "ok": true,
+      "predicted_owner": "codex",
+      "score": 32,
+      "top": [
+        [
+          "codex",
+          32
+        ],
+        [
+          "hermes-agent",
+          6
+        ],
+        [
+          "subagent-driven-development",
+          3
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "github-pr-workflow",
+      "id": "github-pr",
+      "ok": true,
+      "predicted_owner": "github-pr-workflow",
+      "score": 20,
+      "top": [
+        [
+          "github-pr-workflow",
+          20
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "systematic-debugging",
+      "id": "debug-root-cause",
+      "ok": true,
+      "predicted_owner": "systematic-debugging",
+      "score": 14,
+      "top": [
+        [
+          "systematic-debugging",
+          14
+        ],
+        [
+          "test-driven-development",
+          3
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "test-driven-development",
+      "id": "tdd-red-green",
+      "ok": true,
+      "predicted_owner": "test-driven-development",
+      "score": 14,
+      "top": [
+        [
+          "test-driven-development",
+          14
+        ],
+        [
+          "systematic-debugging",
+          3
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "writing-plans",
+      "id": "plan-doc",
+      "ok": true,
+      "predicted_owner": "writing-plans",
+      "score": 20,
+      "top": [
+        [
+          "writing-plans",
+          20
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "google-workspace",
+      "id": "google-gmail",
+      "ok": true,
+      "predicted_owner": "google-workspace",
+      "score": 17,
+      "top": [
+        [
+          "google-workspace",
+          17
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "ocr-and-documents",
+      "id": "pdf-ocr",
+      "ok": true,
+      "predicted_owner": "ocr-and-documents",
+      "score": 20,
+      "top": [
+        [
+          "ocr-and-documents",
+          20
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ]
+      ]
+    },
+    {
+      "expected_owner": "baoyu-infographic",
+      "id": "baoyu-infographic",
+      "ok": true,
+      "predicted_owner": "baoyu-infographic",
+      "score": 12,
+      "top": [
+        [
+          "baoyu-infographic",
+          12
+        ],
+        [
+          "hermes-agent",
+          0
+        ],
+        [
+          "storage-audit-cleanup",
+          0
+        ],
+        [
+          "openclaw-lifecycle-daemon",
+          0
+        ],
+        [
+          "mj-shipping-workflow",
+          0
+        ]
+      ]
+    }
+  ]
+}

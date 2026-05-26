@@ -1,0 +1,191 @@
+# Phase 1.5 owner registry for update-first Hermes skills consolidation.
+# Purpose: make the "patch existing owner before creating a sibling skill" rule concrete.
+# This is not a deletion list. It is a routing map for future lessons/corrections.
+version: 1
+policy:
+  default_action: patch_existing_owner
+  create_new_skill_only_if:
+    - no owner_skill matches the task domain
+    - the proposed skill has materially different commands/tools than existing owners
+    - a human or curator records why a reference file is insufficient
+  local_vs_repo:
+    - MJ-specific preferences, host quirks, profile secrets, and OpenClaw topology stay local
+    - broadly reusable workflows may be promoted to repo skills
+    - long examples/templates/API notes go under references/, templates/, or scripts/
+  destructive_changes:
+    - no skill deletion, archive, or rename without explicit MJ approval
+    - use absorbed_into when retiring a skill
+    - scan cron/config/profile/doc references before retirement
+owners:
+  - owner_skill: hermes-agent
+    system: Hermes
+    skill_type: system-router
+    owns: Hermes runtime, profiles, providers, gateway, Telegram/Slack delivery, compaction, background notifications, skills CLI behavior, auth pools.
+    update_policy: Patch this skill or its references for Hermes operating lessons; create narrow executor only for a new tool with new commands.
+    do_not_use_for: OpenClaw lifecycle/EMA rails; GitHub PR mechanics; generic software debugging.
+    match_terms: [hermes, profile, gateway, telegram, slack, provider, model, fallback, compression, compaction, cron, webhook, auth, oauth, credential, background, notification, skill, skills, skill_manage, config, tui]
+    strong_phrases: [background process notification, profile gateway, fallback provider, compression model, telegram typing, create similar skills]
+    example_triggers:
+      - Telegram shows raw background process completion dumps.
+      - Hermes profile owns wrong bot token.
+      - Agent-created skill should warn when a similar owner exists.
+
+  - owner_skill: storage-audit-cleanup
+    system: macOS
+    skill_type: executor
+    owns: Disk growth investigation, cache cleanup, macOS storage audits, safe deletion rules, lsof/mdls verification.
+    update_policy: Patch for repeatable storage-cleanup discoveries; keep host-specific hazards local if they only apply to MJ's Mac.
+    do_not_use_for: Hermes gateway bugs unless storage is the root cause; OpenClaw lifecycle compaction logic.
+    match_terms: [storage, disk, cache, caches, trash, xcode, documents, icloud, lsof, mdls, du, df, cleanup, playwright, claude, vm_bundles, qmd]
+    strong_phrases: [disk growing, storage crazy, empty trash, safe to remove]
+    example_triggers:
+      - macOS disk usage grew after no work was done.
+      - Need to remove inactive Claude Desktop VM bundles safely.
+
+  - owner_skill: openclaw-lifecycle-daemon
+    system: OpenClaw
+    skill_type: system-executor
+    owns: OpenClaw lifecycle daemon, curation, MEMORY.md proposals, quarantine, launchd services, lifecycle logs, compaction snapshots.
+    update_policy: Patch when operating or debugging lifecycle behavior; keep daemon verification commands here.
+    do_not_use_for: EMA topology rules, brand worker architecture, Hermes skills loader.
+    match_terms: [openclaw, lifecycle, daemon, curation, curated, promoted, rejected, quarantined, memory.md, proposal, launchd, fswatch, digest, compaction-snapshot]
+    strong_phrases: [OpenClaw Lifecycle, pending proposal, review.py list, daemon healthy]
+    example_triggers:
+      - Lifecycle daily digest reports pending MEMORY.md proposal.
+      - Quarantines spike or daemon liveness is stale.
+
+  - owner_skill: mj-shipping-workflow
+    system: Hermes
+    skill_type: workflow-umbrella
+    owns: MJ's non-trivial shipping process, Linear/Kanban proof gates, red-team/spike/spec/TDD/smoke/rollback/adversarial review sequence.
+    update_policy: Patch this for MJ-specific execution workflow corrections; keep executor commands in leaf skills.
+    do_not_use_for: One-shot lookups, simple file reads, tool-specific CLI flags.
+    match_terms: [ship, shipping, phase, phases, kanban, linear, proof, rollback, smoke, n2n, deploy, spec, red-team, adversarial, max, claude-tracked]
+    strong_phrases: [is this exceptional, let's go, ship it, go ahead]
+    example_triggers:
+      - MJ approves a multi-file change.
+      - Need proof before moving Linear to Done.
+
+  - owner_skill: exceptional-engineering-discipline
+    system: Hermes
+    skill_type: quality-gate
+    owns: Architecture-quality challenge, smallest validation first, kill criteria, pushback when a plan is only mid-level.
+    update_policy: Patch for general quality-gate lessons; do not add tool-specific commands here.
+    do_not_use_for: Full shipping execution once scope is approved; use mj-shipping-workflow then.
+    match_terms: [exceptional, architecture, validation, assumption, assumptions, kill, criteria, quality, proof, red-team, pushback, mid-level]
+    strong_phrases: [exceptional level, smallest validation, best engineer, not exceptional]
+    example_triggers:
+      - User asks whether a plan is exceptional.
+      - Plan has no validation harness.
+
+  - owner_skill: subagent-driven-development
+    system: Hermes
+    skill_type: workflow-umbrella
+    owns: Routing coding work among delegate_task, Claude Code, Codex, OpenCode, review subagents, and verification of subagent outputs.
+    update_policy: Patch routing/review policy here; keep provider auth and exact commands in provider skills.
+    do_not_use_for: Non-coding research delegation; Kanban board operations.
+    match_terms: [subagent, sub-agent, delegate_task, claude, codex, opencode, coding-agent, review, agent, agents, parallel, handoff]
+    strong_phrases: [which coding agent, subagent output, Max sub]
+    example_triggers:
+      - Decide whether to use Claude Code Max or Codex.
+      - Need a second agent to review generated code.
+
+  - owner_skill: claude-code
+    system: Hermes
+    skill_type: tool-executor
+    owns: Claude Code CLI usage, Max subscription shell-outs, permission flags, output parsing, claude-tracked gotchas.
+    update_policy: Patch exact Claude Code commands and Max routing notes here; generic delegation stays in subagent-driven-development.
+    do_not_use_for: Codex/OpenCode command details; generic TDD.
+    match_terms: [claude, claude-code, claude-tracked, max, anthropic, permission-mode, bypasspermissions, output-format, max-turns]
+    strong_phrases: [Claude Code, Max subscription, claude -p]
+    example_triggers:
+      - Claude Code asks permission during read-only audit.
+      - Need to prove route is Claude Max account.
+
+  - owner_skill: codex
+    system: Hermes
+    skill_type: tool-executor
+    owns: OpenAI Codex CLI/OAuth/provider quirks and Codex-specific execution patterns.
+    update_policy: Patch Codex auth/model/CLI quirks here; keep generic agent routing elsewhere.
+    do_not_use_for: Claude Code Max routing; OpenCode commands.
+    match_terms: [codex, openai, gpt-5, oauth, acp, cli]
+    strong_phrases: [OpenAI Codex, gpt-5-codex]
+    example_triggers:
+      - Codex OAuth provider rejects a model.
+
+  - owner_skill: github-pr-workflow
+    system: GitHub
+    skill_type: tool-executor
+    owns: Branch, commit, PR, CI, merge flow and gh CLI proof.
+    update_policy: Patch exact PR lifecycle commands here; GitHub auth remains in github-auth.
+    do_not_use_for: General code review criteria; Linear issue state.
+    match_terms: [github, gh, git, branch, commit, pull, pr, ci, merge, remote, origin]
+    strong_phrases: [open PR, merge PR, gh pr]
+    example_triggers:
+      - Need to open a PR after changes.
+
+  - owner_skill: systematic-debugging
+    system: software-development
+    skill_type: workflow-executor
+    owns: Root-cause debugging, reproduce/isolate/fix/verify loop, avoiding blind implementation.
+    update_policy: Patch debugging process lessons here; test mechanics stay in test-driven-development.
+    do_not_use_for: Greenfield feature planning; storage cleanup runbooks.
+    match_terms: [debug, debugging, bug, root-cause, reproduce, isolate, traceback, error, failing, failure]
+    strong_phrases: [diagnose before fix, root cause]
+    example_triggers:
+      - A test fails and the cause is unknown.
+
+  - owner_skill: test-driven-development
+    system: software-development
+    skill_type: workflow-executor
+    owns: RED-GREEN-REFACTOR mechanics for logic-heavy code changes.
+    update_policy: Patch testing discipline here; shipping sequence stays in mj-shipping-workflow.
+    do_not_use_for: Read-only audits or docs-only plans.
+    match_terms: [tdd, test, tests, pytest, red, green, refactor, unit, integration, coverage]
+    strong_phrases: [RED-GREEN-REFACTOR, failing test first]
+    example_triggers:
+      - Need to add logic and prove it with tests first.
+
+  - owner_skill: writing-plans
+    system: software-development
+    skill_type: workflow-executor
+    owns: Markdown implementation plans, bite-sized tasks, file paths, acceptance criteria.
+    update_policy: Patch plan-writing format here; broader shipping gates stay in mj-shipping-workflow.
+    do_not_use_for: Runtime config changes without a plan doc.
+    match_terms: [plan, planning, roadmap, acceptance, criteria, tasks, markdown, implementation]
+    strong_phrases: [write a plan, implementation plan]
+    example_triggers:
+      - Need a plan document before touching files.
+
+  - owner_skill: google-workspace
+    system: Google Workspace
+    skill_type: tool-executor
+    owns: Gmail, Calendar, Drive, Docs, Sheets operations via gws CLI/API and Python version quirks.
+    update_policy: Patch exact gws commands/auth quirks here.
+    do_not_use_for: Generic document IO routing across Notion/Obsidian/PDF.
+    match_terms: [gmail, google, calendar, drive, docs, sheets, gws, workspace, email]
+    strong_phrases: [Google Workspace, gws CLI]
+    example_triggers:
+      - Need to search Gmail or edit a Google Doc.
+
+  - owner_skill: ocr-and-documents
+    system: productivity
+    skill_type: tool-executor
+    owns: PDF/scanned-document extraction, OCR, marker/pymupdf workflows, document text recovery.
+    update_policy: Patch OCR/PDF extraction commands here; app-specific APIs stay in tool skills.
+    do_not_use_for: Creating Google Docs/Notion pages from clean text.
+    match_terms: [ocr, pdf, scan, scanned, pymupdf, marker, document, extraction, text, invoice]
+    strong_phrases: [extract text from PDF, scanned PDF]
+    example_triggers:
+      - Need to extract text from a scan.
+
+  - owner_skill: baoyu-infographic
+    system: creative
+    skill_type: tool-executor
+    owns: Baoyu-style infographic generation, layout systems, palette/style consistency for information graphics.
+    update_policy: Patch infographic-specific style/layout details here; shared creative routing belongs in a future visual-generation-routing umbrella.
+    do_not_use_for: Comics, article illustrations, ASCII/video generation.
+    match_terms: [infographic, baoyu, visual, layout, palette, chart, diagram, poster]
+    strong_phrases: [Baoyu infographic, information graphic]
+    example_triggers:
+      - Need a Chinese knowledge infographic.

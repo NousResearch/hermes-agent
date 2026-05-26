@@ -1,0 +1,89 @@
+# Synthetic validation cases for Phase 1.5 owner-map routing.
+# A passing case means: a new lesson/correction should patch the expected owner
+# instead of creating another adjacent skill.
+version: 1
+cases:
+  - id: hermes-background-spam
+    prompt: Telegram receives raw background process notification dumps after terminal background jobs finish.
+    expected_owner: hermes-agent
+    rationale: Hermes gateway/display behavior, not a new Telegram skill.
+  - id: hermes-profile-token
+    prompt: Profile gateway owns the wrong Telegram bot token and replies from the wrong Hermes profile.
+    expected_owner: hermes-agent
+    rationale: Hermes profile/gateway/auth ownership.
+  - id: hermes-skill-create-warning
+    prompt: Agent-created skill should warn when a similar owner skill exists instead of creating similar skills.
+    expected_owner: hermes-agent
+    rationale: Skill tool/curator behavior belongs under Hermes Agent.
+  - id: storage-claude-vm
+    prompt: Need to verify and remove inactive Claude Desktop vm_bundles cache to recover disk storage.
+    expected_owner: storage-audit-cleanup
+    rationale: Storage audit runbook with lsof verification.
+  - id: storage-xcode
+    prompt: Xcode.app is 4.8G, root owned, no active lsof handles, removal needs sudo.
+    expected_owner: storage-audit-cleanup
+    rationale: macOS storage cleanup candidate handling.
+  - id: openclaw-pending-proposal
+    prompt: OpenClaw Lifecycle digest reports one pending MEMORY.md proposal and says run review.py list.
+    expected_owner: openclaw-lifecycle-daemon
+    rationale: Lifecycle proposal handling.
+  - id: openclaw-quarantine-spike
+    prompt: OpenClaw lifecycle quarantined 12 items and daemon liveness needs verification.
+    expected_owner: openclaw-lifecycle-daemon
+    rationale: Lifecycle daemon health and quarantine handling.
+  - id: shipping-approved
+    prompt: MJ says ok lets go after approving a multi-file phased shipping plan with Linear proof.
+    expected_owner: mj-shipping-workflow
+    rationale: Approved execution scope triggers shipping workflow.
+  - id: shipping-rollback
+    prompt: Need rollback drill and smoke test before moving Linear issue to Done.
+    expected_owner: mj-shipping-workflow
+    rationale: MJ shipping proof gates.
+  - id: exceptional-plan
+    prompt: User asks is this whole plan exceptional level and wants the smallest validation first.
+    expected_owner: exceptional-engineering-discipline
+    rationale: Quality challenge before build.
+  - id: exceptional-kill-criteria
+    prompt: Architecture plan cites quality gains but has no kill criteria or measurement plan.
+    expected_owner: exceptional-engineering-discipline
+    rationale: Exceptional engineering red-team gate.
+  - id: subagent-route
+    prompt: Decide which coding agent should handle a code change and how to verify subagent output.
+    expected_owner: subagent-driven-development
+    rationale: Agent routing umbrella.
+  - id: claude-max
+    prompt: Claude Code Max subscription route needs claude-tracked with permission-mode bypassPermissions.
+    expected_owner: claude-code
+    rationale: Claude Code exact command/gotcha.
+  - id: codex-oauth
+    prompt: OpenAI Codex OAuth rejects gpt-5-codex and CLI provider needs troubleshooting.
+    expected_owner: codex
+    rationale: Codex-specific auth/model behavior.
+  - id: github-pr
+    prompt: Open PR with gh, push branch, wait for CI, then merge.
+    expected_owner: github-pr-workflow
+    rationale: GitHub PR lifecycle.
+  - id: debug-root-cause
+    prompt: A failing test throws traceback; diagnose root cause before fixing.
+    expected_owner: systematic-debugging
+    rationale: Debugging loop.
+  - id: tdd-red-green
+    prompt: Write failing test first, then make it pass, then refactor while green.
+    expected_owner: test-driven-development
+    rationale: TDD mechanics.
+  - id: plan-doc
+    prompt: Write an implementation plan with file paths, tasks, and acceptance criteria.
+    expected_owner: writing-plans
+    rationale: Plan authoring.
+  - id: google-gmail
+    prompt: Search Gmail and edit a Google Doc using gws CLI.
+    expected_owner: google-workspace
+    rationale: Google Workspace tool skill.
+  - id: pdf-ocr
+    prompt: Extract text from a scanned PDF invoice using OCR.
+    expected_owner: ocr-and-documents
+    rationale: OCR/document extraction tool skill.
+  - id: baoyu-infographic
+    prompt: Generate a Baoyu style infographic with palette and layout consistency.
+    expected_owner: baoyu-infographic
+    rationale: Specific creative output skill.

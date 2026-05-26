@@ -2,7 +2,7 @@
 
 Reproduces the exact scenario:
 1. Parent agent calls delegate_task
-2. Child agent is running (simulated with a slow tool)
+2. Subagent is running (simulated with a slow tool)
 3. User "types a message" (simulated by calling parent.interrupt from another thread)
 4. Child should detect the interrupt and stop
 

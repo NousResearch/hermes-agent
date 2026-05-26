@@ -137,7 +137,7 @@ class TestAgentCloseMethod:
             agent.close()
 
     def test_close_propagates_to_children(self):
-        """close() should call close() on all active child agents."""
+        """close() should call close() on all active subagents."""
         from unittest.mock import MagicMock, patch
 
         with patch("run_agent.AIAgent.__init__", return_value=None):
@@ -264,7 +264,7 @@ class TestGatewayCleanupWiring:
 
 
 class TestDelegationCleanup:
-    """Verify subagent delegation cleans up child agents."""
+    """Verify subagent delegation cleans up subagents."""
 
     def test_run_single_child_calls_close(self):
         """_run_single_child finally block should call close() on child."""

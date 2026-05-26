@@ -342,6 +342,78 @@ class TestInstall:
         with pytest.raises(DistributionError, match="requires Hermes"):
             install_distribution(str(staged), name="future")
 
+    def test_install_honors_explicit_distribution_owned_manifest(self, profile_env):
+        """When authors override distribution_owned, unlisted payload is not installed.
+
+        This keeps shareable profiles from silently claiming plugin/tooling/config
+        surfaces the manifest did not mark as distribution-owned. The manifest
+        itself is still written with resolved install metadata.
+        """
+        mf = DistributionManifest(
+            name="identity_only",
+            version="0.1.0",
+            distribution_owned=["SOUL.md"],
+        )
+        staged = _make_staging_dir(profile_env, "identity_only", manifest=mf)
+
+        plan = install_distribution(str(staged), name="identity_only")
+
+        assert (plan.target_dir / "SOUL.md").read_text() == "I am Source.\n"
+        assert (plan.target_dir / MANIFEST_FILENAME).is_file()
+        assert not (plan.target_dir / "mcp.json").exists()
+        assert not (plan.target_dir / "skills" / "demo" / "SKILL.md").exists()
+        assert not (plan.target_dir / "cron" / "daily.json").exists()
+
+    def test_install_supports_nested_distribution_owned_paths(self, profile_env):
+        """distribution_owned entries may name nested paths, not just roots."""
+        mf = DistributionManifest(
+            name="nested_owned",
+            version="0.1.0",
+            distribution_owned=["SOUL.md", "skills/demo/SKILL.md"],
+        )
+        staged = _make_staging_dir(profile_env, "nested_owned", manifest=mf)
+
+        plan = install_distribution(str(staged), name="nested_owned")
+
+        assert (plan.target_dir / "SOUL.md").read_text() == "I am Source.\n"
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").exists()
+        assert not (plan.target_dir / "mcp.json").exists()
+        assert not (plan.target_dir / "cron" / "daily.json").exists()
+
+    def test_install_does_not_follow_source_symlinks_outside_distribution(self, profile_env):
+        """distribution_owned symlinks must not copy files outside the source tree."""
+        secret = profile_env / "outside-secret.txt"
+        secret.write_text("do not copy me\n")
+        mf = DistributionManifest(
+            name="symlink_source",
+            version="0.1.0",
+            distribution_owned=["linked-secret.txt", "SOUL.md"],
+        )
+        staged = _make_staging_dir(profile_env, "symlink_source", manifest=mf)
+        (staged / "linked-secret.txt").symlink_to(secret)
+
+        plan = install_distribution(str(staged), name="symlink_source")
+
+        assert (plan.target_dir / "SOUL.md").read_text() == "I am Source.\n"
+        assert not (plan.target_dir / "linked-secret.txt").exists()
+
+    def test_install_does_not_follow_env_template_source_symlink(self, profile_env):
+        """The .env.template special case must not follow source symlinks."""
+        secret = profile_env / "outside-env-template.txt"
+        secret.write_text("SECRET=do-not-copy\n")
+        mf = DistributionManifest(
+            name="symlink_env_template",
+            version="0.1.0",
+            distribution_owned=[".env.template", "SOUL.md"],
+        )
+        staged = _make_staging_dir(profile_env, "symlink_env_template", manifest=mf)
+        (staged / ".env.template").symlink_to(secret)
+
+        plan = install_distribution(str(staged), name="symlink_env_template")
+
+        assert (plan.target_dir / "SOUL.md").read_text() == "I am Source.\n"
+        assert not (plan.target_dir / ".env.EXAMPLE").exists()
+
 
 # ===========================================================================
 # Update — preserves user data, preserves config by default
@@ -411,6 +483,71 @@ class TestUpdate:
         create_profile(name="plain", no_alias=True)
         with pytest.raises(DistributionError, match="not a distribution"):
             update_distribution("plain")
+
+    def test_update_deletes_distribution_owned_paths_missing_from_new_source(self, profile_env):
+        """Update should replace distribution-owned paths, including removals."""
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="removal")
+        assert (plan.target_dir / "mcp.json").exists()
+
+        (staged / "mcp.json").unlink()
+
+        update_distribution("removal")
+
+        assert not (plan.target_dir / "mcp.json").exists()
+        assert (plan.target_dir / "SOUL.md").read_text() == "I am Source.\n"
+
+    def test_update_does_not_delete_through_target_symlink_ancestor(self, profile_env):
+        """Missing owned paths must not remove files through target symlink ancestors."""
+        mf = DistributionManifest(
+            name="target_symlink",
+            version="0.1.0",
+            distribution_owned=["safe/file.txt"],
+        )
+        staged = _make_staging_dir(profile_env, "target_symlink", manifest=mf)
+        (staged / "safe").mkdir(exist_ok=True)
+        (staged / "safe" / "file.txt").write_text("initial\n")
+        plan = install_distribution(str(staged), name="target_symlink")
+
+        outside = profile_env / "outside-target"
+        outside.mkdir()
+        outside_file = outside / "file.txt"
+        outside_file.write_text("must survive\n")
+        (plan.target_dir / "safe" / "file.txt").unlink()
+        (plan.target_dir / "safe").rmdir()
+        (plan.target_dir / "safe").symlink_to(outside, target_is_directory=True)
+        (staged / "safe" / "file.txt").unlink()
+
+        update_distribution("target_symlink")
+
+        assert outside_file.read_text() == "must survive\n"
+        assert (plan.target_dir / "safe").is_symlink()
+
+    def test_update_does_not_copy_through_target_symlink_ancestor(self, profile_env):
+        """Owned updates must not overwrite files through target symlink ancestors."""
+        mf = DistributionManifest(
+            name="target_symlink_copy",
+            version="0.1.0",
+            distribution_owned=["safe/file.txt"],
+        )
+        staged = _make_staging_dir(profile_env, "target_symlink_copy", manifest=mf)
+        (staged / "safe").mkdir(exist_ok=True)
+        (staged / "safe" / "file.txt").write_text("initial\n")
+        plan = install_distribution(str(staged), name="target_symlink_copy")
+
+        outside = profile_env / "outside-copy-target"
+        outside.mkdir()
+        outside_file = outside / "file.txt"
+        outside_file.write_text("must survive\n")
+        (plan.target_dir / "safe" / "file.txt").unlink()
+        (plan.target_dir / "safe").rmdir()
+        (plan.target_dir / "safe").symlink_to(outside, target_is_directory=True)
+        (staged / "safe" / "file.txt").write_text("updated\n")
+
+        update_distribution("target_symlink_copy")
+
+        assert outside_file.read_text() == "must survive\n"
+        assert (plan.target_dir / "safe").is_symlink()
 
 
 # ===========================================================================

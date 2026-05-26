@@ -281,7 +281,7 @@ Runtime notes:
 - **Gateway:** base identity changes need a gateway runner/session rebuild or restart boundary. Clear persisted and in-memory personality overlays separately.
 - **TUI:** personality changes can update `ephemeral_system_prompt` without rebuilding the cached base prompt; rebuild affected sessions for base identity changes.
 - **Cron:** confirm scheduler/profile `HERMES_HOME` and job `workdir`; project context may differ from base identity loading.
-- **Delegation:** child agents may use `skip_context_files=True` plus child-specific ephemeral prompts; verify child construction separately from the parent session.
+- **Delegation:** subagents may use `skip_context_files=True` plus subagent-specific ephemeral prompts; verify subagent construction separately from the parent session.
 
 ### R8 future rollback runbook
 

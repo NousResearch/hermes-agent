@@ -1166,7 +1166,7 @@ def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
     """Harmony-style `to=functions.foo` leaked into assistant content with no
     structured function_call items must be treated as incomplete so the
     continuation path can re-elicit a proper tool call. This is the
-    Taiwan-embassy-email (Discord bug report) failure mode: child agent
+    Taiwan-embassy-email (Discord bug report) failure mode: subagent
     produces a confident-looking summary, tool_trace is empty because no
     tools actually ran, parent can't audit the claim.
     """

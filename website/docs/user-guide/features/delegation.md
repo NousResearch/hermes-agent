@@ -1,12 +1,12 @@
 ---
 sidebar_position: 7
 title: "Subagent Delegation"
-description: "Spawn isolated child agents for parallel workstreams with delegate_task"
+description: "Spawn isolated subagents for parallel workstreams with delegate_task"
 ---
 
 # Subagent Delegation
 
-The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
+The `delegate_task` tool spawns subagent AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each subagent gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
 ## Single Task
 
@@ -125,7 +125,7 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
-- **Interrupt propagation:** Interrupting the parent (e.g., sending a new message) interrupts all active children
+- **Interrupt propagation:** Interrupting the parent (e.g., sending a new message) interrupts all active subagents
 
 Single-task delegation runs directly without thread pool overhead.
 
@@ -155,10 +155,10 @@ The `toolsets` parameter controls what tools the subagent has access to. Choose 
 | `["terminal"]` | System administration, process management |
 
 Certain toolsets are blocked for subagents regardless of what you specify:
-- `delegation` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+- `delegation` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` subagents, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
-- `code_execution` — children should reason step-by-step
+- `code_execution` — subagents should reason step-by-step
 - `send_message` — no cross-platform side effects (e.g., sending Telegram messages)
 
 ## Max Iterations
@@ -182,7 +182,7 @@ delegation:
   child_timeout_seconds: 600   # default
 ```
 
-Lower it for fast local models; raise it for slow reasoning models on hard problems. The timer resets every time the child makes an API call or tool call — only genuinely idle workers trigger the kill.
+Lower it for fast local models; raise it for slow reasoning models on hard problems. The timer resets every time the subagent makes an API call or tool call — only genuinely idle workers trigger the kill.
 
 :::tip Diagnostic dump on zero-call timeout
 If a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, and any early error messages. Much easier to root-cause than the previous silent-timeout behavior.
@@ -201,32 +201,32 @@ The classic CLI just prints `/agents` as a text summary; the TUI is where the ov
 
 ## Depth Limit and Nested Orchestration
 
-By default, delegation is **flat**: a parent (depth 0) spawns children (depth 1), and those children cannot delegate further. This prevents runaway recursive delegation.
+By default, delegation is **flat**: a parent (depth 0) spawns subagents (depth 1), and those subagents cannot delegate further. This prevents runaway recursive delegation.
 
-For multi-stage workflows (research → synthesis, or parallel orchestration over sub-problems), a parent can spawn **orchestrator** children that *can* delegate their own workers:
+For multi-stage workflows (research → synthesis, or parallel orchestration over sub-problems), a parent can spawn **orchestrator** subagents that *can* delegate their own workers:
 
 ```python
 delegate_task(
     goal="Survey three code review approaches and recommend one",
-    role="orchestrator",  # Allows this child to spawn its own workers
+    role="orchestrator",  # Allows this subagent to spawn its own workers
     context="...",
 )
 ```
 
-- `role="leaf"` (default): child cannot delegate further — identical to the flat-delegation behavior.
-- `role="orchestrator"`: child retains the `delegation` toolset. Gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator children to spawn leaf grandchildren; 3 for three levels (cap).
-- `delegation.orchestrator_enabled: false`: global kill switch that forces every child to `leaf` regardless of the `role` parameter.
+- `role="leaf"` (default): subagent cannot delegate further — identical to the flat-delegation behavior.
+- `role="orchestrator"`: subagent retains the `delegation` toolset. Gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator subagents to spawn leaf subagents; 3 for three levels (cap).
+- `delegation.orchestrator_enabled: false`: global kill switch that forces every subagent to `leaf` regardless of the `role` parameter.
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
 ## Lifetime and Durability
 
 :::warning delegate_task is synchronous — not durable
-`delegate_task` runs **inside the parent's current turn**. It blocks the parent until every child finishes (or is cancelled). It is **not** a background job queue:
+`delegate_task` runs **inside the parent's current turn**. It blocks the parent until every subagent finishes (or is cancelled). It is **not** a background job queue:
 
-- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
+- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active subagents are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
 - Children do **not** continue running after the parent turn ends.
-- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
+- Cancelled subagents return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
 
 For **durable long-running work** that must survive interrupts or outlive the current turn, use:
 
@@ -237,9 +237,9 @@ For **durable long-running work** that must survive interrupts or outlive the cu
 ## Key Properties
 
 - Each subagent gets its **own terminal session** (separate from the parent)
-- **Nested delegation is opt-in** — only `role="orchestrator"` children can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
+- **Nested delegation is opt-in** — only `role="orchestrator"` subagents can delegate further, and only when `max_spawn_depth` is raised from its default of 1 (flat). Disable globally with `orchestrator_enabled: false`.
 - Leaf subagents **cannot** call: `delegate_task`, `clarify`, `memory`, `send_message`, `execute_code`. Orchestrator subagents retain `delegate_task` but still cannot use the other four.
-- **Interrupt propagation** — interrupting the parent interrupts all active children (including grandchildren under orchestrators)
+- **Interrupt propagation** — interrupting the parent interrupts all active subagents (including nested subagents under orchestrators)
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
 
@@ -262,10 +262,10 @@ For **durable long-running work** that must survive interrupts or outlive the cu
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:
-  max_iterations: 50                        # Max turns per child (default: 50)
-  # max_concurrent_children: 3              # Parallel children per batch (default: 3)
-  # max_spawn_depth: 1                      # Tree depth (1-3, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3 for three levels.
-  # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  max_iterations: 50                        # Max turns per subagent (default: 50)
+  # max_concurrent_children: 3              # Parallel subagents per batch (default: 3)
+  # max_spawn_depth: 1                      # Tree depth (1-3, default 1 = flat). Raise to 2 to allow orchestrator subagents to spawn leaves; 3 for three levels.
+  # orchestrator_enabled: true              # Disable to force all subagents to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

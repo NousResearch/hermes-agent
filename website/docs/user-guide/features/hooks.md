@@ -381,7 +381,7 @@ def register(ctx):
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
-| [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
+| [`subagent_stop`](#subagent_stop) | A `delegate_task` subagent has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 | [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
 | [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
@@ -807,7 +807,7 @@ See the **[Build a Plugin guide](/docs/guides/build-a-hermes-plugin)** for the f
 
 ### `subagent_stop`
 
-Fires **once per child agent** after `delegate_task` finishes. Whether you delegated a single task or a batch of three, this hook fires once for each child, serialised on the parent thread.
+Fires **once per subagent** after `delegate_task` finishes. Whether you delegated a single task or a batch of three, this hook fires once for each subagent, serialised on the parent thread.
 
 **Callback signature:**
 
@@ -820,16 +820,16 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `parent_session_id` | `str` | Session ID of the delegating parent agent |
-| `child_role` | `str \| None` | Orchestrator role tag set on the child (`None` if the feature isn't enabled) |
-| `child_summary` | `str \| None` | The final response the child returned to the parent |
+| `child_role` | `str \| None` | Orchestrator role tag set on the subagent (`None` if the feature isn't enabled) |
+| `child_summary` | `str \| None` | The final response the subagent returned to the parent |
 | `child_status` | `str` | `"completed"`, `"failed"`, `"interrupted"`, or `"error"` |
-| `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
+| `duration_ms` | `int` | Wall-clock time spent running the subagent, in milliseconds |
 
-**Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.
+**Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all subagent futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.
 
 **Return value:** Ignored.
 
-**Use cases:** Logging orchestration activity, accumulating child durations for billing, writing post-delegation audit records.
+**Use cases:** Logging orchestration activity, accumulating subagent durations for billing, writing post-delegation audit records.
 
 **Example — log orchestrator activity:**
 

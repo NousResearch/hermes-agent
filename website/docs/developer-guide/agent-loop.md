@@ -18,7 +18,7 @@ The core orchestration engine is `run_agent.py`'s `AIAgent` class — a large fi
 - Executing tool calls (sequentially or concurrently via thread pool)
 - Maintaining conversation history in OpenAI message format
 - Handling compression, retries, and fallback model switching
-- Tracking iteration budgets across parent and child agents
+- Tracking iteration budgets across parent and subagents
 - Flushing persistent memory before context is lost
 
 ## Two Entry Points

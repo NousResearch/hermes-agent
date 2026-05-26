@@ -2,18 +2,18 @@
 """
 Delegate Tool -- Subagent Architecture
 
-Spawns child AIAgent instances with isolated context, restricted toolsets,
+Spawns subagent AIAgent instances with isolated context, restricted toolsets,
 and their own terminal sessions. Supports single-task and batch (parallel)
-modes. The parent blocks until all children complete.
+modes. The parent blocks until all subagents complete.
 
-Each child gets:
+Each subagent gets:
   - A fresh conversation (no parent history)
   - Its own task_id (own terminal session, file ops cache)
   - A restricted toolset (configurable, with blocked tools always stripped)
   - A focused system prompt built from the delegated goal + context
 
 The parent's context only sees the delegation call and the summary result,
-never the child's intermediate tool calls or reasoning.
+never the subagent's intermediate tool calls or reasoning.
 """
 
 import enum
@@ -41,14 +41,14 @@ from tools.terminal_tool import set_approval_callback as _set_subagent_approval_
 from utils import base_url_hostname, is_truthy_value
 
 
-# Tools that children must never have access to
+# Tools that subagents must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "execute_code",  # children should reason step-by-step, not write scripts
+        "execute_code",  # subagents should reason step-by-step, not write scripts
     ]
 )
 
@@ -130,7 +130,7 @@ _SUBAGENT_TOOLSETS = sorted(
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
-MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
+MAX_DEPTH = 1  # flat by default: parent (0) -> subagent (1); nested subagent rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
 _MIN_SPAWN_DEPTH = 1
@@ -150,7 +150,7 @@ _spawn_pause_lock = threading.Lock()
 _spawn_paused: bool = False
 
 _active_subagents_lock = threading.Lock()
-# subagent_id -> mutable record tracking the live child agent.  Stays only
+# subagent_id -> mutable record tracking the live subagent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
@@ -158,7 +158,7 @@ _active_subagents: Dict[str, Dict[str, Any]] = {}
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock new delegate_task spawns.
 
-    Active children keep running; only NEW calls to delegate_task fail fast
+    Active subagents keep running; only NEW calls to delegate_task fail fast
     with a "spawning paused" error until unblocked.  Returns the new state.
     """
     global _spawn_paused
@@ -188,9 +188,9 @@ def _unregister_subagent(subagent_id: str) -> None:
 def interrupt_subagent(subagent_id: str) -> bool:
     """Request that a single running subagent stop at its next iteration boundary.
 
-    Does not hard-kill the worker thread (Python can't); sets the child's
+    Does not hard-kill the worker thread (Python can't); sets the subagent's
     interrupt flag which propagates to in-flight tools and recurses into
-    grandchildren via AIAgent.interrupt().  Returns True if a matching
+    nested subagents via AIAgent.interrupt().  Returns True if a matching
     subagent was found.
     """
     with _active_subagents_lock:
@@ -227,7 +227,7 @@ def _extract_output_tail(
     max_entries: int = 12,
     max_chars: int = 8000,
 ) -> List[Dict[str, Any]]:
-    """Pull the last N tool-call results from a child's conversation.
+    """Pull the last N tool-call results from a subagent's conversation.
 
     Powers the overlay's "Output" section — the cc-swarm-parity feature.
     We reuse the same messages list the trajectory saver walks, taking
@@ -342,7 +342,7 @@ def _get_max_concurrent_children() -> int:
             result = max(1, int(val))
             if result > 10:
                 logger.warning(
-                    "delegation.max_concurrent_children=%d: each child consumes API tokens "
+                    "delegation.max_concurrent_children=%d: each subagent consumes API tokens "
                     "independently. High values multiply cost linearly.",
                     result,
                 )
@@ -367,7 +367,7 @@ def _get_max_concurrent_children() -> int:
 def _get_child_timeout() -> float:
     """Read delegation.child_timeout_seconds from config.
 
-    Returns the number of seconds a single child agent is allowed to run
+    Returns the number of seconds a single subagent is allowed to run
     before being considered stuck.  Default: 600 s (10 minutes).
     """
     cfg = _load_config()
@@ -396,12 +396,12 @@ def _get_max_spawn_depth() -> int:
 
     depth 0 = parent agent.  max_spawn_depth = N means agents at depths
     0..N-1 can spawn; depth N is the leaf floor.  Default 1 is flat:
-    parent spawns children (depth 1), depth-1 children cannot spawn
-    (blocked by this guard AND, for leaf children, by the delegation
+    parent spawns subagents (depth 1), depth-1 subagents cannot spawn
+    (blocked by this guard AND, for leaf subagents, by the delegation
     toolset strip in _strip_blocked_tools).
 
     Raise to 2 or 3 to unlock nested orchestration. role="orchestrator"
-    removes the toolset strip for depth-1 children when
+    removes the toolset strip for depth-1 subagents when
     max_spawn_depth >= 2, enabling them to spawn their own workers.
     """
     cfg = _load_config()
@@ -447,7 +447,7 @@ def _get_orchestrator_enabled() -> bool:
 
 
 def _get_inherit_mcp_toolsets() -> bool:
-    """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
+    """Whether narrowed subagent toolsets should keep the parent's MCP toolsets."""
     cfg = _load_config()
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
@@ -471,7 +471,7 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     """Expand composite toolsets so individual toolset names are recognized.
 
     When a parent uses a composite toolset like ``hermes-cli`` (which bundles
-    all core tools), the child may request individual toolsets such as ``web``
+    all core tools), the subagent may request individual toolsets such as ``web``
     or ``terminal``.  A simple name-based intersection would reject them
     because ``"web" != "hermes-cli"``.
 
@@ -501,7 +501,7 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
 def _preserve_parent_mcp_toolsets(
     child_toolsets: List[str], parent_toolsets: set[str]
 ) -> List[str]:
-    """Append any parent MCP toolsets that are missing from a narrowed child."""
+    """Append any parent MCP toolsets that are missing from a narrowed subagent."""
     preserved = list(child_toolsets)
     for toolset_name in sorted(parent_toolsets):
         if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
@@ -510,13 +510,13 @@ def _preserve_parent_mcp_toolsets(
 
 
 DEFAULT_MAX_ITERATIONS = 50
-DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+DEFAULT_CHILD_TIMEOUT = 600  # seconds before a subagent is considered stuck
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
-# Stale-heartbeat thresholds. A child with no API-call progress is either:
+# Stale-heartbeat thresholds. A subagent with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
 #   - inside a tool (current_tool set) — probably running a legitimately long
 #     operation (terminal command, web fetch, large file read)
-# The idle ceiling stays tight so genuinely stuck children don't mask the gateway
+# The idle ceiling stays tight so genuinely stuck subagents don't mask the gateway
 # timeout. The in-tool ceiling is much higher so legit long-running tools get
 # time to finish; child_timeout_seconds (default 600s) is still the hard cap.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
@@ -551,7 +551,7 @@ class DelegateEvent(str, enum.Enum):
 
 
 # Legacy event strings → DelegateEvent mapping.
-# Incoming child-agent events use the old names; the callback normalises them.
+# Incoming subagent events use the old names; the callback normalises them.
 _LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
     "_thinking": DelegateEvent.TASK_THINKING,
     "reasoning.available": DelegateEvent.TASK_THINKING,
@@ -575,7 +575,7 @@ def _build_child_system_prompt(
     max_spawn_depth: int = 2,
     child_depth: int = 1,
 ) -> str:
-    """Build a focused system prompt for a child agent.
+    """Build a focused system prompt for a subagent.
 
     When role='orchestrator', appends a delegation-capability block
     modeled on OpenClaw's buildSubagentSystemPrompt (canSpawn branch at
@@ -609,16 +609,19 @@ def _build_child_system_prompt(
         "parent agent as a summary."
     )
     if role == "orchestrator":
-        child_note = (
-            "Your own children MUST be leaves (cannot delegate further) "
-            "because they would be at the depth floor — you cannot pass "
-            "role='orchestrator' to your own delegate_task calls."
-            if child_depth + 1 >= max_spawn_depth
-            else "Your own children can themselves be orchestrators or leaves, "
-            "depending on the `role` you pass to delegate_task. Default is "
-            "'leaf'; pass role='orchestrator' explicitly when a child "
-            "needs to further decompose its work."
-        )
+        if child_depth + 1 >= max_spawn_depth:
+            child_note = (
+                "Your own subagents MUST be leaves (cannot delegate further) "
+                "because they would be at the depth floor. You cannot pass "
+                "role='orchestrator' to your own delegate_task calls."
+            )
+        else:
+            child_note = (
+                "Your own subagents can themselves be orchestrators or leaves, "
+                "depending on the `role` you pass to delegate_task. Default is "
+                "'leaf'; pass role='orchestrator' explicitly when a subagent "
+                "needs to further decompose its work."
+            )
         parts.append(
             "\n## Subagent Spawning (Orchestrator Role)\n"
             "You have access to the `delegate_task` tool and CAN spawn "
@@ -643,7 +646,7 @@ def _build_child_system_prompt(
 
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
-    """Best-effort local workspace hint for child prompts.
+    """Best-effort local workspace hint for subagent prompts.
 
     We only inject a path when we have a concrete absolute directory. This avoids
     teaching subagents a fake container path while still helping them avoid
@@ -692,7 +695,7 @@ def _build_child_progress_callback(
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
 ) -> Optional[callable]:
-    """Build a callback that relays child agent tool calls to the parent display.
+    """Build a callback that relays subagent tool calls to the parent display.
 
     Two display paths:
       CLI:     prints tree-view lines above the parent's delegation spinner
@@ -705,7 +708,7 @@ def _build_child_progress_callback(
     older callers that ignore them still produce a flat list on the TUI.
 
     Returns None if no display mechanism is available, in which case the
-    child agent runs with no progress callback (identical to current behavior).
+    subagent runs with no progress callback (identical to current behavior).
     """
     spinner = getattr(parent_agent, "_delegate_spinner", None)
     parent_cb = getattr(parent_agent, "tool_progress_callback", None)
@@ -881,19 +884,19 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
+    # ACP transport overrides — lets a non-ACP parent spawn ACP subagents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
-    # Per-call role controlling whether the child can further delegate.
+    # Per-call role controlling whether the subagent can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
 ):
     """
-    Build a child AIAgent on the main thread (thread-safe construction).
-    Returns the constructed child agent without running it.
+    Build a subagent AIAgent on the main thread (thread-safe construction).
+    Returns the constructed subagent without running it.
 
-    When override_* params are set (from delegation config), the child uses
+    When override_* params are set (from delegation config), the subagent uses
     those credentials instead of inheriting from the parent.  This enables
     routing subagents to a different provider:model pair (e.g. cheap/fast
     model on OpenRouter while the parent runs on Nous Portal).
@@ -903,7 +906,7 @@ def _build_child_agent(
 
     # ── Role resolution ─────────────────────────────────────────────────
     # Honor the caller's role only when BOTH the kill switch and the
-    # child's depth allow it.  This is the single point where role
+    # subagent's depth allow it.  This is the single point where role
     # degrades to 'leaf' — keeps the rule predictable.  Callers pass
     # the normalised role (_normalize_role ran in delegate_task) so
     # we only deal with 'leaf' or 'orchestrator' here.
@@ -919,7 +922,7 @@ def _build_child_agent(
     # (nested orchestrator -> worker chain).
     subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
-    tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
+    tui_depth = max(0, child_depth - 1)  # 0 = first-level subagent for the UI
 
     delegation_cfg = _load_config()
 
@@ -981,7 +984,7 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # Resolve the child's effective model early so it can ride on every event.
+    # Resolve the subagent's effective model early so it can ride on every event.
     effective_model_for_cb = model or getattr(parent_agent, "model", None)
 
     # Build progress callback to relay tool calls to parent display.
@@ -1022,10 +1025,10 @@ def _build_child_agent(
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
-    # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
+    # Bug #20558 / PR #20563: api_mode must NOT be inherited when the subagent uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
-    # Inheriting the parent's mode causes 404 errors when the child routes to the
+    # Inheriting the parent's mode causes 404 errors when the subagent routes to the
     # wrong endpoint.  Derive the mode from the target provider when it differs.
     _parent_provider = getattr(parent_agent, "provider", None) or ""
     if override_api_mode is not None:
@@ -1085,9 +1088,9 @@ def _build_child_agent(
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
     # constraints).  BUT: when `delegation.provider` is set the user is
-    # explicitly asking the child to run on a different provider, and
+    # explicitly asking the subagent to run on a different provider, and
     # parent-level OpenRouter filters (e.g. `only=["Anthropic"]`) would
-    # silently force the child back onto the parent's provider. Clear the
+    # silently force the subagent back onto the parent's provider. Clear the
     # filters in that case so the delegated provider is honoured.
     child_providers_allowed = getattr(parent_agent, "providers_allowed", None)
     child_providers_ignored = getattr(parent_agent, "providers_ignored", None)
@@ -1136,7 +1139,7 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
-    # Set delegation depth so children can't spawn grandchildren
+    # Set delegation depth so subagents can't spawn nested subagents
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
@@ -1147,13 +1150,13 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
 
-    # Share a credential pool with the child when possible so subagents can
+    # Share a credential pool with the subagent when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
     child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
     if child_pool is not None:
         child._credential_pool = child_pool
 
-    # Register child for interrupt propagation
+    # Register subagent for interrupt propagation
     if hasattr(parent_agent, "_active_children"):
         lock = getattr(parent_agent, "_active_children_lock", None)
         if lock:
@@ -1162,7 +1165,7 @@ def _build_child_agent(
         else:
             parent_agent._active_children.append(child)
 
-    # Announce the spawn immediately — the child may sit in a queue
+    # Announce the spawn immediately — the subagent may sit in a queue
     # for seconds if max_concurrent_children is saturated, so the TUI
     # wants a node in the tree before run starts.
     if child_progress_cb:
@@ -1189,7 +1192,7 @@ def _dump_subagent_timeout_diagnostic(
     See issue #14726: users hit "subagent timed out after 300s with no response"
     with zero API calls and no way to inspect what happened. This helper
     writes a dedicated log under ``~/.hermes/logs/subagent-<sid>-<ts>.log``
-    capturing the child's config, system-prompt / tool-schema sizes, activity
+    capturing the subagent's config, system-prompt / tool-schema sizes, activity
     tracker snapshot, and the worker thread's Python stack at timeout.
 
     Returns the absolute path to the diagnostic file, or None on failure.
@@ -1326,16 +1329,16 @@ def _run_single_child(
     **_kwargs,
 ) -> Dict[str, Any]:
     """
-    Run a pre-built child agent. Called from within a thread.
+    Run a pre-built subagent. Called from within a thread.
     Returns a structured result dict.
     """
     child_start = time.monotonic()
 
-    # Get the progress callback from the child agent
+    # Get the progress callback from the subagent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
     # Restore parent tool names using the value saved before child construction
-    # mutated the global. This is the correct parent toolset, not the child's.
+    # mutated the global. This is the correct parent toolset, not the subagent's.
     import model_tools
 
     _saved_tool_names = getattr(
@@ -1354,12 +1357,12 @@ def _run_single_child(
             except Exception as exc:
                 logger.debug("Failed to bind child to leased credential: %s", exc)
 
-    # Heartbeat: periodically propagate child activity to the parent so the
+    # Heartbeat: periodically propagate subagent activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
     _heartbeat_stop = threading.Event()
-    # Stale detection: track the child's (tool, iteration) pair across
+    # Stale detection: track the subagent's (tool, iteration) pair across
     # heartbeat cycles. If neither advances, count the cycle as stale.
     # Different thresholds for idle vs in-tool (see _HEARTBEAT_STALE_CYCLES_*).
     _last_seen_iter = [0]
@@ -1373,7 +1376,7 @@ def _run_single_child(
             touch = getattr(parent_agent, "_touch_activity", None)
             if not touch:
                 continue
-            # Pull detail from the child's own activity tracker
+            # Pull detail from the subagent's own activity tracker
             desc = f"delegate_task: subagent {task_index} working"
             try:
                 child_summary = child.get_activity_summary()
@@ -1473,7 +1476,7 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback start failed: %s", e)
 
-        # File-state coordination: reuse the stable subagent_id as the child's
+        # File-state coordination: reuse the stable subagent_id as the subagent's
         # task_id so file_state writes, active-subagents registry, and TUI
         # events all share one key.  Falls back to a fresh uuid only if the
         # pre-built id is somehow missing.
@@ -1487,7 +1490,7 @@ def _run_single_child(
         )
 
         # Run child with a hard timeout to prevent indefinite blocking
-        # when the child's API call or tool-level HTTP request hangs.
+        # when the subagent's API call or tool-level HTTP request hangs.
         child_timeout = _get_child_timeout()
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -1703,7 +1706,7 @@ def _run_single_child(
             # Stripped before the dict is serialised back to the model.
             "_child_role": getattr(child, "_delegate_role", None),
             # Captured before child.close() so the parent aggregator can fold
-            # the child's total spend into the parent's session cost.  Port of
+            # the subagent's total spend into the parent's session cost.  Port of
             # Kilo-Org/kilocode#9448 — previously the footer only reflected the
             # parent's direct API calls and under-counted subagent-heavy runs.
             # Stripped before the dict is serialised back to the model.
@@ -1723,7 +1726,7 @@ def _run_single_child(
         # files the parent had already read, surface it so the parent
         # knows to re-read before editing — the scenario that motivated
         # the registry.  We check writes by ANY non-parent task_id (not
-        # just this child's), which also covers transitive writes from
+        # just this subagent's), which also covers transitive writes from
         # nested orchestrator→worker chains.
         try:
             if parent_task_id and parent_reads_snapshot:
@@ -1889,7 +1892,7 @@ def _run_single_child(
             if hasattr(child, "close"):
                 child.close()
         except Exception:
-            logger.debug("Failed to close child agent after delegation")
+            logger.debug("Failed to close subagent after delegation")
 
 
 def _recover_tasks_from_json_string(
@@ -1927,13 +1930,13 @@ def delegate_task(
     parent_agent=None,
 ) -> str:
     """
-    Spawn one or more child agents to handle delegated tasks.
+    Spawn one or more subagents to handle delegated tasks.
 
     Supports two modes:
       - Single: provide goal (+ optional context, toolsets, role)
       - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
 
-    The 'role' parameter controls whether a child can further delegate:
+    The 'role' parameter controls whether a subagent can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
@@ -1945,7 +1948,7 @@ def delegate_task(
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
-    # children.  Cleared via the matching `delegation.pause` RPC.
+    # subagents.  Cleared via the matching `delegation.pause` RPC.
     if is_spawn_paused():
         return tool_error(
             "Delegation spawning is paused. Clear the pause via the TUI "
@@ -1991,7 +1994,7 @@ def delegate_task(
     # When delegation.provider is configured, this resolves the full credential
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
+    # subagents inherit from the parent.
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
@@ -2043,12 +2046,12 @@ def delegate_task(
 
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
-    # which overwrites model_tools._last_resolved_tool_names with child's toolset.
+    # which overwrites model_tools._last_resolved_tool_names with subagent's toolset.
     import model_tools as _model_tools
 
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
-    # Build all child agents on the main thread (thread-safe construction)
+    # Build all subagents on the main thread (thread-safe construction)
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
@@ -2085,7 +2088,7 @@ def delegate_task(
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
     finally:
-        # Authoritative restore: reset global to parent's tool names after all children built
+        # Authoritative restore: reset global to parent's tool names after all subagents built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
     if n_tasks == 1:
@@ -2111,11 +2114,11 @@ def delegate_task(
                 futures[future] = i
 
             # Poll futures with interrupt checking.  as_completed() blocks
-            # until ALL futures finish — if a child agent gets stuck,
+            # until ALL futures finish — if a subagent gets stuck,
             # the parent blocks forever even after interrupt propagation.
             # Instead, use wait() with a short timeout so we can bail
             # when the parent is interrupted.
-            # Map task_index -> child agent, so fabricated entries for
+            # Map task_index -> subagent, so fabricated entries for
             # still-pending futures can carry the correct _delegate_role.
             _child_by_index = {i: child for (i, _, child) in children}
 
@@ -2239,7 +2242,7 @@ def delegate_task(
 
     # Fire subagent_stop hooks once per child, serialised on the parent thread.
     # This keeps Python-plugin and shell-hook callbacks off of the worker threads
-    # that ran the children, so hook authors don't need to reason about
+    # that ran the subagents, so hook authors don't need to reason about
     # concurrent invocation.  Role was captured into the entry dict in
     # _run_single_child (or the fabricated-entry branches above) before the
     # child was closed.
@@ -2250,7 +2253,7 @@ def delegate_task(
         _invoke_hook = None
     # Aggregate child spend here so the parent's footer/UI reflect the true
     # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
-    # child's cost was captured in _run_single_child before its AIAgent was
+    # subagent's cost was captured in _run_single_child before its AIAgent was
     # closed; we fold them into the parent in one pass alongside the
     # subagent_stop hook loop so we don't walk `results` twice.
     _children_cost_total = 0.0
@@ -2277,9 +2280,9 @@ def delegate_task(
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
 
     # Fold the aggregated child cost into the parent's session total.  This is
-    # additive — each delegate_task call contributes its own children — so
+    # additive — each delegate_task call contributes its own subagents — so
     # nested orchestrator→worker trees roll up naturally: each layer's own
-    # delegate_task() folds its direct children in, and when the orchestrator
+    # delegate_task() folds its direct subagents in, and when the orchestrator
     # itself finishes, its parent folds the orchestrator's now-inflated total
     # on top.  Degrades silently if the parent lacks the counter (older test
     # fixtures, etc.).
@@ -2310,7 +2313,7 @@ def delegate_task(
 
 
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
-    """Resolve a credential pool for the child agent.
+    """Resolve a credential pool for the subagent.
 
     Rules:
     1. Same provider as the parent -> share the parent's pool so cooldown state
@@ -2512,7 +2515,7 @@ def _build_top_level_description() -> str:
         nesting_clause = (
             f"Nested delegation IS enabled for this user "
             f"(max_spawn_depth={max_depth}): pass role='orchestrator' on a "
-            f"child to let it spawn its own workers, up to {max_depth - 1} "
+            f"subagent to let it spawn its own workers, up to {max_depth - 1} "
             f"additional level(s) deep."
         )
     elif max_depth >= 2 and not orchestrator_on:
@@ -2525,7 +2528,7 @@ def _build_top_level_description() -> str:
     else:
         nesting_clause = (
             f"Nested delegation is OFF for this user "
-            f"(max_spawn_depth={max_depth}): every child is a leaf and "
+            f"(max_spawn_depth={max_depth}): every subagent is a leaf and "
             f"cannot delegate further. Raise delegation.max_spawn_depth in "
             f"config.yaml to enable nesting."
         )
@@ -2553,8 +2556,8 @@ def _build_top_level_description() -> str:
         "use cronjob (action='create') or terminal(background=True, "
         "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
         "inside the parent turn: if the parent is interrupted (user sends a "
-        "new message, /stop, /new) the child is cancelled with status="
-        "'interrupted' and its work is discarded. Children cannot continue "
+        "new message, /stop, /new) the subagent is cancelled with status="
+        "'interrupted' and its work is discarded. Subagents cannot continue "
         "in the background.\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
@@ -2612,7 +2615,7 @@ def _build_role_param_description() -> str:
     if max_depth >= 2 and orchestrator_on:
         nesting_note = (
             f"Nesting IS enabled for this user (max_spawn_depth={max_depth}): "
-            f"orchestrator children can themselves delegate up to {max_depth - 1} "
+            f"orchestrator subagents can themselves delegate up to {max_depth - 1} "
             "more level(s) deep."
         )
     elif max_depth >= 2 and not orchestrator_on:
@@ -2629,7 +2632,7 @@ def _build_role_param_description() -> str:
         )
 
     return (
-        "Role of the child agent. 'leaf' (default) = focused "
+        "Role of the subagent. 'leaf' (default) = focused "
         "worker, cannot delegate further. 'orchestrator' = can "
         f"use delegate_task to spawn its own workers. {nesting_note}"
     )
@@ -2752,8 +2755,8 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
+                    "Override ACP command for subagents (e.g. 'copilot'). "
+                    "When set, subagents use ACP subprocess transport instead of inheriting "
                     "the parent's transport. Requires an ACP-compatible CLI "
                     "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
                     "See agent/copilot_acp_client.py for the implementation. "

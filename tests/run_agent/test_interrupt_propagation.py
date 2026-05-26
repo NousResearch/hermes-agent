@@ -1,4 +1,4 @@
-"""Test interrupt propagation from parent to child agents.
+"""Test interrupt propagation from parent to subagents.
 
 Reproduces the CLI scenario: user sends a message while delegate_task is
 running, main thread calls parent.interrupt(), child should stop.
@@ -14,7 +14,7 @@ from tools.interrupt import set_interrupt, is_interrupted, _interrupt_event
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):
-    """Verify interrupt propagates from parent to child agent."""
+    """Verify interrupt propagates from parent to subagent."""
 
     def setUp(self):
         set_interrupt(False)

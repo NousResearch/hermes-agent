@@ -105,7 +105,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
                             return original_run(self_agent, *args, **kwargs)
 
                         with patch.object(AIAgent, 'run_conversation', patched_run):
-                            # Build a real child agent (AIAgent is NOT patched here,
+                            # Build a real subagent (AIAgent is NOT patched here,
                             # only run_conversation and _build_system_prompt are)
                             child = AIAgent(
                                 base_url="http://localhost:1",

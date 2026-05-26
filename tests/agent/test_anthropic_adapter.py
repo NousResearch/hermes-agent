@@ -28,6 +28,15 @@ from agent.anthropic_adapter import (
 from agent.transports import get_transport
 
 
+@pytest.fixture(autouse=True)
+def _disable_real_claude_code_keychain(monkeypatch):
+    """Credential unit tests must never consult the developer's real keychain."""
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
@@ -478,6 +487,7 @@ class TestRunOauthSetupToken:
         """After subprocess completes, reads credentials from Claude Code files."""
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
 
         # Pre-create credential files that will be found after subprocess
@@ -507,6 +517,7 @@ class TestRunOauthSetupToken:
         """Falls back to CLAUDE_CODE_OAUTH_TOKEN env var when no cred files."""
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-env-var")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
@@ -520,6 +531,7 @@ class TestRunOauthSetupToken:
         """Returns None when subprocess completes but no credentials are found."""
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 

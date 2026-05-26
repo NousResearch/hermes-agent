@@ -470,6 +470,80 @@ def _count_skills(staged: Path) -> int:
     )
 
 
+def _normalise_owned_path(raw: str) -> Optional[Path]:
+    """Return a safe relative Path for a manifest-owned entry, or None."""
+    rel = str(raw or "").strip().strip("/")
+    if not rel:
+        return None
+    p = Path(rel)
+    if p.is_absolute() or any(part in {"", ".", ".."} for part in p.parts):
+        return None
+    return p
+
+
+def _remove_target_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _has_symlink_component(root: Path, path: Path) -> bool:
+    """Return True when any existing component from root to path is a symlink."""
+    try:
+        rel_parts = path.relative_to(root).parts
+    except ValueError:
+        return True
+    current = root
+    for part in rel_parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def _is_safe_source_path(staged: Path, src: Path) -> bool:
+    staged_root = staged.resolve()
+    if _has_symlink_component(staged, src):
+        return False
+    try:
+        src.resolve(strict=True).relative_to(staged_root)
+    except (FileNotFoundError, RuntimeError, ValueError):
+        return False
+    return True
+
+
+def _is_safe_target_parent(target: Path, dest: Path) -> bool:
+    """Return False if a write/remove would traverse a target symlink ancestor."""
+    target_root = target.resolve()
+    parent = dest.parent
+    if _has_symlink_component(target, parent):
+        return False
+    try:
+        parent.resolve(strict=False).relative_to(target_root)
+    except (RuntimeError, ValueError):
+        return False
+    return True
+
+
+def _copy_target_path(src: Path, dest: Path) -> None:
+    if src.is_dir():
+        if dest.exists():
+            _remove_target_path(dest)
+        shutil.copytree(
+            src,
+            dest,
+            ignore=lambda d, names: [
+                n for n in names if n in USER_OWNED_EXCLUDE or (Path(d) / n).is_symlink()
+            ],
+        )
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists() and dest.is_dir():
+            shutil.rmtree(dest)
+        shutil.copy2(src, dest)
+
+
 def plan_install(
     source: str,
     workdir: Path,
@@ -542,29 +616,40 @@ def _copy_dist_payload(
     """
     target.mkdir(parents=True, exist_ok=True)
 
-    for entry in staged.iterdir():
-        name = entry.name
+    for rel in (_normalise_owned_path(p) for p in manifest.owned_paths()):
+        if rel is None:
+            continue
+        root_name = rel.parts[0]
+        if root_name in USER_OWNED_EXCLUDE:
+            continue
+        if root_name == MANIFEST_FILENAME:
+            # Written at the end with resolved name/source/installed_at metadata.
+            continue
+        if root_name == ENV_TEMPLATE_FILENAME:
+            src_template = staged / rel
+            dest_template = target / ENV_EXAMPLE_FILENAME
+            if (
+                src_template.is_file()
+                and _is_safe_source_path(staged, src_template)
+                and _is_safe_target_parent(target, dest_template)
+            ):
+                shutil.copy2(src_template, dest_template)
+            continue
 
-        if name in USER_OWNED_EXCLUDE:
-            continue
-        if name == ENV_TEMPLATE_FILENAME:
-            shutil.copy2(entry, target / ENV_EXAMPLE_FILENAME)
-            continue
-        if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
-            # Leave user's config.yaml alone on update
+        dest = target / rel
+        if root_name == "config.yaml" and preserve_config and dest.exists():
+            # Leave user's config.yaml alone on update.
             continue
 
-        dest = target / name
-        if entry.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(
-                entry,
-                dest,
-                ignore=lambda d, names: [n for n in names if n in USER_OWNED_EXCLUDE],
-            )
-        else:
-            shutil.copy2(entry, dest)
+        src = staged / rel
+        if not _is_safe_target_parent(target, dest):
+            continue
+        if src.exists() and _is_safe_source_path(staged, src):
+            _copy_target_path(src, dest)
+        elif dest.exists():
+            # Updates replace distribution-owned paths, including source-side
+            # removals. Fresh installs normally have no destination here.
+            _remove_target_path(dest)
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():

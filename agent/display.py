@@ -640,7 +640,7 @@ class KawaiiSpinner:
         # agents with _print_fn overridden remain fully silent.
         self._print_fn = print_fn
         # Capture stdout NOW, before any redirect_stdout(devnull) from
-        # child agents can replace sys.stdout with a black hole.
+        # subagents can replace sys.stdout with a black hole.
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):

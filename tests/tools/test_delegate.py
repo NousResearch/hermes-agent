@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -123,6 +124,40 @@ class TestDelegateRequirements(unittest.TestCase):
         )
         self.assertIn(f"up to {_get_max_concurrent_children()}", fn["description"])
         self.assertIn(f"max_spawn_depth={_get_max_spawn_depth()}", fn["description"])
+
+    def test_model_facing_delegation_surfaces_use_subagent_terminology(self):
+        """Model-facing delegation copy should use subagent terminology."""
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+        from tools.registry import registry
+
+        static_text = json.dumps(DELEGATE_TASK_SCHEMA, sort_keys=True)
+        dynamic_text = json.dumps(_build_dynamic_schema_overrides(), sort_keys=True)
+        with patch("tools.delegate_tool._get_max_spawn_depth", return_value=3), patch(
+            "tools.delegate_tool._get_orchestrator_enabled", return_value=True
+        ):
+            nested_dynamic_text = json.dumps(
+                _build_dynamic_schema_overrides(), sort_keys=True
+            )
+        registry_text = json.dumps(registry.get_definitions({"delegate_task"}), sort_keys=True)
+        orchestrator_prompt = _build_child_system_prompt(
+            "coordinate work",
+            role="orchestrator",
+            child_depth=1,
+            max_spawn_depth=2,
+        )
+
+        for surface_name, text in {
+            "static schema": static_text,
+            "dynamic schema": dynamic_text,
+            "nested dynamic schema": nested_dynamic_text,
+            "registry schema": registry_text,
+            "orchestrator subagent prompt": orchestrator_prompt,
+        }.items():
+            self.assertNotRegex(
+                text,
+                re.compile(r"\b(?:child|children)\b", re.IGNORECASE),
+                f"{surface_name} should use subagent terminology",
+            )
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -391,6 +426,27 @@ class TestDelegateTask(unittest.TestCase):
 
         self.assertIs(mock_child._print_fn, sink)
 
+    def test_subagent_construction_skips_parent_context_files_and_memory(self):
+        """Subagents must not inherit parent project context files or memory."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            _build_child_agent(
+                task_index=0,
+                goal="Keep delegation isolated",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIs(kwargs["skip_context_files"], True)
+        self.assertIs(kwargs["skip_memory"], True)
+        self.assertIsNone(kwargs["clarify_callback"])
+
     def test_child_uses_thinking_callback_when_progress_callback_available(self):
         parent = _make_mock_parent(depth=0)
         parent.tool_progress_callback = MagicMock()
@@ -440,7 +496,7 @@ class TestToolNamePreservation(unittest.TestCase):
         self.assertEqual(model_tools._last_resolved_tool_names, original_tools)
 
     def test_global_tool_names_restored_after_child_failure(self):
-        """Even when the child agent raises, the global must be restored."""
+        """Even when the subagent raises, the global must be restored."""
         import model_tools
 
         parent = _make_mock_parent(depth=0)
@@ -1104,7 +1160,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
-        """When delegation.provider is configured, child agent gets resolved credentials."""
+        """When delegation.provider is configured, subagent gets resolved credentials."""
         mock_cfg.return_value = {
             "max_iterations": 45,
             "model": "google/gemini-3-flash-preview",
@@ -1335,7 +1391,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_delegation_acp_runtime_reaches_child_agent(self, mock_creds, mock_cfg):
-        """Resolved ACP runtime command/args must be forwarded to child agents."""
+        """Resolved ACP runtime command/args must be forwarded to subagents."""
         mock_cfg.return_value = {
             "max_iterations": 45,
             "model": "copilot-model",
@@ -1762,10 +1818,13 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            # Long enough to exceed the OLD idle threshold (5 cycles) at
-            # the patched interval, but shorter than the new in-tool
-            # threshold.
-            time.sleep(0.4)
+            # Wait until the heartbeat proves it is still active past the
+            # OLD idle threshold (5 cycles at 0.05s), but cap below the
+            # in-tool threshold (20 cycles = 1.0s). This avoids relying on
+            # exact scheduler timing while still catching the regression.
+            deadline = time.monotonic() + 0.8
+            while len(touch_calls) <= 6 and time.monotonic() < deadline:
+                time.sleep(0.01)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -1774,7 +1833,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         # the in-tool branch takes effect: with a 0.05s interval and the
         # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
         # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
+        # continuing past that old cutoff.
         with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
             _run_single_child(
                 task_index=0,
@@ -1785,11 +1844,11 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         # With the old idle threshold (5 cycles = 0.25s), touch_calls
         # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
+        # we should see heartbeats continue past the old cutoff.
         self.assertGreater(
             len(touch_calls), 6,
-            f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"Heartbeat stopped too early while subagent was inside a tool; "
+            f"got {len(touch_calls)} touches at 0.05s interval",
         )
 
 

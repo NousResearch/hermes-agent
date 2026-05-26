@@ -1651,14 +1651,14 @@ class AIAgent:
                     _set_interrupt(True, _wtid)
                 except Exception:
                     pass
-        # Propagate interrupt to any running child agents (subagent delegation)
+        # Propagate interrupt to any running subagents (delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
         for child in children_copy:
             try:
                 child.interrupt(message)
             except Exception as e:
-                logger.debug("Failed to propagate interrupt to child agent: %s", e)
+                logger.debug("Failed to propagate interrupt to subagent: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
@@ -2034,13 +2034,13 @@ class AIAgent:
         We DO close:
           - OpenAI/httpx client pool (big chunk of held memory + sockets;
             the rebuilt agent gets a fresh client anyway)
-          - Active child subagents (per-turn artefacts; safe to drop)
+          - Active subagents (per-turn artefacts; safe to drop)
 
         Safe to call multiple times.  Distinct from close() — which is the
         hard teardown for actual session boundaries (/new, /reset, session
         expiry).
         """
-        # Close active child agents (per-turn; no cross-turn persistence).
+        # Close active subagents (per-turn; no cross-turn persistence).
         try:
             with self._active_children_lock:
                 children = list(self._active_children)
@@ -2049,7 +2049,7 @@ class AIAgent:
                 try:
                     child.release_clients()
                 except Exception:
-                    # Fall back to full close on children; they're per-turn.
+                    # Fall back to full close on subagents; they're per-turn.
                     try:
                         child.close()
                     except Exception:
@@ -2073,7 +2073,7 @@ class AIAgent:
         - Background processes tracked in ProcessRegistry
         - Terminal sandbox environments
         - Browser daemon sessions
-        - Active child agents (subagent delegation)
+        - Active subagents (delegation)
         - OpenAI/httpx client connections
 
         Safe to call multiple times (idempotent).  Each cleanup step is
@@ -2100,7 +2100,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 4. Close active child agents
+        # 4. Close active subagents
         try:
             with self._active_children_lock:
                 children = list(self._active_children)

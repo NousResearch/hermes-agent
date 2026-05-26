@@ -532,7 +532,7 @@ class TestNousPortalContextResolution:
         self, mock_or, mock_portal, tmp_path, monkeypatch
     ):
         """Portal-derived value should land in the persistent cache so
-        cross-process callers (e.g. child agents) see the same value."""
+        cross-process callers (e.g. subagents) see the same value."""
         import agent.model_metadata as mm
         cache_file = tmp_path / "context_length_cache.yaml"
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)

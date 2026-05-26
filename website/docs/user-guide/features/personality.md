@@ -288,7 +288,7 @@ As of this doc's R1 discovery pass, these are the active paths to account for be
 - **Gateway:** `gateway/run.py` loads `HERMES_EPHEMERAL_SYSTEM_PROMPT` first, then `agent.system_prompt` from config. Gateway `/personality` writes `agent.system_prompt` and updates the in-memory ephemeral prompt so the next message sees the overlay.
 - **TUI:** `tui_gateway/server.py` reads `agent.system_prompt` as an ephemeral prompt when creating the agent. TUI personality changes update `display.personality`, `agent.system_prompt`, and the live agent's `ephemeral_system_prompt` without rebuilding the cached base prompt.
 - **Cron:** `cron/scheduler.py` sets `load_soul_identity=True`; cron jobs inherit `SOUL.md` from `HERMES_HOME` even when no workdir is configured. Project context files are only injected when a cron `workdir` is present.
-- **Delegation:** `tools/delegate_tool.py` creates child agents with `skip_context_files=True`, `skip_memory=True`, and a child-specific `ephemeral_system_prompt`; children do not inherit live project context or memory by default.
+- **Delegation:** `tools/delegate_tool.py` creates subagents with `skip_context_files=True`, `skip_memory=True`, and a subagent-specific `ephemeral_system_prompt`; subagents do not inherit live project context or memory by default.
 - **Profiles:** profile clone paths copy `config.yaml`, `.env`, and `SOUL.md` for continuity; profile distributions may mark `SOUL.md` as distribution-owned, so distribution update/reinstall paths must be treated as possible reapplication sources.
 - **API-call-time overlays:** `agent.chat_completion_helpers` appends `ephemeral_system_prompt` to the cached system prompt immediately before sending API messages. This preserves cache stability but means clearing overlays is separate from restoring base `SOUL.md`.
 
@@ -358,7 +358,7 @@ This plan is for a later, separately approved implementation pass. It names like
 - Moving identity text into an overlay can reduce prompt-cache stability.
 - Clearing overlays without clearing persisted config can make rollback appear successful for one message but reapply later.
 - Profile/distribution-owned `SOUL.md` may overwrite local fixes during reapply/update flows.
-- Cron and delegation intentionally differ from normal project-context loading; cleanup must not accidentally import project context into isolated child runs.
+- Cron and delegation intentionally differ from normal project-context loading; cleanup must not accidentally import project context into isolated subagent runs.
 - Docs that describe `~/.hermes/SOUL.md` must still account for profiles where `HERMES_HOME` is profile-specific.
 
 ### R4 promotion gate package
@@ -386,7 +386,7 @@ Use wording at least this specific before a live promotion:
 - Gateway: restart or otherwise rebuild the runner if base identity changed; clear persisted and in-memory personality overlays separately.
 - TUI: rebuild affected sessions/runners for base identity changes; do not assume updating `ephemeral_system_prompt` changes the cached base prompt.
 - Cron: verify the scheduler's `HERMES_HOME`/profile and job `workdir`; new job runs should use the new identity only after the scheduler/runner boundary reloads it.
-- Delegation: verify child-agent construction flags; delegated children may intentionally use `skip_context_files=True` and child-specific ephemeral prompts.
+- Delegation: verify subagent construction flags; delegated subagents may intentionally use `skip_context_files=True` and subagent-specific ephemeral prompts.
 
 ### R5 rollback and revocation package
 

@@ -65,11 +65,11 @@ class TestCompress:
         assert result == msgs
 
     def test_truncation_fallback_no_client(self, compressor):
-        # compressor has client=None and abort_on_summary_failure=False (default),
-        # so the LEGACY fallback path inserts a static "summary unavailable"
-        # placeholder and the middle window is dropped.
-        msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
-        result = compressor.compress(msgs)
+        # Force the no-provider path so this unit test cannot discover a real
+        # auxiliary provider from the developer environment.
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
+            result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         # Should keep system message and last N
         assert result[0]["role"] == "system"
@@ -82,9 +82,10 @@ class TestCompress:
         msgs = self._make_messages(10)
         # Default config (abort_on_summary_failure=False) — fallback path
         # increments the count even on summary failure.
-        compressor.compress(msgs)
-        assert compressor.compression_count == 1
-        compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            compressor.compress(msgs)
+            assert compressor.compression_count == 1
+            compressor.compress(msgs)
         assert compressor.compression_count == 2
 
     def test_protects_first_and_last(self, compressor):

@@ -181,13 +181,13 @@ Auto-seeded entries are updated on each pool load — if you remove an env var, 
 
 ## Delegation & Subagent Sharing
 
-When the agent spawns subagents via `delegate_task`, the parent's credential pool is automatically shared with children:
+When the agent spawns subagents via `delegate_task`, the parent's credential pool is automatically shared with subagents:
 
-- **Same provider** — the child receives the parent's full pool, enabling key rotation on rate limits
-- **Different provider** — the child loads that provider's own pool (if configured)
-- **No pool configured** — the child falls back to the inherited single API key
+- **Same provider** — the subagent receives the parent's full pool, enabling key rotation on rate limits
+- **Different provider** — the subagent loads that provider's own pool (if configured)
+- **No pool configured** — the subagent falls back to the inherited single API key
 
-This means subagents benefit from the same rate-limit resilience as the parent, with no extra configuration needed. Per-task credential leasing ensures children don't conflict with each other when rotating keys concurrently.
+This means subagents benefit from the same rate-limit resilience as the parent, with no extra configuration needed. Per-task credential leasing ensures subagents don't conflict with each other when rotating keys concurrently.
 
 ## Thread Safety
 

@@ -17,6 +17,16 @@ from gateway.restart import (
 )
 
 
+def _pretend_user_systemd_available(monkeypatch):
+    """Keep unit tests hermetic on non-Linux hosts.
+
+    These tests exercise Hermes' systemd command sequencing, not the host's
+    real user D-Bus/session state. Without this stub a macOS developer box
+    fails in the preflight before the mocked systemctl logic runs.
+    """
+    monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+
+
 class TestUserSystemdPrivateSocketPreflight:
     def test_preflight_accepts_private_socket_without_dbus_bus(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)
@@ -62,6 +72,7 @@ class TestSystemdServiceRefresh:
         ]
 
     def test_systemd_start_refreshes_outdated_unit(self, tmp_path, monkeypatch):
+        _pretend_user_systemd_available(monkeypatch)
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
@@ -85,6 +96,7 @@ class TestSystemdServiceRefresh:
         ]
 
     def test_systemd_restart_refreshes_outdated_unit(self, tmp_path, monkeypatch):
+        _pretend_user_systemd_available(monkeypatch)
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
@@ -738,6 +750,7 @@ class TestGatewayServiceDetection:
 
 class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
+        _pretend_user_systemd_available(monkeypatch)
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
@@ -783,6 +796,7 @@ class TestGatewaySystemServiceRouting:
         assert "restarting gracefully" in out
 
     def test_systemd_restart_uses_systemd_main_pid_when_pid_file_is_missing(self, monkeypatch, capsys):
+        _pretend_user_systemd_available(monkeypatch)
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
@@ -842,6 +856,7 @@ class TestGatewaySystemServiceRouting:
         assert "restarted (pid 999)" in capsys.readouterr().out.lower()
 
     def test_systemd_restart_reports_start_limit_hit(self, monkeypatch, capsys):
+        _pretend_user_systemd_available(monkeypatch)
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
@@ -874,6 +889,7 @@ class TestGatewaySystemServiceRouting:
         assert "reset-failed" in out
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
+        _pretend_user_systemd_available(monkeypatch)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)

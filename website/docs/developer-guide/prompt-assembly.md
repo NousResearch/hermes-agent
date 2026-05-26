@@ -258,13 +258,13 @@ The architecture is intentionally optimized to:
 - keep memory semantics understandable
 - let gateway/ACP/CLI add context without poisoning persistent prompt state
 
-## Grandmaster runtime cleanup implementation-readiness checklist (docs-only)
+## Grandmaster runtime cleanup implementation-readiness checklist
 
-Use this checklist before proposing any future code or live-runtime cleanup. It is documentation-only guidance; it does not authorize editing Python, changing config, starting services, activating a candidate `SOUL.md`, or clearing overlays.
+Use this checklist before proposing any future code or live-runtime cleanup. It is documentation-only guidance unless a separate implementation approval names a scoped code/doc batch. It does not authorize config changes, service starts/restarts, provider calls, activating a candidate `SOUL.md`, or clearing overlays.
 
-### R6 terminology alignment
+### Prompt-surface terminology alignment
 
-Docs should use the same names for the same prompt surfaces:
+Docs should use descriptive names for roadmap items rather than opaque `R#` labels. Use the same names for the same prompt surfaces:
 
 - **Base identity:** `HERMES_HOME/SOUL.md`, loaded into the stable identity slot when available.
 - **Built-in fallback:** `DEFAULT_AGENT_IDENTITY`, used when `SOUL.md` is missing, empty, unreadable, or intentionally skipped. If the prompt-injection scanner blocks content, the identity slot may contain a blocked-content marker instead of the original file text.
@@ -273,7 +273,7 @@ Docs should use the same names for the same prompt surfaces:
 - **Ephemeral API-call-time overlays:** `ephemeral_system_prompt`, `HERMES_EPHEMERAL_SYSTEM_PROMPT`, gateway/channel/session overlays, API instructions, and prefill messages; these preserve the cached prefix but can mask the base identity.
 - **Prompt cache boundary:** base prompt assembly belongs in the cached system prompt; ephemeral overlays are appended immediately before model calls.
 
-### R9 future code-change readiness
+### Runtime prompt assembly code-change readiness
 
 Before a code-change batch, prepare an implementation spec that names exact edits and tests for:
 
@@ -282,12 +282,14 @@ Before a code-change batch, prepare an implementation spec that names exact edit
 - `agent/chat_completion_helpers.py` and `agent/conversation_loop.py`: API-call-time append behavior for `ephemeral_system_prompt`.
 - `cli.py`, `gateway/run.py`, and `tui_gateway/server.py`: `/personality none`, persisted config fields, and in-memory overlay clearing.
 - `cron/scheduler.py`: `load_soul_identity=True`, job `workdir`, and project-context loading boundaries.
-- `tools/delegate_tool.py`: delegated child `skip_context_files=True`, `skip_memory=True`, and child-specific prompt behavior.
+- `tools/delegate_tool.py`: delegated subagent `skip_context_files=True`, `skip_memory=True`, and subagent-specific prompt behavior.
 - `hermes_cli/profiles.py` and `hermes_cli/profile_distribution.py`: clone/copy/reapply behavior for `SOUL.md` and distribution-owned paths.
 
-#### R9a scoped follow-up: Discord channel/thread toolset limits
+#### Scoped follow-up: Discord channel/thread toolset limits
 
 Scope this separately from identity/runtime cleanup. The goal is to reduce gateway token overhead by allowing Discord channels or threads to expose only the tool schemas needed for that surface, without changing global platform defaults for every Discord session.
+
+Status: implementation was deferred after local work; parked in git stash as the Discord channel toolset-limits work. Do not treat this feature as activated until the stash is reapplied, reviewed, committed, configured, and the gateway is restarted/fresh sessions are created as needed.
 
 Proposed config surface:
 
@@ -314,15 +316,17 @@ Implementation spec should name edits and tests for:
 - `hermes_cli/tools_config.py` / `toolsets.py`: verify names resolve consistently and preserve existing default-off / MCP passthrough semantics.
 - `website/docs/user-guide/messaging/discord.md`: document `discord.channel_toolsets`, examples, fallback rules, and restart/fresh-session caveats.
 
-Candidate tests for a future approved code pass:
+Candidate tests for approved offline/runtime cleanup batches:
 
 - `load_soul_identity=True` still loads base identity when `skip_context_files=True` while keeping project context disabled.
 - `skip_context_files=True` without forced identity falls back predictably.
 - `/personality none` clears persisted and in-memory overlays for CLI, gateway, and TUI as documented.
 - Gateway/TUI updates do not pretend to rebuild the cached base prompt when they only change an ephemeral overlay.
 - Cron loads `SOUL.md` from the scheduler/profile `HERMES_HOME` and only injects project context when `workdir` is configured.
-- Delegated children remain isolated from parent project context and memory unless a future approved design changes that.
+- Delegated subagents remain isolated from parent project context and memory unless a future approved design changes that.
 - Distribution-owned `SOUL.md` reapplication is tested for install/update and rollback documentation.
+  - Status: offline hardening implemented locally. `hermes_cli/profile_distribution.py` now copies only manifest-owned paths, supports nested `distribution_owned` paths, preserves protected user-owned paths, and removes distribution-owned target paths when the source no longer ships them. Tests added in `tests/hermes_cli/test_profile_distribution.py`.
+  - Verification: `python -m pytest tests/hermes_cli/test_profile_distribution.py -q -o 'addopts='` → `66 passed`; broader CLI/profile suite → `201 passed`; prompt/runtime-adjacent suite → `116 passed`.
 - `resolve_channel_toolsets()` exact-ID match wins over parent fallback; parent fallback works for Discord threads/forums; malformed config returns `None`.
 - Discord events carry scoped `channel_toolsets` when configured and omit them when not configured.
 - Gateway agent creation passes scoped `enabled_toolsets` only when the event supplies them; existing platform-wide `platform_toolsets.discord` remains unchanged otherwise.

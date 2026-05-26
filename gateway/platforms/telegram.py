@@ -15,6 +15,7 @@ import os
 import tempfile
 import html as _html
 import re
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -439,6 +440,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
+        self._polling_last_conflict_at: float = 0.0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
         # After sustained reconnect storms the PTB httpx pool can return
@@ -1602,8 +1604,6 @@ class TelegramAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                     else:
                         raise
-            await self._app.start()
-
             # Decide between webhook and polling mode
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
 
@@ -1680,6 +1680,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
                 )
+
+            # Match python-telegram-bot's run_polling/run_webhook lifecycle:
+            # initialize -> updater.start_* -> application.start.
+            await self._app.start()
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
@@ -1968,6 +1972,18 @@ class TelegramAdapter(BasePlatformAdapter):
                                 thread_kwargs = {"message_thread_id": None}
                                 continue
                             err_lower = str(send_err).lower()
+                            if "chat not found" in err_lower:
+                                logger.warning(
+                                    "[%s] Telegram chat %s is no longer reachable; "
+                                    "dropping non-retryable send instead of blocking delivery retries",
+                                    self.name,
+                                    chat_id,
+                                )
+                                return SendResult(
+                                    success=False,
+                                    error="Chat not found",
+                                    retryable=False,
+                                )
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
                                 if private_dm_topic_send:
                                     return SendResult(
@@ -5632,6 +5648,88 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    def _remember_dm_chat(self, chat_id: str, user_name: Optional[str]) -> None:
+        """Persist the latest reachable Telegram DM as home/approved chat.
+
+        Bot tokens are sometimes rotated during recovery. A chat id that was
+        valid for the previous token can become unreachable for the new bot
+        until the user messages it again. When a real incoming DM arrives, make
+        that source of truth durable so startup notifications, cron origin
+        delivery, and channel-directory rebuilds stop using a stale target.
+        """
+        if not chat_id:
+            return
+        try:
+            from hermes_constants import get_hermes_home
+            import yaml as _yaml
+
+            home = get_hermes_home()
+            config_path = home / "config.yaml"
+            changed = False
+
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = _yaml.safe_load(f) or {}
+                if str(config.get("TELEGRAM_HOME_CHANNEL") or "") != str(chat_id):
+                    config["TELEGRAM_HOME_CHANNEL"] = str(chat_id)
+                    changed = True
+                    fd, tmp_path = tempfile.mkstemp(
+                        dir=str(config_path.parent),
+                        suffix=".tmp",
+                        prefix=".config_",
+                    )
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                            f.flush()
+                            os.fsync(f.fileno())
+                        atomic_replace(tmp_path, config_path)
+                    except BaseException:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        raise
+
+            pairing_dir = home / "platforms" / "pairing"
+            approved_path = pairing_dir / "telegram-approved.json"
+            pairing_dir.mkdir(parents=True, exist_ok=True)
+            approved = {}
+            if approved_path.exists():
+                try:
+                    approved = json.loads(approved_path.read_text(encoding="utf-8") or "{}")
+                except Exception:
+                    approved = {}
+            if str(chat_id) not in approved:
+                approved[str(chat_id)] = {
+                    "user_name": user_name or str(chat_id),
+                    "approved_at": time.time(),
+                }
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(approved_path.parent),
+                    suffix=".tmp",
+                    prefix=".telegram-approved_",
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(approved, f, ensure_ascii=False, indent=2)
+                        f.write("\n")
+                        f.flush()
+                        os.fsync(f.fileno())
+                    atomic_replace(tmp_path, approved_path)
+                    changed = True
+                except BaseException:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+
+            if changed:
+                logger.info("[%s] Remembered reachable Telegram DM chat %s", self.name, chat_id)
+        except Exception as e:
+            logger.debug("[%s] Failed to remember Telegram DM chat %s: %s", self.name, chat_id, e, exc_info=True)
+
     def _build_message_event(
         self,
         message: Message,
@@ -5734,6 +5832,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
             message_id=str(message.message_id),
         )
+        if chat_type == "dm":
+            self._remember_dm_chat(str(chat.id), source.user_name)
         
         # Extract reply context if this message is a reply.
         # Prefer Telegram's native partial quote (message.quote, TextQuote)

@@ -302,7 +302,7 @@ class TestChatCompletionsBuildKwargs:
     def test_gemini_native_flash_reasoning_maps_to_top_level_thinking_config(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
+            model="gemini-3.5-flash",
             messages=msgs,
             provider_name="gemini",
             base_url="https://generativelanguage.googleapis.com/v1beta",
@@ -316,7 +316,7 @@ class TestChatCompletionsBuildKwargs:
     def test_gemini_openai_compat_flash_reasoning_maps_to_nested_google_thinking_config(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
+            model="gemini-3.5-flash",
             messages=msgs,
             provider_name="gemini",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
@@ -327,6 +327,29 @@ class TestChatCompletionsBuildKwargs:
             "include_thoughts": True,
             "thinking_level": "high",
         }
+
+    def test_gemini_preview_unversioned_does_not_receive_thinking_level(self, transport):
+        # gemini-3-flash-preview rejects thinking_config entirely with HTTP 400
+        # "Unknown name 'thinking_config': Cannot find field" — only versioned
+        # gemini-3.X models (gemini-3.5-flash, gemini-3.1-pro-preview, …)
+        # support thinkingLevel. (#25123)
+        msgs = [{"role": "user", "content": "Hi"}]
+        for base_url in [
+            "https://generativelanguage.googleapis.com/v1beta",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ]:
+            kw = transport.build_kwargs(
+                model="gemini-3-flash-preview",
+                messages=msgs,
+                provider_name="gemini",
+                base_url=base_url,
+                reasoning_config={"enabled": True, "effort": "high"},
+            )
+            tc = (kw.get("extra_body") or {})
+            nested = ((tc.get("extra_body") or {}).get("google") or {}).get("thinking_config") or {}
+            top = tc.get("thinking_config") or {}
+            assert "thinkingLevel" not in top, f"thinkingLevel must not be set for preview model (native, base={base_url})"
+            assert "thinking_level" not in nested, f"thinking_level must not be set for preview model (compat, base={base_url})"
 
     def test_gemini_native_25_reasoning_only_enables_visible_thoughts(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
@@ -371,7 +394,7 @@ class TestChatCompletionsBuildKwargs:
     def test_gemini_openai_compat_xhigh_clamps_to_high(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
+            model="gemini-3.5-flash",
             messages=msgs,
             provider_name="gemini",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
@@ -382,7 +405,7 @@ class TestChatCompletionsBuildKwargs:
     def test_google_gemini_cli_keeps_top_level_thinking_config(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
+            model="gemini-3.5-flash",
             messages=msgs,
             provider_name="google-gemini-cli",
             reasoning_config={"enabled": True, "effort": "high"},
@@ -393,12 +416,12 @@ class TestChatCompletionsBuildKwargs:
         }
         assert "google" not in kw["extra_body"]
 
-    def test_gemini_flash_minimal_clamps_to_low(self, transport):
-        # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,
-        # so clamp it down to "low" rather than forwarding it verbatim.
+    def test_gemini_flash_minimal_maps_to_minimal_level(self, transport):
+        # Gemini 3.5 Flash supports all four levels; "minimal" is a distinct
+        # level optimised for chat-like latency and must not be collapsed to "low".
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
+            model="gemini-3.5-flash",
             messages=msgs,
             provider_name="gemini",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
@@ -406,7 +429,7 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
             "include_thoughts": True,
-            "thinking_level": "low",
+            "thinking_level": "minimal",
         }
 
     def test_gemma_does_not_receive_thinking_config(self, transport):

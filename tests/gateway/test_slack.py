@@ -1966,11 +1966,35 @@ class TestReactions:
 
         adapter._app.client.reactions_add.assert_not_called()
         adapter._app.client.reactions_remove.assert_not_called()
+        assert "1234567890.000004" not in adapter._reacting_message_ids
 
     @pytest.mark.asyncio
     async def test_reactions_enabled_by_default(self, adapter):
         """SLACK_REACTIONS defaults to true (matches existing behavior)."""
         assert adapter._reactions_enabled() is True
+
+    @pytest.mark.asyncio
+    async def test_reaction_tracking_is_bounded_for_unprocessed_messages(self, adapter):
+        """DM reaction tracking should evict old IDs even if processing hooks never run."""
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+        adapter._reacting_message_ids.max_size = 3
+
+        for i in range(5):
+            await adapter._handle_slack_message({
+                "text": f"queued {i}",
+                "user": "U_USER",
+                "channel": "C123",
+                "channel_type": "im",
+                "ts": f"1234567890.00000{i}",
+            })
+
+        assert len(adapter._reacting_message_ids) == 3
+        assert "1234567890.000000" not in adapter._reacting_message_ids
+        assert "1234567890.000001" not in adapter._reacting_message_ids
+        assert "1234567890.000002" in adapter._reacting_message_ids
+        assert "1234567890.000004" in adapter._reacting_message_ids
 
 
 # ---------------------------------------------------------------------------

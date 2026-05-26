@@ -10,6 +10,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+from collections import OrderedDict
 import json
 import logging
 import os
@@ -61,6 +62,33 @@ logger = logging.getLogger(__name__)
 _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_slash_user_id", default=None,
 )
+
+
+class _BoundedMessageIdSet:
+    """Set-like FIFO cache for Slack message IDs awaiting reaction cleanup."""
+
+    def __init__(self, max_size: int):
+        self.max_size = max(1, int(max_size))
+        self._items: OrderedDict[str, None] = OrderedDict()
+
+    def add(self, item: str) -> None:
+        if item in self._items:
+            self._items.move_to_end(item)
+        self._items[item] = None
+        while len(self._items) > self.max_size:
+            self._items.popitem(last=False)
+
+    def discard(self, item: str) -> None:
+        self._items.pop(item, None)
+
+    def __contains__(self, item: object) -> bool:
+        return item in self._items
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __iter__(self):
+        return iter(self._items)
 
 
 @dataclass
@@ -318,7 +346,12 @@ class SlackAdapter(BasePlatformAdapter):
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
-        self._reacting_message_ids: set = set()
+        # Bounded because active-session bypass/queue paths can return before
+        # background-processing hooks get a chance to clean up superseded IDs.
+        self._REACTING_MESSAGE_IDS_MAX = 5000
+        self._reacting_message_ids = _BoundedMessageIdSet(
+            self._REACTING_MESSAGE_IDS_MAX
+        )
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
@@ -1377,12 +1410,12 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
-        if not self._reactions_enabled():
-            return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
         self._reacting_message_ids.discard(ts)
+        if not self._reactions_enabled():
+            return
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return

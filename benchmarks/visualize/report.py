@@ -418,7 +418,7 @@ if __name__ == "__main__":
         print(f"Result file not found: {results_path}")
         raise SystemExit(1)
 
-    with open(results_path) as f:
+    with open(results_path, encoding="utf-8") as f:
         data = json.load(f)
 
     md = generate_report(data, output_path=None)

@@ -125,7 +125,7 @@ def load_fixtures(suite: str) -> Dict[str, list]:
 
     fixtures = {}
     for f in sorted(fixture_dir.glob("*.json")):
-        with open(f) as fh:
+        with open(f, encoding="utf-8") as fh:
             fixtures[f.stem] = json.load(fh)
     return fixtures
 
@@ -2680,7 +2680,7 @@ def main():
     # Merge with existing results (preserve categories from prior runs)
     if result_file.exists():
         try:
-            with open(result_file) as f:
+            with open(result_file, encoding="utf-8") as f:
                 existing = json.load(f)
             # Merge per_category_mean: keep old categories, update/add new ones
             old_cats = existing.get("per_category_mean", {})
@@ -2694,7 +2694,7 @@ def main():
         except (json.JSONDecodeError, KeyError):
             pass  # Corrupted file, just overwrite
 
-    with open(result_file, "w") as f:
+    with open(result_file, "w", encoding="utf-8") as f:
         json.dump(result_data, f, indent=2)
 
     # Also save timestamped copy for history tracking
@@ -2702,7 +2702,7 @@ def main():
     history_dir = output_dir / "history"
     history_dir.mkdir(parents=True, exist_ok=True)
     history_file = history_dir / f"{config.backend_name}_{ts}.json"
-    with open(history_file, "w") as f:
+    with open(history_file, "w", encoding="utf-8") as f:
         json.dump(result_data, f, indent=2)
 
     print(f"  Results saved to {result_file}")
@@ -2725,7 +2725,7 @@ def main():
 
         # Save comparison results
         result_file2 = output_dir / f"{config2.backend_name}.json"
-        with open(result_file2, "w") as f:
+        with open(result_file2, "w", encoding="utf-8") as f:
             json.dump({
                 "backend": config2.backend_name,
                 "mean_score": agg2.mean_score,

@@ -131,7 +131,7 @@ class MemoryJudge:
             "/Users/evinova/.hermes-aegis/proxy.pid",
         ]:
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     data = _json.load(f)
                     return data.get("port", 8444)
             except (FileNotFoundError, ValueError, KeyError):

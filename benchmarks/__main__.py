@@ -95,7 +95,7 @@ def mode_academic(full: bool, passthrough: list[str]) -> None:
         lme_main()
         result_path = Path("benchmarks/results/longmemeval.json")
         if result_path.exists():
-            with open(result_path) as f:
+            with open(result_path, encoding="utf-8") as f:
                 summaries["longmemeval"] = json.load(f)
     except Exception as exc:
         print(f"  WARNING: LongMemEval failed: {exc}", file=sys.stderr)
@@ -112,7 +112,7 @@ def mode_academic(full: bool, passthrough: list[str]) -> None:
         loc_main()
         result_path = Path("benchmarks/results/locomo.json")
         if result_path.exists():
-            with open(result_path) as f:
+            with open(result_path, encoding="utf-8") as f:
                 summaries["locomo"] = json.load(f)
     except Exception as exc:
         print(f"  WARNING: LoCoMo failed: {exc}", file=sys.stderr)
@@ -129,7 +129,7 @@ def mode_academic(full: bool, passthrough: list[str]) -> None:
         hpq_main()
         result_path = Path("benchmarks/results/hotpotqa.json")
         if result_path.exists():
-            with open(result_path) as f:
+            with open(result_path, encoding="utf-8") as f:
                 summaries["hotpotqa"] = json.load(f)
     except Exception as exc:
         print(f"  WARNING: HotpotQA failed: {exc}", file=sys.stderr)

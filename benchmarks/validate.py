@@ -12,7 +12,7 @@ total = 0
 for name in ["semantic_recall", "contradictions", "temporal_decay",
              "cross_reference", "importance_filtering"]:
     path = os.path.join(fixture_dir, f"{name}.json")
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     total += len(data)
     print(f"  {name}: {len(data)} scenarios")

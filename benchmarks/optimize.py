@@ -479,14 +479,14 @@ def save_results(results: List[dict], strategy: str, suite: str) -> Path:
         "best_params": results[0]["params"] if results else {},
         "trials": results,
     }
-    with open(path, "w") as fh:
+    with open(path, "w", encoding='utf-8') as fh:
         json.dump(payload, fh, indent=2)
     return path
 
 
 def load_results(path: str) -> List[dict]:
     """Load a saved results file and return the trials list."""
-    with open(path) as fh:
+    with open(path, encoding='utf-8') as fh:
         data = json.load(fh)
     # Support both raw list and wrapped payload
     if isinstance(data, list):

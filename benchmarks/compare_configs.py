@@ -287,7 +287,7 @@ def main():
                 "categories": agg.per_category_mean,
                 "num_runs": agg.num_runs,
             }
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2)
         print(f"Results saved to {args.output}")
 

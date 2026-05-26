@@ -461,7 +461,7 @@ class CopilotACPClient:
         with self._active_process_lock:
             self._active_process = proc
 
-        inbox: queue.Queue[dict[str, Any]] = queue.Queue()
+        inbox: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=100)
         stderr_tail: deque[str] = deque(maxlen=40)
 
         def _stdout_reader() -> None:

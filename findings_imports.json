@@ -1,0 +1,220 @@
+[
+  {
+    "type": "unused_import",
+    "file": "agent/conversation_loop.py",
+    "line": 68,
+    "import": "from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID",
+    "name": "display_hermes_home",
+    "note": "_dhh_fn imported but never used in file"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/agent_runtime_helpers.py",
+    "line": 30,
+    "import": "import threading",
+    "name": "threading",
+    "note": "imported but never used in file"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/agent_runtime_helpers.py",
+    "line": 32,
+    "import": "import uuid",
+    "name": "uuid",
+    "note": "imported but never used in file"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/agent_runtime_helpers.py",
+    "line": 35,
+    "import": "from typing import Any, Dict, List, Optional, Tuple",
+    "name": "Tuple",
+    "note": "Tuple imported but never used (Any, Dict, List, Optional are all used)"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/agent_runtime_helpers.py",
+    "line": 45,
+    "import": "from agent.error_classifier import classify_api_error, FailoverReason",
+    "name": "classify_api_error",
+    "note": "classify_api_error imported but never used"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/curator_backup.py",
+    "line": 46,
+    "import": "import tempfile",
+    "name": "tempfile",
+    "note": "imported but never used in file"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/tool_executor.py",
+    "line": 23,
+    "import": "from typing import Any, Optional",
+    "name": "Any",
+    "note": "Any imported but never used (only Optional is used from this line)"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/conversation_compression.py",
+    "line": 37,
+    "import": "from typing import Any, List, Optional, Tuple",
+    "name": "List",
+    "note": "List imported but never used (Any, Optional, Tuple are used)"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/transports/chat_completions.py",
+    "line": 13,
+    "import": "from typing import Any, Dict, List, Optional",
+    "name": "List, Optional",
+    "note": "List and Optional imported but never used from this line"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/lsp/servers.py",
+    "line": 28,
+    "import": "from agent.lsp.workspace import nearest_root, normalize_path",
+    "name": "normalize_path",
+    "note": "normalize_path imported but never used (nearest_root is used)"
+  },
+  {
+    "type": "unused_import",
+    "file": "agent/lsp/cli.py",
+    "line": 19,
+    "import": "from typing import Optional",
+    "name": "Optional",
+    "note": "Optional imported but never used in file"
+  },
+  {
+    "type": "unused_import",
+    "file": "tools/lazy_deps.py",
+    "line": 62,
+    "import": "from typing import Any, Callable, Optional",
+    "name": "Any, Callable",
+    "note": "Any and Callable imported but never used (Optional is used)"
+  },
+  {
+    "type": "unused_import",
+    "file": "tools/registry.py",
+    "line": 18,
+    "import": "import importlib",
+    "name": "importlib",
+    "note": "importlib imported but never used"
+  },
+  {
+    "type": "unused_import",
+    "file": "tools/transcription_tools.py",
+    "line": 63,
+    "import": "import importlib.util as _ilu",
+    "name": "importlib.util",
+    "note": "importlib.util imported but never used"
+  },
+  {
+    "type": "unused_import",
+    "file": "tools/skill_usage.py",
+    "line": 34,
+    "import": "from typing import Any, Dict, Iterable, List, Optional, Set, Tuple",
+    "name": "Iterable",
+    "note": "Iterable imported but never used (other types are used)"
+  },
+  {
+    "type": "unused_import",
+    "file": "tools/terminal_tool.py",
+    "line": 36,
+    "import": "import importlib.util",
+    "name": "importlib.util",
+    "note": "importlib.util imported but never used"
+  },
+  {
+    "type": "unused_import",
+    "file": "tools/send_message_tool.py",
+    "line": 16,
+    "import": "from typing import Dict, Optional",
+    "name": "Dict, Optional",
+    "note": "Dict and Optional imported but never used"
+  },
+  {
+    "type": "unused_import",
+    "file": "tools/code_execution_tool.py",
+    "line": 38,
+    "import": "import signal",
+    "name": "signal",
+    "note": "signal imported but never used"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "agent/anthropic_adapter.py",
+    "line": 44,
+    "import": "from tools.lazy_deps import ensure as _lazy_ensure",
+    "issue": "try/except ImportError: pass pattern - silently ignores provider installation issues"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "agent/auxiliary_client.py",
+    "lines": [1164, 1170, 1420, 2322, 3051, 3057, 3502, 3641],
+    "issue": "Multiple try/except ImportError: pass patterns throughout file"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "agent/credential_pool.py",
+    "line": 1527,
+    "issue": "try/except ImportError: pass pattern"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "agent/transports/__init__.py",
+    "lines": [55, 59, 63, 67],
+    "issue": "Silent pass for optional transport imports (anthropic, codex, chat_completions, bedrock) - may hide missing dependencies"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "tools/tts_tool.py",
+    "lines": [85, 104, 2156, 2162, 2168, 2185],
+    "issue": "Multiple try/except ImportError: pass patterns"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "tools/fal_common.py",
+    "line": 47,
+    "issue": "try/except ImportError: pass pattern"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "tools/memory_tool.py",
+    "line": 47,
+    "issue": "try/except ImportError: pass pattern"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "tools/skill_usage.py",
+    "line": 49,
+    "issue": "try/except ImportError: pass pattern"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "tools/credential_files.py",
+    "lines": [241, 333],
+    "issue": "try/except ImportError: pass patterns"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "tools/browser_tool.py",
+    "line": 2861,
+    "issue": "try/except ImportError: pass pattern"
+  },
+  {
+    "type": "conditional_import_silent_fallback",
+    "file": "tools/terminal_tool.py",
+    "lines": [1268, 1298],
+    "issue": "try/except ImportError: pass patterns"
+  },
+  {
+    "type": "version_specific_import",
+    "file": "tools/file_operations.py",
+    "line": 489,
+    "import": "import tomllib as _toml",
+    "note": "tomllib is Python 3.11+ stdlib only. File already has proper fallback via tomli package on line 495. This is OK but should document minimum Python version requirement."
+  }
+]

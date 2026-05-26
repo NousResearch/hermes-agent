@@ -1,0 +1,38 @@
+## Summary
+
+Fixes **admin auth bypass** (N41) — slash command gating was bypassed when no admin list was configured.
+
+## Pain Before
+
+`_get_admin_denial_message()` used a short-circuit OR:
+
+    if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
+        return None  # allow
+
+`policy_for_source()` returns `enabled=False` when no `allow_admin_from` is
+configured for the platform scope. The `not policy.enabled` left side was
+therefore always `True` — making the entire OR expression always `True`,
+regardless of what `can_run()` returned.
+
+**Result**: Every user could run admin-only commands (`/restart`, `/stop`,
+`/platform`, `/yolo`, etc.) on any platform where no admin list was set.
+
+This is a classic auth bypass via insecure default: the "disabled" state
+behaved identically to "allow everyone".
+
+## What Was Fixed
+
+Removed the `not policy.enabled` short-circuit:
+
+    if policy.can_run(source.user_id, canonical_cmd):
+        return None
+
+When `enabled=False`, `can_run()` returns `True` for everyone (legacy behavior
+preserved). The short-circuit was redundant AND caused the bypass — removing
+it fixes the bug while keeping backward compatibility for the no-config case.
+
+## Changes
+
+- **File**: `gateway/run.py`
+- **Line**: 9454 (one-line change)
+- The `not policy.enabled or` clause was removed from the gate condition

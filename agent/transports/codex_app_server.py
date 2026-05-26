@@ -125,8 +125,8 @@ class CodexAppServerClient:
         self._next_id = 1
         self._pending: dict[int, _Pending] = {}
         self._pending_lock = threading.Lock()
-        self._notifications: queue.Queue = queue.Queue()
-        self._server_requests: queue.Queue = queue.Queue()
+        self._notifications: queue.Queue = queue.Queue(maxsize=100)
+        self._server_requests: queue.Queue = queue.Queue(maxsize=100)
         self._stderr_lines: list[str] = []
         self._stderr_lock = threading.Lock()
         self._closed = False

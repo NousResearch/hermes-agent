@@ -3200,8 +3200,8 @@ class HermesCLI:
         # These must exist before any direct chat() call because single-query
         # mode does not go through run().
         self._agent_running = False
-        self._pending_input = queue.Queue()
-        self._interrupt_queue = queue.Queue()
+        self._pending_input = queue.Queue(maxsize=1000)
+        self._interrupt_queue = queue.Queue(maxsize=1000)
         # Tracks whether the turn that just finished was interrupted via
         # Ctrl+C. Consumed by _maybe_continue_goal_after_turn so /goal loops
         # don't auto-queue another continuation on top of a user-cancelled
@@ -12490,8 +12490,8 @@ class HermesCLI:
         
         # State for async operation
         self._agent_running = False
-        self._pending_input = queue.Queue()     # For normal input (commands + new queries)
-        self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        self._pending_input = queue.Queue(maxsize=1000)     # For normal input (commands + new queries)
+        self._interrupt_queue = queue.Queue(maxsize=1000)   # For messages typed while agent is running
         # See constructor note. Mirrored here for the run() path that skips
         # the earlier __init__ branch.
         self._last_turn_interrupted = False

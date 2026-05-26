@@ -39,6 +39,7 @@ import threading
 import time
 import sqlite3
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
@@ -65,6 +66,10 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Bounded thread pool for run_in_executor calls — prevents unbounded thread
+# spawn under heavy concurrent load (DoS prevention).  32 workers matches Python's
+# default cap; keeping it explicit makes the limit visible and tunable.
+_BOUNDED_EXECUTOR = ThreadPoolExecutor(max_workers=32)
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -8515,7 +8520,7 @@ class GatewayRunner:
 
                                     loop = asyncio.get_running_loop()
                                     _compressed, _ = await loop.run_in_executor(
-                                        None,
+                                        _BOUNDED_EXECUTOR,
                                         lambda: _hyg_agent._compress_context(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
@@ -12218,7 +12223,7 @@ class GatewayRunner:
 
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
-                    None,
+                    _BOUNDED_EXECUTOR,
                     lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
                 )
 
@@ -13229,7 +13234,7 @@ class GatewayRunner:
                 db.close()
                 return result
 
-            return await loop.run_in_executor(None, _run_insights)
+            return await loop.run_in_executor(_BOUNDED_EXECUTOR, _run_insights)
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return t("gateway.insights.error", error=e)
@@ -13314,10 +13319,10 @@ class GatewayRunner:
 
             # Read new config before shutting down, so we know what will be added/removed
             # Shutdown existing connections
-            await loop.run_in_executor(None, shutdown_mcp_servers)
+            await loop.run_in_executor(_BOUNDED_EXECUTOR, shutdown_mcp_servers)
 
             # Reconnect by discovering tools (reads config.yaml fresh)
-            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+            new_tools = await loop.run_in_executor(_BOUNDED_EXECUTOR, discover_mcp_tools)
 
             # Compute what changed
             with _lock:
@@ -13388,7 +13393,7 @@ class GatewayRunner:
         try:
             from agent.skill_commands import reload_skills
 
-            result = await loop.run_in_executor(None, reload_skills)
+            result = await loop.run_in_executor(_BOUNDED_EXECUTOR, reload_skills)
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
@@ -13873,7 +13878,7 @@ class GatewayRunner:
             lines.append(t("gateway.debug.share_hint"))
             return "\n".join(lines)
 
-        return await loop.run_in_executor(None, _collect_and_upload)
+        return await loop.run_in_executor(_BOUNDED_EXECUTOR, _collect_and_upload)
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.
@@ -14491,7 +14496,7 @@ class GatewayRunner:
         """Run blocking work in the thread pool while preserving session contextvars."""
         loop = asyncio.get_running_loop()
         ctx = copy_context()
-        return await loop.run_in_executor(None, ctx.run, func, *args)
+        return await loop.run_in_executor(_BOUNDED_EXECUTOR, ctx.run, func, *args)
 
     def _decide_image_input_mode(self) -> str:
         """Resolve the image-input routing for the currently active model.
@@ -15836,7 +15841,7 @@ class GatewayRunner:
         )
         
         # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if tool_progress_enabled else None
+        progress_queue = queue.Queue(maxsize=500) if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -18432,7 +18437,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     try:
         from tools.mcp_tool import discover_mcp_tools
         _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
+        await _loop.run_in_executor(_BOUNDED_EXECUTOR, discover_mcp_tools)
     except Exception as e:
         logger.debug("MCP tool discovery failed: %s", e)
 

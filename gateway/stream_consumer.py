@@ -133,7 +133,7 @@ class GatewayStreamConsumer:
         # Called with no arguments. Exceptions are swallowed.
         self._on_new_message = on_new_message
         self._initial_reply_to_id = initial_reply_to_id
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.Queue = queue.Queue(maxsize=1000)
         self._accumulated = ""
         self._message_id: Optional[str] = None
         # Wall-clock timestamp (time.monotonic) when ``_message_id`` was

@@ -1,0 +1,21 @@
+## Summary
+
+Fixes **SSRF in CDP URL override resolution** (N6).
+
+## Pain Before
+
+`_resolve_cdp_override()` takes a user-supplied CDP URL (from `BROWSER_CDP_URL` env var or `browser.cdp_url` config) and immediately makes an HTTP GET to `{url}/json/version` to discover the websocket debugger URL — **ALL BEFORE** any SSRF validation is applied.
+
+This allowed a user to supply a CDP override pointing to private IP ranges (e.g. `http://169.254.169.254` AWS metadata, `http://10.0.0.1` internal network) and have the gateway actively scan those addresses during CDP override resolution.
+
+Attack example: `BROWSER_CDP_URL=http://169.254.169.254` would trigger an active SSRF request to the AWS metadata service before any browser session was established. Any internal network service accessible from the gateway host was reachable during CDP discovery.
+
+## What Was Fixed
+
+Added `is_safe_url()` check on the constructed discovery URL **before** `requests.get()` is called. If the URL fails the SSRF check, log a warning and return the raw URL without attempting discovery.
+
+## Changes
+
+- **File**: `tools/browser_tool.py`
+- **Lines**: 265–276 (new block inserted before the `try:` that calls `requests.get()`)
+- The SSRF guard now runs on `version_url` before any outbound HTTP request is made

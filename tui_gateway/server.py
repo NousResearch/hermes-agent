@@ -187,7 +187,7 @@ class _SlashWorker:
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
-        self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
+        self.stdout_queue: queue.Queue[dict | None] = queue.Queue(maxsize=100)
 
         argv = [
             sys.executable,

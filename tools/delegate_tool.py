@@ -1132,6 +1132,16 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
+    # Trigger lazy MCP discovery if this child needs MCP toolsets. This is a
+    # no-op when eager discovery already ran at startup; it only does work when
+    # the active platform skipped eager discovery via the no_mcp sentinel
+    # (Phase 2). Runs for ALL MCP-needing child builds, not just profile-named
+    # ones, so the child sees a populated MCP registry before AIAgent builds.
+    if any(_is_mcp_toolset_name(t) for t in child_toolsets):
+        from tools.mcp_tool import ensure_mcp_discovered
+
+        ensure_mcp_discovered()
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,

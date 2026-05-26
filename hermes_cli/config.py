@@ -889,6 +889,11 @@ DEFAULT_CONFIG = {
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
+    "attach_light": {
+        # Optional directories scanned by the LLM-free attach pre-router for
+        # messages like "너는 DASHBOARD 세션이야" / "DASHBOARD 붙어".
+        "project_roots": [],
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

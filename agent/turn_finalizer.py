@@ -42,6 +42,8 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    _usage_counter_fields,
+    _turn_usage_start,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -347,12 +349,31 @@ def finalize_turn(
             last_reasoning = msg["reasoning"]
             break
 
+    _turn_usage = {}
+    for _key, _attr in _usage_counter_fields.items():
+        _turn_usage[_key] = max(
+            0,
+            int(getattr(agent, _attr, 0) or 0) - _turn_usage_start.get(_key, 0),
+        )
+    _turn_usage["api_calls"] = api_call_count
+    _turn_usage.pop("session_api_calls", None)
+    _turn_usage["model"] = agent.model
+    _turn_usage["provider"] = agent.provider
+    _turn_usage["last_prompt_tokens"] = getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0
+    _turn_usage["context_length"] = getattr(agent.context_compressor, "context_length", 0) or 0
+    _turn_usage["message_count"] = len(messages)
+    try:
+        agent.last_turn_usage = dict(_turn_usage)
+    except Exception:
+        pass
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
         "last_reasoning": last_reasoning,
         "messages": messages,
         "api_calls": api_call_count,
+        "last_turn_usage": dict(_turn_usage),
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,

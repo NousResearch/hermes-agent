@@ -14420,6 +14420,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        # LLM-free attach pre-router. Only first-turn, plain-text attach
+        # phrases are handled here; everything substantive continues through
+        # the normal agent path.
+        if isinstance(message, str) and not history:
+            try:
+                from hermes_cli.attach_light import render_attach_light_status
+                _attach = render_attach_light_status(
+                    message,
+                    config=_load_gateway_config(),
+                    cwd=os.getcwd(),
+                )
+            except Exception:
+                _attach = None
+            if _attach is not None:
+                response = _attach.response
+                return {
+                    "final_response": response,
+                    "messages": [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": response},
+                    ],
+                    "api_calls": 0,
+                    "completed": True,
+                    "tools": [],
+                    "history_offset": 0,
+                    "session_id": session_id,
+                    "attach_light": True,
+                }
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(

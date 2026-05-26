@@ -21,6 +21,18 @@ def _make_mock_agent(**overrides):
         "session_output_tokens": 10_000,
         "session_cache_read_tokens": 5_000,
         "session_cache_write_tokens": 2_000,
+        "last_turn_usage": {
+            "api_calls": 2,
+            "input_tokens": 21_000,
+            "output_tokens": 1_200,
+            "cache_read_tokens": 18_000,
+            "cache_write_tokens": 3_000,
+            "prompt_tokens": 24_000,
+            "completion_tokens": 1_200,
+            "total_tokens": 25_200,
+            "last_prompt_tokens": 22_000,
+            "context_length": 200_000,
+        },
     }
     defaults.update(overrides)
     for k, v in defaults.items():
@@ -145,6 +157,22 @@ class TestUsageCachedAgent:
         assert "Session Info" in result
         assert "Messages: 2" in result
         assert "~500" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_last_shows_last_turn_breakdown(self):
+        """/usage last should be non-LLM and show the previous turn delta only."""
+        agent = _make_mock_agent()
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+        event.get_command_args.return_value = "last"
+
+        result = await runner._handle_usage_command(event)
+
+        assert "Last Turn Usage" in result
+        assert "21,000" in result  # last-turn input, not session input
+        assert "18,000" in result  # last-turn cache read
+        assert "25,200" in result  # last-turn total
+        assert "API calls: 2" in result
 
     @pytest.mark.asyncio
     async def test_cache_read_write_hidden_when_zero(self):

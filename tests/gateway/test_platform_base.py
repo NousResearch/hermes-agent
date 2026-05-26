@@ -361,6 +361,30 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    def test_media_tag_matches_uppercase_extension(self):
+        """Regression: MEDIA: paths with uppercase extensions (e.g. .JPG from
+        a 表情包 folder) must be extracted just like lowercase. Without
+        re.IGNORECASE on media_pattern, the entire MEDIA:... token leaks
+        through as plain text to the user."""
+        content = "MEDIA:/Users/zhangjinshi/biaoqingbao/cat/IMG_0001.JPG"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/Users/zhangjinshi/biaoqingbao/cat/IMG_0001.JPG", False)]
+        assert "MEDIA:" not in cleaned
+
+    def test_media_tag_matches_mixed_case_extensions(self):
+        """Cover the common cases: .JPG, .PNG, .MP4, .Jpeg — all should
+        extract and be stripped from cleaned text."""
+        content = (
+            "MEDIA:/a/b.PNG\n"
+            "MEDIA:/a/c.JPG\n"
+            "MEDIA:/a/d.Jpeg\n"
+            "MEDIA:/a/e.MP4"
+        )
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        paths = [p for p, _ in media]
+        assert paths == ["/a/b.PNG", "/a/c.JPG", "/a/d.Jpeg", "/a/e.MP4"]
+        assert "MEDIA:" not in cleaned
+
 
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):

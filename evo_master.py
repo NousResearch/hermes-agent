@@ -425,138 +425,21 @@ class EvoMaster:
     
     def _llm_generate_policy(self, top_trajectories: List[Trajectory]) -> Dict[str, Any]:
         """
-        使用 LLM 流式推理生成新策略
-        
-        实现 GPT-Stream(τ^(t), K_claw, Constraint_sandbox)
-        
-        Args:
-            top_trajectories: 最优轨迹列表
-            
-        Returns:
-            新策略字典
+        使用 LLM 流式推理生成新策略。
+
+        实现 GPT-Stream(τ^(t), K_claw, Constraint_sandbox)：先按 Hermes
+        当前配置调用主模型；429/503/超时/解析失败时，真实调用本机量子
+        路由选择健康模型降级重试；只有主通路和动态降级都失败，才明确
+        标注统计 fallback，避免把统计简化冒充 LLM 进化。
         """
-        try:
-            # 直接使用 OpenAI 兼容客户端（基于 config.yaml 配置）
-            from openai import OpenAI
-            import yaml
-            from pathlib import Path
-            
-            # 读取 Hermes 配置
-            config_path = Path.home() / ".hermes" / "config.yaml"
-            if not config_path.exists():
-                raise FileNotFoundError(f"Hermes config not found: {config_path}")
-            
-            with open(config_path) as f:
-                config = yaml.safe_load(f)
-            
-            # 优先使用主供应商
-            providers = config.get('providers', {}) or {}
-            custom_providers_raw = config.get('custom_providers', []) or []
-            
-            # custom_providers 可能是列表（含 name 字段）或字典
-            custom_providers = {}
-            if isinstance(custom_providers_raw, list):
-                for cp in custom_providers_raw:
-                    if isinstance(cp, dict) and 'name' in cp:
-                        custom_providers[cp['name']] = cp
-            elif isinstance(custom_providers_raw, dict):
-                custom_providers = custom_providers_raw
-            
-            all_providers = {**providers, **custom_providers}
-            
-            if not all_providers:
-                raise ValueError("No providers configured in config.yaml")
-            
-            # 选择默认供应商（用户主模型）
-            main_provider = config.get('main_provider') or config.get('default_provider')
-            if not main_provider or main_provider not in all_providers:
-                # 优先选 claude_opus（用户当前主模型）
-                preferred = ['claude_opus47_5yuantoken', 'gpt55_5yuantoken', 'deepseek_v4_flash']
-                main_provider = next((p for p in preferred if p in all_providers), 
-                                     next(iter(all_providers.keys())))
-            
-            provider_config = all_providers[main_provider]
-            base_url = provider_config.get('base_url') or provider_config.get('api_base')
-            
-            # 读取 API key
-            import os
-            key_env = provider_config.get('key_env')
-            api_key = os.environ.get(key_env) if key_env else provider_config.get('api_key')
-            
-            if not api_key:
-                raise ValueError(f"No API key for provider {main_provider}")
-            
-            # 选择模型
-            model_name = provider_config.get('default_model') or provider_config.get('model') or 'gpt-4'
-            
-            # 构建提示词
-            trajectory_summary = "\n".join([
-                f"- 任务: {t.task}, 成功: {t.success}, 价值: {t.total_value:.2f}, "
-                f"动作数: {len(t.actions)}"
-                for t in top_trajectories[:5]
-            ])
-            
-            prompt = f"""你是 CLAW 进化策略生成器。基于以下最优执行轨迹，生成新的调度策略。
+        errors: List[str] = []
 
-当前策略版本: v{self.current_strategy.version}
-当前策略性能: {self.current_strategy.performance:.2f}
-
-最优轨迹（按价值排序）:
-{trajectory_summary}
-
-约束条件（Constraint_sandbox）:
-- 必须保持工具调用的安全性和可逆性
-- 优先复用成功率高的动作模式
-- 避免重复失败的动作序列
-- 策略必须可解释和可验证
-
-请生成新策略的核心要点（JSON 格式）:
-{{
-  "type": "llm_evolved",
-  "key_insights": ["洞察1", "洞察2", ...],
-  "recommended_patterns": [
-    {{"task_type": "类型", "action_sequence": ["动作1", "动作2"], "priority": 0.9}}
-  ],
-  "avoid_patterns": ["避免模式1", ...],
-  "performance_target": 预期性能值
-}}"""
-
-            # 创建客户端并调用 LLM
-            client = OpenAI(base_url=base_url, api_key=api_key)
-            logger.info(f"🤖 调用 LLM 生成策略: {main_provider}/{model_name}")
-            
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": "你是 CLAW 进化策略专家，擅长从执行轨迹中提取最优模式。"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=1000
-            )
-            
-            # 解析 LLM 响应
-            content = response.choices[0].message.content or ""
-            
-            # 尝试提取 JSON
-            import re
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                policy = json.loads(json_match.group())
-                policy['base_version'] = self.current_strategy.version
-                policy['llm_raw_response'] = content
-                logger.info(f"✅ LLM 生成策略: {len(policy.get('key_insights', []))} 个洞察")
-                return policy
-            else:
-                logger.warning("⚠️ LLM 响应无 JSON，降级到统计方法")
-                raise ValueError("No JSON in LLM response")
-                
-        except Exception as e:
-            logger.warning(f"⚠️ LLM 策略生成失败: {e}，降级到统计方法")
-            # 降级到简化版本
+        def _statistical_fallback(reason: str) -> Dict[str, Any]:
             return {
                 'type': 'evolved_fallback',
                 'base_version': self.current_strategy.version,
+                'fallback_reason': reason,
+                'llm_errors': errors[-3:],
                 'top_patterns': [
                     {
                         'task': t.task,
@@ -565,9 +448,174 @@ class EvoMaster:
                     }
                     for t in top_trajectories[:3]
                 ],
-                'llm_error': str(e)
             }
-    
+
+        try:
+            import os
+            import re
+            import yaml
+            from openai import OpenAI
+            from pathlib import Path
+            try:
+                from dotenv import load_dotenv
+            except Exception:  # pragma: no cover - optional dependency guard
+                load_dotenv = None
+
+            hermes_home = Path(os.environ.get('HERMES_HOME') or '/Users/appleoppa/.hermes')
+            if load_dotenv is not None:
+                for env_path in (hermes_home / '.env', Path('/Users/appleoppa/.hermes/.env')):
+                    if env_path.exists():
+                        load_dotenv(str(env_path), override=False)
+
+            config_path = hermes_home / 'config.yaml'
+            if not config_path.exists():
+                config_path = Path('/Users/appleoppa/.hermes/config.yaml')
+            if not config_path.exists():
+                raise FileNotFoundError(f"Hermes config not found: {config_path}")
+
+            with open(config_path, encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+
+            providers = config.get('providers', {}) or {}
+            custom_providers_raw = config.get('custom_providers', {}) or {}
+            custom_providers = {}
+            if isinstance(custom_providers_raw, list):
+                for cp in custom_providers_raw:
+                    if isinstance(cp, dict) and cp.get('name'):
+                        custom_providers[cp['name']] = cp
+            elif isinstance(custom_providers_raw, dict):
+                custom_providers = custom_providers_raw
+            all_providers = {**providers, **custom_providers}
+            if not all_providers:
+                raise ValueError('No providers configured in config.yaml')
+
+            def _strip_custom_prefix(provider: str) -> str:
+                provider = (provider or '').strip()
+                return provider.split(':', 1)[1] if provider.startswith('custom:') else provider
+
+            def _provider_candidates() -> List[str]:
+                main_provider = _strip_custom_prefix(
+                    str(config.get('model', {}).get('provider') or config.get('main_provider') or config.get('default_provider') or '')
+                )
+                ordered = [main_provider]
+                try:
+                    from tools.model_failover_tool import auto_failover
+                    model, provider = auto_failover(
+                        task='EvoMaster strategy evolution LLM policy generation',
+                        failed_model='',
+                        failed_provider='',
+                    )
+                    if provider:
+                        ordered.append(_strip_custom_prefix(provider))
+                except Exception as exc:
+                    errors.append(f'qr_route_unavailable: {type(exc).__name__}: {exc}')
+                ordered.extend([
+                    'deepseek_v4_flash',
+                    'claude_opus47_5yuantoken',
+                    'gpt55_5yuantoken',
+                    'appleoppa',
+                ])
+                seen = set()
+                result = []
+                for provider in ordered:
+                    if provider and provider in all_providers and provider not in seen:
+                        seen.add(provider)
+                        result.append(provider)
+                return result
+
+            trajectory_summary = "\n".join([
+                f"- 任务: {t.task}, 成功: {t.success}, 价值: {t.total_value:.2f}, 动作数: {len(t.actions)}"
+                for t in top_trajectories[:8]
+            ])
+            action_samples = json.dumps([
+                {
+                    'task': t.task,
+                    'actions': t.actions[:6],
+                    'reward': t.reward,
+                    'knowledge_value': t.knowledge_value,
+                    'total_value': t.total_value,
+                    'metadata_keys': sorted((t.metadata or {}).keys())[:10],
+                }
+                for t in top_trajectories[:5]
+            ], ensure_ascii=False)[:6000]
+            prompt = f"""你是 CLAW/APEX 进化策略生成器。请基于真实执行轨迹生成下一版调度策略。
+
+当前策略版本: v{self.current_strategy.version}
+当前策略性能: {self.current_strategy.performance:.2f}
+
+最优轨迹摘要:
+{trajectory_summary}
+
+轨迹样本JSON:
+{action_samples}
+
+约束条件:
+- 必须保持工具调用安全、可逆、可验证。
+- 优先复用成功率高、知识沉淀价值高的动作模式。
+- 明确避免失败或低价值动作序列。
+- 输出必须是严格 JSON，不要 Markdown，不要解释。
+
+JSON schema:
+{{
+  "type": "llm_evolved",
+  "key_insights": ["..."],
+  "recommended_patterns": [{{"task_type": "...", "action_sequence": ["..."], "priority": 0.9, "evidence": "..."}}],
+  "avoid_patterns": ["..."],
+  "verification_gates": ["..."],
+  "performance_target": 0.0
+}}"""
+
+            last_error = None
+            for provider_name in _provider_candidates():
+                provider_config = all_providers[provider_name]
+                base_url = provider_config.get('base_url') or provider_config.get('api_base')
+                key_env = provider_config.get('key_env') or provider_config.get('api_key_env')
+                api_key = os.environ.get(key_env) if key_env else None
+                api_key = api_key or provider_config.get('api_key')
+                model_name = provider_config.get('default_model') or provider_config.get('model') or provider_config.get('name')
+                if not base_url or not api_key or not model_name:
+                    errors.append(f'{provider_name}: missing base_url/api_key/model')
+                    continue
+                try:
+                    client = OpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+                    logger.info(f"🤖 调用 LLM 生成策略: {provider_name}/{model_name}")
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=[
+                            {"role": "system", "content": "你是 CLAW/APEX 进化策略专家，只输出严格 JSON。"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.3,
+                        max_tokens=1200,
+                    )
+                    content = response.choices[0].message.content or ""
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if not json_match:
+                        raise ValueError('No JSON in LLM response')
+                    policy = json.loads(json_match.group())
+                    if not isinstance(policy, dict):
+                        raise ValueError('LLM JSON is not an object')
+                    policy['type'] = policy.get('type') or 'llm_evolved'
+                    policy['base_version'] = self.current_strategy.version
+                    policy['llm_provider'] = provider_name
+                    policy['llm_model'] = model_name
+                    policy['llm_failover_errors'] = errors[-3:]
+                    # 保留摘要和 hash，不保存完整原文，避免污染知识缓存。
+                    policy['llm_response_sha256'] = hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]
+                    logger.info(f"✅ LLM 生成策略: provider={provider_name}, insights={len(policy.get('key_insights', []))}")
+                    return policy
+                except Exception as exc:
+                    last_error = exc
+                    errors.append(f'{provider_name}: {type(exc).__name__}: {str(exc)[:180]}')
+                    logger.warning("⚠️ LLM 策略生成失败，尝试下一通道: %s/%s error=%s", provider_name, model_name, exc)
+                    continue
+
+            return _statistical_fallback(f'all_llm_routes_failed: {last_error}')
+        except Exception as e:
+            errors.append(f'fatal: {type(e).__name__}: {str(e)[:180]}')
+            logger.warning(f"⚠️ LLM 策略生成失败: {e}，降级到统计方法")
+            return _statistical_fallback(str(e))
+
     def select_best_strategy_for_task(self, task: str) -> Optional[Strategy]:
         """
         根据任务类型选择最优策略版本。

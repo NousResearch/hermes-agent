@@ -88,7 +88,8 @@ class TestFallbackChainInit:
 class TestFallbackChainAdvancement:
     def test_exhausted_returns_false(self):
         agent = _make_agent(fallback_model=None)
-        assert agent._try_activate_fallback() is False
+        with patch("tools.model_failover_tool.auto_failover", return_value=("", "")):
+            assert agent._try_activate_fallback() is False
 
     def test_advances_index(self):
         fbs = [
@@ -121,9 +122,23 @@ class TestFallbackChainAdvancement:
         fbs = [{"provider": "openai", "model": "gpt-4o"}]
         agent = _make_agent(fallback_model=fbs)
         with patch("agent.auxiliary_client.resolve_provider_client",
-                    return_value=(_mock_client(), "gpt-4o")):
+                    return_value=(_mock_client(), "gpt-4o")), patch(
+            "tools.model_failover_tool.auto_failover", return_value=("", "")
+        ):
             assert agent._try_activate_fallback() is True
             assert agent._try_activate_fallback() is False
+
+    def test_exhausted_static_chain_uses_dynamic_qr_failover(self):
+        agent = _make_agent(fallback_model=[])
+        with patch("tools.model_failover_tool.auto_failover", return_value=("deepseek-v4-flash", "deepseek_v4_flash")), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.deepseek.com", api_key="dyn-key"), "deepseek-v4-flash"),
+        ) as mock_rpc:
+            assert agent._try_activate_fallback() is True
+            assert getattr(agent, "provider") == "deepseek_v4_flash"
+            assert getattr(agent, "model") == "deepseek-v4-flash"
+            assert getattr(agent, "_fallback_activated") is True
+            assert mock_rpc.call_args.args[0] == "deepseek_v4_flash"
 
     def test_skips_unconfigured_provider_to_next(self):
         """If resolve_provider_client returns None, skip to next in chain."""
@@ -300,7 +315,9 @@ class TestFallbackChainDedup:
         agent.model = "z-ai/glm-4.7"
         agent.base_url = "https://openrouter.ai/api/v1"
 
-        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve, patch(
+            "tools.model_failover_tool.auto_failover", return_value=("", "")
+        ):
             ok = agent._try_activate_fallback()
 
         assert ok is False

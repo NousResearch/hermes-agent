@@ -902,6 +902,36 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
     if agent._fallback_index >= len(agent._fallback_chain):
+        # Last-resort dynamic failover: when the static fallback chain is
+        # empty/exhausted, ask the local quantum router for a currently healthy
+        # provider instead of giving up after retries.  This is deliberately
+        # one-shot per turn/provider failure so a bad router result cannot loop.
+        if not getattr(agent, "_qr_dynamic_failover_attempted", False):
+            agent._qr_dynamic_failover_attempted = True
+            try:
+                from tools.model_failover_tool import auto_failover
+
+                model, provider = auto_failover(
+                    task="Hermes agent model failure recovery",
+                    failed_model=getattr(agent, "model", "") or "",
+                    failed_provider=getattr(agent, "provider", "") or "",
+                )
+                provider = (provider or "").strip()
+                model = (model or "").strip()
+                current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+                current_model = (getattr(agent, "model", "") or "").strip()
+                if provider and model and not (
+                    provider.lower() == current_provider and model == current_model
+                ):
+                    logging.warning(
+                        "Dynamic qr failover selected %s/%s after static chain exhausted",
+                        provider,
+                        model,
+                    )
+                    agent._fallback_chain.append({"provider": provider, "model": model})
+                    return agent._try_activate_fallback(reason=reason)
+            except Exception as exc:
+                logging.warning("Dynamic qr failover unavailable: %s", exc)
         return False
 
     fb = agent._fallback_chain[agent._fallback_index]

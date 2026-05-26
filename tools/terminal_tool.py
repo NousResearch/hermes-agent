@@ -268,6 +268,19 @@ def _check_all_guards(command: str, env_type: str) -> dict:
 # dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
 # else is rejected.
 _WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/\\:_\-.~ +@=,]+$')
+_PATH_TOKEN_RE = r"(?:\"[^\"]+\"|'[^']+'|[^\s;&|]+)"
+_DIRECT_GIT_RESET_HARD_RE = re.compile(
+    r"\bgit\s+reset\s+--hard\b",
+    re.IGNORECASE,
+)
+_GIT_C_RESET_HARD_RE = re.compile(
+    r"\bgit\s+-C\s+(?P<path>" + _PATH_TOKEN_RE + r")\s+reset\s+--hard\b",
+    re.IGNORECASE,
+)
+_CD_RESET_HARD_RE = re.compile(
+    r"\bcd\s+(?P<path>" + _PATH_TOKEN_RE + r")\s*(?:&&|;|\n)\s*git\s+reset\s+--hard\b",
+    re.IGNORECASE,
+)
 
 
 def _validate_workdir(workdir: str) -> str | None:
@@ -290,6 +303,74 @@ def _validate_workdir(workdir: str) -> str | None:
                 )
         return "Blocked: workdir contains disallowed characters."
     return None
+
+
+def _strip_shell_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _resolve_guard_path(path: str, base_cwd: str) -> Path:
+    raw = _strip_shell_quotes(path.strip())
+    expanded = os.path.expandvars(os.path.expanduser(raw))
+    candidate = Path(expanded)
+    if not candidate.is_absolute():
+        candidate = Path(base_cwd) / candidate
+    return candidate.resolve(strict=False)
+
+
+def _path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _runtime_checkout_git_reset_block_message(command: str, cwd: str) -> str | None:
+    """Block hard resets of the active runtime authority checkout.
+
+    Normal ``git reset --hard`` remains a dangerous command that can be
+    approved for scratch repos. The active ``HERMES_AGENT_REPO`` is different:
+    resetting it while the gateway is running creates a split between the live
+    process, systemd release SHA, and the on-disk checkout.
+    """
+    repo_raw = os.getenv("HERMES_AGENT_REPO", "").strip()
+    if not repo_raw or not command:
+        return None
+
+    try:
+        repo_root = Path(repo_raw).expanduser().resolve(strict=False)
+        cwd_path = Path(cwd or os.getcwd()).expanduser().resolve(strict=False)
+    except OSError:
+        return None
+
+    direct_reset_in_runtime = (
+        _DIRECT_GIT_RESET_HARD_RE.search(command) is not None
+        and _path_is_relative_to(cwd_path, repo_root)
+    )
+    explicit_runtime_reset = False
+    for matcher in (_GIT_C_RESET_HARD_RE, _CD_RESET_HARD_RE):
+        for match in matcher.finditer(command):
+            target = _resolve_guard_path(match.group("path"), str(cwd_path))
+            if target == repo_root or _path_is_relative_to(target, repo_root):
+                explicit_runtime_reset = True
+                break
+        if explicit_runtime_reset:
+            break
+
+    if not direct_reset_in_runtime and not explicit_runtime_reset:
+        return None
+
+    release_sha = os.getenv("HERMES_RELEASE_SHA", "").strip()
+    suffix = f" configured release SHA {release_sha}" if release_sha else ""
+    return (
+        "BLOCKED (runtime authority): git reset --hard is not allowed against "
+        f"the active HERMES_AGENT_REPO ({repo_root}){suffix}. Use a separate "
+        "scratch clone/worktree or run the reset manually outside the agent "
+        "after stopping affected runtime work."
+    )
 
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:
@@ -1772,6 +1853,37 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
+        # Validate workdir against shell injection
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], _safe_command_preview(command))
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked"
+                }, ensure_ascii=False)
+
+        effective_cwd_for_guard = workdir or cwd
+        runtime_git_reset_block = _runtime_checkout_git_reset_block_message(
+            command,
+            effective_cwd_for_guard,
+        )
+        if runtime_git_reset_block:
+            logger.warning(
+                "Blocked runtime authority git reset: cwd=%s command=%s",
+                str(effective_cwd_for_guard)[:200],
+                _safe_command_preview(command),
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": runtime_git_reset_block,
+                "status": "blocked"
+            }, ensure_ascii=False)
+
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
@@ -1809,19 +1921,6 @@ def terminal_tool(
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
-
-        # Validate workdir against shell injection
-        if workdir:
-            workdir_error = _validate_workdir(workdir)
-            if workdir_error:
-                logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], _safe_command_preview(command))
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": workdir_error,
-                    "status": "blocked"
-                }, ensure_ascii=False)
 
         # Prepare command for execution
         pty_disabled_reason = None

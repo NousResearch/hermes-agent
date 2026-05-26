@@ -51,6 +51,27 @@ def test_windows_terminal_session_preserves_newline():
             assert cli_mod._preserve_ctrl_enter_newline() is True
 
 
+def test_warp_terminal_preserves_newline():
+    """Warp sends Shift+Enter as bare LF (c-j). Detect via TERM_PROGRAM=WarpTerminal.
+
+    Regression test for issue #22908.
+    """
+    import cli as cli_mod
+    with patch.object(sys, "platform", "darwin"):
+        with patch.dict(os.environ, {"TERM_PROGRAM": "WarpTerminal"}, clear=True):
+            with patch("builtins.open", side_effect=OSError("no /proc")):
+                assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
+def test_non_warp_macos_does_not_preserve():
+    """Non-Warp macOS terminals (e.g. Terminal.app, iTerm2) keep c-j → submit."""
+    import cli as cli_mod
+    with patch.object(sys, "platform", "darwin"):
+        with patch.dict(os.environ, {"TERM_PROGRAM": "Apple_Terminal"}, clear=True):
+            with patch("builtins.open", side_effect=OSError("no /proc")):
+                assert cli_mod._preserve_ctrl_enter_newline() is False
+
+
 def test_pure_local_linux_does_not_preserve():
     """A bare local Linux TTY (no SSH/WSL/WT) keeps c-j → submit so docker exec
     style Enter-as-LF stays usable."""

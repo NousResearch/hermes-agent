@@ -2483,6 +2483,11 @@ def _preserve_ctrl_enter_newline() -> bool:
     some thin PTYs without SSH) still need c-j bound to submit, so we keep
     that binding for those.
 
+    Warp terminal also sends Shift+Enter as bare LF (c-j) — detected via the
+    TERM_PROGRAM=WarpTerminal env var set by Warp for all its shell sessions.
+    Binding c-j to submit in Warp makes Shift+Enter submit instead of inserting
+    a newline. See issue #22908.
+
     See issue #22379.
     """
     if sys.platform == "win32":
@@ -2501,6 +2506,10 @@ def _preserve_ctrl_enter_newline() -> bool:
                     return True
         except OSError:
             continue
+    # Warp terminal sends Shift+Enter as bare LF (c-j), same as Ctrl+Enter on
+    # Windows Terminal. Preserve c-j as newline so Shift+Enter works.
+    if os.environ.get("TERM_PROGRAM") == "WarpTerminal":
+        return True
     return False
 
 

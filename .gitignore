@@ -52,6 +52,7 @@ cli-config.yaml
 skills/.hub/
 ignored/
 .worktrees/
+.hermes/
 environments/benchmarks/evals/
 
 # Web UI build output

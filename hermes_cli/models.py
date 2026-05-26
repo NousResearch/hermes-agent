@@ -217,18 +217,23 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "copilot-acp",
     ],
     "copilot": [
+        "claude-opus-4.7",
+        "claude-opus-4.7-high",
+        "claude-opus-4.7-xhigh",
+        "claude-opus-4.7-1m-internal",
+        "claude-opus-4.6",
+        "claude-opus-4.5",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
         "gpt-5.3-codex",
         "gpt-5.2-codex",
+        "gpt-5.2",
         "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "claude-sonnet-4.6",
-        "claude-sonnet-4",
-        "claude-sonnet-4.5",
-        "claude-haiku-4.5",
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",
@@ -2046,6 +2051,9 @@ def _resolve_copilot_catalog_api_key() -> str:
       1. ``resolve_api_key_provider_credentials("copilot")`` — env vars
          (``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN``) plus
          the ``gh auth token`` CLI fallback.
+      1b. ``get_env_value("COPILOT_GITHUB_TOKEN")`` — reads from the Hermes
+          secret store (~/.hermes/.env) which may mask values as ``***``
+          but resolves the real secret at runtime.
       2. ``read_credential_pool("copilot")`` — a token (typically a
          ``gho_*`` from device-code login, or a fine-grained PAT) stored in
          ``auth.json`` under ``credential_pool.copilot[]``. The pool is
@@ -2066,6 +2074,17 @@ def _resolve_copilot_catalog_api_key() -> str:
         api_key = str(creds.get("api_key") or "").strip()
         if api_key:
             return api_key
+    except Exception:
+        pass
+
+    # Fallback: resolve from Hermes secret store (handles masked .env values)
+    try:
+        from hermes_cli.config import get_env_value
+
+        for env_var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            val = get_env_value(env_var)
+            if val:
+                return val
     except Exception:
         pass
 

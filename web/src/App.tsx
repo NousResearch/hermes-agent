@@ -24,6 +24,7 @@ import {
   Database,
   Download,
   Eye,
+  FileHeart,
   FileText,
   Globe,
   Heart,
@@ -40,6 +41,7 @@ import {
   Terminal,
   Users,
   Wrench,
+  Workflow,
   X,
   Zap,
 } from "lucide-react";
@@ -58,6 +60,9 @@ import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
+import OverviewPage from "@/pages/OverviewPage";
+import TasksPage from "@/pages/TasksPage";
+import SystemHealthPage from "@/pages/SystemHealthPage";
 import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
@@ -78,7 +83,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/overview" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -86,7 +91,7 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
     return null;
   }
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/overview" replace />;
 }
 
 const CHAT_NAV_ITEM: NavItem = {
@@ -107,6 +112,8 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/overview": OverviewPage,
+  "/tasks": TasksPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -118,6 +125,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/system": SystemHealthPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -129,6 +137,18 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/overview",
+    labelKey: "overview",
+    label: "Mission Control",
+    icon: Activity,
+  },
+  {
+    path: "/tasks",
+    labelKey: "tasks",
+    label: "Tasks",
+    icon: Workflow,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -160,6 +180,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Documentation",
     icon: BookOpen,
   },
+  { path: "/system", labelKey: "system", label: "System", icon: FileHeart },
 ];
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
@@ -180,11 +201,13 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Shield,
   Users,
   Wrench,
+  Workflow,
   Zap,
   Heart,
   Star,
   Code,
   Eye,
+  FileHeart,
 };
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {

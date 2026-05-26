@@ -68,6 +68,11 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getSystemHealth: () => fetchJSON<SystemHealthResponse>("/api/system/health"),
+  getKanbanStats: () => fetchJSON<KanbanStatsResponse>("/api/plugins/kanban/stats"),
+  getKanbanBoard: () => fetchJSON<KanbanBoardResponse>("/api/plugins/kanban/board"),
+  getKanbanDiagnostics: () => fetchJSON<KanbanDiagnosticsResponse>("/api/plugins/kanban/diagnostics"),
+  getKanbanActiveWorkers: () => fetchJSON<KanbanActiveWorkersResponse>("/api/plugins/kanban/workers/active"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -385,6 +390,129 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface SystemPathStat {
+  path: string;
+  exists: boolean;
+  is_dir: boolean;
+  size: number | null;
+  mtime: number | null;
+}
+
+export interface SystemHealthResponse {
+  hermes: {
+    version: string;
+    release_date: string;
+    home: string;
+    config_path: string;
+    env_path: string;
+    project_root: string;
+    web_dist: string;
+  };
+  runtime: {
+    python: string;
+    python_executable: string;
+    platform: string;
+    system: string;
+    machine: string;
+    process_pid: number;
+  };
+  git: {
+    branch: string | null;
+    commit: string | null;
+    dirty: boolean;
+    dirty_count: number;
+  };
+  gateway: {
+    running: boolean;
+    pid: number | null;
+    state: string | null;
+    updated_at: string | null;
+    exit_reason: string | null;
+    platform_count: number;
+  };
+  paths: Record<string, SystemPathStat>;
+  last_errors: string[];
+}
+
+export interface KanbanStatsResponse {
+  by_status: Record<string, number>;
+  by_assignee: Record<string, Record<string, number>>;
+  oldest_ready_age_seconds: number | null;
+  now: number;
+}
+
+export interface KanbanTask {
+  id: string;
+  title: string;
+  body?: string | null;
+  status: string;
+  assignee?: string | null;
+  tenant?: string | null;
+  priority?: number | null;
+  created_at?: number | string | null;
+  updated_at?: number | string | null;
+  started_at?: number | string | null;
+  completed_at?: number | string | null;
+  latest_summary?: string | null;
+  comment_count?: number;
+  link_counts?: { parents: number; children: number };
+  progress?: { done: number; total: number } | null;
+  diagnostics?: unknown[];
+  warnings?: unknown;
+  age?: {
+    created_age_seconds?: number | null;
+    started_age_seconds?: number | null;
+    time_to_complete_seconds?: number | null;
+  };
+}
+
+export interface KanbanColumn {
+  name: string;
+  tasks: KanbanTask[];
+}
+
+export interface KanbanBoardResponse {
+  columns: KanbanColumn[];
+  tenants: string[];
+  assignees: string[];
+  latest_event_id: number;
+  now: number;
+}
+
+export interface KanbanDiagnosticItem {
+  task_id: string;
+  task_title: string | null;
+  task_status: string | null;
+  task_assignee: string | null;
+  diagnostics: Array<Record<string, unknown>>;
+}
+
+export interface KanbanDiagnosticsResponse {
+  diagnostics: KanbanDiagnosticItem[];
+  count: number;
+}
+
+export interface KanbanWorker {
+  run_id: number;
+  task_id: string;
+  task_title: string;
+  task_status: string;
+  task_assignee: string | null;
+  profile: string | null;
+  worker_pid: number | null;
+  started_at: number | string | null;
+  claim_lock: string | null;
+  claim_expires: number | string | null;
+  last_heartbeat_at: number | string | null;
+  max_runtime_seconds: number | null;
+}
+
+export interface KanbanActiveWorkersResponse {
+  workers: KanbanWorker[];
+  count: number;
+  checked_at: number;
 }
 
 export interface SessionInfo {

@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import platform
 import secrets
 import stat
 import subprocess
@@ -638,6 +639,117 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+    }
+
+
+def _run_short_command(args: List[str], cwd: Path | None = None) -> str | None:
+    """Run a quick local diagnostic command for dashboard health metadata."""
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _safe_path_stat(path: Path) -> Dict[str, Any]:
+    try:
+        stat = path.stat()
+        return {
+            "path": str(path),
+            "exists": True,
+            "is_dir": path.is_dir(),
+            "size": stat.st_size,
+            "mtime": stat.st_mtime,
+        }
+    except OSError:
+        return {
+            "path": str(path),
+            "exists": False,
+            "is_dir": False,
+            "size": None,
+            "mtime": None,
+        }
+
+
+@app.get("/api/system/health")
+async def get_system_health():
+    """Read-only local system/Hermes health summary for Mission Control.
+
+    Keep this endpoint diagnostic-only: no secrets, no destructive actions, no
+    broad process inventory. It reports only local runtime metadata needed by
+    the dashboard.
+    """
+    hermes_home = get_hermes_home()
+    state_db = hermes_home / "state.db"
+    sessions_dir = hermes_home / "sessions"
+    logs_dir = hermes_home / "logs"
+    skills_dir = hermes_home / "skills"
+    cron_dir = hermes_home / "cron"
+
+    git_branch = _run_short_command(["git", "rev-parse", "--abbrev-ref", "HEAD"], PROJECT_ROOT)
+    git_commit = _run_short_command(["git", "rev-parse", "--short", "HEAD"], PROJECT_ROOT)
+    git_dirty = _run_short_command(["git", "status", "--porcelain"], PROJECT_ROOT)
+
+    status = await get_status()
+
+    error_tail: List[str] = []
+    try:
+        from hermes_cli.logs import _read_tail, LOG_FILES
+        error_log = logs_dir / LOG_FILES.get("errors", "errors.log")
+        if error_log.exists():
+            error_tail = _read_tail(error_log, 12)
+    except Exception:
+        error_tail = []
+
+    return {
+        "hermes": {
+            "version": __version__,
+            "release_date": __release_date__,
+            "home": str(hermes_home),
+            "config_path": str(get_config_path()),
+            "env_path": str(get_env_path()),
+            "project_root": str(PROJECT_ROOT),
+            "web_dist": str(WEB_DIST),
+        },
+        "runtime": {
+            "python": sys.version.split()[0],
+            "python_executable": sys.executable,
+            "platform": platform.platform(),
+            "system": platform.system(),
+            "machine": platform.machine(),
+            "process_pid": os.getpid(),
+        },
+        "git": {
+            "branch": git_branch,
+            "commit": git_commit,
+            "dirty": bool(git_dirty),
+            "dirty_count": len(git_dirty.splitlines()) if git_dirty else 0,
+        },
+        "gateway": {
+            "running": status.get("gateway_running"),
+            "pid": status.get("gateway_pid"),
+            "state": status.get("gateway_state"),
+            "updated_at": status.get("gateway_updated_at"),
+            "exit_reason": status.get("gateway_exit_reason"),
+            "platform_count": len(status.get("gateway_platforms") or {}),
+        },
+        "paths": {
+            "state_db": _safe_path_stat(state_db),
+            "sessions_dir": _safe_path_stat(sessions_dir),
+            "logs_dir": _safe_path_stat(logs_dir),
+            "skills_dir": _safe_path_stat(skills_dir),
+            "cron_dir": _safe_path_stat(cron_dir),
+        },
+        "last_errors": error_tail,
     }
 
 

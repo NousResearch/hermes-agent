@@ -4501,6 +4501,15 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
+        # Sever parent→child links so children of the archived task are
+        # no longer blocked.  Without this, ``recompute_ready`` promotes
+        # children (archived ≈ done), but the children's workers may
+        # still try to access the archived parent's scratch workspace,
+        # which was already cleaned up on completion — causing crashes.
+        conn.execute(
+            "DELETE FROM task_links WHERE parent_id = ?",
+            (task_id,),
+        )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting

@@ -29,6 +29,8 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.tool_description_compactor import compact_tool_definitions
+
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -254,6 +256,17 @@ _LEGACY_TOOLSET_MAP = {
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 
 
+def _compact_tool_descriptions_enabled() -> bool:
+    """Return True when config enables conservative tool-description compaction."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        return bool(cfg_get(cfg, "display", "compact_tool_descriptions", default=False))
+    except Exception:
+        return False
+
+
 def _clear_tool_defs_cache() -> None:
     """Drop memoized get_tool_definitions() results. Called when dynamic
     schema dependencies change (e.g. discord capability cache reset,
@@ -301,6 +314,7 @@ def get_tool_definitions(
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
+            _compact_tool_descriptions_enabled(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -468,6 +482,9 @@ def _compute_tool_definitions(
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+
+    if _compact_tool_descriptions_enabled():
+        filtered_tools = compact_tool_definitions(filtered_tools)
 
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build

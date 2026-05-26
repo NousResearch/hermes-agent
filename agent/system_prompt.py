@@ -31,14 +31,21 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE_COMPACT,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
+    MEMORY_GUIDANCE_COMPACT,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
+    SEARCH_ROUTER_GUIDANCE,
+    SEARCH_ROUTER_GUIDANCE_COMPACT,
     SESSION_SEARCH_GUIDANCE,
+    SESSION_SEARCH_GUIDANCE_COMPACT,
     SKILLS_GUIDANCE,
+    SKILLS_GUIDANCE_COMPACT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    _compact_guidance_blocks_enabled,
 )
 
 
@@ -97,17 +104,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    compact_guidance = _compact_guidance_blocks_enabled()
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    stable_parts.append(
+        HERMES_AGENT_HELP_GUIDANCE_COMPACT if compact_guidance else HERMES_AGENT_HELP_GUIDANCE
+    )
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
-        tool_guidance.append(MEMORY_GUIDANCE)
+        tool_guidance.append(MEMORY_GUIDANCE_COMPACT if compact_guidance else MEMORY_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
-        tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        tool_guidance.append(SESSION_SEARCH_GUIDANCE_COMPACT if compact_guidance else SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
-        tool_guidance.append(SKILLS_GUIDANCE)
+        tool_guidance.append(SKILLS_GUIDANCE_COMPACT if compact_guidance else SKILLS_GUIDANCE)
+    if "search_router" in agent.valid_tool_names and "web_search" in agent.valid_tool_names:
+        tool_guidance.append(SEARCH_ROUTER_GUIDANCE_COMPACT if compact_guidance else SEARCH_ROUTER_GUIDANCE)
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
@@ -163,7 +176,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # Also applied to xAI Grok — same failure modes (claims completion
             # without tool calls, suggests workarounds instead of using
             # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            if any(p in _model_lower for p in ("gpt", "codex", "grok", "qwen", "deepseek")):
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])

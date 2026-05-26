@@ -61,4 +61,31 @@ UNION ALL SELECT 'skill_feedback', COUNT(*) FROM skill_feedback WHERE reacted_at
 ```
 
 ## Status
-Not started
+BLOCKED — 2026-05-26 — infrastructure debt from Plan 001-E
+
+### What happened
+- Cloud Hermes successfully received UAT 005-E message + reaction (verified in CloudWatch + skill_feedback row landed)
+- But cloud Hermes couldn't REPLY because LLM call returned HTTP 401: "Missing Authentication header"
+- Investigation chained through 3 nested pre-existing infra gaps:
+  1. Portkey image missing from ECR (fixed tonight by pulling upstream `portkeyai/gateway:latest`)
+  2. Portkey has no provider config (vanilla install, no virtual-key → provider mapping)
+  3. ALL LLM-routing secrets in Secrets Manager are placeholders (`PLACEHOLDER...`, `bed...`)
+- Cloud Hermes scaled back to `desiredCount=0` to stop being a silent zombie burning AWS dollars
+- Local launchd Hermes restored as the sole working Hermes
+
+### Why this isn't fixable inside Plan 005
+The cloud LLM-routing layer was scaffolded by Plan 001-E but never finished. No service in cloud has ever successfully made an LLM call. Bringing it to working state requires:
+- Decision: keep Portkey (author full provider config) OR remove Portkey (wire direct Anthropic/Bedrock per service)
+- Populating real credentials in Secrets Manager
+- Possibly building + pushing Rooben image (same gap as Portkey)
+- Coordinating with Atlas's Portkey usage (same root cause; Atlas in cloud is also probably broken)
+
+This is its own focused plan. Tracked as **Plan 009 — Cloud LLM Routing Infrastructure**.
+
+### What got fixed tonight (kept for next attempt)
+- v8 image with all Plan 004-A + Plan 007 code is in ECR (`plan-001-E-amd64-v8`)
+- Build script patched to enforce `--platform linux/amd64` (committed)
+- Task def revisions registered: :9 (v8 image), :10 (+PYTHONUNBUFFERED), :11 (+-v flag), :12 (+SLACK_ALLOWED_USERS)
+- Portkey image pushed to ECR (no config but image is there)
+- Three discoveries that need permanent fixes in Dockerfile.saas/entrypoint.saas.sh (tracked in Plan 009-E)
+- One discovery requiring kanban dispatcher disable in cloud config (Plan 009-F)

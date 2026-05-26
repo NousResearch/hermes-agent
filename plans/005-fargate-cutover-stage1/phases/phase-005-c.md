@@ -63,4 +63,18 @@ done
 ```
 
 ## Status
-Not started
+Complete — 2026-05-26
+
+### Adaptations — significantly more was already in place than the master plan assumed
+
+- **Real task def family is `agentic-stack-hermes`**, not `hermes-saas` as the master plan assumed. Latest revision is `:8`.
+- **Cloud Hermes is ALREADY running at `desiredCount=1`** and has been steady-state since 2026-05-20. Running image `plan-001-E-amd64-v6` (pre-Plan-004-A + pre-Plan-007).
+- This means the whole "set up secrets + IAM + networking" Phase C scope was effectively done by Plan 001-E months ago. Pre-flight is a *verification*, not a setup.
+- **All 4 secrets confirmed accessible**:
+  - `agentic-stack/neon/hermes-saas` (DSN)
+  - `agentic-stack/slack-bot-token`
+  - `agentic-stack/slack-app-token`
+  - `agentic-stack/hermes-portkey-virtual-key` (LLM routing via Portkey, mapped to `OPENAI_API_KEY`)
+- **Neon reachable from laptop**: `SELECT 1` succeeded
+- **CloudWatch evidence v6 is missing Plan 007/Plan 004-A code**: today's 👍 reaction during UAT 007-E showed `Unhandled request ({'type': 'event_callback', 'event': {'type': 'reaction_added'}})` in cloud Hermes logs. v6 doesn't have the reaction handler. Confirms cutover to v8 is the actual fix.
+- **Service network config**: 1 subnet (`subnet-0b755463aa328e1c2`), 1 security group (`sg-09a265d8a851487cb`), no public IP, launch type FARGATE, platform 1.4.0.

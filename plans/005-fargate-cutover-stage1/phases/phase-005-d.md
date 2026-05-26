@@ -68,4 +68,20 @@ aws logs tail /ecs/hermes-saas --follow --since 5m --profile $PROFILE
 ```
 
 ## Status
-Not started
+Complete — 2026-05-26
+
+### Adaptations — surfaced a 5-day-pre-existing bug in cloud saas-mode startup
+
+1. **Misassumption corrected**: Plan 005 master plan claimed Fargate was at `desiredCount=0`. Reality: cloud Hermes has been at `desiredCount=1, runningCount=1` since 2026-05-20 — but **silently broken**. ECS health check passed because the entrypoint's port-8080 health server child process kept passing; the actual gateway process never logged past the "No user allowlists configured" warning. Zero "Storage backend initialized", zero "Socket Mode connected", zero "inbound message" lines in 5 days of supposedly-running logs.
+
+2. **Root cause found**: `gateway/run.py:17970` only attaches the stderr log handler when CLI verbosity is non-null. Default `hermes gateway run` has verbosity=None → no handler installed → INFO logs go nowhere. The WARNING at line 3768 only appeared because Python's default warning machinery bypasses the handler chain.
+
+3. **Fix without image rebuild**: overrode task def CMD to `["gateway", "run", "-v"]`. Task def revisions: `:9` (v8 image only) → `:10` (added `PYTHONUNBUFFERED=1`) → `:11` (added `-v` flag). td:11 is the working revision.
+
+4. **The local laptop Hermes was never broken because** launchd's plist passes verbosity differently OR was started without `-v` but the local TTY-attached logging behaves differently. Either way, local has been logging fine; only cloud was silent.
+
+5. **Follow-up: bake `-v` into `entrypoint.saas.sh`** (no image rebuild needed for current run; permanent fix is a small edit + v9 image). Track in Plan 005-G follow-ups.
+
+6. **Follow-up: kanban dispatcher is `embedded` in cloud config** (`INFO gateway.run: kanban dispatcher: embedded in gateway (interval=60.0s)`). Local has `dispatch_in_gateway=false`. This is the OOM-risk path. Cloud may need to set `kanban.dispatch_in_gateway=false` in its config (via env var or config file) before Plan 005-G soak starts. **High-priority Phase 005-G prerequisite.**
+
+7. **All Plan 004-A + Plan 007 startup lines confirmed active in cloud** — tenant bootstrap fired, NeonBackend pool is ready, Slack Socket Mode connected.

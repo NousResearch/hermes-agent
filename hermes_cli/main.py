@@ -11889,6 +11889,12 @@ def main():
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
     )
 
+    # inspect one job
+    cron_show = cron_subparsers.add_parser(
+        "show", help="Show full details for one scheduled job"
+    )
+    cron_show.add_argument("job_id", help="Job ID or exact job name to inspect")
+
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
     cron_pause.add_argument("job_id", help="Job ID to pause")

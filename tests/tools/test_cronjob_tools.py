@@ -231,6 +231,29 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_show_returns_full_job_details(self):
+        prompt = "Summarize Joe's recurring personal ops and preserve enough context for audit."
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt=prompt,
+                schedule="every 1h",
+                name="Ops audit",
+                deliver="local",
+                skills=["blogwatcher"],
+            )
+        )
+
+        shown = json.loads(cronjob(action="show", job_id=created["job_id"]))
+
+        assert shown["success"] is True
+        assert shown["job"]["job_id"] == created["job_id"]
+        assert shown["job"]["name"] == "Ops audit"
+        assert shown["job"]["prompt"] == prompt
+        assert shown["job"]["prompt_preview"] == prompt
+        assert shown["job"]["skills"] == ["blogwatcher"]
+        assert shown["job"]["deliver"] == "local"
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

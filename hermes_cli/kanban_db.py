@@ -3414,7 +3414,11 @@ def promote_task(
     drives it from a deliberate operator action with an audit-trail
     entry. Refuses to promote if any parent dep is not in a terminal
     state (`done`/`archived`) unless ``force=True``. Does NOT change
-    assignee or claim state. Returns ``(True, None)`` on success and
+    assignee or claim state. Successful manual promotion also resets the
+    failure counter: this is an operator-driven recovery action, same as
+    ``unblock_task`` / ``reclaim_task``, so the next retry gets a fresh
+    budget instead of inheriting a stale ``gave_up`` streak. Returns
+    ``(True, None)`` on success and
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
     """
@@ -3465,7 +3469,7 @@ def promote_task(
             "promoted_manual",
             {"actor": actor, "reason": reason, "forced": force},
         )
-
+    _clear_failure_counter(conn, task_id)
     return True, None
 
 

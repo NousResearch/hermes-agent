@@ -3602,6 +3602,68 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
     )
 
 
+def test_gateway_dispatcher_watcher_respects_dispatch_board_allowlist(monkeypatch):
+    """dispatch_boards limits embedded gateway dispatch to named boards only."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    dispatched: list[str | None] = []
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
+                "dispatch_boards": ["canary"],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [
+            {"slug": "canary"},
+            {"slug": "production"},
+        ],
+    )
+    monkeypatch.setattr(_kb, "connect", lambda board=None: SimpleNamespace(close=lambda: None))
+
+    def _dispatch_once(conn, *, board=None, **kwargs):
+        dispatched.append(board)
+        runner._running = False
+        return SimpleNamespace(
+            spawned=[], reclaimed=0, crashed=[], timed_out=[], promoted=0, auto_blocked=[]
+        )
+
+    async def _to_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "dispatch_once", _dispatch_once)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    asyncio.run(
+        asyncio.wait_for(
+            runner._kanban_dispatcher_watcher(),
+            timeout=3.0,
+        )
+    )
+
+    assert dispatched == ["canary"]
+
+
 def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     monkeypatch, tmp_path, caplog
 ):

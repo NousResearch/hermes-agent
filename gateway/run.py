@@ -5332,6 +5332,39 @@ class GatewayRunner:
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
+        raw_dispatch_boards = kanban_cfg.get("dispatch_boards")
+        dispatch_board_allowlist: set[str] | None = None
+        if isinstance(raw_dispatch_boards, str):
+            dispatch_board_allowlist = {
+                slug.strip() for slug in raw_dispatch_boards.split(",") if slug.strip()
+            }
+        elif isinstance(raw_dispatch_boards, (list, tuple, set)):
+            dispatch_board_allowlist = {
+                str(slug).strip() for slug in raw_dispatch_boards if str(slug).strip()
+            }
+        elif raw_dispatch_boards is not None:
+            logger.warning(
+                "kanban dispatcher: invalid kanban.dispatch_boards=%r; dispatching all boards",
+                raw_dispatch_boards,
+            )
+        if dispatch_board_allowlist:
+            logger.info(
+                "kanban dispatcher: dispatch_boards=%s",
+                ",".join(sorted(dispatch_board_allowlist)),
+            )
+
+        def _list_dispatch_boards() -> list[dict]:
+            try:
+                boards = _kb.list_boards(include_archived=False)
+            except Exception:
+                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            if dispatch_board_allowlist is None:
+                return boards
+            return [
+                b for b in boards
+                if (b.get("slug") or _kb.DEFAULT_BOARD) in dispatch_board_allowlist
+            ]
+
         # Read max_spawn config to limit concurrent kanban tasks
         max_spawn = kanban_cfg.get("max_spawn", None)
         if max_spawn is not None:
@@ -5494,10 +5527,7 @@ class GatewayRunner:
             when users create a new board mid-run: no restart required,
             the next tick picks it up automatically.
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            boards = _list_dispatch_boards()
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
@@ -5516,10 +5546,7 @@ class GatewayRunner:
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            boards = _list_dispatch_boards()
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
@@ -5567,10 +5594,7 @@ class GatewayRunner:
                     "kanban auto-decompose: import failed (%s); skipping", exc,
                 )
                 return 0
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            boards = _list_dispatch_boards()
             attempted = 0
             successes = 0
             for b in boards:

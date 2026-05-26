@@ -171,6 +171,10 @@ _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
     "/private/etc/", "/private/var/",
 )
+# Normal macOS temp files resolve under /private/var/folders. They are not
+# system config targets, and blocking them breaks pytest tmp_path plus ordinary
+# file-tool writes in temporary workspaces.
+_SENSITIVE_PATH_EXEMPT_PREFIXES = ("/private/var/folders/",)
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
@@ -185,6 +189,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    for exempt_prefix in _SENSITIVE_PATH_EXEMPT_PREFIXES:
+        if resolved.startswith(exempt_prefix) or normalized.startswith(exempt_prefix):
+            return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err

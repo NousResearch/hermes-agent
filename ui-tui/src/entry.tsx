@@ -11,6 +11,7 @@ import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
+import { I18nProvider } from './i18n/index.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
@@ -91,7 +92,11 @@ const onFrame =
       }
     : undefined
 
-ink.render(<App gw={gw} />, {
+ink.render(
+  <I18nProvider>
+    <App gw={gw} />
+  </I18nProvider>,
+  {
   exitOnCtrlC: false,
   onFrame,
   // Open URLs in the user's default browser when a link cell is clicked.

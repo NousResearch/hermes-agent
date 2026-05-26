@@ -837,6 +837,14 @@ def run_conversation(
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
                         api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                    elif isinstance(_base, list):
+                        # Multimodal content (list of blocks): prepend injected context
+                        # as a leading text block so external memory and plugin context
+                        # reach the model even when the user message carries image parts.
+                        # Without this branch the injections are silently dropped because
+                        # the str-only path above never fires for list content.
+                        injection_text = "\n\n".join(_injections)
+                        api_msg["content"] = [{"type": "text", "text": injection_text}, *_base]
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved

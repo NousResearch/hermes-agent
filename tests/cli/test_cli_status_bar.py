@@ -29,11 +29,13 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    provider: str | None = None,
+    base_url: str = "",
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
-        provider="anthropic" if cli_obj.model.startswith("anthropic/") else None,
-        base_url="",
+        provider=provider if provider is not None else ("anthropic" if cli_obj.model.startswith("anthropic/") else None),
+        base_url=base_url,
         session_input_tokens=input_tokens if input_tokens is not None else prompt_tokens,
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
         session_cache_read_tokens=cache_read_tokens,
@@ -80,6 +82,62 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_build_status_bar_text_includes_native_codex_quota_when_available(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            provider="openai-codex",
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        with patch("agent.native_quota.get_native_quota_statusbar_for_model", return_value="cdx 5h 12%↻2h 7d 4%↻5d"):
+            text = cli_obj._build_status_bar_text(width=160)
+
+        assert "gpt-5.5" in text
+        assert "cdx 5h 12%↻2h 7d 4%↻5d" in text
+
+    def test_wide_fragments_include_native_quota_style(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            provider="openai-codex",
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=200)
+        with patch("agent.native_quota.get_native_quota_statusbar_for_model", return_value="cdx 5h 12%↻2h 7d 4%↻5d"), \
+             patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+
+        assert ("class:status-bar-quota", "cdx 5h 12%↻2h 7d 4%↻5d") in frags
+
+    def test_native_quota_absent_for_non_plan_model(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="local/qwen"),
+            provider="custom",
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        with patch("agent.native_quota.get_native_quota_statusbar_for_model", return_value=""):
+            text = cli_obj._build_status_bar_text(width=160)
+
+        assert "cdx 5h" not in text
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()

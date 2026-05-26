@@ -244,3 +244,35 @@ def format_rate_limit_compact(state: RateLimitState) -> str:
         parts.append(f"TPH: {_fmt_count(th.remaining)}/{_fmt_count(th.limit)} (resets {_fmt_seconds(th.remaining_seconds_now)})")
 
     return " | ".join(parts)
+
+
+def format_rate_limit_statusbar(state: RateLimitState) -> str:
+    """Ultra-compact single-line summary for the CLI status bar.
+
+    Shows RPM and TPM (remaining/limit) using only the most critical
+    windows.  Skips hourly windows unless the per-minute bucket is
+    missing, and omits "resets in …" text.  Returns the empty string
+    when no data is available — callers should skip display entirely.
+    """
+    if not state.has_data:
+        return ""
+
+    rm = state.requests_min
+    tm = state.tokens_min
+
+    parts = []
+    if rm.limit > 0:
+        parts.append(f"RPM {rm.remaining}/{rm.limit}")
+    else:
+        rh = state.requests_hour
+        if rh.limit > 0:
+            parts.append(f"RPH {_fmt_count(rh.remaining)}/{_fmt_count(rh.limit)}")
+
+    if tm.limit > 0:
+        parts.append(f"TPM {_fmt_count(tm.remaining)}/{_fmt_count(tm.limit)}")
+    else:
+        th = state.tokens_hour
+        if th.limit > 0:
+            parts.append(f"TPH {_fmt_count(th.remaining)}/{_fmt_count(th.limit)}")
+
+    return " · ".join(parts) if parts else ""

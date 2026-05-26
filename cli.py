@@ -3414,6 +3414,7 @@ class HermesCLI:
             "session_api_calls": 0,
             "compressions": 0,
             "active_background_tasks": 0,
+            "native_quota_compact": "",
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -3447,6 +3448,30 @@ class HermesCLI:
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+
+        # ── Rate limit / quota summary (one-line compact) ────────────
+        get_rl_state = getattr(agent, "get_rate_limit_state", None)
+        rl_state: Any = get_rl_state() if callable(get_rl_state) else None
+        snapshot["rate_limit_state"] = rl_state
+        snapshot["rate_limit_compact"] = ""
+        if rl_state is not None and rl_state.has_data:
+            try:
+                from agent.rate_limit_tracker import format_rate_limit_statusbar
+                snapshot["rate_limit_compact"] = format_rate_limit_statusbar(rl_state)
+            except Exception:
+                pass
+
+        try:
+            from agent.native_quota import get_native_quota_statusbar_for_model
+            snapshot["native_quota_compact"] = get_native_quota_statusbar_for_model(
+                getattr(agent, "provider", None),
+                model_name,
+                getattr(agent, "base_url", None),
+                runtime_api_key=getattr(agent, "api_key", None),
+                runtime_account_id=getattr(agent, "account_id", None),
+            )
+        except Exception:
+            snapshot["native_quota_compact"] = ""
 
         return snapshot
 
@@ -3687,6 +3712,12 @@ class HermesCLI:
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
+            rl_compact = snapshot.get("rate_limit_compact", "")
+            if rl_compact:
+                parts.append(rl_compact)
+            native_quota = snapshot.get("native_quota_compact", "")
+            if native_quota:
+                parts.append(native_quota)
             if yolo_active:
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -3780,6 +3811,16 @@ class HermesCLI:
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
+                    # Position 8: rate limit headers (RPM/TPM compact)
+                    rl_compact = snapshot.get("rate_limit_compact", "")
+                    if rl_compact:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-quota", rl_compact))
+                    # Position 9: native Claude/Codex plan quota (5h/7d)
+                    native_quota = snapshot.get("native_quota_compact", "")
+                    if native_quota:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-quota", native_quota))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -13887,6 +13928,7 @@ class HermesCLI:
             'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
+            'status-bar-quota': 'bg:#1a1a2e #8B8682',
             'status-bar-yolo': 'bg:#1a1a2e #FF4444 bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',

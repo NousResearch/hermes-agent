@@ -889,6 +889,10 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Name of the resolved agent_profiles profile, if delegation used one.
+    # When set, MCP toolsets declared by the profile bypass parent
+    # intersection (see toolset resolution below).
+    profile_name: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -948,7 +952,22 @@ def _build_child_agent(
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
+
+        # When toolsets come from a named agent_profile, MCP toolsets bypass the
+        # parent intersection. The profile declares exactly which MCP servers the
+        # child needs; resolving them against the parent's loaded tools would
+        # silently drop them whenever the orchestrator restricts its own MCP
+        # context (e.g. no_mcp, or simply not loading domain servers). Non-MCP
+        # toolsets still go through intersection — that security boundary is
+        # preserved. See NousResearch/hermes-agent#32668.
+        if profile_name:
+            child_toolsets = [
+                t for t in toolsets
+                if _is_mcp_toolset_name(t) or t in expanded_parent
+            ]
+        else:
+            child_toolsets = [t for t in toolsets if t in expanded_parent]
+
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
@@ -2067,11 +2086,16 @@ def delegate_task(
     # profiles block once for the whole batch). Per-task profile beats the
     # top-level profile; tasks without one inherit the top-level overrides.
     _task_profile_overrides: List[dict] = []
+    # Effective profile name per task (per-task profile beats the top-level
+    # one). Passed to _build_child_agent so MCP toolsets declared by a named
+    # profile bypass the parent intersection. See NousResearch/hermes-agent#32668.
+    _task_profile_names: List[Optional[str]] = []
     _profiles_cache: Optional[dict] = None
     for t in task_list:
         task_profile = t.get("profile")
         if not task_profile:
             _task_profile_overrides.append(_profile_overrides)
+            _task_profile_names.append(profile)
             continue
         if _profiles_cache is None:
             _profiles_cache = _load_profiles()
@@ -2081,6 +2105,7 @@ def delegate_task(
             )
         except ValueError as exc:
             return tool_error(str(exc))
+        _task_profile_names.append(task_profile)
 
     overall_start = time.monotonic()
     results = []
@@ -2110,6 +2135,7 @@ def delegate_task(
             # Per-task profile (pre-resolved above) beats the top-level profile;
             # tasks without one carry the top-level overrides.
             task_overrides = _task_profile_overrides[i]
+            task_profile_name = _task_profile_names[i]
 
             # Explicit per-task value > task profile > top-level toolsets baseline.
             task_toolsets = t.get("toolsets") or task_overrides.get("toolsets") or toolsets
@@ -2145,6 +2171,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                profile_name=task_profile_name,
             )
             # Profile system prompt override: replace the child's ephemeral
             # system prompt (read at runtime by the conversation loop) when the

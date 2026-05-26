@@ -209,3 +209,33 @@ def test_register_webhook_surfaces_secret(monkeypatch: pytest.MonkeyPatch) -> No
     )
     assert data["signingSecret"] == "0" * 64
     assert data["webhookUrl"] == "https://x.example.com/hook"
+
+
+def test_persist_webhook_signing_secret_writes_env(
+    tmp_hermes_home: Path,
+) -> None:
+    """The helper hands the secret to save_env_value, never returns it."""
+    response = {
+        "id": "wh-uuid",
+        "webhookUrl": "https://x.example.com/hook",
+        "signingSecret": "ABCDEF1234567890" * 4,
+    }
+    path, redacted = photon_auth.persist_webhook_signing_secret(response)
+
+    assert path is not None
+    assert path.exists()
+    env_text = path.read_text()
+    assert "PHOTON_WEBHOOK_SECRET=ABCDEF1234567890" in env_text
+    # The returned redacted copy must not leak the secret.
+    assert redacted["signingSecret"] == "<redacted>"
+    assert redacted["webhookUrl"] == "https://x.example.com/hook"
+
+
+def test_persist_webhook_signing_secret_no_secret_no_write(
+    tmp_hermes_home: Path,
+) -> None:
+    path, redacted = photon_auth.persist_webhook_signing_secret(
+        {"id": "wh-uuid", "webhookUrl": "https://x"}
+    )
+    assert path is None
+    assert "<redacted>" not in redacted.values()

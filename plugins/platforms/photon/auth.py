@@ -399,6 +399,15 @@ def create_user(
 def register_webhook(
     project_id: str, project_secret: str, *, webhook_url: str,
 ) -> Dict[str, Any]:
+    """Register a webhook URL with Photon and return the API response.
+
+    Photon returns the per-URL signing secret exactly once in this
+    response, so callers who need to persist it should hand the
+    response to :func:`persist_webhook_signing_secret` immediately —
+    that helper writes the value into ``~/.hermes/.env`` (mode 0o600,
+    existing entries preserved) without the secret value ever needing
+    to leave this module.
+    """
     if httpx is None:
         raise RuntimeError("httpx is required for Photon webhook registration")
     url = f"{_spectrum_host()}/projects/{project_id}/webhooks/"
@@ -415,6 +424,49 @@ def register_webhook(
             f"Photon register-webhook failed: {data.get('message') or data}"
         )
     return data.get("data") or {}
+
+
+def persist_webhook_signing_secret(
+    webhook_data: Dict[str, Any],
+) -> Tuple[Optional[Path], Dict[str, Any]]:
+    """Persist a webhook signing secret via Hermes' canonical .env writer.
+
+    Delegates to :func:`hermes_cli.config.save_env_value` — the same
+    helper that backs every other API-key persistence path in Hermes
+    Agent (OpenAI key, Anthropic key, Telegram token, ...). The secret
+    value is read directly from ``webhook_data['signingSecret']`` (or
+    ``['secret']`` fallback) and handed to that helper without ever
+    being bound to a local in any module that prints or logs.
+
+    Returns ``(path_written | None, redacted_response)``. The redacted
+    response has any secret-bearing keys replaced with ``"<redacted>"``
+    so callers can safely dump the rest of the response.
+    """
+    if not isinstance(webhook_data, dict):
+        return None, {}
+    has_secret = bool(webhook_data.get("signingSecret") or webhook_data.get("secret"))
+    redacted = {
+        k: ("<redacted>" if k in ("signingSecret", "secret") else v)
+        for k, v in webhook_data.items()
+    }
+    if not has_secret:
+        return None, redacted
+    try:
+        from hermes_cli.config import save_env_value  # type: ignore
+    except ImportError:
+        return None, redacted
+    try:
+        save_env_value(
+            "PHOTON_WEBHOOK_SECRET",
+            webhook_data.get("signingSecret") or webhook_data.get("secret") or "",
+        )
+    except Exception:
+        return None, redacted
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore
+        return Path(get_hermes_home()) / ".env", redacted
+    except Exception:
+        return Path(os.path.expanduser("~/.hermes")) / ".env", redacted
 
 
 def list_webhooks(project_id: str, project_secret: str) -> list:

@@ -1044,6 +1044,25 @@ def switch_model(
 # Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
 
+def _extract_model_id(entry) -> str:
+    """Extract a model id string from a config entry.
+
+    The ``providers:`` and ``custom_providers:`` schemas accept model entries
+    as either a plain string (``"qwen36-mtp"``) or a dict with ``id`` and
+    ``name`` keys (``{id: qwen36-mtp, name: Qwen3.6 MTP}``).  This helper
+    normalises both forms to a plain id string so downstream consumers
+    (including the Dashboard model picker) never receive an opaque dict.
+    """
+    if isinstance(entry, dict):
+        mid = str(entry.get("id", "") or "").strip()
+        if mid:
+            return mid
+        return ""
+    if isinstance(entry, str):
+        return entry.strip()
+    return ""
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -1503,8 +1522,9 @@ def list_authenticated_providers(
                         models_list.append(m)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    mid = _extract_model_id(m)
+                    if mid and mid not in models_list:
+                        models_list.append(mid)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -1643,8 +1663,9 @@ def list_authenticated_providers(
                         groups[group_key]["models"].append(m)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+                    mid = _extract_model_id(m)
+                    if mid and mid not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(mid)
 
         _section4_emitted_slugs: set = set()
         for grp_key, grp in groups.items():

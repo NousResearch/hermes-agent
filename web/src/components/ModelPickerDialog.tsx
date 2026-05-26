@@ -105,7 +105,12 @@ export function ModelPickerDialog(props: Props) {
     promise
       .then((r) => {
         if (closedRef.current) return;
-        const next = r?.providers ?? [];
+        const next = (r?.providers ?? []).map((p) => ({
+          ...p,
+          models: (p.models ?? []).map((m: unknown) =>
+            typeof m === "string" ? m : String(m),
+          ),
+        }));
         setProviders(next);
         setCurrentModel(String(r?.model ?? ""));
         setCurrentProviderSlug(String(r?.provider ?? ""));

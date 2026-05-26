@@ -3260,12 +3260,20 @@ def _normalize_custom_provider_entry(
         normalized["models"] = models
     elif isinstance(models, list) and models:
         # Hand-edited configs (and older Hermes versions) write ``models`` as
-        # a plain list of model ids. Preserve them by converting to the dict
-        # shape downstream code expects; otherwise normalize silently drops
-        # the list and /model shows the provider with (0) models.
-        normalized["models"] = {
-            str(m): {} for m in models if isinstance(m, str) and m.strip()
-        }
+        # a plain list of model ids.  v12+ ``providers:`` entries use dicts
+        # with ``id`` / ``name`` keys.  Normalise both forms to the dict shape
+        # downstream code expects; otherwise the Dashboard model picker
+        # receives opaque objects it can't render.
+        result: Dict[str, Dict] = {}
+        for m in models:
+            if isinstance(m, dict):
+                mid = str(m.get("id", "") or "").strip()
+                if mid:
+                    result[mid] = {}
+            elif isinstance(m, str) and m.strip():
+                result[m.strip()] = {}
+        if result:
+            normalized["models"] = result
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:

@@ -15,6 +15,20 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
+- GET  /api/sessions               — persisted session summaries
+- GET  /api/sessions/search        — full-text session search
+- GET  /api/sessions/{id}/messages — persisted session messages
+- GET  /api/profiles               — profile metadata
+- POST /api/profiles               — create profile
+- DELETE /api/profiles/{name}      — delete profile
+- POST /api/profiles/{name}/activate — set active profile
+- GET/PUT/POST /api/profiles/{name}/soul — read, write, reset persona
+- GET/POST/PUT/DELETE /api/memory  — read and edit memory/user profile files
+- GET/PUT /api/tools/toolsets      — list and update toolsets
+- GET /api/skills/installed        — installed skills
+- GET /api/skills/bundled          — bundled skills
+- GET /api/skills/content          — read a skill's SKILL.md
+- GET /api/gateway/status          — gateway runtime status
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -656,6 +670,167 @@ except ImportError:
     _cron_trigger = None
 
 
+MEMORY_ENTRY_DELIMITER = "\n\u00a7\n"
+MEMORY_CHAR_LIMIT = 2200
+USER_PROFILE_CHAR_LIMIT = 1375
+
+
+def _api_json_error(message: str, status: int = 400) -> "web.Response":
+    return web.json_response({"error": message}, status=status)
+
+
+def _coerce_limit_offset(request: "web.Request", *, default_limit: int = 30) -> tuple[int, int]:
+    try:
+        limit = int(request.query.get("limit", default_limit))
+    except (TypeError, ValueError):
+        limit = default_limit
+    try:
+        offset = int(request.query.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    return max(1, min(limit, 200)), max(0, offset)
+
+
+def _csv_query_values(request: "web.Request", *names: str) -> list[str]:
+    values: list[str] = []
+    for name in names:
+        for raw in request.query.getall(name, []):
+            values.extend(part.strip() for part in raw.split(","))
+    return [value for value in values if value]
+
+
+def _session_source_filters(request: "web.Request") -> tuple[Optional[str], Optional[list[str]]]:
+    source = (request.query.get("source") or "").strip() or None
+    exclude_sources = _csv_query_values(request, "exclude_source", "exclude_sources")
+    return source, (exclude_sources or None)
+
+
+def _profile_dir_for_request(request: "web.Request") -> Path:
+    return _resolve_profile_dir(request.query.get("profile"))
+
+
+def _resolve_profile_dir(profile: Optional[str]) -> Path:
+    if not profile or profile == "current":
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home()
+
+    from hermes_cli import profiles as profiles_mod
+
+    name = profiles_mod.normalize_profile_name(profile)
+    profiles_mod.validate_profile_name(name)
+    if not profiles_mod.profile_exists(name):
+        raise FileNotFoundError(f"Profile '{name}' does not exist.")
+    return profiles_mod.get_profile_dir(name)
+
+
+def _read_text_file(path: Path) -> dict:
+    try:
+        st = path.stat()
+        return {
+            "content": path.read_text(encoding="utf-8"),
+            "exists": True,
+            "lastModified": int(st.st_mtime),
+            "last_modified": int(st.st_mtime),
+        }
+    except FileNotFoundError:
+        return {
+            "content": "",
+            "exists": False,
+            "lastModified": None,
+            "last_modified": None,
+        }
+
+
+def _parse_memory_entries(content: str) -> list[dict]:
+    if not content.strip():
+        return []
+    entries = []
+    for idx, entry in enumerate(content.split(MEMORY_ENTRY_DELIMITER)):
+        entry = entry.strip()
+        if entry:
+            entries.append({"index": idx, "content": entry})
+    return entries
+
+
+def _serialize_memory_entries(entries: list[dict]) -> str:
+    return MEMORY_ENTRY_DELIMITER.join(str(entry.get("content", "")).strip() for entry in entries)
+
+
+def _ensure_parent_and_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _skill_frontmatter(content: str) -> tuple[str, str]:
+    name = ""
+    description = ""
+    if content.startswith("---"):
+        end = content.find("---", 3)
+        if end != -1:
+            frontmatter = content[3:end]
+            if match := re.search(r"^\s*name:\s*[\"']?([^\"'\n]+)[\"']?\s*$", frontmatter, re.M):
+                name = match.group(1).strip()
+            if match := re.search(r"^\s*description:\s*[\"']?([^\"'\n]+)[\"']?\s*$", frontmatter, re.M):
+                description = match.group(1).strip()
+    if not name:
+        if match := re.search(r"^#\s+(.+)$", content, re.M):
+            name = match.group(1).strip()
+    if not description:
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith(("#", "---")):
+                description = stripped[:160]
+                break
+    return name, description
+
+
+def _scan_skills(root: Path, *, source: str) -> list[dict]:
+    if not root.is_dir():
+        return []
+    skills: list[dict] = []
+    for skill_md in sorted(root.rglob("SKILL.md")):
+        if ".git" in skill_md.parts or ".hub" in skill_md.parts:
+            continue
+        try:
+            rel = skill_md.parent.relative_to(root)
+        except ValueError:
+            continue
+        parts = rel.parts
+        category = parts[0] if len(parts) > 1 else "local"
+        slug = parts[-1] if parts else skill_md.parent.name
+        try:
+            content = skill_md.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            content = ""
+        name, description = _skill_frontmatter(content[:4000])
+        skills.append(
+            {
+                "name": name or slug,
+                "slug": slug,
+                "category": category,
+                "description": description,
+                "source": source,
+                "path": str(skill_md.parent),
+            }
+        )
+    return skills
+
+
+def _path_within(path: Path, roots: list[Path]) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -1024,6 +1199,330 @@ class APIServerAdapter(BasePlatformAdapter):
             "pid": os.getpid(),
         })
 
+    async def _handle_gateway_status(self, request: "web.Request") -> "web.Response":
+        """GET /api/gateway/status — return persisted gateway runtime status."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from gateway.status import read_runtime_status
+
+        runtime = read_runtime_status() or {}
+        return web.json_response(
+            {
+                "ok": True,
+                "running": True,
+                "pid": os.getpid(),
+                "gateway_state": runtime.get("gateway_state"),
+                "platforms": runtime.get("platforms", {}),
+                "active_agents": runtime.get("active_agents", 0),
+                "exit_reason": runtime.get("exit_reason"),
+                "updated_at": runtime.get("updated_at"),
+            }
+        )
+
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions — list persisted session summaries."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        limit, offset = _coerce_limit_offset(request)
+        source, exclude_sources = _session_source_filters(request)
+        try:
+            from hermes_state import SessionDB
+
+            db_path = _profile_dir_for_request(request) / "state.db"
+            if not db_path.exists():
+                return web.json_response(
+                    {"sessions": [], "total": 0, "limit": limit, "offset": offset}
+                )
+            db = SessionDB(db_path)
+            try:
+                sessions = db.list_sessions_rich(
+                    source=source,
+                    exclude_sources=exclude_sources,
+                    limit=limit,
+                    offset=offset,
+                    order_by_last_active=True,
+                )
+                total = db.session_count(source=source) if not exclude_sources else len(sessions)
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.exception("GET /api/sessions failed")
+            return _api_json_error(str(exc), status=500)
+
+        from gateway.platforms.api_sanitiser import sanitize_response
+
+        normalized = []
+        for item in sessions:
+            row = dict(item)
+            row.setdefault("preview", row.get("preview") or "")
+            row.setdefault("title", row.get("title"))
+            row["startedAt"] = row.get("started_at")
+            row["endedAt"] = row.get("ended_at")
+            row["messageCount"] = row.get("message_count", 0)
+            normalized.append(row)
+        return web.json_response(
+            sanitize_response(
+                {"sessions": normalized, "total": total, "limit": limit, "offset": offset}
+            )
+        )
+
+    async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/search?q=... — search persisted messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        query = (request.query.get("q") or "").strip()
+        if not query:
+            return web.json_response({"results": []})
+        try:
+            limit = max(1, min(int(request.query.get("limit", 20)), 100))
+        except (TypeError, ValueError):
+            limit = 20
+
+        try:
+            from hermes_state import SessionDB
+
+            db_path = _profile_dir_for_request(request) / "state.db"
+            if not db_path.exists():
+                return web.json_response({"results": []})
+            db = SessionDB(db_path)
+            try:
+                source, exclude_sources = _session_source_filters(request)
+                matches = db.search_messages(
+                    query=query,
+                    source_filter=[source] if source else None,
+                    exclude_sources=exclude_sources,
+                    limit=limit,
+                )
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.exception("GET /api/sessions/search failed")
+            return _api_json_error(str(exc), status=500)
+
+        seen: dict[str, dict] = {}
+        for match in matches:
+            sid = match.get("session_id")
+            if not sid or sid in seen:
+                continue
+            seen[sid] = {
+                "session_id": sid,
+                "sessionId": sid,
+                "title": match.get("title"),
+                "snippet": match.get("snippet", ""),
+                "role": match.get("role"),
+                "source": match.get("source"),
+                "model": match.get("model"),
+                "started_at": match.get("session_started"),
+                "startedAt": match.get("session_started"),
+            }
+        return web.json_response({"results": list(seen.values())})
+
+    async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/messages — fetch persisted messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+        try:
+            from hermes_state import SessionDB
+
+            db_path = _profile_dir_for_request(request) / "state.db"
+            if not db_path.exists():
+                return _api_json_error("Session not found", status=404)
+            db = SessionDB(db_path)
+            try:
+                resolved = db.resolve_session_id(session_id)
+                if not resolved:
+                    return _api_json_error("Session not found", status=404)
+                messages = db.get_messages(resolved)
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.exception("GET /api/sessions/%s/messages failed", session_id)
+            return _api_json_error(str(exc), status=500)
+
+        from gateway.platforms.api_sanitiser import sanitize_response
+
+        return web.json_response(
+            sanitize_response(
+                {"session_id": resolved, "sessionId": resolved, "messages": messages}
+            )
+        )
+
+    async def _handle_list_profiles(self, request: "web.Request") -> "web.Response":
+        """GET /api/profiles — list Hermes profiles."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli import profiles as profiles_mod
+
+            active = profiles_mod.get_active_profile_name()
+            items = []
+            for profile in profiles_mod.list_profiles():
+                has_soul = (Path(profile.path) / "SOUL.md").exists()
+                item = {
+                    "name": profile.name,
+                    "path": str(profile.path),
+                    "is_default": profile.is_default,
+                    "isDefault": profile.is_default,
+                    "is_active": profile.name == active,
+                    "isActive": profile.name == active,
+                    "model": profile.model or "",
+                    "provider": profile.provider or "",
+                    "has_env": profile.has_env,
+                    "hasEnv": profile.has_env,
+                    "has_soul": has_soul,
+                    "hasSoul": has_soul,
+                    "skill_count": profile.skill_count,
+                    "skillCount": profile.skill_count,
+                    "gateway_running": profile.gateway_running,
+                    "gatewayRunning": profile.gateway_running,
+                }
+                items.append(item)
+            return web.json_response({"profiles": items, "active": active})
+        except Exception as exc:
+            logger.exception("GET /api/profiles failed")
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_create_profile(self, request: "web.Request") -> "web.Response":
+        """POST /api/profiles — create a Hermes profile."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return _api_json_error("Invalid JSON in request body", status=400)
+        name = str(body.get("name") or "").strip()
+        clone = bool(body.get("clone") or body.get("clone_from_default"))
+        no_skills = bool(body.get("no_skills"))
+        if not name:
+            return _api_json_error("Profile name is required", status=400)
+
+        try:
+            from hermes_cli import profiles as profiles_mod
+
+            path = profiles_mod.create_profile(
+                name=name,
+                clone_from="default" if clone else None,
+                clone_config=clone,
+                no_skills=no_skills,
+            )
+            if not clone:
+                profiles_mod.seed_profile_skills(path, quiet=True)
+            if not profiles_mod.check_alias_collision(name):
+                profiles_mod.create_wrapper_script(name)
+            return web.json_response({"ok": True, "name": name, "path": str(path)})
+        except (ValueError, FileExistsError, FileNotFoundError) as exc:
+            return _api_json_error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("POST /api/profiles failed")
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_delete_profile(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/profiles/{name} — delete a Hermes profile."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        name = request.match_info["name"]
+        try:
+            from hermes_cli import profiles as profiles_mod
+
+            path = profiles_mod.delete_profile(name, yes=True)
+            return web.json_response({"ok": True, "path": str(path)})
+        except FileNotFoundError as exc:
+            return _api_json_error(str(exc), status=404)
+        except ValueError as exc:
+            return _api_json_error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("DELETE /api/profiles/%s failed", name)
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_activate_profile(self, request: "web.Request") -> "web.Response":
+        """POST /api/profiles/{name}/activate — set the active profile."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        name = request.match_info["name"]
+        try:
+            from hermes_cli import profiles as profiles_mod
+
+            profiles_mod.set_active_profile(name)
+            return web.json_response({"ok": True, "active": profiles_mod.get_active_profile_name()})
+        except (ValueError, FileNotFoundError) as exc:
+            return _api_json_error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("POST /api/profiles/%s/activate failed", name)
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_get_soul(self, request: "web.Request") -> "web.Response":
+        """GET /api/profiles/{name}/soul — read persona/SOUL.md."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            profile_dir = _resolve_profile_dir(request.match_info["name"])
+            return web.json_response(_read_text_file(profile_dir / "SOUL.md"))
+        except FileNotFoundError as exc:
+            return _api_json_error(str(exc), status=404)
+        except ValueError as exc:
+            return _api_json_error(str(exc), status=400)
+
+    async def _handle_write_soul(self, request: "web.Request") -> "web.Response":
+        """PUT /api/profiles/{name}/soul — write persona/SOUL.md."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return _api_json_error("Invalid JSON in request body", status=400)
+        try:
+            profile_dir = _resolve_profile_dir(request.match_info["name"])
+            _ensure_parent_and_write(profile_dir / "SOUL.md", str(body.get("content") or ""))
+            return web.json_response({"ok": True})
+        except FileNotFoundError as exc:
+            return _api_json_error(str(exc), status=404)
+        except ValueError as exc:
+            return _api_json_error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("PUT /api/profiles/%s/soul failed", request.match_info["name"])
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_reset_soul(self, request: "web.Request") -> "web.Response":
+        """POST /api/profiles/{name}/soul/reset — reset persona/SOUL.md."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+            profile_dir = _resolve_profile_dir(request.match_info["name"])
+            _ensure_parent_and_write(profile_dir / "SOUL.md", DEFAULT_SOUL_MD)
+            return web.json_response({"ok": True, "content": DEFAULT_SOUL_MD})
+        except FileNotFoundError as exc:
+            return _api_json_error(str(exc), status=404)
+        except ValueError as exc:
+            return _api_json_error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("POST /api/profiles/%s/soul/reset failed", request.match_info["name"])
+            return _api_json_error(str(exc), status=500)
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
         auth_err = self._check_auth(request)
@@ -1056,6 +1555,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        from gateway.platforms.api_sanitiser import declared_policy
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -1064,6 +1565,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "type": "bearer",
                 "required": bool(self._api_key),
             },
+            "sanitisation": declared_policy(),
             "runtime": {
                 "mode": "server_agent",
                 "tool_execution": "server",
@@ -1086,6 +1588,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "remote_sessions": True,
+                "remote_profiles": True,
+                "remote_memory": True,
+                "remote_persona": True,
+                "remote_skills": True,
+                "remote_toolsets": True,
+                "remote_gateway_status": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1101,6 +1610,23 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "gateway_status": {"method": "GET", "path": "/api/gateway/status"},
+                "sessions": {"method": "GET", "path": "/api/sessions"},
+                "session_search": {"method": "GET", "path": "/api/sessions/search"},
+                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "profiles": {"method": "GET", "path": "/api/profiles"},
+                "profile_create": {"method": "POST", "path": "/api/profiles"},
+                "profile_delete": {"method": "DELETE", "path": "/api/profiles/{name}"},
+                "profile_activate": {"method": "POST", "path": "/api/profiles/{name}/activate"},
+                "profile_soul": {"method": "GET/PUT", "path": "/api/profiles/{name}/soul"},
+                "profile_soul_reset": {"method": "POST", "path": "/api/profiles/{name}/soul/reset"},
+                "memory": {"method": "GET", "path": "/api/memory"},
+                "memory_entries": {"method": "POST/PUT/DELETE", "path": "/api/memory/entries"},
+                "memory_user": {"method": "PUT", "path": "/api/memory/user"},
+                "toolsets": {"method": "GET/PUT", "path": "/api/tools/toolsets"},
+                "installed_skills": {"method": "GET", "path": "/api/skills/installed"},
+                "bundled_skills": {"method": "GET", "path": "/api/skills/bundled"},
+                "skill_content": {"method": "GET", "path": "/api/skills/content"},
             },
         })
 
@@ -2487,6 +3013,290 @@ class APIServerAdapter(BasePlatformAdapter):
             "deleted": True,
         })
 
+    async def _handle_read_memory(self, request: "web.Request") -> "web.Response":
+        """GET /api/memory — read MEMORY.md and USER.md for a profile."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            memory_file = _read_text_file(profile_dir / "memories" / "MEMORY.md")
+            user_file = _read_text_file(profile_dir / "memories" / "USER.md")
+            entries = _parse_memory_entries(memory_file["content"])
+            stats = {"totalSessions": 0, "totalMessages": 0, "total_sessions": 0, "total_messages": 0}
+            try:
+                db_path = profile_dir / "state.db"
+                if db_path.exists():
+                    with sqlite3.connect(str(db_path)) as conn:
+                        row = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+                        total_sessions = int(row[0]) if row else 0
+                        row = conn.execute("SELECT COUNT(*) FROM messages").fetchone()
+                        total_messages = int(row[0]) if row else 0
+                else:
+                    total_sessions = 0
+                    total_messages = 0
+                stats = {
+                    "totalSessions": total_sessions,
+                    "totalMessages": total_messages,
+                    "total_sessions": total_sessions,
+                    "total_messages": total_messages,
+                }
+            except Exception:
+                pass
+            from gateway.platforms.api_sanitiser import sanitize_response
+
+            return web.json_response(
+                sanitize_response(
+                    {
+                        "memory": {
+                            **memory_file,
+                            "entries": entries,
+                            "charCount": len(memory_file["content"]),
+                            "char_count": len(memory_file["content"]),
+                            "charLimit": MEMORY_CHAR_LIMIT,
+                            "char_limit": MEMORY_CHAR_LIMIT,
+                        },
+                        "user": {
+                            **user_file,
+                            "charCount": len(user_file["content"]),
+                            "char_count": len(user_file["content"]),
+                            "charLimit": USER_PROFILE_CHAR_LIMIT,
+                            "char_limit": USER_PROFILE_CHAR_LIMIT,
+                        },
+                        "stats": stats,
+                    }
+                )
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            return _api_json_error(str(exc), status=400)
+        except Exception as exc:
+            logger.exception("GET /api/memory failed")
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_add_memory_entry(self, request: "web.Request") -> "web.Response":
+        """POST /api/memory/entries — append a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return _api_json_error("Invalid JSON in request body", status=400)
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            path = profile_dir / "memories" / "MEMORY.md"
+            existing = _read_text_file(path)
+            entries = _parse_memory_entries(existing["content"])
+            entries.append({"index": len(entries), "content": str(body.get("content") or "").strip()})
+            content = _serialize_memory_entries(entries)
+            if len(content) > MEMORY_CHAR_LIMIT:
+                return _api_json_error(
+                    f"Would exceed memory limit ({len(content)}/{MEMORY_CHAR_LIMIT} chars)",
+                    status=400,
+                )
+            _ensure_parent_and_write(path, content)
+            return web.json_response({"ok": True})
+        except Exception as exc:
+            logger.exception("POST /api/memory/entries failed")
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_update_memory_entry(self, request: "web.Request") -> "web.Response":
+        """PUT /api/memory/entries/{index} — update a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+            index = int(request.match_info["index"])
+        except Exception:
+            return _api_json_error("Invalid request", status=400)
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            path = profile_dir / "memories" / "MEMORY.md"
+            entries = _parse_memory_entries(_read_text_file(path)["content"])
+            if index < 0 or index >= len(entries):
+                return _api_json_error("Entry not found", status=404)
+            entries[index]["content"] = str(body.get("content") or "").strip()
+            content = _serialize_memory_entries(entries)
+            if len(content) > MEMORY_CHAR_LIMIT:
+                return _api_json_error(
+                    f"Would exceed memory limit ({len(content)}/{MEMORY_CHAR_LIMIT} chars)",
+                    status=400,
+                )
+            _ensure_parent_and_write(path, content)
+            return web.json_response({"ok": True})
+        except Exception as exc:
+            logger.exception("PUT /api/memory/entries/%s failed", request.match_info.get("index"))
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_delete_memory_entry(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/memory/entries/{index} — remove a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            index = int(request.match_info["index"])
+        except Exception:
+            return _api_json_error("Invalid entry index", status=400)
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            path = profile_dir / "memories" / "MEMORY.md"
+            entries = _parse_memory_entries(_read_text_file(path)["content"])
+            if index < 0 or index >= len(entries):
+                return _api_json_error("Entry not found", status=404)
+            entries.pop(index)
+            _ensure_parent_and_write(path, _serialize_memory_entries(entries))
+            return web.json_response({"ok": True})
+        except Exception as exc:
+            logger.exception("DELETE /api/memory/entries/%s failed", request.match_info.get("index"))
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_write_user_profile(self, request: "web.Request") -> "web.Response":
+        """PUT /api/memory/user — write USER.md."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return _api_json_error("Invalid JSON in request body", status=400)
+        content = str(body.get("content") or "")
+        if len(content) > USER_PROFILE_CHAR_LIMIT:
+            return _api_json_error(
+                f"Exceeds limit ({len(content)}/{USER_PROFILE_CHAR_LIMIT} chars)",
+                status=400,
+            )
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            _ensure_parent_and_write(profile_dir / "memories" / "USER.md", content)
+            return web.json_response({"ok": True})
+        except Exception as exc:
+            logger.exception("PUT /api/memory/user failed")
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_list_toolsets(self, request: "web.Request") -> "web.Response":
+        """GET /api/tools/toolsets — list configurable toolsets."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        platform = request.query.get("platform") or "api_server"
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import (
+                _get_effective_configurable_toolsets,
+                _get_platform_tools,
+                _toolset_has_keys,
+            )
+            from toolsets import resolve_toolset
+
+            config = load_config()
+            enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
+            toolsets = []
+            for key, label, description in _get_effective_configurable_toolsets():
+                try:
+                    tools = sorted(set(resolve_toolset(key)))
+                except Exception:
+                    tools = []
+                is_enabled = key in enabled
+                toolsets.append(
+                    {
+                        "key": key,
+                        "name": key,
+                        "label": label,
+                        "description": description,
+                        "enabled": is_enabled,
+                        "available": is_enabled,
+                        "configured": _toolset_has_keys(key, config),
+                        "tools": tools,
+                    }
+                )
+            return web.json_response({"toolsets": toolsets, "platform": platform})
+        except Exception as exc:
+            logger.exception("GET /api/tools/toolsets failed")
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_set_toolset(self, request: "web.Request") -> "web.Response":
+        """PUT /api/tools/toolsets/{key} — enable or disable a toolset."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return _api_json_error("Invalid JSON in request body", status=400)
+        key = request.match_info["key"]
+        platform = request.query.get("platform") or "api_server"
+        enabled = bool(body.get("enabled"))
+        try:
+            from hermes_cli.config import load_config, save_config
+            from hermes_cli.tools_config import _apply_toolset_change
+
+            config = load_config()
+            _apply_toolset_change(config, platform, [key], "enable" if enabled else "disable")
+            save_config(config)
+            return web.json_response({"ok": True, "key": key, "enabled": enabled, "platform": platform})
+        except Exception as exc:
+            logger.exception("PUT /api/tools/toolsets/%s failed", key)
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_installed_skills(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/installed — list installed skills."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            return web.json_response({"skills": _scan_skills(profile_dir / "skills", source="installed")})
+        except Exception as exc:
+            logger.exception("GET /api/skills/installed failed")
+            return _api_json_error(str(exc), status=500)
+
+    async def _handle_bundled_skills(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/bundled — list bundled skills from the repo."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        root = Path(__file__).resolve().parents[2] / "skills"
+        return web.json_response({"skills": _scan_skills(root, source="bundled")})
+
+    async def _handle_skill_content(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/content?path=... — read a SKILL.md under allowed roots."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        raw_path = request.query.get("path") or ""
+        if not raw_path:
+            return _api_json_error("path is required", status=400)
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            repo_skills = Path(__file__).resolve().parents[2] / "skills"
+            skill_dir = Path(raw_path)
+            skill_file = skill_dir / "SKILL.md"
+            allowed_roots = [profile_dir / "skills", repo_skills]
+            if not _path_within(skill_file, allowed_roots):
+                return _api_json_error("Skill path is outside the allowed skills directories", status=403)
+            return web.json_response(
+                {
+                    "content": skill_file.read_text(encoding="utf-8", errors="replace"),
+                    "path": str(skill_dir),
+                }
+            )
+        except FileNotFoundError:
+            return _api_json_error("Skill not found", status=404)
+        except Exception as exc:
+            logger.exception("GET /api/skills/content failed")
+            return _api_json_error(str(exc), status=500)
+
     # ------------------------------------------------------------------
     # Cron jobs API
     # ------------------------------------------------------------------
@@ -3496,6 +4306,28 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # Remote management/read APIs for desktop and dashboard clients
+            self._app.router.add_get("/api/gateway/status", self._handle_gateway_status)
+            self._app.router.add_get("/api/sessions", self._handle_list_sessions)
+            self._app.router.add_get("/api/sessions/search", self._handle_search_sessions)
+            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
+            self._app.router.add_get("/api/profiles", self._handle_list_profiles)
+            self._app.router.add_post("/api/profiles", self._handle_create_profile)
+            self._app.router.add_delete("/api/profiles/{name}", self._handle_delete_profile)
+            self._app.router.add_post("/api/profiles/{name}/activate", self._handle_activate_profile)
+            self._app.router.add_get("/api/profiles/{name}/soul", self._handle_get_soul)
+            self._app.router.add_put("/api/profiles/{name}/soul", self._handle_write_soul)
+            self._app.router.add_post("/api/profiles/{name}/soul/reset", self._handle_reset_soul)
+            self._app.router.add_get("/api/memory", self._handle_read_memory)
+            self._app.router.add_post("/api/memory/entries", self._handle_add_memory_entry)
+            self._app.router.add_put("/api/memory/entries/{index}", self._handle_update_memory_entry)
+            self._app.router.add_delete("/api/memory/entries/{index}", self._handle_delete_memory_entry)
+            self._app.router.add_put("/api/memory/user", self._handle_write_user_profile)
+            self._app.router.add_get("/api/tools/toolsets", self._handle_list_toolsets)
+            self._app.router.add_put("/api/tools/toolsets/{key}", self._handle_set_toolset)
+            self._app.router.add_get("/api/skills/installed", self._handle_installed_skills)
+            self._app.router.add_get("/api/skills/bundled", self._handle_bundled_skills)
+            self._app.router.add_get("/api/skills/content", self._handle_skill_content)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

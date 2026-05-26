@@ -806,14 +806,26 @@ logger = logging.getLogger(__name__)
 
 
 def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
-    """Import-safe Termux check for cold-start-sensitive CLI paths."""
+    """Безопасная при импорте проверка Termux и размещённого в нём PRoot."""
     check = env or os.environ
     prefix = str(check.get("PREFIX", ""))
-    return bool(
+    if (
         check.get("TERMUX_VERSION")
         or "com.termux/files/usr" in prefix
         or prefix.startswith("/data/data/com.termux/")
-    )
+    ):
+        return True
+
+    # В proot-distro ядро сообщает PRoot, а каталог хостового Termux доступен.
+    try:
+        uts = os.uname()
+        if ("PRoot" in uts.release or "PRoot" in uts.version) and os.path.isdir(
+            "/data/data/com.termux"
+        ):
+            return True
+    except (OSError, AttributeError):
+        pass
+    return False
 
 
 def _read_packed_ref(common_dir: Path, ref: str) -> str | None:

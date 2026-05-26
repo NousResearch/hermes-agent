@@ -282,6 +282,94 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+def cron_inspect(args):
+    """Display the latest run audit for a cron job."""
+    job_id = args.job_id
+    from cron.jobs import OUTPUT_DIR
+
+    job_output_dir = OUTPUT_DIR / job_id
+    if not job_output_dir.is_dir():
+        print(color(f"No output directory found for job: {job_id}", Colors.RED))
+        print(f"Expected: {job_output_dir}")
+        return 1
+
+    audit_files = sorted(job_output_dir.glob("*.audit.json"))
+    if not audit_files:
+        print(color(f"No audit files found for job: {job_id}", Colors.YELLOW))
+        print(f"Directory: {job_output_dir}")
+        print("Audit files are created when cron jobs run.")
+        return 1
+
+    latest = audit_files[-1]
+    try:
+        with open(latest, "r", encoding="utf-8") as f:
+            audit = json.load(f)
+    except Exception as e:
+        print(color(f"Failed to read audit file: {e}", Colors.RED))
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(audit, indent=2, ensure_ascii=False))
+        return 0
+
+    # Human-readable display
+    print()
+    run_id = audit.get("run_id", "?")
+    print(color(f"Run Audit: {run_id}", Colors.CYAN))
+    print()
+
+    status = audit.get("status", "?")
+    status_color = Colors.GREEN if status == "ok" else Colors.RED
+    print(f"  Status:      {color(status, status_color)}")
+    print(f"  Job:         {audit.get('job_name', '?')} ({audit.get('job_id', '?')})")
+    print(f"  Schedule:    {audit.get('schedule', '?')}")
+    print(f"  Mode:        {audit.get('mode', '?')}")
+    print(f"  Start:       {audit.get('start_time', '?')}")
+    print(f"  End:         {audit.get('end_time', '?')}")
+
+    silent = audit.get("silent", False)
+    silent_reason = audit.get("silent_reason")
+    if silent:
+        print(f"  Silent:      {color('yes', Colors.YELLOW)} (reason: {silent_reason})")
+    else:
+        print(f"  Silent:      no")
+
+    script = audit.get("script") or {}
+    if script.get("path"):
+        print(f"  Script:      {script['path']}")
+        print(f"  Script out:  {script.get('output_length', 0)} bytes")
+
+    agent = audit.get("agent")
+    if agent:
+        resp_len = agent.get("response_length", 0)
+        if resp_len:
+            print(f"  Response:    {resp_len} chars")
+        else:
+            print(f"  Response:    (empty)")
+
+    delivery = audit.get("delivery") or {}
+    delivered = delivery.get("delivered", False)
+    targets = delivery.get("targets", [])
+    print(f"  Delivered:   {color('yes', Colors.GREEN) if delivered else color('no', Colors.DIM)}")
+    if targets:
+        print(f"  Targets:     {', '.join(str(t) for t in targets)}")
+    delivery_err = delivery.get("error")
+    if delivery_err:
+        print(f"  Delivery err: {color(delivery_err, Colors.RED)}")
+
+    error = audit.get("error")
+    if error:
+        print(f"  Error:       {color(error.get('type', 'Error') + ': ' + error.get('message', ''), Colors.RED)}")
+
+    print()
+    print(color(f"  Audit file: {latest}", Colors.DIM))
+    other_count = len(audit_files) - 1
+    if other_count > 0:
+        print(color(f"  ({other_count} earlier audit(s) available)", Colors.DIM))
+    print()
+    return 0
+
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
@@ -317,6 +405,9 @@ def cron_command(args):
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
 
+    if subcmd == "inspect":
+        return cron_inspect(args)
+
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick|inspect]")
     sys.exit(1)

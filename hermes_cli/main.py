@@ -11913,6 +11913,16 @@ def main():
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     _add_accept_hooks_flag(cron_tick)
+
+    # cron inspect
+    cron_inspect = cron_subparsers.add_parser(
+        "inspect", help="Show the latest run audit for a job"
+    )
+    cron_inspect.add_argument("job_id", help="Job ID to inspect")
+    cron_inspect.add_argument(
+        "--json", action="store_true", help="Output raw audit JSON"
+    )
+
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
 

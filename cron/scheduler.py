@@ -147,7 +147,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, save_job_audit, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1931,22 +1931,24 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
+                job_id = job["id"]
+                start_time = _hermes_now()
                 success, output, final_response, error = run_job(job)
 
-                output_file = save_job_output(job["id"], output)
+                output_file = save_job_output(job_id, output)
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job_id)}' failed:\n{error}"
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job_id, SILENT_MARKER)
                     should_deliver = False
 
                 delivery_error = None
@@ -1955,7 +1957,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                         delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
                         delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
+                        logger.error("Delivery failed for job %s: %s", job_id, de)
 
                 # Treat empty final_response as a soft failure so last_status
                 # is not "ok" — the agent ran but produced nothing useful.
@@ -1964,11 +1966,104 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                # Persist a structured audit artifact alongside the markdown
+                # output so missed-task debugging doesn't require re-running
+                # collectors or reading truncated markdown logs.
+                _is_silent = bool(success and SILENT_MARKER in (final_response or "").strip().upper())
+                _silent_reason = None
+                if _is_silent:
+                    _out_upper = (output or "").upper()
+                    if "WAKEAGENT=FALSE" in _out_upper or "WAKEGENT=FALSE" in _out_upper:
+                        _silent_reason = "wake_agent_false"
+                    elif "EMPTY STDOUT" in _out_upper:
+                        _silent_reason = "empty_stdout"
+                    elif "NO OUTPUT" in _out_upper or "SCRIPT PRODUCED NO OUTPUT" in _out_upper:
+                        _silent_reason = "no_script_output"
+                    elif not final_response.strip():
+                        _silent_reason = "empty_response"
+                    else:
+                        _silent_reason = "explicit_silent"
+
+                _deliver_targets = job.get("deliver")
+                if isinstance(_deliver_targets, str):
+                    _deliver_targets = [_deliver_targets]
+                elif not _deliver_targets:
+                    _deliver_targets = ["local"]
+
+                _schedule = job.get("schedule_display") or job.get("schedule", "N/A")
+                if isinstance(_schedule, dict):
+                    _schedule = _schedule.get("value", "N/A")
+                elif not isinstance(_schedule, str):
+                    _schedule = "N/A"
+
+                audit = {
+                    "audit_version": 1,
+                    "run_id": f"cron_{job_id}_{start_time.strftime('%Y%m%d_%H%M%S')}",
+                    "job_id": job_id,
+                    "job_name": job.get("name") or job_id,
+                    "schedule": _schedule,
+                    "start_time": start_time.isoformat(),
+                    "end_time": _hermes_now().isoformat(),
+                    "status": "ok" if success else "error",
+                    "mode": "no_agent" if job.get("no_agent") else "agent",
+                    "silent": _is_silent,
+                    "silent_reason": _silent_reason,
+                    "script": {
+                        "path": job.get("script"),
+                        "output_length": len(output) if output else 0,
+                    },
+                    "delivery": {
+                        "delivered": bool(should_deliver and delivery_error is None),
+                        "targets": _deliver_targets,
+                        "error": delivery_error,
+                    },
+                    "error": (
+                        {"type": error.split(":")[0] if error and ": " in error else "Error",
+                         "message": error}
+                        if not success and error
+                        else None
+                    ),
+                }
+                if not job.get("no_agent"):
+                    audit["agent"] = {
+                        "prompt_length": None,
+                        "response_length": len(final_response) if final_response else 0,
+                    }
+                save_job_audit(job_id, audit)
+
+                mark_job_run(job_id, success, error, delivery_error=delivery_error)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
+                # Attempt to write an audit entry for the crashed run so the
+                # failure is visible in the structured trail.
+                try:
+                    _job_id = job.get("id", "unknown")
+                    _schedule = job.get("schedule_display") or job.get("schedule", "N/A")
+                    if isinstance(_schedule, dict):
+                        _schedule = _schedule.get("value", "N/A")
+                    elif not isinstance(_schedule, str):
+                        _schedule = "N/A"
+                    audit = {
+                        "audit_version": 1,
+                        "run_id": f"cron_{_job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
+                        "job_id": _job_id,
+                        "job_name": job.get("name") or _job_id,
+                        "schedule": _schedule,
+                        "start_time": _hermes_now().isoformat(),
+                        "end_time": _hermes_now().isoformat(),
+                        "status": "error",
+                        "mode": "no_agent" if job.get("no_agent") else "agent",
+                        "silent": False,
+                        "silent_reason": None,
+                        "script": {"path": job.get("script"), "output_length": 0},
+                        "delivery": {"delivered": False, "targets": [], "error": None},
+                        "error": {"type": type(e).__name__, "message": str(e)},
+                    }
+                    save_job_audit(_job_id, audit)
+                except Exception:
+                    pass
                 mark_job_run(job["id"], False, str(e))
                 return False
 

@@ -1120,6 +1120,39 @@ def save_job_output(job_id: str, output: str):
     return output_file
 
 
+def save_job_audit(job_id: str, audit: dict) -> Path:
+    """Save structured audit metadata alongside the markdown output.
+
+    Writes ``{timestamp}.audit.json`` into the same per-job output directory
+    as ``save_job_output`` so every run has a compact, machine-readable
+    decision trace for debugging missed-task scenarios.
+    """
+    ensure_dirs()
+    job_output_dir = _job_output_dir(job_id)
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+    _secure_dir(job_output_dir)
+
+    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
+    audit_file = job_output_dir / f"{timestamp}.audit.json"
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.audit_')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(audit, f, indent=2, ensure_ascii=False, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, audit_file)
+        _secure_file(audit_file)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    return audit_file
+
+
 # =============================================================================
 # Skill reference rewriting (curator integration)
 # =============================================================================

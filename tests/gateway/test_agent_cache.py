@@ -1323,6 +1323,38 @@ class TestCachedAgentInactivityReset:
         assert agent_fresh._api_call_count == 0
         assert agent_interrupted._api_call_count == 0
 
+    def test_max_iterations_refreshes_on_fresh_turn(self):
+        """Cached agents must pick up updated agent.max_turns immediately."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent.max_iterations = 90
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(
+                agent,
+                interrupt_depth=0,
+                max_iterations=12,
+            )
+
+        assert agent.max_iterations == 12
+
+    def test_max_iterations_refreshes_on_interrupt_recursive_turn(self):
+        """Interrupt-recursive cache reuse must still refresh the budget."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent.max_iterations = 90
+
+        GatewayRunner._init_cached_agent_for_turn(
+            agent,
+            interrupt_depth=2,
+            max_iterations=7,
+        )
+
+        assert agent.max_iterations == 7
+
     def test_watchdog_accumulation_across_recursive_turns(self):
         """Scenario: stuck turn + user interrupt → recursive turn.
 

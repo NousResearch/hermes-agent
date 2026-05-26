@@ -824,11 +824,22 @@ class APIServerAdapter(BasePlatformAdapter):
         Validate Bearer token from Authorization header.
 
         Returns None if auth is OK, or a 401 web.Response on failure.
-        If no API key is configured, all requests are allowed (only when API
-        server is local).
+        If no API key is configured, only loopback requests are allowed;
+        non-loopback or unresolvable requests fail closed.
         """
         if not self._api_key:
-            return None  # No key configured — allow all (local-only use)
+            remote = getattr(request, "remote", None)
+            if isinstance(remote, str) and not is_network_accessible(remote):
+                return None  # No key configured, but loopback/local-only use.
+
+            logger.warning(
+                "API server rejected unauthenticated non-local request: %s",
+                self._request_audit_log_suffix(request),
+            )
+            return web.json_response(
+                {"error": {"message": "Authentication required", "type": "invalid_request_error", "code": "invalid_api_key"}},
+                status=401,
+            )
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
@@ -1008,8 +1019,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns gateway state, connected platforms, PID, and uptime so the
         dashboard can display full status without needing a shared PID file or
-        /proc access.  No authentication required.
+        /proc access.  Authentication required.
         """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
         from gateway.status import read_runtime_status
 
         runtime = read_runtime_status() or {}

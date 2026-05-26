@@ -16,7 +16,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, secure_dir, secure_file
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -156,29 +156,12 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def _secure_dir(path: Path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
-    try:
-        os.chmod(path, 0o700)
-    except (OSError, NotImplementedError):
-        pass  # Windows or other platforms where chmod is not supported
-
-
-def _secure_file(path: Path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
-    try:
-        if path.exists():
-            os.chmod(path, 0o600)
-    except (OSError, NotImplementedError):
-        pass
-
-
 def ensure_dirs():
     """Ensure cron directories exist with secure permissions."""
     CRON_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _secure_dir(CRON_DIR)
-    _secure_dir(OUTPUT_DIR)
+    secure_dir(CRON_DIR)
+    secure_dir(OUTPUT_DIR)
 
 
 # =============================================================================
@@ -462,7 +445,7 @@ def save_jobs(jobs: List[Dict[str, Any]]):
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        secure_file(JOBS_FILE)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -1097,7 +1080,7 @@ def save_job_output(job_id: str, output: str):
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     job_output_dir.mkdir(parents=True, exist_ok=True)
-    _secure_dir(job_output_dir)
+    secure_dir(job_output_dir)
     
     timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = job_output_dir / f"{timestamp}.md"
@@ -1109,7 +1092,7 @@ def save_job_output(job_id: str, output: str):
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, output_file)
-        _secure_file(output_file)
+        secure_file(output_file)
     except BaseException:
         try:
             os.unlink(tmp_path)

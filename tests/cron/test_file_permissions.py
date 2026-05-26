@@ -120,15 +120,15 @@ class TestConfigFilePermissions(unittest.TestCase):
 
 
 class TestSecureHelpers(unittest.TestCase):
-    """Test the _secure_file and _secure_dir helpers."""
+    """Test the shared secure_file and secure_dir helpers."""
 
     def test_secure_file_nonexistent_no_error(self):
-        from cron.jobs import _secure_file
-        _secure_file(Path("/nonexistent/path/file.json"))  # Should not raise
+        from hermes_constants import secure_file
+        secure_file(Path("/nonexistent/path/file.json"))  # Should not raise
 
     def test_secure_dir_nonexistent_no_error(self):
-        from cron.jobs import _secure_dir
-        _secure_dir(Path("/nonexistent/path"))  # Should not raise
+        from hermes_constants import secure_dir
+        secure_dir(Path("/nonexistent/path"))  # Should not raise
 
 
 if __name__ == "__main__":

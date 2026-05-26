@@ -713,6 +713,95 @@ class TestBodySize:
             )
             assert resp.status == 413
 
+    @pytest.mark.asyncio
+    async def test_chunked_no_content_length_oversized_rejected(self):
+        """Chunked requests without Content-Length still enforce max_body_bytes."""
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        max_bytes = 100
+        adapter = _make_adapter(routes=routes, max_body_bytes=max_bytes)
+
+        async def _chunked_body():
+            chunk = b"x" * 64
+            total = 0
+            target = max_bytes + 200
+            while total < target:
+                size = min(len(chunk), target - total)
+                yield chunk[:size]
+                total += size
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/big",
+                data=_chunked_body(),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 413
+
+    @pytest.mark.asyncio
+    async def test_chunked_no_content_length_within_limit_accepted(self):
+        """Chunked requests within max_body_bytes are accepted."""
+        routes = {"small": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=1024)
+        adapter.handle_message = AsyncMock()
+
+        async def _chunked_body():
+            yield b'{"status": "ok"}'
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/small",
+                data=_chunked_body(),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_hmac_validation_on_chunked_body(self):
+        """HMAC validation uses the exact streamed body."""
+        secret = "test-hmac-secret"
+        routes = {
+            "secure": {
+                "secret": secret,
+                "events": ["push"],
+                "prompt": "Event: {event}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        body = b'{"event": "push", "data": "test"}'
+        valid_sig = _github_signature(body, secret)
+
+        async def _chunked_body():
+            yield body
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/secure",
+                data=_chunked_body(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Hub-Signature-256": valid_sig,
+                    "X-GitHub-Event": "push",
+                },
+            )
+            assert resp.status == 202
+
+            resp = await cli.post(
+                "/webhooks/secure",
+                data=_chunked_body(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Hub-Signature-256": "sha256=badbadbad",
+                    "X-GitHub-Event": "push",
+                },
+            )
+            assert resp.status == 401
+
 
 # ===================================================================
 # INSECURE_NO_AUTH
@@ -1031,4 +1120,3 @@ class TestInsecureNoAuthSafetyRail:
             assert result is True
         finally:
             await adapter.disconnect()
-

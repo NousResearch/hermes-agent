@@ -3581,7 +3581,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if normalized.startswith("image/"):
             return MessageType.PHOTO
         if normalized.startswith("audio/"):
-            return MessageType.AUDIO
+            return MessageType.VOICE
         if normalized.startswith("video/"):
             return MessageType.VIDEO
         return default

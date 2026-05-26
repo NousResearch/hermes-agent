@@ -107,6 +107,18 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 logger = logging.getLogger(__name__)
 
 
+def _safe_float_env(var_name: str, default: float) -> float:
+    """Read env var as float, returning *default* if missing or non-numeric."""
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        logger.warning("Invalid %s=%r, using default %s", var_name, raw, default)
+        return default
+
+
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
     try:
@@ -1275,7 +1287,7 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
 
         creds = resolve_nous_runtime_credentials(
             min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
-            timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+            timeout_seconds=_safe_float_env("HERMES_NOUS_TIMEOUT_SECONDS", 15.0),
             inference_auth_mode=(
                 NOUS_INFERENCE_AUTH_MODE_LEGACY
                 if force_refresh
@@ -2707,7 +2719,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=_safe_float_env("HERMES_NOUS_TIMEOUT_SECONDS", 15.0),
                 inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
             )
             if not str(creds.get("api_key", "") or "").strip():

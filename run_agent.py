@@ -206,6 +206,18 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname, e
 from hermes_cli.config import cfg_get
 
 
+def _safe_float_env(var_name: str, default: float) -> float:
+    """Read env var as float, returning *default* if missing or non-numeric."""
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        logger.warning("Invalid %s=%r, using default %s", var_name, raw, default)
+        return default
+
+
 
 _MAX_TOOL_WORKERS = 8
 
@@ -876,7 +888,7 @@ class AIAgent:
         cfg = get_provider_request_timeout(self.provider, self.model)
         if cfg is not None:
             return cfg
-        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+        return _safe_float_env("HERMES_API_TIMEOUT", 1800.0)
 
     def _resolved_api_call_stale_timeout_base(self) -> tuple[float, bool]:
         """Resolve the base non-stream stale timeout and whether it is implicit.
@@ -2824,7 +2836,7 @@ class AIAgent:
 
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=_safe_float_env("HERMES_NOUS_TIMEOUT_SECONDS", 15.0),
                 inference_auth_mode=(
                     NOUS_INFERENCE_AUTH_MODE_LEGACY
                     if force

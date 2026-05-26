@@ -791,14 +791,30 @@ logger = logging.getLogger(__name__)
 
 
 def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
-    """Import-safe Termux check for cold-start-sensitive CLI paths."""
+    """Import-safe Termux check for cold-start-sensitive CLI paths.
+
+    Detects native Termux, and also proot-distro environments running
+    on top of Termux/Android (kernel version string contains ``PRoot``
+    and the Android data directory is accessible).
+    """
     check = env or os.environ
     prefix = str(check.get("PREFIX", ""))
-    return bool(
+    if (
         check.get("TERMUX_VERSION")
         or "com.termux/files/usr" in prefix
         or prefix.startswith("/data/data/com.termux/")
-    )
+    ):
+        return True
+    # proot-distro: kernel reports PRoot, Android data dir is still accessible.
+    try:
+        uts = os.uname()
+        if ("PRoot" in uts.release or "PRoot" in uts.version) and os.path.isdir(
+            "/data/data/com.termux"
+        ):
+            return True
+    except (OSError, AttributeError):
+        pass
+    return False
 
 
 def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
@@ -11192,6 +11208,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # ``.[all]`` install completes — lazy refresh uses a separate marker.
         _write_update_incomplete_marker()
         print("→ Updating Python dependencies...")
+
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current — runs `uv self update` if we already have one.
@@ -11203,6 +11220,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if not uv_bin:
             uv_bin = _ensure_uv_for_termux(pip_cmd)
         install_group = "all"
+        deps_installed = False
 
         if uv_bin:
             uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
@@ -11214,10 +11232,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env(uv_env) and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
-        else:
+            try:
+                _install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group
+                )
+                deps_installed = True
+            except subprocess.CalledProcessError as exc:
+                # On Termux/proot, uv can fail with ENOENT file-copy errors
+                # due to proot filesystem translation limitations.  Fall back
+                # to regular pip which handles these cases correctly.
+                if _is_termux_env(uv_env):
+                    print("  ⚠ uv install failed on Termux/proot, falling back to pip...")
+                    logger.debug("uv install failed on Termux/proot: %s", exc)
+                else:
+                    raise
+
+        if not deps_installed:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
             # Some environments lose pip inside the venv; bootstrap it back with
@@ -11238,7 +11268,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             if _is_termux_env():
                 install_group = "termux-all"
-                print("  → Termux detected: using curated termux-all optional profile...")
+                print("  → Termux detected: using pip + curated termux-all optional profile...")
             if _is_termux_env() and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)

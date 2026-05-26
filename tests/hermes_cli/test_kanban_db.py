@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import time
@@ -22,6 +23,34 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+def _make_profile(home: Path, name: str, *, disabled_skills=()) -> Path:
+    profile_dir = home / "profiles" / name
+    (profile_dir / "skills").mkdir(parents=True)
+    if disabled_skills:
+        disabled_yaml = "\n".join(f"  - {skill}" for skill in disabled_skills)
+        config = f"skills:\n  disabled:\n{disabled_yaml}\n"
+    else:
+        config = "skills:\n  disabled: []\n"
+    (profile_dir / "config.yaml").write_text(config, encoding="utf-8")
+    return profile_dir
+
+
+def _make_profile_skill(profile_dir: Path, name: str, *, platforms=None) -> Path:
+    skill_dir = profile_dir / "skills" / "software-development" / name
+    skill_dir.mkdir(parents=True)
+    platform_line = f"platforms: {platforms}\n" if platforms is not None else ""
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        f"description: Test skill {name}\n"
+        f"{platform_line}"
+        "---\n\n"
+        f"# {name}\n",
+        encoding="utf-8",
+    )
+    return skill_dir
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +239,111 @@ def test_branch_name_requires_worktree_workspace(kanban_home):
             workspace_kind="scratch",
             branch_name="wt/bad",
         )
+
+
+def test_create_task_rejects_forced_skill_disabled_for_assignee_profile(kanban_home):
+    profile_dir = _make_profile(kanban_home, "worker", disabled_skills=("demo-skill",))
+    _make_profile_skill(profile_dir, "demo-skill")
+
+    with kb.connect() as conn, pytest.raises(ValueError) as exc_info:
+        kb.create_task(
+            conn,
+            title="bad forced skill",
+            assignee="worker",
+            skills=["demo-skill"],
+        )
+
+    msg = str(exc_info.value)
+    assert "skill-disabled-for-profile" in msg
+    assert "demo-skill" in msg
+    assert "worker" in msg
+
+
+def test_create_task_rejects_forced_skill_missing_from_assignee_profile(kanban_home):
+    _make_profile(kanban_home, "worker")
+
+    with kb.connect() as conn, pytest.raises(ValueError) as exc_info:
+        kb.create_task(
+            conn,
+            title="missing forced skill",
+            assignee="worker",
+            skills=["does-not-exist"],
+        )
+
+    msg = str(exc_info.value)
+    assert "skill-not-installed-for-profile" in msg
+    assert "does-not-exist" in msg
+    assert "worker" in msg
+
+
+def test_create_task_rejects_forced_skill_unsupported_on_platform(kanban_home):
+    profile_dir = _make_profile(kanban_home, "worker")
+    _make_profile_skill(
+        profile_dir,
+        "wrong-platform",
+        platforms="[definitely-not-this-platform]",
+    )
+
+    with kb.connect() as conn, pytest.raises(ValueError) as exc_info:
+        kb.create_task(
+            conn,
+            title="unsupported forced skill",
+            assignee="worker",
+            skills=["wrong-platform"],
+        )
+
+    msg = str(exc_info.value)
+    assert "skill-unsupported-on-platform" in msg
+    assert "wrong-platform" in msg
+    assert "worker" in msg
+
+
+def test_create_task_accepts_category_qualified_forced_skill(kanban_home):
+    profile_dir = _make_profile(kanban_home, "worker")
+    _make_profile_skill(profile_dir, "category-skill")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="category forced skill",
+            assignee="worker",
+            skills=["software-development:category-skill"],
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.skills == ["software-development:category-skill"]
+
+
+def test_create_task_rejects_missing_category_qualified_forced_skill(kanban_home):
+    _make_profile(kanban_home, "worker")
+
+    with kb.connect() as conn, pytest.raises(ValueError) as exc_info:
+        kb.create_task(
+            conn,
+            title="missing category forced skill",
+            assignee="worker",
+            skills=["software-development:missing-skill"],
+        )
+
+    msg = str(exc_info.value)
+    assert "skill-not-installed-for-profile" in msg
+    assert "software-development:missing-skill" in msg
+    assert "worker" in msg
+
+
+def test_kanban_worker_skill_available_respects_disabled_profile_skill(kanban_home):
+    enabled_profile = _make_profile(kanban_home, "enabled-worker")
+    _make_profile_skill(enabled_profile, "kanban-worker")
+    disabled_profile = _make_profile(
+        kanban_home,
+        "disabled-worker",
+        disabled_skills=("kanban-worker",),
+    )
+    _make_profile_skill(disabled_profile, "kanban-worker")
+
+    assert kb._kanban_worker_skill_available(str(enabled_profile)) is True
+    assert kb._kanban_worker_skill_available(str(disabled_profile)) is False
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +835,30 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.last_failure_error is None
 
 
+def test_unblock_refuses_disabled_forced_skill_for_assignee_profile(kanban_home):
+    profile_dir = _make_profile(kanban_home, "worker", disabled_skills=("demo-skill",))
+    _make_profile_skill(profile_dir, "demo-skill")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blocked bad skill", assignee="worker")
+        conn.execute(
+            "UPDATE tasks SET skills = ? WHERE id = ?",
+            (json.dumps(["demo-skill"]), tid),
+        )
+        assert kb.block_task(conn, tid, reason="operator review")
+
+        with pytest.raises(ValueError) as exc_info:
+            kb.unblock_task(conn, tid)
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+
+    msg = str(exc_info.value)
+    assert "skill-disabled-for-profile" in msg
+    assert "demo-skill" in msg
+    assert task.status == "blocked"
+
+
 # ---------------------------------------------------------------------------
 # Parent-completion invariant at the claim gate (RCA t_a6acd07d)
 # ---------------------------------------------------------------------------
@@ -998,6 +1156,42 @@ def test_worker_context_includes_parent_results_and_comments(kanban_home):
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
+
+
+def test_dispatch_blocks_legacy_task_with_disabled_forced_skill_before_spawn(kanban_home):
+    profile_dir = _make_profile(kanban_home, "worker", disabled_skills=("demo-skill",))
+    _make_profile_skill(profile_dir, "demo-skill")
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append(task.id)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy bad skill", assignee="worker")
+        # Simulate a task created before forced-skill validation existed, or one
+        # edited directly in the DB. Dispatch must still fail closed before the
+        # worker process reaches fatal CLI preload.
+        conn.execute(
+            "UPDATE tasks SET skills = ? WHERE id = ?",
+            (json.dumps(["demo-skill"]), tid),
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        events = kb.list_events(conn, tid)
+
+    assert spawned == []
+    assert tid in res.auto_blocked
+    assert task.status == "blocked"
+    assert task.claim_lock is None
+    assert task.worker_pid is None
+    assert task.last_failure_error and "skill-disabled-for-profile" in task.last_failure_error
+    blocked_events = [event for event in events if event.kind == "blocked"]
+    assert blocked_events
+    reason = blocked_events[-1].payload["reason"] if blocked_events[-1].payload else ""
+    assert "skill-disabled-for-profile" in reason
+
 
 def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
     with kb.connect() as conn:
@@ -2630,6 +2824,28 @@ def test_dispatch_review_spawns_with_correct_skills(
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
     assert spawned_tasks[0].skills == ["sdlc-review"]
+
+
+def test_dispatch_review_blocks_when_sdlc_review_disabled_for_profile(kanban_home):
+    profile_dir = _make_profile(kanban_home, "reviewer", disabled_skills=("sdlc-review",))
+    _make_profile_skill(profile_dir, "sdlc-review")
+    spawned = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawned.append(task.id)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="review bad skill", assignee="reviewer")
+        _set_task_status(conn, tid, "review")
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+
+    assert spawned == []
+    assert tid in res.auto_blocked
+    assert task.status == "blocked"
+    assert task.last_failure_error and "skill-disabled-for-profile" in task.last_failure_error
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):

@@ -1524,6 +1524,275 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+@dataclass(frozen=True)
+class ForcedSkillValidationIssue:
+    """A task skill that would fail fatal CLI preload for an assignee profile."""
+
+    skill: str
+    code: str
+    detail: str
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _load_profile_skills_config(profile_home: Path) -> dict[str, Any]:
+    cfg_path = profile_home / "config.yaml"
+    if not cfg_path.exists():
+        return {}
+    try:
+        from agent.skill_utils import yaml_load
+
+        parsed = yaml_load(cfg_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    skills_cfg = parsed.get("skills")
+    return skills_cfg if isinstance(skills_cfg, dict) else {}
+
+
+def _profile_disabled_skill_names(skills_cfg: dict[str, Any]) -> set[str]:
+    platform = os.getenv("HERMES_PLATFORM") or os.getenv("HERMES_SESSION_PLATFORM")
+    if platform:
+        platform_disabled = skills_cfg.get("platform_disabled")
+        if isinstance(platform_disabled, dict) and platform in platform_disabled:
+            return set(_normalize_string_list(platform_disabled.get(platform)))
+    return set(_normalize_string_list(skills_cfg.get("disabled")))
+
+
+def _profile_external_skill_dirs(profile_home: Path, skills_cfg: dict[str, Any]) -> list[Path]:
+    raw_dirs = skills_cfg.get("external_dirs")
+    dirs: list[Path] = []
+    seen: set[Path] = set()
+    local_skills = (profile_home / "skills").resolve()
+    for entry in _normalize_string_list(raw_dirs):
+        expanded = os.path.expanduser(os.path.expandvars(entry))
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = profile_home / path
+        try:
+            path = path.resolve()
+        except OSError:
+            continue
+        if path == local_skills or path in seen or not path.is_dir():
+            continue
+        seen.add(path)
+        dirs.append(path)
+    return dirs
+
+
+def _candidate_skill_files(profile_home: Path, skills_cfg: dict[str, Any], name: str) -> list[Path]:
+    """Return local/external SKILL.md candidates using skill_view's main strategies.
+
+    This is intentionally lightweight and profile-home explicit. Importing
+    tools.skills_tool in the dispatcher would bind its module-level SKILLS_DIR
+    to the dispatcher's profile, not the worker's profile. Re-implement the
+    filesystem lookup here so validation answers the question the child CLI will
+    answer after ``hermes -p <assignee>`` rewrites HERMES_HOME.
+    """
+    from agent.skill_utils import iter_skill_index_files
+
+    roots = [profile_home / "skills"] + _profile_external_skill_dirs(profile_home, skills_cfg)
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    local_category_name: Optional[str] = None
+    if ":" in name:
+        namespace, bare = name.split(":", 1)
+        if namespace and bare:
+            local_category_name = f"{namespace}/{bare}"
+
+    def _record(path: Path) -> None:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    for root in roots:
+        if not root.exists():
+            continue
+        direct = root / name
+        if direct.is_dir() and (direct / "SKILL.md").is_file():
+            _record(direct / "SKILL.md")
+        elif direct.with_suffix(".md").is_file():
+            _record(direct.with_suffix(".md"))
+
+        if local_category_name:
+            categorized = root / local_category_name
+            if categorized.is_dir() and (categorized / "SKILL.md").is_file():
+                _record(categorized / "SKILL.md")
+            elif categorized.with_suffix(".md").is_file():
+                _record(categorized.with_suffix(".md"))
+
+        for skill_md in iter_skill_index_files(root, "SKILL.md"):
+            if skill_md.parent.name == name:
+                _record(skill_md)
+
+        # Legacy flat <name>.md files. Path separators and plugin-qualified
+        # names are not valid flat basenames, so only attempt this for bare names.
+        if "/" not in name and ":" not in name:
+            try:
+                for found_md in root.rglob(f"{name}.md"):
+                    if found_md.name != "SKILL.md":
+                        _record(found_md)
+            except OSError:
+                pass
+
+    return candidates
+
+
+def _validate_forced_skills_for_profile(
+    assignee: Optional[str],
+    skills: Optional[Iterable[str]],
+) -> list[ForcedSkillValidationIssue]:
+    """Classify per-task skills that cannot preload for *assignee*.
+
+    Returns an empty list when validation passes or when the assignee is not a
+    real Hermes profile. The latter is deliberate: dispatch already buckets
+    non-profile lanes as ``skipped_nonspawnable`` and create_task historically
+    allowed tasks for terminal-pulled lanes.
+    """
+    if not assignee or not skills:
+        return []
+    try:
+        from hermes_cli.profiles import profile_exists, resolve_profile_env
+
+        if not profile_exists(assignee):
+            return []
+        profile_home = Path(resolve_profile_env(assignee))
+    except Exception:
+        return []
+
+    skills_cfg = _load_profile_skills_config(profile_home)
+    disabled = _profile_disabled_skill_names(skills_cfg)
+    issues: list[ForcedSkillValidationIssue] = []
+
+    try:
+        from agent.skill_utils import parse_frontmatter, skill_matches_platform
+    except Exception:
+        # If skill metadata helpers are unavailable, fail open: the child CLI
+        # will still enforce preload. This avoids blocking dispatch because an
+        # optional validation dependency failed inside the dispatcher.
+        return []
+
+    for raw_skill in skills:
+        skill = str(raw_skill or "").strip()
+        if not skill:
+            continue
+        candidates = _candidate_skill_files(profile_home, skills_cfg, skill)
+        if not candidates:
+            issues.append(
+                ForcedSkillValidationIssue(
+                    skill=skill,
+                    code="skill-not-installed-for-profile",
+                    detail=(
+                        f"skill {skill!r} is not installed in profile {assignee!r} "
+                        "skills or external_dirs"
+                    ),
+                )
+            )
+            continue
+        if len(candidates) > 1:
+            matches = ", ".join(str(path) for path in candidates[:5])
+            issues.append(
+                ForcedSkillValidationIssue(
+                    skill=skill,
+                    code="skill-ambiguous-for-profile",
+                    detail=(
+                        f"skill {skill!r} is ambiguous for profile {assignee!r}; "
+                        f"matches: {matches}"
+                    ),
+                )
+            )
+            continue
+
+        skill_md = candidates[0]
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+        except Exception as exc:
+            issues.append(
+                ForcedSkillValidationIssue(
+                    skill=skill,
+                    code="skill-unreadable-for-profile",
+                    detail=f"skill {skill!r} cannot be read for profile {assignee!r}: {exc}",
+                )
+            )
+            continue
+        frontmatter, _body = parse_frontmatter(content)
+        resolved_name = str(frontmatter.get("name") or skill_md.parent.name).strip()
+        if not skill_matches_platform(frontmatter):
+            issues.append(
+                ForcedSkillValidationIssue(
+                    skill=skill,
+                    code="skill-unsupported-on-platform",
+                    detail=(
+                        f"skill {resolved_name or skill!r} is not supported on this platform "
+                        f"for profile {assignee!r}"
+                    ),
+                )
+            )
+            continue
+        if resolved_name in disabled:
+            issues.append(
+                ForcedSkillValidationIssue(
+                    skill=skill,
+                    code="skill-disabled-for-profile",
+                    detail=f"skill {resolved_name!r} is disabled for profile {assignee!r}",
+                )
+            )
+
+    return issues
+
+
+def _format_forced_skill_validation_issues(
+    assignee: Optional[str],
+    issues: list[ForcedSkillValidationIssue],
+) -> str:
+    details = "; ".join(f"{issue.code}: {issue.detail}" for issue in issues)
+    return (
+        f"forced skill validation failed for assignee profile {assignee!r}: {details}. "
+        "Remove or replace the task's forced skill(s), install/support the skill "
+        "for that profile, or intentionally enable it before unblocking."
+    )
+
+
+def _forced_skill_validation_error(
+    assignee: Optional[str],
+    skills: Optional[Iterable[str]],
+) -> Optional[str]:
+    issues = _validate_forced_skills_for_profile(assignee, skills)
+    if not issues:
+        return None
+    return _format_forced_skill_validation_issues(assignee, issues)
+
+
+def _block_forced_skill_validation_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reason: str,
+) -> bool:
+    if not block_task(conn, task_id, reason=reason):
+        return False
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (reason[:500], task_id),
+        )
+    return True
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -1647,6 +1916,10 @@ def create_task(
         ).fetchone()
         if row:
             return row["id"]
+
+    skill_validation_error = _forced_skill_validation_error(assignee, skills_list)
+    if skill_validation_error:
+        raise ValueError(skill_validation_error)
 
     now = int(time.time())
 
@@ -3255,7 +3528,7 @@ def block_task(
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running -> blocked``."""
+    """Transition ``running``/``ready``/``review`` -> blocked."""
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
@@ -3266,7 +3539,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                 """,
                 (task_id,),
             )
@@ -3279,7 +3552,7 @@ def block_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready')
+                   AND status IN ('running', 'ready', 'review')
                    AND current_run_id = ?
                 """,
                 (task_id, int(expected_run_id)),
@@ -3384,6 +3657,15 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
     """
+    task = get_task(conn, task_id)
+    if task and task.status in ("blocked", "scheduled"):
+        skill_validation_error = _forced_skill_validation_error(
+            task.assignee,
+            task.skills,
+        )
+        if skill_validation_error:
+            raise ValueError(skill_validation_error)
+
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
@@ -5144,6 +5426,19 @@ def dispatch_once(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        validation_task = get_task(conn, row["id"])
+        skill_validation_error = _forced_skill_validation_error(
+            validation_task.assignee if validation_task else row["assignee"],
+            validation_task.skills if validation_task else None,
+        )
+        if skill_validation_error:
+            if dry_run:
+                result.respawn_guarded.append((row["id"], "forced_skill_validation"))
+            elif _block_forced_skill_validation_failure(
+                conn, row["id"], skill_validation_error,
+            ):
+                result.auto_blocked.append(row["id"])
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -5243,6 +5538,18 @@ def dispatch_once(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        skill_validation_error = _forced_skill_validation_error(
+            row["assignee"],
+            ["sdlc-review"],
+        )
+        if skill_validation_error:
+            if dry_run:
+                result.respawn_guarded.append((row["id"], "forced_skill_validation"))
+            elif _block_forced_skill_validation_failure(
+                conn, row["id"], skill_validation_error,
+            ):
+                result.auto_blocked.append(row["id"])
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
@@ -5493,38 +5800,34 @@ def _resolve_hermes_argv() -> list[str]:
 
 
 def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
-    """True if the bundled ``kanban-worker`` skill resolves for the home the
-    spawned worker will run under.
+    """True if ``kanban-worker`` can be safely preloaded for a worker home.
 
-    The dispatcher injects ``--skills kanban-worker`` into every worker. When
-    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
-    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
-    the bundled skill (it ships in the *default* root home, not every
-    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
-    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
-    worker before the agent loop runs. Gate the flag on actual resolvability;
-    the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
-    omitting the flag only drops the supplementary pattern library.
+    The dispatcher injects ``--skills kanban-worker`` into every worker when
+    safe. When the worker activates a profile (``hermes -p <name>``), its
+    skills root becomes ``<profile_home>/skills`` and its profile config may
+    explicitly disable skills. Preloading a missing, disabled, ambiguous, or
+    platform-unsupported skill is fatal at CLI startup, aborting the worker
+    before the agent loop runs. Gate the flag on profile-specific preload
+    safety; the Kanban lifecycle contract is still injected via
+    ``KANBAN_GUIDANCE``, so omitting the flag only drops the supplementary
+    pattern library.
     """
-    from pathlib import Path as _Path
-
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
+    profile_home = Path(hermes_home) if hermes_home else (Path.home() / ".hermes")
+    skills_cfg = _load_profile_skills_config(profile_home)
+    candidates = _candidate_skill_files(profile_home, skills_cfg, "kanban-worker")
+    if len(candidates) != 1:
         return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
     try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
+        from agent.skill_utils import parse_frontmatter, skill_matches_platform
+
+        content = candidates[0].read_text(encoding="utf-8")
+        frontmatter, _body = parse_frontmatter(content)
+    except Exception:
+        return False
+    if not skill_matches_platform(frontmatter):
+        return False
+    resolved_name = str(frontmatter.get("name") or candidates[0].parent.name).strip()
+    return resolved_name not in _profile_disabled_skill_names(skills_cfg)
 
 
 def _worker_terminal_timeout_env(

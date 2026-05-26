@@ -888,6 +888,10 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Name of the resolved agent_profiles profile, if delegation used one.
+    # When set, MCP toolsets declared by the profile bypass parent
+    # intersection (see toolset resolution below).
+    profile_name: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -947,7 +951,22 @@ def _build_child_agent(
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
+
+        # When toolsets come from a named agent_profile, MCP toolsets bypass the
+        # parent intersection. The profile declares exactly which MCP servers the
+        # child needs; resolving them against the parent's loaded tools would
+        # silently drop them whenever the orchestrator restricts its own MCP
+        # context (e.g. no_mcp, or simply not loading domain servers). Non-MCP
+        # toolsets still go through intersection — that security boundary is
+        # preserved. See NousResearch/hermes-agent#32668.
+        if profile_name:
+            child_toolsets = [
+                t for t in toolsets
+                if _is_mcp_toolset_name(t) or t in expanded_parent
+            ]
+        else:
+            child_toolsets = [t for t in toolsets if t in expanded_parent]
+
         if _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
@@ -2096,6 +2115,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                profile_name=None,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names

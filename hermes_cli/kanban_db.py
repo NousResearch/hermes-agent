@@ -1033,14 +1033,35 @@ def _cross_process_init_lock(path: Path):
     lock_path = path.with_name(path.name + ".init.lock")
     handle = lock_path.open("a+b")
     try:
-        if not _IS_WINDOWS:
+        if _IS_WINDOWS:
+            import msvcrt
+
+            # Lock a single byte in the sidecar file. ``msvcrt.locking`` starts
+            # at the current file position, so seek explicitly before both
+            # lock and unlock.  The file is opened in append/read binary mode so
+            # it always exists but the byte-range lock is the synchronization
+            # primitive; no payload needs to be written.
+            handle.seek(0)
+            locking = getattr(msvcrt, "locking")
+            lock_mode = getattr(msvcrt, "LK_LOCK")
+            locking(handle.fileno(), lock_mode, 1)
+        else:
             import fcntl
+
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         yield
     finally:
         try:
-            if not _IS_WINDOWS:
+            if _IS_WINDOWS:
+                import msvcrt
+
+                handle.seek(0)
+                locking = getattr(msvcrt, "locking")
+                unlock_mode = getattr(msvcrt, "LK_UNLCK")
+                locking(handle.fileno(), unlock_mode, 1)
+            else:
                 import fcntl
+
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()

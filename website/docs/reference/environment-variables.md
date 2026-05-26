@@ -130,6 +130,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `SEARXNG_URL` | SearXNG instance URL for free self-hosted web search — no API key required ([searxng.github.io](https://searxng.github.io/searxng/)) |
 | `TAVILY_BASE_URL` | Override the Tavily API endpoint. Useful for corporate proxies and self-hosted Tavily-compatible search backends. Same pattern as `GROQ_BASE_URL`. |
 | `EXA_API_KEY` | Exa API key for AI-native web search and contents ([exa.ai](https://exa.ai/)) |
+| `SERPAPI_API_KEY` | SerpApi API key, preferably loaded from Bitwarden Secrets Manager using the same secret name. Used by the `serpapi_read_only_probe` tool and search-only SerpApi wrappers such as `serpapi_google_flights_search` and `serpapi_google_hotels_search` without exposing the key. |
+| `GOOGLE_MAPS_API_KEY` | Optional Google Maps Platform API key, preferably loaded from Bitwarden Secrets Manager using the same secret name. Used only by Google-backed travel POI/routing features when implemented/enabled; existing OSM-based maps behavior remains the no-key fallback. Never log, display, or return the key. |
+| `TODOIST_API_TOKEN` | Todoist API token, preferably loaded from Bitwarden Secrets Manager using the same secret name. Used by read-only Todoist Sync API tools such as `todoist_read_only_probe` and `todoist_list_tasks`. |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
 | `BROWSER_USE_API_KEY` | Browser Use cloud browser API key ([browser-use.com](https://browser-use.com/)) |

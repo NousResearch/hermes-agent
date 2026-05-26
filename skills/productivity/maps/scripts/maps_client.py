@@ -31,6 +31,7 @@ import urllib.request
 
 USER_AGENT = "HermesAgent/1.0 (contact: hermes@agent.ai)"
 DATA_SOURCE = "OpenStreetMap/Nominatim"
+GOOGLE_MAPS_API_KEY_ENV = "GOOGLE_MAPS_API_KEY"
 
 NOMINATIM_SEARCH  = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
@@ -142,6 +143,35 @@ OSRM_PROFILES = {
     "walking": "foot",
     "cycling": "bike",
 }
+
+def google_maps_api_key_available():
+    """Return True when a non-blank Google Maps Platform API key is loaded.
+
+    Hermes loads ``GOOGLE_MAPS_API_KEY`` through the normal environment path,
+    which includes Bitwarden Secrets Manager when enabled.  This capability
+    helper intentionally exposes only presence/absence; callers must never log,
+    return, persist, or include the key in errors.
+    """
+    return bool(os.getenv(GOOGLE_MAPS_API_KEY_ENV, "").strip())
+
+
+# Backward-compatible alias for downstream code that wants a generic capability
+# check without importing the env-var constant.
+def google_maps_available():
+    """Return True when Google-backed maps probes may be used."""
+    return google_maps_api_key_available()
+
+
+def _get_google_maps_api_key():
+    """Return the loaded Google Maps key for internal API calls, or None.
+
+    Keep this helper private so only code that is about to call Google Maps can
+    access the secret value.  Public helpers should use
+    ``google_maps_api_key_available()`` instead.
+    """
+    value = os.getenv(GOOGLE_MAPS_API_KEY_ENV, "").strip()
+    return value or None
+
 
 # ---------------------------------------------------------------------------
 # Output helpers

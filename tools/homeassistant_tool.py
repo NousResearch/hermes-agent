@@ -1,10 +1,14 @@
 """Home Assistant tool for controlling smart home devices via REST API.
 
-Registers four LLM-callable tools:
+Registers read-only LLM-callable tools by default:
 - ``ha_list_entities`` -- list/filter entities by domain or area
 - ``ha_get_state`` -- get detailed state of a single entity
-- ``ha_list_services`` -- list available services (actions) per domain
-- ``ha_call_service`` -- call a HA service (turn_on, turn_off, set_temperature, etc.)
+- ``ha_house_state_snapshot`` -- fetch a structured whole-house state view
+
+Action/service discovery and service calls are intentionally gated behind
+``HASS_ENABLE_ACTIONS=true``/``HOME_ASSISTANT_ENABLE_ACTIONS=true``. A Home
+Assistant token alone is enough for read-only state discovery, but does not
+expose mutating services to the model.
 
 Authentication uses a Long-Lived Access Token via ``HASS_TOKEN`` env var.
 The HA instance URL is read from ``HASS_URL`` (default: http://homeassistant.local:8123).
@@ -15,6 +19,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter, defaultdict
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -29,11 +34,23 @@ _HASS_TOKEN: str = ""
 
 
 def _get_config():
-    """Return (hass_url, hass_token) from env vars at call time."""
+    """Return (hass_url, hass_token) from env vars at call time.
+
+    Hermes historically used HASS_URL/HASS_TOKEN, but Jonas and many users
+    naturally name Bitwarden secrets HOME_ASSISTANT_URL/HOME_ASSISTANT_TOKEN.
+    Support both, with short names taking precedence for backwards
+    compatibility.
+    """
     return (
-        (_HASS_URL or os.getenv("HASS_URL", "http://homeassistant.local:8123")).rstrip("/"),
-        _HASS_TOKEN or os.getenv("HASS_TOKEN", ""),
+        (_HASS_URL or os.getenv("HASS_URL") or os.getenv("HOME_ASSISTANT_URL") or "http://homeassistant.local:8123").rstrip("/"),
+        _HASS_TOKEN or os.getenv("HASS_TOKEN") or os.getenv("HOME_ASSISTANT_TOKEN", ""),
     )
+
+
+def _actions_enabled() -> bool:
+    """Return whether potentially mutating Home Assistant action tools are exposed."""
+    value = os.getenv("HASS_ENABLE_ACTIONS") or os.getenv("HOME_ASSISTANT_ENABLE_ACTIONS") or ""
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
@@ -102,6 +119,56 @@ def _filter_and_summarize(
     return {"count": len(entities), "entities": entities}
 
 
+def _state_summary_for_entity(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a compact but useful read-only state summary for one entity."""
+    attrs = state.get("attributes", {}) or {}
+    return {
+        "entity_id": state.get("entity_id", ""),
+        "domain": state.get("entity_id", "").split(".", 1)[0],
+        "state": state.get("state", ""),
+        "friendly_name": attrs.get("friendly_name", ""),
+        "area": attrs.get("area", ""),
+        "device_class": attrs.get("device_class", ""),
+        "unit_of_measurement": attrs.get("unit_of_measurement", ""),
+        "last_changed": state.get("last_changed"),
+        "last_updated": state.get("last_updated"),
+    }
+
+
+def _build_house_state_snapshot(states: list) -> Dict[str, Any]:
+    """Build a structured read-only snapshot from HA /api/states output."""
+    domains: Dict[str, list] = defaultdict(list)
+    by_state = Counter()
+    areas = Counter()
+
+    for state in states:
+        entity = _state_summary_for_entity(state)
+        domain = entity["domain"] or "unknown"
+        domains[domain].append(entity)
+        by_state[str(entity.get("state", ""))] += 1
+        if entity.get("area"):
+            areas[str(entity["area"])] += 1
+
+    domain_entries = []
+    for domain in sorted(domains):
+        entities = sorted(domains[domain], key=lambda e: e["entity_id"])
+        domain_entries.append({
+            "domain": domain,
+            "count": len(entities),
+            "states": dict(sorted(Counter(e["state"] for e in entities).items())),
+            "entities": entities,
+        })
+
+    return {
+        "read_only": True,
+        "entity_count": len(states),
+        "domain_count": len(domain_entries),
+        "domains": domain_entries,
+        "state_counts": dict(sorted(by_state.items())),
+        "area_counts": dict(sorted(areas.items())),
+    }
+
+
 async def _async_list_entities(
     domain: Optional[str] = None,
     area: Optional[str] = None,
@@ -117,6 +184,20 @@ async def _async_list_entities(
             states = await resp.json()
 
     return _filter_and_summarize(states, domain, area)
+
+
+async def _async_house_state_snapshot() -> Dict[str, Any]:
+    """Fetch all HA states and return a structured read-only house snapshot."""
+    import aiohttp
+
+    hass_url, hass_token = _get_config()
+    url = f"{hass_url}/api/states"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=_get_headers(hass_token), timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            resp.raise_for_status()
+            states = await resp.json()
+
+    return _build_house_state_snapshot(states)
 
 
 async def _async_get_state(entity_id: str) -> Dict[str, Any]:
@@ -204,8 +285,17 @@ async def _async_call_service(
 # Sync wrappers (handler signature: (args, **kw) -> str)
 # ---------------------------------------------------------------------------
 
-def _run_async(coro):
-    """Run an async coroutine from a sync handler."""
+def _run_async(coro_or_factory):
+    """Run an async coroutine from a sync handler.
+
+    Accept either a coroutine object (legacy callers) or a zero-argument
+    coroutine factory. The factory form avoids creating an unawaited coroutine
+    in tests or nested-loop contexts if execution is redirected to another
+    thread.
+    """
+    def _make_coro():
+        return coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -215,10 +305,10 @@ def _run_async(coro):
         # Already inside an event loop -- create a new thread
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
+            future = pool.submit(lambda: asyncio.run(_make_coro()))
             return future.result(timeout=30)
     else:
-        return asyncio.run(coro)
+        return asyncio.run(_make_coro())
 
 
 def _handle_list_entities(args: dict, **kw) -> str:
@@ -246,6 +336,16 @@ def _handle_get_state(args: dict, **kw) -> str:
     except Exception as e:
         logger.error("ha_get_state error: %s", e)
         return tool_error(f"Failed to get state for {entity_id}: {e}")
+
+
+def _handle_house_state_snapshot(args: dict, **kw) -> str:
+    """Handler for ha_house_state_snapshot tool."""
+    try:
+        result = _run_async(_async_house_state_snapshot)
+        return json.dumps({"result": result})
+    except Exception as e:
+        logger.error("ha_house_state_snapshot error: %s", e)
+        return tool_error(f"Failed to fetch Home Assistant state snapshot: {e}")
 
 
 def _handle_call_service(args: dict, **kw) -> str:
@@ -281,7 +381,7 @@ def _handle_call_service(args: dict, **kw) -> str:
             return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
 
     try:
-        result = _run_async(_async_call_service(domain, service, entity_id, data))
+        result = _run_async(lambda: _async_call_service(domain, service, entity_id, data))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_call_service error: %s", e)
@@ -342,8 +442,14 @@ def _handle_list_services(args: dict, **kw) -> str:
 # ---------------------------------------------------------------------------
 
 def _check_ha_available() -> bool:
-    """Tool is only available when HASS_TOKEN is set."""
-    return bool(os.getenv("HASS_TOKEN"))
+    """Tool is only available when a Home Assistant token is set."""
+    _, token = _get_config()
+    return bool(token)
+
+
+def _check_ha_actions_available() -> bool:
+    """Action tools require both credentials and explicit action enablement."""
+    return _check_ha_available() and _actions_enabled()
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +504,20 @@ HA_GET_STATE_SCHEMA = {
             },
         },
         "required": ["entity_id"],
+    },
+}
+
+HA_HOUSE_STATE_SNAPSHOT_SCHEMA = {
+    "name": "ha_house_state_snapshot",
+    "description": (
+        "Fetch a structured read-only Home Assistant state snapshot: domains, "
+        "entity counts, current states, friendly names, areas, and timestamps. "
+        "This tool does not list or call services."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
     },
 }
 
@@ -495,11 +615,20 @@ registry.register(
 )
 
 registry.register(
+    name="ha_house_state_snapshot",
+    toolset="homeassistant",
+    schema=HA_HOUSE_STATE_SNAPSHOT_SCHEMA,
+    handler=_handle_house_state_snapshot,
+    check_fn=_check_ha_available,
+    emoji="🏠",
+)
+
+registry.register(
     name="ha_list_services",
     toolset="homeassistant",
     schema=HA_LIST_SERVICES_SCHEMA,
     handler=_handle_list_services,
-    check_fn=_check_ha_available,
+    check_fn=_check_ha_actions_available,
     emoji="🏠",
 )
 
@@ -508,6 +637,6 @@ registry.register(
     toolset="homeassistant",
     schema=HA_CALL_SERVICE_SCHEMA,
     handler=_handle_call_service,
-    check_fn=_check_ha_available,
+    check_fn=_check_ha_actions_available,
     emoji="🏠",
 )

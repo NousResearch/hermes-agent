@@ -109,6 +109,16 @@ TOOLSETS = {
         "tools": ["x_search"],
         "includes": []
     },
+
+    "serpapi": {
+        "description": (
+            "SerpApi read-only credential/capability probes and search-only "
+            "travel wrappers. Uses SERPAPI_API_KEY from the environment / "
+            "Bitwarden Secrets Manager and never returns the secret value."
+        ),
+        "tools": ["serpapi_read_only_probe", "serpapi_google_flights_search", "serpapi_google_hotels_search"],
+        "includes": []
+    },
     
     "vision": {
         "description": "Image analysis and vision tools",
@@ -242,6 +252,12 @@ TOOLSETS = {
 
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
+
+    "todoist": {
+        "description": "Todoist read-only task/project listing via Sync API",
+        "tools": ["todoist_read_only_probe", "todoist_list_tasks"],
+        "includes": []
+    },
 
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",

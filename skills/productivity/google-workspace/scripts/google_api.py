@@ -41,6 +41,29 @@ from _hermes_home import get_hermes_home
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
+SUPPORTED_GOOGLE_ACCOUNTS = ("joncoenen@gmail.com", "salofren@gmail.com")
+
+
+def _account_slug(account: str) -> str:
+    return account.replace("@", "_").replace(".", "_")
+
+
+def _token_path_for_account(account: str | None = None) -> Path:
+    if not account:
+        return TOKEN_PATH
+    return HERMES_HOME / f"google_token_{_account_slug(account)}.json"
+
+
+def _validate_account(account: str) -> str:
+    if account not in SUPPORTED_GOOGLE_ACCOUNTS:
+        supported = ", ".join(SUPPORTED_GOOGLE_ACCOUNTS)
+        print(f"ERROR: invalid Google account '{account}'. Supported accounts: {supported}", file=sys.stderr)
+        sys.exit(2)
+    return account
+
+
+def _selected_account(args) -> str:
+    return _validate_account(getattr(args, "account", ""))
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -61,16 +84,19 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
     return normalized
 
 
-def _ensure_authenticated():
-    if not TOKEN_PATH.exists():
-        print("Not authenticated. Run the setup script first:", file=sys.stderr)
+def _ensure_authenticated(token_path: Path | None = None, account: str | None = None):
+    token_path = token_path or _token_path_for_account(account)
+    if not token_path.exists():
+        acct_hint = f" for {account}" if account else ""
+        print(f"Not authenticated{acct_hint}. Run the setup script first:", file=sys.stderr)
         print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
         sys.exit(1)
 
 
-def _stored_token_scopes() -> list[str]:
+def _stored_token_scopes(token_path: Path | None = None) -> list[str]:
+    token_path = token_path or TOKEN_PATH
     try:
-        data = json.loads(TOKEN_PATH.read_text())
+        data = json.loads(token_path.read_text())
     except Exception:
         return list(SCOPES)
     scopes = data.get("scopes")
@@ -86,18 +112,19 @@ def _gws_binary() -> str | None:
     return shutil.which("gws")
 
 
-def _gws_env() -> dict[str, str]:
+def _gws_env(token_path: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
-    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
+    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(token_path or TOKEN_PATH)
     return env
 
 
-def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None = None):
+def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None = None, account: str | None = None):
     binary = _gws_binary()
     if not binary:
         raise RuntimeError("gws not installed")
 
-    _ensure_authenticated()
+    token_path = _token_path_for_account(account)
+    _ensure_authenticated(token_path, account)
 
     cmd = [binary, *parts]
     if params is not None:
@@ -109,7 +136,7 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
         cmd,
         capture_output=True,
         text=True,
-        env=_gws_env(),
+        env=_gws_env(token_path),
     )
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip() or "Unknown gws error"
@@ -174,17 +201,18 @@ def _datetime_with_timezone(value: str) -> str:
     return value + "Z"
 
 
-def get_credentials():
+def get_credentials(account: str | None = None):
     """Load and refresh credentials from token file."""
-    _ensure_authenticated()
+    token_path = _token_path_for_account(account)
+    _ensure_authenticated(token_path, account)
 
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
-    creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), _stored_token_scopes())
+    creds = Credentials.from_authorized_user_file(str(token_path), _stored_token_scopes(token_path))
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        TOKEN_PATH.write_text(
+        token_path.write_text(
             json.dumps(
                 _normalize_authorized_user_payload(json.loads(creds.to_json())),
                 indent=2,
@@ -196,10 +224,10 @@ def get_credentials():
     return creds
 
 
-def build_service(api, version):
+def build_service(api, version, account: str | None = None):
     from googleapiclient.discovery import build
 
-    return build(api, version, credentials=get_credentials())
+    return build(api, version, credentials=get_credentials(account))
 
 
 # =========================================================================
@@ -208,10 +236,12 @@ def build_service(api, version):
 
 
 def gmail_search(args):
+    args.account = _selected_account(args)
     if _gws_binary():
         results = _run_gws(
             ["gmail", "users", "messages", "list"],
             params={"userId": "me", "q": args.query, "maxResults": args.max},
+            account=args.account,
         )
         messages = results.get("messages", [])
         output = []
@@ -224,6 +254,7 @@ def gmail_search(args):
                     "format": "metadata",
                     "metadataHeaders": ["From", "To", "Subject", "Date"],
                 },
+                account=args.account,
             )
             headers = _headers_dict(msg)
             output.append(
@@ -241,7 +272,7 @@ def gmail_search(args):
         print(json.dumps(output, indent=2, ensure_ascii=False))
         return
 
-    service = build_service("gmail", "v1")
+    service = build_service("gmail", "v1", args.account)
     results = service.users().messages().list(
         userId="me", q=args.query, maxResults=args.max
     ).execute()
@@ -272,10 +303,12 @@ def gmail_search(args):
 
 
 def gmail_get(args):
+    args.account = _selected_account(args)
     if _gws_binary():
         msg = _run_gws(
             ["gmail", "users", "messages", "get"],
             params={"userId": "me", "id": args.message_id, "format": "full"},
+            account=args.account,
         )
         headers = _headers_dict(msg)
         result = {
@@ -291,7 +324,7 @@ def gmail_get(args):
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
-    service = build_service("gmail", "v1")
+    service = build_service("gmail", "v1", args.account)
     msg = service.users().messages().get(
         userId="me", id=args.message_id, format="full"
     ).execute()
@@ -312,6 +345,7 @@ def gmail_get(args):
 
 
 def gmail_send(args):
+    args.account = _selected_account(args)
     if _gws_binary():
         message = MIMEText(args.body, "html" if args.html else "plain")
         message["to"] = args.to
@@ -330,11 +364,12 @@ def gmail_send(args):
             ["gmail", "users", "messages", "send"],
             params={"userId": "me"},
             body=body,
+        account=args.account,
         )
         print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
         return
 
-    service = build_service("gmail", "v1")
+    service = build_service("gmail", "v1", args.account)
     message = MIMEText(args.body, "html" if args.html else "plain")
     message["to"] = args.to
     message["subject"] = args.subject
@@ -355,6 +390,7 @@ def gmail_send(args):
 
 
 def gmail_reply(args):
+    args.account = _selected_account(args)
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -364,6 +400,7 @@ def gmail_reply(args):
                 "format": "metadata",
                 "metadataHeaders": ["From", "Subject", "Message-ID"],
             },
+        account=args.account,
         )
         headers = _headers_dict(original)
 
@@ -385,11 +422,12 @@ def gmail_reply(args):
             ["gmail", "users", "messages", "send"],
             params={"userId": "me"},
             body={"raw": raw, "threadId": original["threadId"]},
+        account=args.account,
         )
         print(json.dumps({"status": "sent", "id": result["id"], "threadId": result.get("threadId", "")}, indent=2))
         return
 
-    service = build_service("gmail", "v1")
+    service = build_service("gmail", "v1", args.account)
     original = service.users().messages().get(
         userId="me", id=args.message_id, format="metadata",
         metadataHeaders=["From", "Subject", "Message-ID"],
@@ -418,13 +456,14 @@ def gmail_reply(args):
 
 
 def gmail_labels(args):
+    args.account = _selected_account(args)
     if _gws_binary():
-        results = _run_gws(["gmail", "users", "labels", "list"], params={"userId": "me"})
+        results = _run_gws(["gmail", "users", "labels", "list"], params={"userId": "me"}, account=args.account)
         labels = [{"id": l["id"], "name": l["name"], "type": l.get("type", "")} for l in results.get("labels", [])]
         print(json.dumps(labels, indent=2))
         return
 
-    service = build_service("gmail", "v1")
+    service = build_service("gmail", "v1", args.account)
     results = service.users().labels().list(userId="me").execute()
     labels = [{"id": l["id"], "name": l["name"], "type": l.get("type", "")} for l in results.get("labels", [])]
     print(json.dumps(labels, indent=2))
@@ -432,6 +471,7 @@ def gmail_labels(args):
 
 
 def gmail_modify(args):
+    args.account = _selected_account(args)
     body = {}
     if args.add_labels:
         body["addLabelIds"] = args.add_labels.split(",")
@@ -443,11 +483,12 @@ def gmail_modify(args):
             ["gmail", "users", "messages", "modify"],
             params={"userId": "me", "id": args.message_id},
             body=body,
+        account=args.account,
         )
         print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
         return
 
-    service = build_service("gmail", "v1")
+    service = build_service("gmail", "v1", args.account)
     result = service.users().messages().modify(userId="me", id=args.message_id, body=body).execute()
     print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
 
@@ -458,6 +499,7 @@ def gmail_modify(args):
 
 
 def calendar_list(args):
+    args.account = _selected_account(args)
     now = datetime.now(timezone.utc)
     time_min = _datetime_with_timezone(args.start or now.isoformat())
     time_max = _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat())
@@ -473,6 +515,7 @@ def calendar_list(args):
                 "singleEvents": True,
                 "orderBy": "startTime",
             },
+        account=args.account,
         )
         events = []
         for e in results.get("items", []):
@@ -489,7 +532,7 @@ def calendar_list(args):
         print(json.dumps(events, indent=2, ensure_ascii=False))
         return
 
-    service = build_service("calendar", "v3")
+    service = build_service("calendar", "v3", args.account)
     results = service.events().list(
         calendarId=args.calendar, timeMin=time_min, timeMax=time_max,
         maxResults=args.max, singleEvents=True, orderBy="startTime",
@@ -512,6 +555,7 @@ def calendar_list(args):
 
 
 def calendar_create(args):
+    args.account = _selected_account(args)
     event = {
         "summary": args.summary,
         "start": {"dateTime": args.start},
@@ -529,6 +573,7 @@ def calendar_create(args):
             ["calendar", "events", "insert"],
             params={"calendarId": args.calendar},
             body=event,
+        account=args.account,
         )
         print(json.dumps({
             "status": "created",
@@ -538,7 +583,7 @@ def calendar_create(args):
         }, indent=2))
         return
 
-    service = build_service("calendar", "v3")
+    service = build_service("calendar", "v3", args.account)
     result = service.events().insert(calendarId=args.calendar, body=event).execute()
     print(json.dumps({
         "status": "created",
@@ -550,12 +595,13 @@ def calendar_create(args):
 
 
 def calendar_delete(args):
+    args.account = _selected_account(args)
     if _gws_binary():
-        _run_gws(["calendar", "events", "delete"], params={"calendarId": args.calendar, "eventId": args.event_id})
+        _run_gws(["calendar", "events", "delete"], params={"calendarId": args.calendar, "eventId": args.event_id}, account=args.account)
         print(json.dumps({"status": "deleted", "eventId": args.event_id}))
         return
 
-    service = build_service("calendar", "v3")
+    service = build_service("calendar", "v3", args.account)
     service.events().delete(calendarId=args.calendar, eventId=args.event_id).execute()
     print(json.dumps({"status": "deleted", "eventId": args.event_id}))
 
@@ -566,6 +612,7 @@ def calendar_delete(args):
 
 
 def drive_search(args):
+    args.account = _selected_account(args)
     query = args.query if args.raw_query else f"fullText contains '{args.query}'"
     if _gws_binary():
         results = _run_gws(
@@ -575,11 +622,12 @@ def drive_search(args):
                 "pageSize": args.max,
                 "fields": "files(id, name, mimeType, modifiedTime, webViewLink)",
             },
+        account=args.account,
         )
         print(json.dumps(results.get("files", []), indent=2, ensure_ascii=False))
         return
 
-    service = build_service("drive", "v3")
+    service = build_service("drive", "v3", args.account)
     results = service.files().list(
         q=query, pageSize=args.max, fields="files(id, name, mimeType, modifiedTime, webViewLink)",
     ).execute()
@@ -588,22 +636,25 @@ def drive_search(args):
 
 
 def drive_get(args):
+    args.account = _selected_account(args)
     """Get metadata for a single Drive file by ID."""
     fields = "id, name, mimeType, modifiedTime, size, webViewLink, parents, owners(emailAddress)"
     if _gws_binary():
         result = _run_gws(
             ["drive", "files", "get"],
             params={"fileId": args.file_id, "fields": fields},
+        account=args.account,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
-    service = build_service("drive", "v3")
+    service = build_service("drive", "v3", args.account)
     result = service.files().get(fileId=args.file_id, fields=fields).execute()
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 def drive_upload(args):
+    args.account = _selected_account(args)
     """Upload a local file to Drive. Falls through to Python client even when gws
     is installed, because gws doesn't do multipart uploads."""
     import mimetypes
@@ -619,7 +670,7 @@ def drive_upload(args):
     if args.parent:
         metadata["parents"] = [args.parent]
 
-    service = build_service("drive", "v3")
+    service = build_service("drive", "v3", args.account)
     media = MediaFileUpload(str(local_path), mimetype=mime, resumable=True)
     result = service.files().create(
         body=metadata,
@@ -636,12 +687,13 @@ def drive_upload(args):
 
 
 def drive_download(args):
+    args.account = _selected_account(args)
     """Download a Drive file to a local path. Google-native files (Docs/Sheets/Slides)
     must be exported; binary files are downloaded as-is."""
     import io
     from googleapiclient.http import MediaIoBaseDownload
 
-    service = build_service("drive", "v3")
+    service = build_service("drive", "v3", args.account)
 
     # Look up the file to decide download vs export.
     meta = service.files().get(fileId=args.file_id, fields="id, name, mimeType").execute()
@@ -685,6 +737,7 @@ def drive_download(args):
 
 
 def drive_create_folder(args):
+    args.account = _selected_account(args)
     body = {
         "name": args.name,
         "mimeType": "application/vnd.google-apps.folder",
@@ -697,6 +750,7 @@ def drive_create_folder(args):
             ["drive", "files", "create"],
             params={"fields": "id, name, webViewLink"},
             body=body,
+        account=args.account,
         )
         print(json.dumps({
             "status": "created",
@@ -706,7 +760,7 @@ def drive_create_folder(args):
         }, indent=2, ensure_ascii=False))
         return
 
-    service = build_service("drive", "v3")
+    service = build_service("drive", "v3", args.account)
     result = service.files().create(body=body, fields="id, name, webViewLink").execute()
     print(json.dumps({
         "status": "created",
@@ -717,6 +771,7 @@ def drive_create_folder(args):
 
 
 def drive_share(args):
+    args.account = _selected_account(args)
     permission = {
         "type": args.type,
         "role": args.role,
@@ -740,6 +795,7 @@ def drive_share(args):
                 "sendNotificationEmail": args.notify,
             },
             body=permission,
+        account=args.account,
         )
         print(json.dumps({
             "status": "shared",
@@ -750,7 +806,7 @@ def drive_share(args):
         }, indent=2, ensure_ascii=False))
         return
 
-    service = build_service("drive", "v3")
+    service = build_service("drive", "v3", args.account)
     result = service.permissions().create(
         fileId=args.file_id,
         body=permission,
@@ -767,13 +823,14 @@ def drive_share(args):
 
 
 def drive_delete(args):
+    args.account = _selected_account(args)
     """Trash or permanently delete a Drive file. Defaults to trash (reversible)."""
     if args.permanent:
         if _gws_binary():
-            _run_gws(["drive", "files", "delete"], params={"fileId": args.file_id})
+            _run_gws(["drive", "files", "delete"], params={"fileId": args.file_id}, account=args.account)
             print(json.dumps({"status": "deleted", "fileId": args.file_id, "permanent": True}))
             return
-        service = build_service("drive", "v3")
+        service = build_service("drive", "v3", args.account)
         service.files().delete(fileId=args.file_id).execute()
         print(json.dumps({"status": "deleted", "fileId": args.file_id, "permanent": True}))
         return
@@ -785,11 +842,12 @@ def drive_delete(args):
             ["drive", "files", "update"],
             params={"fileId": args.file_id},
             body=body,
+        account=args.account,
         )
         print(json.dumps({"status": "trashed", "fileId": args.file_id, "permanent": False}))
         return
 
-    service = build_service("drive", "v3")
+    service = build_service("drive", "v3", args.account)
     service.files().update(fileId=args.file_id, body=body).execute()
     print(json.dumps({"status": "trashed", "fileId": args.file_id, "permanent": False}))
 
@@ -1048,11 +1106,13 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
+    parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent. Gmail, Calendar, and Drive require --account with one of: joncoenen@gmail.com, salofren@gmail.com")
+    account_parent = argparse.ArgumentParser(add_help=False)
+    account_parent.add_argument("--account", required=True, choices=SUPPORTED_GOOGLE_ACCOUNTS, help="Google account to use. Supported: joncoenen@gmail.com, salofren@gmail.com")
     sub = parser.add_subparsers(dest="service", required=True)
 
     # --- Gmail ---
-    gmail = sub.add_parser("gmail")
+    gmail = sub.add_parser("gmail", parents=[account_parent], help="Gmail operations; requires --account")
     gmail_sub = gmail.add_subparsers(dest="action", required=True)
 
     p = gmail_sub.add_parser("search")
@@ -1090,7 +1150,7 @@ def main():
     p.set_defaults(func=gmail_modify)
 
     # --- Calendar ---
-    cal = sub.add_parser("calendar")
+    cal = sub.add_parser("calendar", parents=[account_parent], help="Calendar operations; requires --account")
     cal_sub = cal.add_subparsers(dest="action", required=True)
 
     p = cal_sub.add_parser("list")
@@ -1116,7 +1176,7 @@ def main():
     p.set_defaults(func=calendar_delete)
 
     # --- Drive ---
-    drv = sub.add_parser("drive")
+    drv = sub.add_parser("drive", parents=[account_parent], help="Drive operations; requires --account")
     drv_sub = drv.add_subparsers(dest="action", required=True)
 
     p = drv_sub.add_parser("search")

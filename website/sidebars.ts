@@ -93,6 +93,8 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/voice-mode',
             'user-guide/features/web-search',
             'user-guide/features/x-search',
+            'user-guide/features/serpapi-travel',
+            'user-guide/features/google-maps-travel',
             'user-guide/features/browser',
             'user-guide/features/computer-use',
             'user-guide/features/vision',

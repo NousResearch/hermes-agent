@@ -17,6 +17,9 @@ from tools.homeassistant_tool import (
     _get_headers,
     _handle_get_state,
     _handle_call_service,
+    _handle_house_state_snapshot,
+    _build_house_state_snapshot,
+    _actions_enabled,
     _BLOCKED_DOMAINS,
     _ENTITY_ID_RE,
     _SERVICE_NAME_RE,
@@ -110,6 +113,29 @@ class TestFilterAndSummarize:
 # ---------------------------------------------------------------------------
 # Service payload building
 # ---------------------------------------------------------------------------
+
+
+class TestHouseStateSnapshot:
+    def test_snapshot_groups_domains_and_marks_read_only(self):
+        result = _build_house_state_snapshot(SAMPLE_STATES)
+
+        assert result["read_only"] is True
+        assert result["entity_count"] == 7
+        assert result["domain_count"] == 5
+        assert result["state_counts"]["on"] == 2
+
+        domains = {entry["domain"]: entry for entry in result["domains"]}
+        assert domains["light"]["count"] == 2
+        assert domains["sensor"]["states"] == {"22.5": 1, "55": 1}
+        sensor_entities = {entry["entity_id"]: entry for entry in domains["sensor"]["entities"]}
+        assert sensor_entities["sensor.temperature"]["unit_of_measurement"] == "C"
+
+    @patch("tools.homeassistant_tool._async_house_state_snapshot", return_value={"read_only": True, "entity_count": 0})
+    def test_snapshot_handler_returns_result(self, mock_snapshot):
+        result = json.loads(_handle_house_state_snapshot({}))
+
+        assert result["result"]["read_only"] is True
+        mock_snapshot.assert_called_once()
 
 
 class TestBuildServicePayload:
@@ -322,7 +348,9 @@ class TestCallServiceStringData:
             "entity_id": "climate.living_room",
             "data": '{"hvac_mode": "heat"}',
         })
-        call_args = mock_run.call_args[0][0]  # the coroutine arg
+        call_factory = mock_run.call_args[0][0]
+        call_args = call_factory()
+        call_args.close()
         # _run_async was called, meaning we got past validation
 
     @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
@@ -454,6 +482,7 @@ class TestServiceNameValidation:
 class TestCheckAvailable:
     def test_unavailable_without_token(self, monkeypatch):
         monkeypatch.delenv("HASS_TOKEN", raising=False)
+        monkeypatch.delenv("HOME_ASSISTANT_TOKEN", raising=False)
         assert _check_ha_available() is False
 
     def test_available_with_token(self, monkeypatch):
@@ -462,7 +491,22 @@ class TestCheckAvailable:
 
     def test_empty_token_is_unavailable(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "")
+        monkeypatch.delenv("HOME_ASSISTANT_TOKEN", raising=False)
         assert _check_ha_available() is False
+
+    def test_available_with_long_token_name(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        monkeypatch.setenv("HOME_ASSISTANT_TOKEN", "test-token")
+        assert _check_ha_available() is True
+
+    def test_actions_disabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("HASS_ENABLE_ACTIONS", raising=False)
+        monkeypatch.delenv("HOME_ASSISTANT_ENABLE_ACTIONS", raising=False)
+        assert _actions_enabled() is False
+
+    def test_actions_enabled_with_explicit_flag(self, monkeypatch):
+        monkeypatch.setenv("HASS_ENABLE_ACTIONS", "true")
+        assert _actions_enabled() is True
 
 
 # ---------------------------------------------------------------------------
@@ -490,29 +534,76 @@ class TestRegistration:
         names = registry.get_all_tool_names()
         assert "ha_list_entities" in names
         assert "ha_get_state" in names
+        assert "ha_house_state_snapshot" in names
         assert "ha_call_service" in names
 
     def test_tools_in_homeassistant_toolset(self):
         from tools.registry import registry
 
         toolset_map = registry.get_tool_to_toolset_map()
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service"):
+        for tool in ("ha_list_entities", "ha_get_state", "ha_house_state_snapshot", "ha_list_services", "ha_call_service"):
             assert toolset_map[tool] == "homeassistant"
 
     def test_check_fn_gates_availability(self, monkeypatch):
-        """Registry should exclude HA tools when HASS_TOKEN is not set."""
+        """Registry should exclude HA tools when no HA token is set."""
         from tools.registry import invalidate_check_fn_cache, registry
 
         monkeypatch.delenv("HASS_TOKEN", raising=False)
+        monkeypatch.delenv("HOME_ASSISTANT_TOKEN", raising=False)
         invalidate_check_fn_cache()
-        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
+        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_house_state_snapshot", "ha_list_services", "ha_call_service"})
         assert len(defs) == 0
 
-    def test_check_fn_includes_when_token_set(self, monkeypatch):
-        """Registry should include HA tools when HASS_TOKEN is set."""
+    def test_check_fn_includes_read_only_tools_when_token_set(self, monkeypatch):
+        """Registry should include only read-only HA tools when only HASS_TOKEN is set."""
         from tools.registry import invalidate_check_fn_cache, registry
 
         monkeypatch.setenv("HASS_TOKEN", "test-token")
+        monkeypatch.delenv("HASS_ENABLE_ACTIONS", raising=False)
+        monkeypatch.delenv("HOME_ASSISTANT_ENABLE_ACTIONS", raising=False)
         invalidate_check_fn_cache()
-        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
-        assert len(defs) == 3
+        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_house_state_snapshot", "ha_list_services", "ha_call_service"})
+        names = {definition["function"]["name"] for definition in defs}
+        assert names == {"ha_list_entities", "ha_get_state", "ha_house_state_snapshot"}
+
+    def test_action_tools_included_only_when_explicitly_enabled(self, monkeypatch):
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        monkeypatch.setenv("HASS_TOKEN", "test-token")
+        monkeypatch.setenv("HASS_ENABLE_ACTIONS", "true")
+        invalidate_check_fn_cache()
+        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_house_state_snapshot", "ha_list_services", "ha_call_service"})
+        names = {definition["function"]["name"] for definition in defs}
+        assert names == {"ha_list_entities", "ha_get_state", "ha_house_state_snapshot", "ha_list_services", "ha_call_service"}
+
+
+def test_homeassistant_accepts_long_home_assistant_env_names(monkeypatch):
+    from tools import homeassistant_tool as ha
+
+    monkeypatch.setattr(ha, "_HASS_URL", "")
+    monkeypatch.setattr(ha, "_HASS_TOKEN", "")
+    monkeypatch.delenv("HASS_URL", raising=False)
+    monkeypatch.delenv("HASS_TOKEN", raising=False)
+    monkeypatch.setenv("HOME_ASSISTANT_URL", "https://ha.example.test/")
+    monkeypatch.setenv("HOME_ASSISTANT_TOKEN", "token-from-long-name")
+
+    url, token = ha._get_config()
+
+    assert url == "https://ha.example.test"
+    assert token == "token-from-long-name"
+
+
+def test_homeassistant_short_env_names_take_precedence(monkeypatch):
+    from tools import homeassistant_tool as ha
+
+    monkeypatch.setattr(ha, "_HASS_URL", "")
+    monkeypatch.setattr(ha, "_HASS_TOKEN", "")
+    monkeypatch.setenv("HASS_URL", "https://short.example.test")
+    monkeypatch.setenv("HASS_TOKEN", "short-token")
+    monkeypatch.setenv("HOME_ASSISTANT_URL", "https://long.example.test")
+    monkeypatch.setenv("HOME_ASSISTANT_TOKEN", "long-token")
+
+    url, token = ha._get_config()
+
+    assert url == "https://short.example.test"
+    assert token == "short-token"

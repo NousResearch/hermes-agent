@@ -21,6 +21,10 @@ API_PATH = (
     Path(__file__).resolve().parents[2]
     / "skills/productivity/google-workspace/scripts/google_api.py"
 )
+SETUP_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "skills/productivity/google-workspace/scripts/setup.py"
+)
 
 
 @pytest.fixture
@@ -51,7 +55,20 @@ def api_module(monkeypatch, tmp_path):
     # Python SDK path which imports ``googleapiclient`` — not in deps.
     module._gws_binary = lambda: "/usr/bin/gws"
     # Bypass authentication check — no real token file in CI.
-    module._ensure_authenticated = lambda: None
+    module._ensure_authenticated = lambda *args, **kwargs: None
+    return module
+
+
+@pytest.fixture
+def setup_module(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    spec = importlib.util.spec_from_file_location("gws_setup_test", SETUP_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
     return module
 
 
@@ -185,7 +202,8 @@ def test_api_calendar_list_uses_events_list(api_module):
         return MagicMock(returncode=0, stdout="{}", stderr="")
 
     args = api_module.argparse.Namespace(
-        start="", end="", max=25, calendar="primary", func=api_module.calendar_list,
+        start="", end="", max=25, calendar="primary",
+        account="joncoenen@gmail.com", func=api_module.calendar_list,
     )
 
     with patch.object(api_module.subprocess, "run", side_effect=capture_run):
@@ -217,6 +235,7 @@ def test_api_calendar_list_respects_date_range(api_module):
         end="2026-04-07T23:59:59Z",
         max=25,
         calendar="primary",
+        account="joncoenen@gmail.com",
         func=api_module.calendar_list,
     )
 
@@ -228,6 +247,59 @@ def test_api_calendar_list_respects_date_range(api_module):
     params = json.loads(cmd[params_idx + 1])
     assert params["timeMin"] == "2026-04-01T00:00:00Z"
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
+
+
+def test_api_google_account_required_for_target_services():
+    result = subprocess.run(
+        [sys.executable, str(API_PATH), "gmail", "search", "is:unread"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "--account" in result.stderr
+
+    result = subprocess.run(
+        [sys.executable, str(API_PATH), "drive", "search", "quarterly report"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "--account" in result.stderr
+
+
+def test_api_google_account_rejects_invalid_value():
+    result = subprocess.run(
+        [
+            sys.executable, str(API_PATH),
+            "calendar", "--account", "not-an-account@example.com", "list",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr
+    assert "joncoenen@gmail.com" in result.stderr
+    assert "salofren@gmail.com" in result.stderr
+
+
+def test_api_gws_uses_account_specific_token_file(api_module):
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return MagicMock(returncode=0, stdout="{}", stderr="")
+
+    args = api_module.argparse.Namespace(
+        start="", end="", max=25, calendar="primary",
+        account="salofren@gmail.com", func=api_module.calendar_list,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_list(args)
+
+    assert captured["env"]["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"].endswith(
+        "google_token_salofren_gmail_com.json"
+    )
 
 
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
@@ -279,3 +351,85 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_setup_token_paths_are_account_specific(setup_module):
+    assert setup_module.token_path_for_account("joncoenen@gmail.com").name == "google_token_joncoenen_gmail_com.json"
+    assert setup_module.token_path_for_account("salofren@gmail.com").name == "google_token_salofren_gmail_com.json"
+    assert setup_module.pending_auth_path_for_account("salofren@gmail.com").name == "google_oauth_pending_salofren_gmail_com.json"
+
+
+def test_setup_check_uses_selected_account_token(setup_module, monkeypatch, capsys):
+    setup_module.token_path_for_account("salofren@gmail.com").write_text(json.dumps({"scopes": setup_module.SCOPES}))
+    monkeypatch.setattr(setup_module, "_ensure_deps", lambda: None)
+
+    class FakeCreds:
+        valid = True
+        expired = False
+        refresh_token = "refresh"
+
+    class FakeCredentialsModule:
+        @staticmethod
+        def from_authorized_user_file(filename):
+            assert filename.endswith("google_token_salofren_gmail_com.json")
+            return FakeCreds()
+
+    google_module = types.ModuleType("google")
+    oauth2_module = types.ModuleType("google.oauth2")
+    credentials_module = types.ModuleType("google.oauth2.credentials")
+    credentials_module.Credentials = FakeCredentialsModule
+    transport_module = types.ModuleType("google.auth.transport")
+    requests_module = types.ModuleType("google.auth.transport.requests")
+    requests_module.Request = lambda: object()
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", credentials_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport", transport_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_module)
+
+    assert setup_module.check_auth(account="salofren@gmail.com") is True
+    out = capsys.readouterr().out
+    assert "google_token_salofren_gmail_com.json" in out
+
+
+def test_setup_pending_auth_is_account_specific(setup_module):
+    setup_module._save_pending_auth(account="joncoenen@gmail.com", state="state-j", code_verifier="verifier-j")
+    setup_module._save_pending_auth(account="salofren@gmail.com", state="state-s", code_verifier="verifier-s")
+
+    assert setup_module._load_pending_auth("joncoenen@gmail.com")["state"] == "state-j"
+    assert setup_module._load_pending_auth("salofren@gmail.com")["state"] == "state-s"
+
+
+def test_setup_revoke_deletes_only_selected_account(setup_module, monkeypatch):
+    jon = setup_module.token_path_for_account("joncoenen@gmail.com")
+    sal = setup_module.token_path_for_account("salofren@gmail.com")
+    jon.write_text(json.dumps({"token": "jon"}))
+    sal.write_text(json.dumps({"token": "sal"}))
+    setup_module.pending_auth_path_for_account("joncoenen@gmail.com").write_text("{}")
+    setup_module.pending_auth_path_for_account("salofren@gmail.com").write_text("{}")
+    monkeypatch.setattr(setup_module, "_ensure_deps", lambda: None)
+
+    class FakeCredentialsModule:
+        @staticmethod
+        def from_authorized_user_file(filename, scopes=None):
+            raise RuntimeError("skip remote revoke")
+
+    google_module = types.ModuleType("google")
+    oauth2_module = types.ModuleType("google.oauth2")
+    credentials_module = types.ModuleType("google.oauth2.credentials")
+    credentials_module.Credentials = FakeCredentialsModule
+    transport_module = types.ModuleType("google.auth.transport")
+    requests_module = types.ModuleType("google.auth.transport.requests")
+    requests_module.Request = lambda: object()
+    monkeypatch.setitem(sys.modules, "google", google_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2", oauth2_module)
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", credentials_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport", transport_module)
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", requests_module)
+
+    setup_module.revoke(account="joncoenen@gmail.com")
+
+    assert not jon.exists()
+    assert sal.exists()
+    assert not setup_module.pending_auth_path_for_account("joncoenen@gmail.com").exists()
+    assert setup_module.pending_auth_path_for_account("salofren@gmail.com").exists()

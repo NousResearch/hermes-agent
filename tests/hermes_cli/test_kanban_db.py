@@ -49,6 +49,22 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
+    """All kanban connections should use the explicit busy-timeout knob.
+
+    A worker stampede should wait for SQLite's writer lock instead of failing
+    immediately with ``database is locked`` during first-connect/WAL/schema
+    setup.  The timeout must be queryable via PRAGMA so CLI, gateway, and tool
+    connections behave the same way.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_BUSY_TIMEOUT_MS", "123456")
+
+    with kb.connect() as conn:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+
+    assert row[0] == 123456
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

@@ -18,7 +18,12 @@ from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from run_agent import AIAgent
 
-from .production_order_db import ProductionOrder, run_full_bridge, run_orchestrator_triage_bridge
+from .production_order_db import (
+    ProductionOrder,
+    _find_existing_order,
+    run_full_bridge,
+    run_orchestrator_triage_bridge,
+)
 from .production_order_dispatch import (
     DispatchManifestError,
     ProfileTaskEnvelope,
@@ -708,25 +713,40 @@ def run_approved_action_envelope_autonomously(
     validated = validate_approved_action_envelope(envelope)
     brief_packet = brief_packet_from_approved_action_envelope(validated)
     frozen_source_brief = json.dumps(brief_packet, indent=2, sort_keys=True)
-    production_order = run_full_bridge(
-        conn,
-        title=str(brief_packet.get("title") or "Approved production workflow brief"),
-        source_brief=frozen_source_brief,
-        approved_by=validated["approved_by"],
-        priority_lane=validated["priority_lane"],
-        repo_or_workspace=validated["repo_or_workspace"],
-        idempotency_key=validated["idempotency_key"],
-    )
-    run_result = run_production_order_autonomously(
-        conn,
-        production_order.production_order_id,
-        runner=runner,
-        max_steps=max_steps,
-        max_retries=max_retries,
-        timeout_seconds=timeout_seconds,
-    )
+    production_order = _find_existing_order(conn, validated["idempotency_key"])
+    if production_order is None:
+        production_order = run_full_bridge(
+            conn,
+            title=str(brief_packet.get("title") or "Approved production workflow brief"),
+            source_brief=frozen_source_brief,
+            approved_by=validated["approved_by"],
+            priority_lane=validated["priority_lane"],
+            repo_or_workspace=validated["repo_or_workspace"],
+            idempotency_key=validated["idempotency_key"],
+        )
+
     refreshed_order = _load_production_order(conn, production_order.production_order_id)
+    if refreshed_order.current_state in _TERMINAL_OR_PAUSE_STATES:
+        run_result = _result_from_order(
+            refreshed_order,
+            steps_run=0,
+            terminal_reason="already_terminal",
+            applied_actions=[],
+            errors=[],
+        )
+    else:
+        run_result = run_production_order_autonomously(
+            conn,
+            production_order.production_order_id,
+            runner=runner,
+            max_steps=max_steps,
+            max_retries=max_retries,
+            timeout_seconds=timeout_seconds,
+        )
+        refreshed_order = _load_production_order(conn, production_order.production_order_id)
     return {
+        "approved_action_envelope_id": validated["approved_action_envelope_id"],
+        "production_order_id": refreshed_order.production_order_id,
         "approved_action_envelope": validated,
         "brief_packet": brief_packet,
         "production_order": _production_order_metadata(refreshed_order),

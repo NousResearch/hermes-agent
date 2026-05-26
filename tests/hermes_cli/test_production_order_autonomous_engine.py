@@ -688,6 +688,19 @@ def test_run_approved_action_envelope_autonomously_creates_or_reuses_order_and_p
     )
 
     assert first["silence_protocol"] == {"mode": "silent", "channel": "none"}
+    assert first["approved_action_envelope_id"] == envelope["approved_action_envelope_id"]
     assert first["production_run_result"]["done"] is True
+    assert second["approved_action_envelope_id"] == envelope["approved_action_envelope_id"]
+    assert second["production_order_id"] == first["production_order_id"]
     assert second["production_order"]["production_order_id"] == first["production_order"]["production_order_id"]
-    assert second["production_run_result"]["terminal_reason"] == "already_terminal_or_paused"
+    assert second["production_run_result"] == {
+        "production_order_id": first["production_order_id"],
+        "final_state": "DONE",
+        "final_owner_profile": "default",
+        "steps_run": 0,
+        "terminal_reason": "already_terminal",
+        "applied_actions": [],
+        "errors": [],
+        "blocked_reason": None,
+        "done": True,
+    }

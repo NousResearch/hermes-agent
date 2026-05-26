@@ -49,6 +49,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _escape_invalid_chars_in_json_strings,
 )
+from agent.prefill_messages import fold_system_prefill_messages
 from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
@@ -1151,10 +1152,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
-        if agent.prefill_messages:
-            sys_offset = 1 if effective_system else 0
-            for idx, pfm in enumerate(agent.prefill_messages):
-                api_messages.insert(sys_offset + idx, pfm.copy())
+        api_messages = fold_system_prefill_messages(api_messages, agent.prefill_messages)
 
         # Same safety net as the main loop: repair tool-call/result
         # pairing before asking for a final summary.  Compression and

@@ -60,6 +60,7 @@ from agent.nous_rate_guard import (
     nous_rate_limit_remaining,
     record_nous_rate_limit,
 )
+from agent.prefill_messages import fold_system_prefill_messages
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
@@ -882,12 +883,7 @@ def run_conversation(
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
-        # Inject ephemeral prefill messages right after the system prompt
-        # but before conversation history. Same API-call-time-only pattern.
-        if agent.prefill_messages:
-            sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
-            for idx, pfm in enumerate(agent.prefill_messages):
-                api_messages.insert(sys_offset + idx, pfm.copy())
+        api_messages = fold_system_prefill_messages(api_messages, agent.prefill_messages)
 
         # Apply Anthropic prompt caching for Claude models on native
         # Anthropic, OpenRouter, and third-party Anthropic-compatible

@@ -4683,6 +4683,29 @@ class GatewayRunner:
                         with self.session_store._lock:
                             entry.expiry_finalized = True
                             self.session_store._save()
+                        # Emit gateway-level session:end so external hook
+                        # subscribers (and not just plugin on_session_finalize
+                        # handlers above) see the close.  Mirrors the explicit
+                        # /new emit so subscribers can track session lifecycle
+                        # symmetrically.  See #28746.
+                        try:
+                            await self.hooks.emit("session:end", {
+                                "platform": _platform,
+                                "user_id": (
+                                    entry.origin.user_id
+                                    if entry.origin else ""
+                                ),
+                                "session_id": entry.session_id,
+                                "session_key": key,
+                                "reason": "idle_expiry",
+                            })
+                        except Exception:
+                            logger.debug(
+                                "session:end emit failed during idle expiry "
+                                "for %s",
+                                entry.session_id,
+                                exc_info=True,
+                            )
                         logger.debug(
                             "Session expiry finalized for %s",
                             entry.session_id,
@@ -8180,6 +8203,37 @@ class GatewayRunner:
         if getattr(session_entry, "is_fresh_reset", False):
             session_entry.is_fresh_reset = False
         if _is_new_session:
+            # If this entry replaced a prior session via auto-reset (idle /
+            # daily / suspended), close the OLD session_id substrate-side
+            # BEFORE emitting session:start for the new one.  Mirrors the
+            # explicit /new path so external observers see start/end pairs
+            # even on idle-driven turnover.  See #28746.
+            _prior_session_id = getattr(
+                session_entry, "auto_reset_prior_session_id", None
+            )
+            if _prior_session_id:
+                try:
+                    await self.hooks.emit("session:end", {
+                        "platform": (
+                            source.platform.value if source.platform else ""
+                        ),
+                        "user_id": source.user_id,
+                        "session_id": _prior_session_id,
+                        "session_key": session_key,
+                        "reason": "auto_reset",
+                    })
+                except Exception:
+                    logger.debug(
+                        "session:end emit failed on auto-reset for %s",
+                        _prior_session_id,
+                        exc_info=True,
+                    )
+                # Consume the field so it never fires twice for the same
+                # auto-reset event.
+                try:
+                    session_entry.auto_reset_prior_session_id = None
+                except Exception:
+                    pass
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,

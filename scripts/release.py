@@ -317,6 +317,7 @@ AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "kenyon1977@gmail.com": "kenyonxu",
+    "loicnico96@gmail.com": "loicnico96",
     "cipherframe@users.noreply.github.com": "CipherFrame",
     "donovan-yohan@users.noreply.github.com": "donovan-yohan",
     "121752779+jacevys@users.noreply.github.com": "jacevys",

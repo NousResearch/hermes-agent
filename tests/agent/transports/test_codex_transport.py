@@ -513,3 +513,145 @@ class TestCodexTransportTimeout:
             request_overrides={"timeout": 450.0},
         )
         assert kw.get("timeout") == 450.0
+
+
+class TestCodexTransportXaiServiceTierStrip:
+    """xAI Responses API rejects ``service_tier`` (#28490).
+
+    ``resolve_fast_mode_overrides`` only returns ``service_tier`` for
+    OpenAI fast-eligible models, so on paper the field should never
+    reach a Grok request.  But ``self.service_tier`` lingers across
+    model switches and can also be set directly via ``agent.service_tier``
+    in config.yaml — both leak paths plumb through ``request_overrides``
+    and would 400 against xAI's ``/v1/responses``.
+    Strip defensively when targeting xAI.
+    """
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    def test_xai_strips_service_tier_from_request_overrides(self, transport):
+        """Headline #28490 case: service_tier=priority leaks through
+        request_overrides, must not reach the xAI request body."""
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "priority"},
+        )
+        assert "service_tier" not in kw, (
+            f"service_tier must be stripped on xAI requests, "
+            f"got {kw.get('service_tier')!r}"
+        )
+
+    def test_non_xai_codex_preserves_service_tier(self, transport):
+        """The strip is xAI-only — native Codex DOES accept
+        service_tier=priority (OpenAI Priority Processing).  Stripping
+        it elsewhere would silently disable the user's fast-mode opt-in.
+        """
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=False,
+            is_codex_backend=True,
+            request_overrides={"service_tier": "priority"},
+        )
+        assert kw.get("service_tier") == "priority", (
+            "non-xAI codex_responses providers must keep service_tier"
+        )
+
+    def test_github_responses_preserves_service_tier(self, transport):
+        """GitHub Models (Copilot) is another codex_responses surface
+        that should not be affected by the xAI strip."""
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"service_tier": "priority"},
+        )
+        assert kw.get("service_tier") == "priority"
+
+
+class TestPreflightSlashEnumStrip:
+    """xAI Responses safety-net: strip slash-containing enum values
+    when the model name indicates a Grok target (#28490).
+
+    Native Codex accepts ``/``-containing enums; xAI rejects them with
+    HTTP 400 "Invalid arguments passed to the model".  The main agent
+    loop and the auxiliary client already sanitize at request-build
+    time; this preflight catches any future code path that bypasses
+    those — gated on model name so we don't unnecessarily strip on
+    non-xAI providers.
+    """
+
+    def _make_kwargs(self, model: str, enum_values: list[str]) -> dict:
+        return {
+            "model": model,
+            "instructions": "test",
+            "input": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "pick_model",
+                    "description": "pick a model",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "model_id": {
+                                "type": "string",
+                                "enum": enum_values,
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+
+    def test_grok_model_strips_slash_enum_values(self):
+        """When the model name is Grok-family, slash-containing enum
+        values are stripped so xAI doesn't 400 on the tool schema."""
+        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        kwargs = self._make_kwargs(
+            "grok-4.3",
+            ["Qwen/Qwen3.5-0.8B", "openai/gpt-oss-20b", "plain-id"],
+        )
+        result = _preflight_codex_api_kwargs(kwargs)
+        # The enum keyword itself is stripped (per strip_slash_enum's
+        # semantics — it removes the constraint entirely when any value
+        # contains /).
+        params = result["tools"][0]["parameters"]
+        assert "enum" not in params["properties"]["model_id"], (
+            "slash-containing enum must be stripped on Grok"
+        )
+
+    def test_aggregator_prefixed_grok_also_strips(self):
+        """Aggregator-prefixed (x-ai/grok-*) names hit the same path."""
+        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        kwargs = self._make_kwargs(
+            "x-ai/grok-4.3",
+            ["Qwen/Qwen3.5-0.8B"],
+        )
+        result = _preflight_codex_api_kwargs(kwargs)
+        assert "enum" not in result["tools"][0]["parameters"]["properties"]["model_id"]
+
+    def test_non_grok_model_preserves_slash_enum_values(self):
+        """Native Codex / GitHub Models DO accept slash-containing
+        enums.  The safety-net must NOT strip there or we silently
+        degrade tool-schema constraints on every codex_responses
+        provider that isn't xAI."""
+        from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+        kwargs = self._make_kwargs(
+            "gpt-5.5",
+            ["Qwen/Qwen3.5-0.8B", "plain-id"],
+        )
+        result = _preflight_codex_api_kwargs(kwargs)
+        params = result["tools"][0]["parameters"]
+        # The enum must survive on non-xAI providers.
+        assert params["properties"]["model_id"].get("enum") == [
+            "Qwen/Qwen3.5-0.8B", "plain-id"
+        ]

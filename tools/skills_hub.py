@@ -391,12 +391,15 @@ class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
     DEFAULT_TAPS = [
-        {"repo": "openai/skills", "path": "skills/"},
+        # NOTE: openai/skills moved its content into skills/.curated/ (and
+        # skills/.system/ for system-level skills). _list_skills_in_repo
+        # skips directories starting with "." or "_", so we point both
+        # entries at the inner paths directly.
+        {"repo": "openai/skills", "path": "skills/.curated/"},
+        {"repo": "openai/skills", "path": "skills/.system/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "huggingface/skills", "path": "skills/"},
-        {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
-        {"repo": "MiniMax-AI/cli", "path": "skill/"},
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -3039,6 +3042,21 @@ def install_from_quarantine(
                 )
         except OSError:
             pass
+
+    # Reject symlinks inside the quarantined skill before moving it.
+    # A malicious skill bundle could include a symlink pointing outside the
+    # skills tree; its target contents would then be copied into skills/ and
+    # leaked to the agent on the next skill_view call.
+    for entry in quarantine_path.rglob("*"):
+        if not _is_path_redirect(entry):
+            continue
+        try:
+            rel = entry.relative_to(quarantine_resolved)
+        except ValueError:
+            rel = entry
+        raise ValueError(
+            f"Installed skill contains symlinks, which is not allowed: {rel}"
+        )
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))

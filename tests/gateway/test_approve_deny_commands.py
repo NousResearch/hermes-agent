@@ -456,7 +456,9 @@ class TestBlockingApprovalE2E:
         assert len(notified) == 1
         resolve_gateway_approval(session_key, "once")
         t1.join(timeout=5)
-        assert first_result[0] == {"approved": True, "message": None}
+        assert first_result[0] is not None
+        assert first_result[0]["approved"] is True
+        assert first_result[0]["message"] is None
         assert not is_approved(session_key, pattern_key)
 
         t2 = threading.Thread(target=run_command, args=(second_result,))

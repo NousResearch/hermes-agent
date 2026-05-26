@@ -12,8 +12,8 @@ import pytest
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.base import SendResult
-from gateway.platforms import weixin
-from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
+from gateway.platforms.wxbot import adapter as weixin
+from gateway.platforms.wxbot import ContextTokenStore, WeixinAdapter
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
 
 
@@ -312,10 +312,10 @@ class TestWeixinQrLogin:
         }
         pending = {"status": "wait"}
 
-        with patch("gateway.platforms.weixin._api_get", new_callable=AsyncMock) as api_get_mock, \
-             patch("gateway.platforms.weixin.time") as mock_time, \
-             patch("gateway.platforms.weixin.AIOHTTP_AVAILABLE", True), \
-             patch("gateway.platforms.weixin.aiohttp.ClientSession", create=True) as session_cls, \
+        with patch("gateway.platforms.wxbot.adapter._api_get", new_callable=AsyncMock) as api_get_mock, \
+             patch("gateway.platforms.wxbot.adapter.time") as mock_time, \
+             patch("gateway.platforms.wxbot.adapter.AIOHTTP_AVAILABLE", True), \
+             patch("gateway.platforms.wxbot.adapter.aiohttp.ClientSession", create=True) as session_cls, \
              patch("builtins.print"):
             api_get_mock.side_effect = [first_qr, pending]
             mock_time.monotonic.side_effect = [1000, 1000.2, 1001.1]
@@ -372,8 +372,8 @@ class TestWeixinChunkDelivery:
         adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
         return adapter
 
-    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
-    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @patch("gateway.platforms.wxbot.adapter.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.wxbot.adapter._send_message", new_callable=AsyncMock)
     def test_send_waits_between_multiple_chunks(self, send_message_mock, sleep_mock):
         adapter = self._connected_adapter()
         adapter.MAX_MESSAGE_LENGTH = 12
@@ -385,8 +385,8 @@ class TestWeixinChunkDelivery:
         assert send_message_mock.await_count == 3
         assert sleep_mock.await_count == 2
 
-    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
-    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @patch("gateway.platforms.wxbot.adapter.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.wxbot.adapter._send_message", new_callable=AsyncMock)
     def test_send_retries_failed_chunk_before_continuing(self, send_message_mock, sleep_mock):
         adapter = self._connected_adapter()
         adapter.MAX_MESSAGE_LENGTH = 12
@@ -502,10 +502,10 @@ class TestWeixinOutboundMedia:
         aes_key = bytes(range(16))
         expected_aes_key = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
 
-        with patch("gateway.platforms.weixin._get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://upload.example.com/media"})), \
-             patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock) as api_post_mock, \
-             patch("gateway.platforms.weixin.secrets.token_hex", return_value="filekey-123"), \
-             patch("gateway.platforms.weixin.secrets.token_bytes", return_value=aes_key):
+        with patch("gateway.platforms.wxbot.adapter._get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://upload.example.com/media"})), \
+             patch("gateway.platforms.wxbot.adapter._api_post", new_callable=AsyncMock) as api_post_mock, \
+             patch("gateway.platforms.wxbot.adapter.secrets.token_hex", return_value="filekey-123"), \
+             patch("gateway.platforms.wxbot.adapter.secrets.token_bytes", return_value=aes_key):
             message_id = asyncio.run(adapter._send_file("wxid_test123", str(image_path), ""))
 
         assert message_id.startswith("hermes-weixin-")
@@ -583,7 +583,7 @@ class TestWeixinBlankMessagePrevention:
         )
         assert adapter._split_text("") == []
 
-    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @patch("gateway.platforms.wxbot.adapter._send_message", new_callable=AsyncMock)
     def test_send_empty_content_does_not_call_send_message(self, send_message_mock):
         adapter = _make_adapter()
         adapter._session = object()

@@ -66,6 +66,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.platforms.wxbot.send_gate import SendGate
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -1192,6 +1193,8 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_session: Optional[aiohttp.ClientSession] = None
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
+        self._poll_guardian_task: Optional[asyncio.Task] = None
+        self._send_gate = SendGate()
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
@@ -1274,6 +1277,9 @@ class WeixinAdapter(BasePlatformAdapter):
         self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
+        self._poll_guardian_task = asyncio.create_task(
+            self._poll_guardian(), name="weixin-poll-guardian"
+        )
         self._mark_connected()
         _LIVE_ADAPTERS[self._token] = self
         logger.info("[%s] Connected account=%s base=%s", self.name, _safe_id(self._account_id), self._base_url)
@@ -1293,6 +1299,16 @@ class WeixinAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
         self._running = False
+
+        # Cancel the guardian first so it doesn't race with poll_task shutdown
+        if self._poll_guardian_task and not self._poll_guardian_task.done():
+            self._poll_guardian_task.cancel()
+            try:
+                await self._poll_guardian_task
+            except asyncio.CancelledError:
+                pass
+        self._poll_guardian_task = None
+
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
@@ -1370,6 +1386,40 @@ class WeixinAdapter(BasePlatformAdapter):
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     consecutive_failures = 0
 
+    async def _poll_guardian(self) -> None:
+        """Monitor _poll_task and restart it if it finishes unexpectedly.
+
+        The guardian runs as long as ``self._running`` is True.  When
+        ``_poll_task`` completes with a ``CancelledError`` it means a
+        planned shutdown (via ``disconnect()``), so the guardian exits.
+        Any other completion (unhandled exception, infinite-loop exit) is
+        treated as unexpected — the guardian recreates ``_poll_task`` and
+        the ``_poll_session`` if needed, then loops back to watch again.
+        """
+        while self._running:
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                return  # Planned disconnect — guardian exits
+
+            if not self._running:
+                return  # Already stopped during restart — race guard
+
+            logger.warning(
+                "[%s] _poll_task terminated unexpectedly; restarting...",
+                self.name,
+            )
+
+            # Recreate poll session if it was closed
+            if self._poll_session is None or self._poll_session.closed:
+                self._poll_session = aiohttp.ClientSession(
+                    trust_env=True, connector=_make_ssl_connector()
+                )
+
+            self._poll_task = asyncio.create_task(
+                self._poll_loop(), name="weixin-poll"
+            )
+
     async def _process_message_safe(self, message: Dict[str, Any]) -> None:
         try:
             await self._process_message(message)
@@ -1441,6 +1491,16 @@ class WeixinAdapter(BasePlatformAdapter):
             timestamp=datetime.now(),
         )
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
+        self._send_gate.on_user_message()
+
+        # WeChat heartbeat: bare "==" (half-width) or "＝＝" (full-width) resets
+        # the SendGate rate-limit state without forwarding to the session.
+        # This lets the user send a quick ping to unstick the gate after a
+        # RATE_LIMITED timeout without triggering any AI response.
+        if text and text.strip() in ("==", "＝＝"):
+            logger.info("[%s] Heartbeat ping from=%s — gate reset, session not invoked", self.name, _safe_id(sender_id))
+            return
+
         await self.handle_message(event)
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
@@ -1619,28 +1679,22 @@ class WeixinAdapter(BasePlatformAdapter):
                                 self.name, _safe_id(chat_id),
                             )
                             continue
-                        # Rate limit (-2) — backoff and retry
+                        # Rate limit (-2) — log error and abort, no retry
                         is_rate_limited = (
                             ret == RATE_LIMIT_ERRCODE
                             or errcode == RATE_LIMIT_ERRCODE
                         )
                         if is_rate_limited:
                             errmsg = resp.get("errmsg") or resp.get("msg") or "rate limited"
-                            # Record the error so we raise a descriptive
-                            # RuntimeError (instead of AssertionError) if the
-                            # loop exhausts with the server still rate-limiting.
+                            logger.error(
+                                "[%s] rate limited for %s; aborting send (no retry): "
+                                "ret=%s errcode=%s errmsg=%s",
+                                self.name, _safe_id(chat_id), ret, errcode, errmsg,
+                            )
                             last_error = RuntimeError(
                                 f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
-                            if attempt >= self._send_chunk_retries:
-                                break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
-                            logger.warning(
-                                "[%s] rate limited for %s; backing off %.1fs before retry",
-                                self.name, _safe_id(chat_id), wait,
-                            )
-                            await asyncio.sleep(wait)
-                            continue
+                            break
                         errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
                         raise RuntimeError(
                             f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
@@ -1674,6 +1728,16 @@ class WeixinAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
+
+        # iLink send gate — reject if rate-limited
+        allowed, gate_err = self._send_gate.try_acquire()
+        if not allowed:
+            logger.error(
+                "[%s] send blocked by gate: %s",
+                self.name, gate_err,
+            )
+            return SendResult(success=False, error=gate_err or "rate limited")
+
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
 
@@ -1727,6 +1791,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
+            self._send_gate.on_send_done()
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)

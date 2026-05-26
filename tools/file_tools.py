@@ -188,7 +188,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     detection rules.
     """
     try:
-        from agent.file_safety import get_cross_profile_warning
+        from agent.file_safety import get_container_mirror_warning, get_cross_profile_warning
     except Exception:
         # Fail open on import error — the existing sensitive-path guard
         # plus the write_denied list still apply.
@@ -202,7 +202,10 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     except (OSError, ValueError):
         resolved = filepath
 
-    return get_cross_profile_warning(resolved)
+    warning = get_cross_profile_warning(resolved)
+    if warning is not None:
+        return warning
+    return get_container_mirror_warning(resolved)
 
 
 def _is_expected_write_exception(exc: Exception) -> bool:

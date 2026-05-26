@@ -373,6 +373,7 @@ class DockerEnvironment(BaseEnvironment):
 
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
+        self._mirror_token: Optional[object] = None
         writable_args = []
         if self._persistent:
             sandbox = get_sandbox_dir() / "docker" / task_id
@@ -381,6 +382,14 @@ class DockerEnvironment(BaseEnvironment):
             writable_args.extend([
                 "-v", f"{self._home_dir}:/root",
             ])
+            # /root inside the container maps to sandbox/home on the host.
+            # Declare this so file_safety guards can detect writes to
+            # /root/.hermes/… as sandbox-mirror targets (#32049).
+            try:
+                from agent.file_safety import set_container_hermes_mirror
+                self._mirror_token = set_container_hermes_mirror("/root/.hermes")
+            except Exception:
+                pass
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)

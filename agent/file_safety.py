@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional
+
+# Set by DockerEnvironment when persistent=True to declare that the
+# container's /root maps to a sandbox bind-mount, making /root/.hermes
+# a non-authoritative mirror of the host profile state.
+_CONTAINER_HERMES_MIRROR: ContextVar[str | None] = ContextVar(
+    "_CONTAINER_HERMES_MIRROR", default=None
+)
 
 
 def _hermes_home_path() -> Path:
@@ -446,4 +454,81 @@ def get_cross_profile_warning(path: str) -> Optional[str]:
         f"after explicit user direction, retry the call with "
         f"``cross_profile=True``. (Defense-in-depth — not a security "
         f"boundary; the terminal tool can still bypass.)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Container-context mirror guard (inner-container case — #32049 follow-up)
+#
+# Brian's shape-based detector (#32213) catches paths that still carry the
+# full ``…/sandboxes/<backend>/<task>/home/.hermes/…`` prefix on the host.
+# But when file tools execute *inside* the container the bind-mount strips
+# that prefix: the agent sees plain ``/root/.hermes/…``.  The root:root
+# ownership on the divergent SOUL.md in #32049 confirms this is the primary
+# failure mode.
+#
+# Fix: DockerEnvironment sets _CONTAINER_HERMES_MIRROR to "/root/.hermes"
+# when persistent=True (it already knows /root maps to <sandbox>/home).
+# classify_container_mirror_target then catches any write whose resolved
+# path starts with that prefix, using the same warning + bypass contract.
+# ---------------------------------------------------------------------------
+
+
+def set_container_hermes_mirror(path: str) -> object:
+    """Declare that *path* inside the container is a sandbox mirror, not
+    authoritative HERMES_HOME state.  Call from DockerEnvironment when
+    persistent=True.  Returns the ContextVar token for reset on teardown."""
+    return _CONTAINER_HERMES_MIRROR.set(path)
+
+
+def classify_container_mirror_target(path: str) -> Optional[dict]:
+    """Classify a write target as a container-side sandbox mirror.
+
+    Returns ``None`` when no Docker context is active or the path is not
+    under the declared mirror prefix.  Otherwise returns the same dict
+    shape as ``classify_sandbox_mirror_target``:
+
+      * ``target_path``: resolved path string
+      * ``mirror_root``: the declared container mirror prefix
+      * ``inner_path``: portion under the mirror root (what the agent
+        likely meant to address in the host HERMES_HOME)
+    """
+    mirror_prefix = _CONTAINER_HERMES_MIRROR.get()
+    if not mirror_prefix:
+        return None
+    try:
+        target = Path(os.path.expanduser(str(path))).resolve()
+        mirror = Path(os.path.expanduser(mirror_prefix)).resolve()
+        inner = target.relative_to(mirror)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return {
+        "target_path": str(target),
+        "mirror_root": str(mirror),
+        "inner_path": inner.as_posix(),
+    }
+
+
+def get_container_mirror_warning(path: str) -> Optional[str]:
+    """Return a model-facing warning when *path* lands in the container's
+    sandbox mirror of authoritative Hermes state.
+
+    Same contract as ``get_sandbox_mirror_warning``: soft guard, returns
+    ``None`` for non-mirror paths, caller surfaces as a tool-result error.
+    Bypass via ``cross_profile=True`` after explicit user direction.
+    """
+    info = classify_container_mirror_target(path)
+    if info is None:
+        return None
+    return (
+        f"Sandbox-mirror write blocked by soft guard: {info['target_path']} "
+        f"sits under {info['mirror_root']!r}, which is the container's "
+        f"bind-mounted home — a per-task mirror that the host Hermes "
+        f"process never reads. The authoritative file is "
+        f"{info['inner_path']!r} under the real HERMES_HOME. Use the "
+        f"host-side tool for authoritative state (e.g. ``memory`` for "
+        f"memories), or address the host path directly. To bypass after "
+        f"explicit user direction, retry with ``cross_profile=True``. "
+        f"(Defense-in-depth — not a security boundary; the terminal tool "
+        f"can still bypass.)"
     )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from tools.schema_sanitizer import _normalize_type_array
 
@@ -112,3 +112,28 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
 def sanitize_gemini_tool_parameters(parameters: Any) -> Dict[str, Any]:
     """Normalize tool parameters to a valid Gemini object schema."""
     return sanitize_gemini_schema(parameters) or {"type": "object", "properties": {}}
+
+
+def sanitize_gemini_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sanitize an OpenAI-format tool list for Gemini's strict schema subset.
+
+    Applies ``sanitize_gemini_tool_parameters`` to each tool's ``parameters``
+    field.  Used in the chat-completions transport for Gemini models reached
+    via OpenAI-compatible endpoints (Copilot, Google AI Studio /openai, etc.)
+    that enforce the same schema restrictions as the native Gemini API.
+    """
+    result: List[Dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            result.append(tool)
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            result.append(tool)
+            continue
+        params = fn.get("parameters")
+        if params is None:
+            result.append(tool)
+            continue
+        result.append({**tool, "function": {**fn, "parameters": sanitize_gemini_tool_parameters(params)}})
+    return result

@@ -587,6 +587,14 @@ def apply_bitwarden_secrets(
         return result
 
     access_token = os.environ.get(access_token_env, "").strip()
+
+    # `enabled: true` with neither a token nor a project configured means
+    # the integration was never actually set up — stay silent rather than
+    # nagging on every startup.  The warnings below are only actionable
+    # once setup is partway done (one of the two is present).  See #32715.
+    if not access_token and not project_id:
+        return result
+
     if not access_token:
         result.error = (
             f"secrets.bitwarden.enabled is true but {access_token_env} is "

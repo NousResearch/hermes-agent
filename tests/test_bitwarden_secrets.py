@@ -413,6 +413,18 @@ def test_apply_disabled_returns_empty():
     assert not result.error
 
 
+def test_apply_unconfigured_is_silent(monkeypatch):
+    # enabled: true but neither a token nor a project_id — the integration
+    # was never set up, so we must not nag on startup (#32715).
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    result = bw.apply_bitwarden_secrets(
+        enabled=True, project_id="", auto_install=False
+    )
+    assert result.ok
+    assert not result.error
+    assert not result.applied
+
+
 def test_apply_missing_token(monkeypatch):
     monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
     result = bw.apply_bitwarden_secrets(

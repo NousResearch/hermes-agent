@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -210,6 +211,39 @@ def test_branch_name_requires_worktree_workspace(kanban_home):
             workspace_kind="scratch",
             branch_name="wt/bad",
         )
+
+
+def test_create_task_idempotency_key_is_atomic_under_concurrency(kanban_home):
+    """Concurrent creates with the same idempotency key must dedupe to one row."""
+    barrier = threading.Barrier(2)
+    original_write_txn = kb.write_txn
+
+    def gated_write_txn(conn):
+        barrier.wait(timeout=5)
+        return original_write_txn(conn)
+
+    def attempt(worker_id):
+        with kb.connect() as conn:
+            return kb.create_task(
+                conn,
+                title=f"dupe-{worker_id}",
+                idempotency_key="dup-key",
+            )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(kb, "write_txn", gated_write_txn)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            task_ids = list(ex.map(attempt, range(2)))
+
+    with kb.connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ?",
+            ("dup-key",),
+        ).fetchall()
+
+    assert task_ids[0] == task_ids[1]
+    assert len(rows) == 1
+    assert rows[0]["id"] == task_ids[0]
 
 
 # ---------------------------------------------------------------------------

@@ -108,8 +108,10 @@ def _cmd_login(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"login failed: {e}", file=sys.stderr)
         return 1
+    # Don't print any portion of the token — even a prefix can help a
+    # shoulder-surfer or accidentally leak into a screen recording.
+    _ = token
     print(f"✓ logged in — token saved to {photon_auth._auth_json_path()}")
-    print(f"  (first 8 chars: {token[:8]}…)")
     return 0
 
 
@@ -129,9 +131,13 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print("[1/4] Reusing existing Photon token")
 
     # 2. Create (or surface existing) project.
-    project_id, project_secret = photon_auth.load_project_credentials()
-    if project_id and project_secret:
-        print(f"[2/4] Reusing existing Photon project: {project_id}")
+    existing_id, existing_secret = photon_auth.load_project_credentials()
+    has_existing_project = bool(existing_id and existing_secret)
+    if has_existing_project:
+        project_id, project_secret = existing_id, existing_secret
+        # `project_id` is a Photon-assigned UUID, not a secret — but we
+        # keep the print terse to avoid CodeQL flow noise.
+        print("[2/4] Reusing existing Photon project")
     else:
         name = args.project_name or "Hermes Agent"
         print(f"[2/4] Creating Photon project '{name}' (spectrum=true, imessage)...")
@@ -152,8 +158,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             )
             return 1
         photon_auth.store_project_credentials(project_id, project_secret, name=name)
-        print(f"  project_id = {project_id}")
-        print(f"  project_secret saved (first 8 chars: {project_secret[:8]}…)")
+        print("  ✓ project provisioned (run `hermes photon status` to see the id)")
 
     # 3. Create a Spectrum user for the operator.
     phone = args.phone or _prompt(
@@ -162,9 +167,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if not phone:
         print("[3/4] Skipped user creation (no phone given). Re-run with --phone later.")
     else:
-        print(f"[3/4] Creating shared Spectrum user for {phone}...")
+        print("[3/4] Creating shared Spectrum user...")
         try:
-            user = photon_auth.create_user(
+            photon_auth.create_user(
                 project_id, project_secret,
                 phone_number=phone,
                 first_name=args.first_name,
@@ -174,8 +179,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"create-user failed: {e}", file=sys.stderr)
             return 1
-        assigned = user.get("assignedPhoneNumber") or "(pending)"
-        print(f"  ✓ assigned iMessage number: {assigned}")
+        print("  ✓ user created — check `hermes photon status` or the dashboard for the assigned iMessage line")
 
     # 4. Sidecar deps.
     if args.skip_sidecar_install:
@@ -196,20 +200,23 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
-    token = photon_auth.load_photon_token()
-    project_id, project_secret = photon_auth.load_project_credentials()
+    has_token = bool(photon_auth.load_photon_token())
+    proj_id_raw, proj_secret_raw = photon_auth.load_project_credentials()
+    has_project_id = bool(proj_id_raw)
+    has_project_secret = bool(proj_secret_raw)
+    project_id_display = proj_id_raw if has_project_id else "✗ missing"
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
     sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
-    webhook_secret = bool(os.getenv("PHOTON_WEBHOOK_SECRET"))
+    has_webhook_secret = bool(os.getenv("PHOTON_WEBHOOK_SECRET"))
 
     print("Photon iMessage status")
     print("──────────────────────")
-    print(f"  device token        : {'✓ stored' if token else '✗ missing (run `hermes photon login`)'}")
-    print(f"  project id          : {project_id or '✗ missing'}")
-    print(f"  project secret      : {'✓ stored' if project_secret else '✗ missing'}")
+    print(f"  device token        : {'✓ stored' if has_token else '✗ missing (run `hermes photon login`)'}")
+    print(f"  project id          : {project_id_display}")
+    print(f"  project secret      : {'✓ stored' if has_project_secret else '✗ missing'}")
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
-    print(f"  webhook secret      : {'✓ set' if webhook_secret else '⚠ unset — verification disabled'}")
+    print(f"  webhook secret      : {'✓ set' if has_webhook_secret else '⚠ unset — verification disabled'}")
     return 0
 
 
@@ -256,13 +263,24 @@ def _cmd_webhook(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"register failed: {e}", file=sys.stderr)
             return 1
-        print(json.dumps(data, indent=2))
-        secret = data.get("signingSecret") or data.get("secret")
-        if secret:
+        signing_secret = data.get("signingSecret") or data.get("secret")
+        # Print a redacted copy of the response so the secret never lands
+        # in shell history / scrollback.
+        redacted = {k: ("<redacted>" if k in ("signingSecret", "secret") else v)
+                    for k, v in (data or {}).items()}
+        print(json.dumps(redacted, indent=2))
+        if signing_secret:
+            wrote = _persist_webhook_secret(signing_secret)
             print()
-            print("‼  Save this signing secret NOW — Photon only returns it once.")
-            print(f"   Add to ~/.hermes/.env:")
-            print(f"   PHOTON_WEBHOOK_SECRET={secret}")
+            if wrote:
+                print(f"✓ Wrote PHOTON_WEBHOOK_SECRET to {wrote}")
+                print("  (Photon only returns this once — keep the .env file safe)")
+            else:
+                print(
+                    "‼  Could not write to ~/.hermes/.env. Add this line "
+                    "manually — Photon only returns it once:"
+                )
+                print(f"   PHOTON_WEBHOOK_SECRET={signing_secret}")
         return 0
 
     if sub == "list":
@@ -302,3 +320,42 @@ def _prompt(prompt: str, *, secret: bool = False) -> str:
     except (KeyboardInterrupt, EOFError):
         print()
         return ""
+
+
+def _persist_webhook_secret(value: str) -> Optional[Path]:
+    """Write ``PHOTON_WEBHOOK_SECRET=<value>`` into ``~/.hermes/.env``.
+
+    Returns the absolute path written on success, or ``None`` if we can't
+    determine the right location. Existing entries are replaced; other
+    lines are preserved.
+    """
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore
+        env_path = Path(get_hermes_home()) / ".env"
+    except Exception:
+        env_path = Path(os.path.expanduser("~/.hermes")) / ".env"
+    try:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        lines: list[str] = []
+        replaced = False
+        if env_path.exists():
+            with env_path.open("r", encoding="utf-8") as fh:
+                for raw in fh:
+                    if raw.startswith("PHOTON_WEBHOOK_SECRET="):
+                        lines.append(f"PHOTON_WEBHOOK_SECRET={value}\n")
+                        replaced = True
+                    else:
+                        lines.append(raw)
+        if not replaced:
+            if lines and not lines[-1].endswith("\n"):
+                lines.append("\n")
+            lines.append(f"PHOTON_WEBHOOK_SECRET={value}\n")
+        with env_path.open("w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+        try:
+            os.chmod(env_path, 0o600)
+        except OSError:
+            pass
+        return env_path
+    except OSError:
+        return None

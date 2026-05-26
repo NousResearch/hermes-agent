@@ -32,3 +32,13 @@
 
 .visibility-os-column.hermes-kanban-column:hover { border-color: color-mix(in srgb, var(--color-ring) 45%, var(--color-border)); }
 .visibility-os-card.hermes-kanban-card:active { cursor:grabbing; transform:scale(0.995); }
+.visibility-os-card.hermes-kanban-card:focus { outline:2px solid color-mix(in srgb, var(--color-ring) 75%, transparent); outline-offset:2px; }
+.visibility-os-modal-backdrop { position:fixed; inset:0; z-index:70; display:flex; align-items:center; justify-content:center; padding:1.25rem; background:rgba(2, 6, 12, 0.72); backdrop-filter:blur(8px); }
+.visibility-os-modal { width:min(920px, calc(100vw - 2rem)); max-height:min(86vh, 920px); display:flex; flex-direction:column; overflow:hidden; border:1px solid color-mix(in srgb, var(--color-ring) 40%, var(--color-border)); border-radius:calc(var(--radius, 0.5rem) * 1.4); background:color-mix(in srgb, var(--color-card) 96%, #020617 12%); box-shadow:0 24px 80px rgba(0,0,0,0.48), 0 0 0 1px rgba(255,255,255,0.04) inset; }
+.visibility-os-modal-header { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; padding:1rem 1.1rem 0.8rem; border-bottom:1px solid color-mix(in srgb, var(--color-border) 70%, transparent); }
+.visibility-os-modal-kicker { color:var(--color-muted-foreground); font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; }
+.visibility-os-modal-title { margin:0.12rem 0 0; color:var(--color-foreground); font-size:1.05rem; font-weight:750; line-height:1.25; }
+.visibility-os-modal-body { overflow:auto; padding:1rem 1.1rem 1.1rem; }
+.visibility-os-modal-actions { display:flex; flex-wrap:wrap; gap:0.5rem; padding-top:0.25rem; }
+.visibility-os-modal-close { flex:0 0 auto; }
+@media (max-width: 700px) { .visibility-os-modal-backdrop { align-items:flex-end; padding:0.75rem; } .visibility-os-modal { width:100%; max-height:90vh; } }

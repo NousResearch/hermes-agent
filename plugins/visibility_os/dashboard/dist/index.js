@@ -31,6 +31,7 @@
     const [busy, setBusy] = hooks.useState(false);
     const [selectedOpportunity, setSelectedOpportunity] = hooks.useState(null);
     const [selectedWorkstream, setSelectedWorkstream] = hooks.useState(null);
+    const [selectedTicket, setSelectedTicket] = hooks.useState(null);
     const [slackTarget, setSlackTarget] = hooks.useState('');
     const [severityFilter, setSeverityFilter] = hooks.useState('all');
     const [sourceFilter, setSourceFilter] = hooks.useState('all');
@@ -208,6 +209,75 @@
         )
       );
     }
+    function modalShell(title, subtitle, onClose, content) {
+      return h('div', { className: 'visibility-os-modal-backdrop', role: 'presentation', onMouseDown: function (e) { if (e.target === e.currentTarget) onClose(); } },
+        h('div', { className: 'visibility-os-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+          h('div', { className: 'visibility-os-modal-header' },
+            h('div', null,
+              h('div', { className: 'visibility-os-modal-kicker' }, subtitle || 'Visibility OS ticket'),
+              h('h2', { className: 'visibility-os-modal-title' }, title)
+            ),
+            h(ActionButton, { onClick: onClose, className: 'visibility-os-modal-close' }, 'Close')
+          ),
+          h('div', { className: 'visibility-os-modal-body' }, content)
+        )
+      );
+    }
+    function ticketModalView(item) {
+      if (!item) return null;
+      const title = item.title || item.opportunity_title || item.summary || item.id;
+      const description = item.kind === 'opportunity' ? item.description : item.summary;
+      return modalShell(title, item.kind === 'opportunity' ? 'Opportunity' : 'Action', function () { setSelectedTicket(null); },
+        h('div', { className: 'space-y-4' },
+          h('div', { className: 'flex gap-2 flex-wrap' },
+            h(Badge, null, item.kind || 'ticket'),
+            item.repo && h(Badge, null, item.repo),
+            item.source_repo && h(Badge, null, item.source_repo),
+            item.category && h(Badge, null, item.category),
+            item.status && h(Badge, null, item.status),
+            item.priority_score && h(Badge, null, 'Priority ' + item.priority_score),
+            item.board_state && h(Badge, null, item.board_state.replace(/_/g, ' '))
+          ),
+          description && h('p', { className: 'text-sm text-text-secondary' }, description),
+          item.current_step && h('div', { className: 'rounded border border-current/10 bg-black/20 p-3 text-xs' }, item.current_step),
+          item.source_url && h('a', { className: 'text-xs underline text-midground', href: item.source_url, target: '_blank' }, item.source_url),
+          item.workstream_id && h('div', { className: 'text-xs' }, workstreamBadge(item)),
+          item.kind === 'action' && actionPayloadView(item),
+          item.kind === 'action' && evidenceLinks(item),
+          item.action_type === 'github_push_branch' && h('div', { className: 'text-xs text-text-secondary' }, 'Review the prepared PR here, then use Push branch when you are ready.'),
+          findingsView(item),
+          h('div', { className: 'visibility-os-modal-actions' }, sectionActions(item))
+        )
+      );
+    }
+    function opportunityModalView(detail) {
+      if (!detail) return null;
+      return modalShell('Opportunity detail: ' + detail.title, detail.source_repo || detail.source_system || 'Opportunity', function () { setSelectedOpportunity(null); },
+        h('div', { className: 'space-y-3' },
+          h('div', { className: 'flex gap-2 flex-wrap' },
+            h(Badge, null, detail.source_repo || detail.source_system),
+            h(Badge, null, detail.category),
+            h(Badge, null, 'Priority ' + detail.priority_score)
+          ),
+          h('p', { className: 'text-sm text-text-secondary' }, detail.why_it_matters || detail.description),
+          h('p', { className: 'text-xs text-text-secondary' }, scoreLine(detail)),
+          detail.source_url && h('a', { className: 'text-xs underline text-midground', href: detail.source_url, target: '_blank' }, detail.source_url),
+          detail.score_explanation && h('pre', { className: 'whitespace-pre-wrap rounded bg-black/40 p-3 text-xs' }, detail.score_explanation),
+          evidenceLinks(detail),
+          h('div', { className: 'flex items-center gap-2 flex-wrap' },
+            h('label', { className: 'text-xs text-text-secondary' }, 'Slack target'),
+            h('input', { className: 'rounded bg-black/40 px-2 py-1 text-xs border border-current/20', value: slackTarget, onChange: function (e) { setSlackTarget(e.target.value); } })
+          ),
+          h('div', { className: 'visibility-os-modal-actions' },
+            detail.source_url && detail.source_url.indexOf('/pull/') !== -1 && h(ActionButton, { disabled: busy, onClick: function () { auditOpportunity(detail); } }, 'Audit PR'),
+            detail.source_url && detail.source_url.indexOf('/pull/') !== -1 && h(ActionButton, { disabled: busy, onClick: function () { deepReviewOpportunity(detail); } }, 'Deep Review PR'),
+            (detail.recommended_actions || []).map(function (a) {
+              return h(ActionButton, { key: a.action_kind, disabled: busy, onClick: function () { draftOpportunity(detail, a.action_kind); } }, a.label);
+            })
+          )
+        )
+      );
+    }
     function findingsSummaryView(findings) {
       const counts = findings.reduce(function (acc, f) { acc[f.severity || 'suggestion'] = (acc[f.severity || 'suggestion'] || 0) + 1; return acc; }, { critical: 0, warning: 0, suggestion: 0 });
       return h('div', { className: 'grid grid-cols-3 gap-2 text-xs' },
@@ -335,6 +405,19 @@
         className: 'hermes-kanban-card visibility-os-card',
         'data-visibility-kind': item.kind,
         draggable: true,
+        role: 'button',
+        tabIndex: 0,
+        onClick: function (e) {
+          if (e.target && e.target.closest && e.target.closest('button, a, input, select, textarea, summary, details')) return;
+          if (item.kind === 'opportunity') viewOpportunity(item.id);
+          else setSelectedTicket(item);
+        },
+        onKeyDown: function (e) {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          if (item.kind === 'opportunity') viewOpportunity(item.id);
+          else setSelectedTicket(item);
+        },
         onDragStart: function (e) {
           e.dataTransfer.setData('application/vnd.visibility-os-card', JSON.stringify({ kind: item.kind, id: item.id }));
           e.dataTransfer.effectAllowed = 'move';
@@ -415,32 +498,8 @@
       ),
       error && h('div', { className: 'rounded border border-red-500/40 p-3 text-red-300' }, error),
       selectedWorkstream && workstreamDetailView(selectedWorkstream),
-      selectedOpportunity && h(Card, { className: 'border-emerald-500/40' },
-        h(CardHeader, null, h(CardTitle, null, 'Opportunity detail: ' + selectedOpportunity.title)),
-        h(CardContent, { className: 'space-y-3' },
-          h('div', { className: 'flex gap-2 flex-wrap' },
-            h(Badge, null, selectedOpportunity.source_repo || selectedOpportunity.source_system),
-            h(Badge, null, selectedOpportunity.category),
-            h(Badge, null, 'Priority ' + selectedOpportunity.priority_score)
-          ),
-          h('p', { className: 'text-sm text-text-secondary' }, selectedOpportunity.why_it_matters || selectedOpportunity.description),
-          h('p', { className: 'text-xs text-text-secondary' }, scoreLine(selectedOpportunity)),
-          h('pre', { className: 'whitespace-pre-wrap rounded bg-black/40 p-3 text-xs' }, selectedOpportunity.score_explanation),
-          evidenceLinks(selectedOpportunity),
-          h('div', { className: 'flex items-center gap-2 flex-wrap' },
-            h('label', { className: 'text-xs text-text-secondary' }, 'Slack target'),
-            h('input', { className: 'rounded bg-black/40 px-2 py-1 text-xs border border-current/20', value: slackTarget, onChange: function (e) { setSlackTarget(e.target.value); } })
-          ),
-          h('div', { className: 'flex gap-2 flex-wrap' },
-            selectedOpportunity.source_url && selectedOpportunity.source_url.indexOf('/pull/') !== -1 && h(ActionButton, { disabled: busy, onClick: function () { auditOpportunity(selectedOpportunity); } }, 'Audit PR'),
-            selectedOpportunity.source_url && selectedOpportunity.source_url.indexOf('/pull/') !== -1 && h(ActionButton, { disabled: busy, onClick: function () { deepReviewOpportunity(selectedOpportunity); } }, 'Deep Review PR'),
-            (selectedOpportunity.recommended_actions || []).map(function (a) {
-              return h(ActionButton, { key: a.action_kind, disabled: busy, onClick: function () { draftOpportunity(selectedOpportunity, a.action_kind); } }, a.label);
-            }),
-            h(ActionButton, { disabled: busy, onClick: function () { setSelectedOpportunity(null); } }, 'Close')
-          )
-        )
-      ),
+      selectedTicket && ticketModalView(selectedTicket),
+      selectedOpportunity && opportunityModalView(selectedOpportunity),
       h('div', { className: 'visibility-os-metrics' },
         h(Card, null, h(CardContent, { className: 'p-4' }, h('div', { className: 'text-2xl font-bold' }, boardCounts.todo || 0), h('div', { className: 'text-xs text-text-secondary' }, 'Todo'))),
         h(Card, null, h(CardContent, { className: 'p-4' }, h('div', { className: 'text-2xl font-bold' }, boardCounts.in_progress || 0), h('div', { className: 'text-xs text-text-secondary' }, 'In progress'))),

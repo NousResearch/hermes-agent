@@ -1103,6 +1103,13 @@ def test_visibility_os_dashboard_shows_single_fix_ci_button():
     assert "sectionActions" in js
     assert "Open opportunity" in js
     assert "viewOpportunity(item.id)" in js
+    assert "ticketModalView" in js
+    assert "opportunityModalView" in js
+    assert "visibility-os-modal-backdrop" in js
+    assert "role: 'dialog'" in js
+    assert "aria-modal" in js
+    assert "setSelectedTicket(item)" in js
+    assert "onKeyDown" in js
     assert "Kanban board" in js
     assert "kanbanColumn('todo'" in js
     assert "kanbanColumn('in_progress'" in js

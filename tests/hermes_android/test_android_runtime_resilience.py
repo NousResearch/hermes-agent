@@ -45,7 +45,7 @@ def test_android_boot_and_chat_paths_guard_local_backend_failures_instead_of_cra
 
     assert 'internal fun parseStream(' in sse_client
     assert 'parseStream(source, onDelta, onComplete, onError)' in sse_client
-    assert 'runCatching { extractDelta(payload) }' in sse_client
+    assert 'runCatching { extractStreamEvent(payload) }' in sse_client
     assert 'catch (error: Exception)' in sse_client
 
 

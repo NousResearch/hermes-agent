@@ -87,6 +87,7 @@ AUTHOR_MAP = {
     "gaia@gaia.local": "jfuenmayor",
     "jiahuigu@users.noreply.github.com": "Jiahui-Gu",
     "openhands@all-hands.dev": "YLChen-007",
+    "3153586+xzessmedia@users.noreply.github.com": "xzessmedia",
     "AdamPlatin123@outlook.com": "AdamPlatin123",
     "32711803+waefrebeorn@users.noreply.github.com": "waefrebeorn",
     "32869278+dusterbloom@users.noreply.github.com": "dusterbloom",
@@ -240,6 +241,7 @@ AUTHOR_MAP = {
     "jonathan.troyer@overmatch.com": "JTroyerOvermatch",
     "harryykyle1@gmail.com": "hharry11",
     "wysie@users.noreply.github.com": "wysie",
+    "ronhi@buildabear1.localdomain": "RonHillDev",  # PR #29523 salvage (machine-local commit email)
     "jkausel@gmail.com": "jkausel-ai",
     "e.silacandmr@gmail.com": "Es1la",
     "51599529+stephen0110@users.noreply.github.com": "stephen0110",
@@ -1312,6 +1314,9 @@ AUTHOR_MAP = {
     "66773372+Tranquil-Flow@users.noreply.github.com": "Tranquil-Flow",  # PR #27518 (bracketed-paste timeout)
     "8bit64k@pm.me": "8bit64k",  # PR #14681 (TUI /q alias from quit to queue)
     "chenglunhu@gmail.com": "hclsys",  # PR #31985 (TUI /q alias regression test)
+    "dearmayo@localhost": "ffr31mr",  # PR #32103 (SubdirectoryHintTracker workspace boundary)
+    "TheOnlyMika@users.noreply.github.com": "TheOnlyMika",  # PR #32155 (dashboard XSS + defusedxml)
+    "krislidimo@gmail.com": "krislidimo",  # PR #29775 (tighten Telegram table row-group spacing; drop redundant first bullet)
 }
 
 

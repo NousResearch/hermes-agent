@@ -707,7 +707,14 @@ class TestSyncSkills:
         assert not (skills_dir / ".hub" / "lock.json").exists()
 
     def test_nonexistent_bundled_dir(self, tmp_path):
-        with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
+        # Patch SKILLS_DIR to a clean tmp path so the marker check inside
+        # sync_skills() doesn't pick up the developer's live HERMES_HOME
+        # opt-out marker and short-circuit before the missing-bundled-dir
+        # path runs.
+        skills_dir = tmp_path / "profile" / "skills"
+        skills_dir.mkdir(parents=True)
+        with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir):
             result = sync_skills(quiet=True)
         assert result == {
             "copied": [], "updated": [], "skipped": 0,
@@ -1280,3 +1287,66 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+class TestNoBundledSkillsMarker:
+    """Regression: sync_skills must honor the .no-bundled-skills opt-out marker.
+
+    PR #15 added the marker check at every documented caller but the
+    DESCRIPTION.md copy loop inside sync_skills() still ran unconditionally
+    when sync_skills() was called directly (e.g. seed_profile_skills() on a
+    profile created before the marker was written). That left stale category
+    DESCRIPTION.md stubs in opted-out profile skill dirs.
+    """
+
+    def _setup_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "apple").mkdir(parents=True)
+        (bundled / "apple" / "DESCRIPTION.md").write_text(
+            "---\ndescription: Apple\n---\n"
+        )
+        (bundled / "apple" / "imessage").mkdir()
+        (bundled / "apple" / "imessage" / "SKILL.md").write_text(
+            "---\nname: imessage\n---\n# iMessage\n"
+        )
+        return bundled
+
+    def test_marker_skips_skill_and_description_copy(self, tmp_path):
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "profile" / "skills"
+        skills_dir.mkdir(parents=True)
+        manifest_file = skills_dir / ".bundled_manifest"
+        # Marker lives at HERMES_HOME root (skills_dir.parent in this test).
+        from hermes_cli.profiles import NO_BUNDLED_SKILLS_MARKER
+        (skills_dir.parent / NO_BUNDLED_SKILLS_MARKER).write_text("opt-out\n")
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", skills_dir.parent):
+            result = sync_skills(quiet=True)
+
+        assert result.get("skipped_opt_out") is True
+        assert result["copied"] == []
+        # The bug we're guarding: no DESCRIPTION.md must land in the profile.
+        assert not (skills_dir / "apple" / "DESCRIPTION.md").exists()
+        # And no SKILL.md either.
+        assert not (skills_dir / "apple" / "imessage" / "SKILL.md").exists()
+
+    def test_no_marker_proceeds_normally(self, tmp_path):
+        """Sanity check: without the marker sync still copies as before."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "profile" / "skills"
+        skills_dir.mkdir(parents=True)
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", skills_dir.parent):
+            result = sync_skills(quiet=True)
+
+        assert result.get("skipped_opt_out") is not True
+        assert (skills_dir / "apple" / "DESCRIPTION.md").exists()
+        assert (skills_dir / "apple" / "imessage" / "SKILL.md").exists()

@@ -998,6 +998,8 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
     """Validate the audio file.  Returns an error dict or None if OK."""
     audio_path = Path(file_path)
 
+    if os.path.islink(audio_path):
+        return {"success": False, "transcript": "", "error": f"Path is a symbolic link: {file_path}"}
     if not audio_path.exists():
         return {"success": False, "transcript": "", "error": f"Audio file not found: {file_path}"}
     if not audio_path.is_file():

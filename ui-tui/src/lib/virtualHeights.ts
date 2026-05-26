@@ -1,6 +1,6 @@
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Msg } from '../types.js'
 
-import { TERMUX_TUI_MODE } from '../config/env.js'
 import { transcriptBodyWidth } from './inputMetrics.js'
 
 const hashText = (text: string) => {
@@ -72,11 +72,15 @@ export const estimatedMsgHeight = (
   {
     compact,
     details,
+    thinkingVisible = details,
+    toolsVisible = details,
     userPrompt = '',
     withSeparator = false
   }: {
     compact: boolean
     details: boolean
+    thinkingVisible?: boolean
+    toolsVisible?: boolean
     userPrompt?: string
     withSeparator?: boolean
   }
@@ -111,7 +115,17 @@ export const estimatedMsgHeight = (
   }
 
   if (details) {
-    h += (msg.tools?.length ?? 0) + wrappedLines(msg.thinking ?? '', bodyWidth)
+    const hasVisibleTools = toolsVisible && Boolean(msg.tools?.length)
+    const hasVisibleThinking = thinkingVisible && /\S/.test(msg.thinking ?? '')
+    const hasVisibleDetails = hasVisibleTools || hasVisibleThinking
+
+    if (hasVisibleDetails) {
+      h += (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
+
+      if (msg.role === 'assistant' && /\S/.test(msg.text)) {
+        h += 2
+      }
+    }
   }
 
   if (msg.role === 'user' || msg.kind === 'diff') {

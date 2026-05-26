@@ -569,6 +569,13 @@ def run_doctor(args):
             if should_fix:
                 env_path.parent.mkdir(parents=True, exist_ok=True)
                 env_path.touch()
+                # .env holds API keys — restrict to owner-only access from
+                # creation. touch() obeys umask which is commonly 0o022,
+                # leaving the file world-readable; tighten explicitly.
+                try:
+                    os.chmod(str(env_path), 0o600)
+                except OSError:
+                    pass
                 check_ok(f"Created empty {_DHH}/.env")
                 check_info("Run 'hermes setup' to configure API keys")
                 fixed_count += 1
@@ -805,7 +812,18 @@ def run_doctor(args):
                     "(should be under 'model:' section)"
                 )
                 if should_fix:
-                    model_section = raw_config.setdefault("model", {})
+                    # Coerce scalar/None ``model:`` into a dict before mutation —
+                    # ``setdefault("model", {})`` would return an existing scalar
+                    # and then ``model_section[k] = ...`` would raise TypeError.
+                    raw_model = raw_config.get("model")
+                    if isinstance(raw_model, dict):
+                        model_section = raw_model
+                    elif isinstance(raw_model, str) and raw_model.strip():
+                        model_section = {"default": raw_model.strip()}
+                        raw_config["model"] = model_section
+                    else:
+                        model_section = {}
+                        raw_config["model"] = model_section
                     for k in stale_root_keys:
                         if not model_section.get(k):
                             model_section[k] = raw_config.pop(k)

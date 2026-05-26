@@ -12,7 +12,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, load_config
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -1261,7 +1261,7 @@ def build_skills_system_prompt(
         )
 
         # Use TOON-lite compact encoding when configured
-        if bool(cfg_get("context.compact_format", False)):
+        if bool(cfg_get(load_config(), "context", "compact_format", default=False)):
             result += _toon_skills_index(skills_by_category, category_descriptions)
             result += "\n\nOnly proceed without loading a skill if genuinely none are relevant to the task."
         else:

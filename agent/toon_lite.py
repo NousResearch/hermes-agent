@@ -15,13 +15,12 @@ Design principles:
   - LLM-readable first, compression second (this IS for LLMs to read)
   - Header declares schema once; rows carry only data
   - Tokenizer-friendly separators (comma, newline, colon)
-  - No structural noise: no XML tags, no JSON braces, no markdown bullets
+  - No structural noise: no XML tags, no JSON braces
 """
 
 from __future__ import annotations
 
-import re
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 
 # ── Table mode ──────────────────────────────────────────────────────────
@@ -232,7 +231,7 @@ def format_skills_index_toon(
 
         for name, desc in sorted(set(skills), key=lambda x: x[0]):
             clean_desc = _truncate_desc(desc.strip(), 100) if desc else ""
-            cat_lines.append(f"  - {name}: {clean_desc}")
+            cat_lines.append(f"  {name}: {clean_desc}")
 
         blocks.append("\n".join(cat_lines))
 

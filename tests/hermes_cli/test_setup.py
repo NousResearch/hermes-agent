@@ -237,6 +237,50 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     assert "restart" in out.lower()
 
 
+def test_setup_gateway_allows_returning_to_platform_selection(monkeypatch):
+    import hermes_cli.gateway as gateway_mod
+
+    configured = set()
+    configure_calls = []
+    checklist_calls = []
+    prompt_answers = iter([True, False])
+    platforms = [
+        {"key": "whatsapp", "label": "WhatsApp", "emoji": "💬"},
+        {"key": "telegram", "label": "Telegram", "emoji": "✈️"},
+    ]
+
+    def fake_prompt_checklist(question, items, pre_selected=None):
+        checklist_calls.append((question, list(items), list(pre_selected or [])))
+        if len(checklist_calls) == 1:
+            return [0]
+        return [1]
+
+    def fake_configure(platform):
+        configure_calls.append(platform["key"])
+        configured.add(platform["key"])
+
+    monkeypatch.setattr(setup_mod, "prompt_checklist", fake_prompt_checklist)
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **kw: next(prompt_answers))
+    monkeypatch.setattr(gateway_mod, "_all_platforms", lambda: platforms)
+    monkeypatch.setattr(
+        gateway_mod,
+        "_platform_status",
+        lambda platform: "configured" if platform["key"] in configured else "not configured",
+    )
+    monkeypatch.setattr(gateway_mod, "_configure_platform", fake_configure)
+    monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    setup_mod.setup_gateway({})
+
+    assert configure_calls == ["whatsapp", "telegram"]
+    assert len(checklist_calls) == 2
+    assert checklist_calls[1][2] == [0]
+
+
 def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
     """Removing the last custom provider in model setup should persist."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

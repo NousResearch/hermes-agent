@@ -2387,25 +2387,38 @@ def setup_gateway(config: dict):
     print_info("Toggle with Space, confirm with Enter.")
     print()
 
-    platforms = _all_platforms()
+    configured_this_run = False
 
-    # Build checklist, pre-selecting already-configured platforms.
-    items = []
-    pre_selected = []
-    for i, plat in enumerate(platforms):
-        status = _platform_status(plat)
-        items.append(f"{plat['emoji']} {plat['label']}  ({status})")
-        if status == "configured":
-            pre_selected.append(i)
+    while True:
+        platforms = _all_platforms()
 
-    selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
+        # Build checklist, pre-selecting already-configured platforms.
+        items = []
+        pre_selected = []
+        for i, plat in enumerate(platforms):
+            status = _platform_status(plat)
+            items.append(f"{plat['emoji']} {plat['label']}  ({status})")
+            if status == "configured":
+                pre_selected.append(i)
 
-    if not selected:
-        print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
-        return
+        selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
 
-    for idx in selected:
-        _configure_platform(platforms[idx])
+        if not selected:
+            if not configured_this_run:
+                print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
+                return
+            break
+
+        for idx in selected:
+            _configure_platform(platforms[idx])
+
+        configured_this_run = True
+        print()
+        if not prompt_yes_no(
+            "Return to the messaging platform list before continuing setup?",
+            False,
+        ):
+            break
 
     # ── Gateway Service Setup ──
     # Count any platform (built-in or plugin) the user configured during this

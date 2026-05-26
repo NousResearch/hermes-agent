@@ -127,6 +127,7 @@ export const uk: Translations = {
 
   sessions: {
     title: "Сесії",
+    overview: "Огляд",
     searchPlaceholder: "Пошук у вмісті повідомлень...",
     noSessions: "Поки немає сесій",
     noMatch: "Жодна сесія не відповідає вашому пошуку",
@@ -269,7 +270,7 @@ export const uk: Translations = {
       "Знаходьте, встановлюйте, вмикайте та оновлюйте плагіни Hermes (паритет з `hermes plugins`).",
     identifierLabel: "Git URL або owner/repo",
     inactive: "неактивний",
-    installBtn: "Встановити з Git",
+    installBtn: "Встановити",
     installHeading: "Встановити з GitHub / Git URL",
     installHint: "Використовуйте скорочення owner/repo або повну https:// чи git@ URL для клонування.",
     memoryProviderLabel: "Постачальник пам'яті",
@@ -367,6 +368,8 @@ export const uk: Translations = {
     description: "Керуйте API-ключами та секретами, що зберігаються в",
     hideAdvanced: "Сховати розширене",
     showAdvanced: "Показати розширене",
+    showLess: "Показати менше",
+    showMore: "Показати більше",
     llmProviders: "Постачальники LLM",
     providersConfigured: "Налаштовано {configured} з {total} постачальників",
     getKey: "Отримати ключ",
@@ -392,7 +395,7 @@ export const uk: Translations = {
     disconnect: "Відключити",
     managedExternally: "Керується ззовні",
     copied: "Скопійовано ✓",
-    cli: "CLI",
+    cli: "Копіювати",
     copyCliCommand: "Скопіювати CLI-команду (для зовнішнього / резервного варіанту)",
     connect: "Підключити",
     sessionExpires: "Сесія завершиться через {time}",
@@ -654,6 +657,7 @@ export const uk: Translations = {
     columnLabels: {
       triage: "Сортування",
       todo: "До виконання",
+      scheduled: "Заплановано",
       ready: "Готово",
       running: "У роботі",
       blocked: "Заблоковано",
@@ -663,6 +667,7 @@ export const uk: Translations = {
     columnHelp: {
       triage: "Сирі ідеї — специфікатор деталізує специфікацію",
       todo: "Очікує на залежності або не призначено",
+      scheduled: "Очікує на відому затримку в часі або заплановане продовження",
       ready: "Залежності задоволені; призначте профіль для диспетчеризації",
       running: "Захоплено воркером — у роботі",
       blocked: "Воркер запитав втручання людини",

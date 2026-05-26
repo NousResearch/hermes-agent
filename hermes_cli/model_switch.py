@@ -1232,7 +1232,7 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and hermes_id in store.get("credential_pool", {}):
+                if store and store.get("credential_pool", {}).get(hermes_id):
                     has_creds = True
             except Exception:
                 pass
@@ -1720,7 +1720,10 @@ def list_authenticated_providers(
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider,
+                "is_current": slug == current_provider or (
+                    bool(current_base_url)
+                    and _grp_url_norm == current_base_url.strip().rstrip("/").lower()
+                ),
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),

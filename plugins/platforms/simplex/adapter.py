@@ -685,8 +685,8 @@ def interactive_setup() -> None:
         suffix = " [keep current]" if existing else ""
         try:
             if secret:
-                import getpass
-                value = getpass.getpass(f"{prompt}{suffix}: ")
+                from hermes_cli.secret_prompt import masked_secret_prompt
+                value = masked_secret_prompt(f"{prompt}{suffix}: ")
             else:
                 value = input(f"{prompt}{suffix}: ").strip()
         except (EOFError, KeyboardInterrupt):

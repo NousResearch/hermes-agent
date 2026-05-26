@@ -233,8 +233,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         aria-controls="chat-side-panel"
         className={cn(
           "shrink-0 rounded border border-current/20",
-          "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",
-          "text-midground/80 hover:text-midground hover:bg-midground/5",
+          "px-2 py-1 text-xs font-medium tracking-wide",
+          "text-text-secondary hover:text-midground hover:bg-midground/5",
         )}
       >
         <span className="inline-flex items-center gap-1.5">
@@ -298,10 +298,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // is false; enabling it gives users a single-action selection
       // path on top of the modifier-based bypass above.
       rightClickSelectsWord: true,
-      // Single-scroll-system experiment:
-      // let the inner Hermes TUI own transcript history/scroll behavior.
-      // The outer browser xterm should act as a display/input bridge only.
-      scrollback: 0,
+      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
+      // history in xterm.js so the browser wheel can scroll it directly.
+      scrollback: 5000,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -345,7 +344,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -404,34 +403,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Single-scroll-system experiment:
-    // keep browser xterm as a display/input bridge only, and let the inner
-    // Hermes TUI own transcript scrolling.
-    //
-    // In practice, the most reliable path here is NOT terminal mouse-wheel
-    // protocol emulation — that can vary by terminal mode and parser path.
-    // The inner TUI already handles keyboard-driven transcript scrolling
-    // correctly (`Shift+Up` / `Shift+Down`, `PageUp` / `PageDown`), so we
-    // translate browser wheel gestures into those known-good key sequences.
+    // Dashboard chat should scroll the browser-side transcript, not send
+    // mouse-wheel protocol bytes through the PTY.
     term.attachCustomWheelEventHandler((ev) => {
-      if (wsRef.current?.readyState !== WebSocket.OPEN) {
-        return false;
-      }
-
       const delta = ev.deltaY;
       if (!delta) {
         return false;
       }
 
-      // Shift+Up / Shift+Down: the TUI maps these to line-by-line
-      // transcript scrolling, which feels much closer to wheel behavior
-      // than PageUp/PageDown's half-page jumps.
       const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      const seq = delta > 0 ? "\x1b[1;2B" : "\x1b[1;2A";
-
-      for (let i = 0; i < step; i++) {
-        wsRef.current.send(seq);
-      }
+      term.scrollLines(delta > 0 ? step : -step);
 
       ev.preventDefault();
       ev.stopPropagation();
@@ -727,9 +708,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   //     model badge, tool-call list, model picker. Best-effort: if the
   //     sidecar fails to connect the terminal pane keeps working.
   //
-  // `normal-case` opts out of the dashboard's global `uppercase` rule on
-  // the root `<div>` in App.tsx — terminal output must preserve case.
-  //
   // Mobile model/tools sheet is portaled to `document.body` so it stacks
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
   // dashboard column uses `relative z-2`, which traps `position:fixed`
@@ -775,7 +753,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             )}
           >
             <Typography
-              className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+              mondwest
+              className="text-display font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
               style={{ mixBlendMode: "plus-lighter" }}
             >
               {t.app.modelToolsSheetTitle}
@@ -788,7 +767,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className="text-midground/70 hover:text-midground"
+              className="text-text-secondary hover:text-midground"
             >
               <X />
             </Button>
@@ -808,7 +787,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 normal-case">
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
@@ -841,11 +820,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             aria-label="Copy last assistant response"
             className={cn(
               "absolute z-10",
+              "normal-case tracking-normal font-normal",
               "rounded border border-current/30",
               "bg-black/20 backdrop-blur-sm",
-              "opacity-60 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150 normal-case font-normal tracking-normal",
-              "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+              "opacity-70 hover:opacity-100 hover:border-current/60",
+              "transition-opacity duration-150",
+              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}
             style={{ color: TERMINAL_THEME.foreground }}

@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
+from agent.skill_utils import is_excluded_skill_path
+
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Directories bootstrapped inside every new profile
@@ -485,8 +487,9 @@ def _count_skills(profile_dir: Path) -> int:
         return 0
     count = 0
     for md in skills_dir.rglob("SKILL.md"):
-        if "/.hub/" not in str(md) and "/.git/" not in str(md):
-            count += 1
+        if is_excluded_skill_path(md):
+            continue
+        count += 1
     return count
 
 
@@ -720,7 +723,17 @@ def create_profile(
             for filename in _CLONE_CONFIG_FILES:
                 src = source_dir / filename
                 if src.exists():
-                    shutil.copy2(src, profile_dir / filename)
+                    dst = profile_dir / filename
+                    shutil.copy2(src, dst)
+                    # Tighten .env to owner-only after copy. shutil.copy2
+                    # preserves source mode bits, but if the source's .env
+                    # was loose (host umask 0o022 leaving 0o644), tighten
+                    # explicitly so the clone doesn't inherit weak perms.
+                    if filename == ".env":
+                        try:
+                            os.chmod(str(dst), 0o600)
+                        except OSError:
+                            pass
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled
@@ -773,6 +786,14 @@ def create_profile(
             )
         except Exception:
             pass  # non-fatal — user can describe later with `hermes profile describe`
+
+    # Phase 4: when running inside a container under s6, register the
+    # new profile's gateway as a runtime s6 service so
+    # `hermes -p <profile> gateway start` can supervise it via
+    # `s6-svc -u` instead of spawning a bare process. On host (systemd
+    # / launchd / windows) this is a no-op — the existing per-profile
+    # unit-generation paths handle gateway lifecycle.
+    _maybe_register_gateway_service(canon)
 
     return profile_dir
 
@@ -890,6 +911,10 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 1. Disable service (prevents auto-restart)
     _cleanup_gateway_service(canon, profile_dir)
+    # 1b. Phase 4: unregister the s6 service slot (container path).
+    # On host this is a no-op; on container it removes
+    # /run/service/gateway-<profile>/ so s6-supervise drops it.
+    _maybe_unregister_gateway_service(canon)
 
     # 2. Stop running gateway
     if gw_running:
@@ -902,7 +927,49 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 4. Remove profile directory
     try:
-        shutil.rmtree(profile_dir)
+        def _make_writable(func, path, exc):
+            """onexc/onerror handler: add +w on PermissionError so rmtree can proceed.
+
+            Handles two cases on NixOS (and other systems with read-only
+            copies from immutable stores):
+            1. The path itself isn't writable (e.g. a file with mode 0444)
+            2. The *parent* directory isn't writable (e.g. mode 0555)
+
+            Compatible with both the ``onexc`` API (3.12+, receives an
+            exception instance) and the ``onerror`` API (3.11-, receives
+            ``sys.exc_info()`` tuple).
+            """
+            import stat as _stat
+            import sys as _sys
+
+            # Normalise the two callback signatures:
+            #   onexc(func, path, exc_instance)   — 3.12+
+            #   onerror(func, path, exc_info_tuple) — 3.11
+            if isinstance(exc, tuple):
+                exc = exc[1]  # exc_info → actual exception object
+
+            if isinstance(exc, PermissionError):
+                # Make the path writable
+                try:
+                    os.chmod(path, os.stat(path).st_mode | _stat.S_IWUSR)
+                except OSError:
+                    pass
+                # Also make the parent writable (needed for unlink/rmdir)
+                parent = os.path.dirname(path)
+                if parent:
+                    try:
+                        os.chmod(parent, os.stat(parent).st_mode | _stat.S_IWUSR)
+                    except OSError:
+                        pass
+                func(path)
+            else:
+                raise
+
+        # ``onexc`` was added in 3.12; fall back to ``onerror`` on 3.11.
+        try:
+            shutil.rmtree(profile_dir, onexc=_make_writable)
+        except TypeError:
+            shutil.rmtree(profile_dir, onerror=_make_writable)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
@@ -918,6 +985,87 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir
+
+
+def _maybe_register_gateway_service(profile_name: str) -> None:
+    """Register a profile's gateway with s6 inside the container.
+
+    No-op on host (systemd/launchd/windows) — those backends raise
+    ``NotImplementedError`` on ``register_profile_gateway`` and the
+    existing per-profile unit-generation paths handle lifecycle.
+
+    Best-effort: any error (no backend detected, s6 not yet ready,
+    etc.) is logged and swallowed so profile creation doesn't fail
+    because the s6 supervision tree is in a weird state. The user
+    can re-register manually later via the gateway start command,
+    which goes through the same dispatch path.
+
+    Port selection is governed by the profile's ``config.yaml``
+    (``[gateway] port = …``) — there is no Python-side allocator
+    (PR #30136 review item I5 retired the SHA-256-derived range
+    [9200, 9800) because it was dead code through the entire stack).
+
+    Host short-circuit: check ``detect_service_manager()`` first and
+    return immediately if it isn't ``"s6"``. This keeps host
+    (systemd/launchd/windows) profile creation completely silent —
+    no ``get_service_manager()`` call, no exception path, no chance
+    of the ``⚠ Could not register s6 gateway service`` warning ever
+    rendering on a non-container machine. The earlier
+    ``supports_runtime_registration()`` check still catches the case
+    where detection somehow returns ``"s6"`` but the backend isn't
+    actually the S6 one.
+    """
+    try:
+        from hermes_cli.service_manager import detect_service_manager
+        if detect_service_manager() != "s6":
+            return  # host path — silent, no registration needed
+        from hermes_cli.service_manager import get_service_manager
+        mgr = get_service_manager()
+    except RuntimeError:
+        return  # no backend on this host — nothing to do
+    except Exception:
+        # Defensive: detect_service_manager failed for some other
+        # reason. Stay silent on host rather than printing a confusing
+        # s6 warning to users who have never touched the container.
+        return
+    if not mgr.supports_runtime_registration():
+        return  # host backend; no-op
+    try:
+        mgr.register_profile_gateway(profile_name)
+    except ValueError:
+        # Already registered (e.g. the container-boot reconciler ran
+        # first and brought up a stale slot). That's fine.
+        pass
+    except Exception as exc:
+        # Don't fail profile create over a supervision-tree hiccup.
+        print(f"⚠ Could not register s6 gateway service: {exc}")
+
+
+def _maybe_unregister_gateway_service(profile_name: str) -> None:
+    """Tear down a profile's s6 gateway service inside the container.
+
+    No-op on host. Idempotent: absent services are silently skipped
+    by ``unregister_profile_gateway``.
+
+    Same host short-circuit as :func:`_maybe_register_gateway_service`
+    — see that docstring.
+    """
+    try:
+        from hermes_cli.service_manager import detect_service_manager
+        if detect_service_manager() != "s6":
+            return  # host path — silent
+        from hermes_cli.service_manager import get_service_manager
+        mgr = get_service_manager()
+    except RuntimeError:
+        return
+    except Exception:
+        return
+    if not mgr.supports_runtime_registration():
+        return
+    try:
+        mgr.unregister_profile_gateway(profile_name)
+    except Exception as exc:
+        print(f"⚠ Could not unregister s6 gateway service: {exc}")
 
 
 def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:

@@ -112,17 +112,43 @@ class ChatCompletionsTransport(ProviderTransport):
     def convert_messages(
         self, messages: list[dict[str, Any]], **kwargs
     ) -> list[dict[str, Any]]:
-        """Messages are already in OpenAI format — sanitize Codex leaks only.
+        """Messages are already in OpenAI format — strip internal fields
+        that strict chat-completions providers reject with HTTP 400/422
+        (or, in the case of some OpenAI-compatible gateways, 5xx):
 
-        Strips Codex Responses API fields (``codex_reasoning_items`` /
-        ``codex_message_items`` on the message, ``call_id``/``response_item_id``
-        on tool_calls) that strict chat-completions providers reject with 400/422.
+        - Codex Responses API fields: ``codex_reasoning_items`` /
+          ``codex_message_items`` on the message, ``call_id`` /
+          ``response_item_id`` on ``tool_calls`` entries.
+        - ``tool_name`` on tool-result messages — written by
+          ``make_tool_result_message()`` for the SQLite FTS index, but not
+          part of the Chat Completions schema. Strict providers (Fireworks,
+          Moonshot/Kimi) reject any payload containing it with
+          ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
+          Permissive providers (OpenRouter, MiniMax) silently ignore the
+          field, which masked the bug for months.
+        - Hermes-internal scaffolding markers — any top-level message key
+          starting with ``_`` (e.g. ``_empty_recovery_synthetic``,
+          ``_empty_terminal_sentinel``, ``_thinking_prefill``). These are
+          bookkeeping flags the agent loop attaches to messages so the
+          persistence layer can later strip its own scaffolding; they must
+          never reach the wire. Permissive providers (real OpenAI,
+          Anthropic) silently drop unknown message keys, but strict
+          gateways (e.g. opencode-go, codex.nekos.me) reject with
+          ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
+          which then poisons every subsequent request in the session.
         """
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
-            if "codex_reasoning_items" in msg or "codex_message_items" in msg:
+            if (
+                "codex_reasoning_items" in msg
+                or "codex_message_items" in msg
+                or "tool_name" in msg
+            ):
+                needs_sanitize = True
+                break
+            if any(isinstance(k, str) and k.startswith("_") for k in msg):
                 needs_sanitize = True
                 break
             tool_calls = msg.get("tool_calls")
@@ -145,6 +171,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 continue
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
+            msg.pop("tool_name", None)
+            # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
+            # OpenAI's message schema has no ``_``-prefixed fields, so this
+            # is safe and future-proofs against new markers being added.
+            for key in [k for k in msg if isinstance(k, str) and k.startswith("_")]:
+                msg.pop(key, None)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:

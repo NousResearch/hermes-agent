@@ -1255,6 +1255,15 @@ class MCPServerTask:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        if not _MCP_AVAILABLE:
+            raise ImportError(
+                f"MCP server '{self.name}' requires the 'mcp' Python SDK, but "
+                "it is not installed. Install with:\n"
+                "  pip install 'hermes-agent[mcp]'\n"
+                "or (full install):\n"
+                "  pip install 'hermes-agent[all]'"
+            )
+
         command = config.get("command")
         args = config.get("args", [])
         user_env = config.get("env")

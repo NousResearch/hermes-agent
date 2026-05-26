@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import stat
 import subprocess
 import sys
 import threading
@@ -48,6 +49,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from utils import env_var_enabled
 
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -118,7 +120,6 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/model/info",
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
-    "/api/dashboard/plugins/rescan",
 })
 
 
@@ -975,11 +976,13 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "vision",
     "web_extract",
     "compression",
-    "session_search",
     "skills_hub",
     "approval",
     "mcp",
     "title_generation",
+    "triage_specifier",
+    "kanban_decomposer",
+    "profile_describer",
     "curator",
 )
 
@@ -1220,6 +1223,12 @@ async def set_env_var(body: EnvVarUpdate):
     try:
         save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
+    except ValueError as exc:
+        # save_env_value raises ValueError for invalid names and for keys
+        # on the denylist (LD_PRELOAD, PATH, PYTHONPATH, …). Surface the
+        # message to the SPA so the user understands why the write was
+        # refused instead of seeing an opaque 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         _log.exception("PUT /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -1684,7 +1693,25 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         "expiresAt": expires_at_ms,
     }
     _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _HERMES_OAUTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path = _HERMES_OAUTH_FILE.with_name(
+        f"{_HERMES_OAUTH_FILE.name}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
+    )
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, _HERMES_OAUTH_FILE)
+        try:
+            _HERMES_OAUTH_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
@@ -2560,73 +2587,188 @@ class CronJobUpdate(BaseModel):
     updates: dict
 
 
+_CRON_PROFILE_LOCK = threading.RLock()
+
+
+def _cron_profile_dicts() -> List[Dict[str, Any]]:
+    """Return dashboard profile records, falling back to a directory scan."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+    except Exception:
+        _log.exception("Failed to list profiles for cron dashboard; falling back to directory scan")
+        return _fallback_profile_dicts(profiles_mod)
+
+
+def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
+    """Resolve a profile query value to (profile_name, HERMES_HOME)."""
+    from hermes_cli import profiles as profiles_mod
+
+    raw = (profile or "default").strip() or "default"
+    try:
+        canon = profiles_mod.normalize_profile_name(raw)
+        profiles_mod.validate_profile_name(canon)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+    return canon, profiles_mod.get_profile_dir(canon)
+
+
+def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+    annotated = dict(job)
+    annotated["profile"] = profile
+    annotated["profile_name"] = profile
+    annotated["hermes_home"] = str(home)
+    annotated["is_default_profile"] = profile == "default"
+    return annotated
+
+
+def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
+    """Run cron.jobs helpers against the selected profile's cron directory.
+
+    cron.jobs keeps CRON_DIR/JOBS_FILE/OUTPUT_DIR as module globals resolved
+    from the process HERMES_HOME at import time. The dashboard is a single
+    process that can inspect many profiles, so temporarily retarget those
+    globals while holding a lock and restore them immediately after the call.
+    """
+    profile_name, home = _cron_profile_home(profile)
+    with _CRON_PROFILE_LOCK:
+        from cron import jobs as cron_jobs
+
+        old_cron_dir = cron_jobs.CRON_DIR
+        old_jobs_file = cron_jobs.JOBS_FILE
+        old_output_dir = cron_jobs.OUTPUT_DIR
+        cron_jobs.CRON_DIR = home / "cron"
+        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
+        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
+        try:
+            result = getattr(cron_jobs, func_name)(*args, **kwargs)
+        finally:
+            cron_jobs.CRON_DIR = old_cron_dir
+            cron_jobs.JOBS_FILE = old_jobs_file
+            cron_jobs.OUTPUT_DIR = old_output_dir
+
+    if isinstance(result, list):
+        return [_annotate_cron_job(j, profile_name, home) for j in result]
+    if isinstance(result, dict):
+        return _annotate_cron_job(result, profile_name, home)
+    return result
+
+
+def _find_cron_job_profile(job_id: str) -> Optional[str]:
+    for profile in _cron_profile_dicts():
+        name = str(profile.get("name") or "")
+        if not name:
+            continue
+        jobs = _call_cron_for_profile(name, "list_jobs", True)
+        if any(j.get("id") == job_id or j.get("name") == job_id for j in jobs):
+            return name
+    return None
+
+
 @app.get("/api/cron/jobs")
-async def list_cron_jobs():
-    from cron.jobs import list_jobs
-    return list_jobs(include_disabled=True)
+async def list_cron_jobs(profile: str = "all"):
+    requested = (profile or "all").strip()
+    if requested.lower() != "all":
+        return _call_cron_for_profile(requested, "list_jobs", True)
+
+    jobs: List[Dict[str, Any]] = []
+    for item in _cron_profile_dicts():
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        try:
+            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+        except Exception:
+            _log.exception("Failed to list cron jobs for profile %s", name)
+    return jobs
 
 
 @app.get("/api/cron/jobs/{job_id}")
-async def get_cron_job(job_id: str):
-    from cron.jobs import get_job
-    job = get_job(job_id)
+async def get_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "get_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate):
-    from cron.jobs import create_job
+async def create_cron_job(body: CronJobCreate, profile: str = "default"):
     try:
-        job = create_job(prompt=body.prompt, schedule=body.schedule,
-                         name=body.name, deliver=body.deliver)
-        return job
+        return _call_cron_for_profile(
+            profile,
+            "create_job",
+            prompt=body.prompt,
+            schedule=body.schedule,
+            name=body.name,
+            deliver=body.deliver,
+        )
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate):
-    from cron.jobs import update_job
-    job = update_job(job_id, body.updates)
+async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str):
-    from cron.jobs import pause_job
-    job = pause_job(job_id)
+async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "pause_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str):
-    from cron.jobs import resume_job
-    job = resume_job(job_id)
+async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "resume_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str):
-    from cron.jobs import trigger_job
-    job = trigger_job(job_id)
+async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = _call_cron_for_profile(selected, "trigger_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str):
-    from cron.jobs import remove_job
-    if not remove_job(job_id):
+async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        removed = _call_cron_for_profile(selected, "remove_job", job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True}
 
@@ -3185,23 +3327,48 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
-def _is_public_bind() -> bool:
-    """True when bound to all-interfaces (operator used --insecure)."""
-    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
-
-
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    Allows loopback clients only.
     """
-    if _is_public_bind():
-        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
     return client_host in _LOOPBACK_HOSTS
+
+
+def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
+    """Apply the dashboard Host/Origin guard to WebSocket upgrades.
+
+    FastAPI HTTP middleware does not run for WebSocket routes, so the
+    DNS-rebinding Host check used for normal dashboard HTTP requests must be
+    repeated here before accepting the upgrade.  Browsers also send an Origin
+    header on WebSocket handshakes; when present, require it to target the
+    same bound dashboard host.
+    """
+    bound_host = getattr(app.state, "bound_host", None)
+    if not bound_host:
+        return True
+
+    host_header = ws.headers.get("host", "")
+    if not _is_accepted_host(host_header, bound_host):
+        return False
+
+    origin = ws.headers.get("origin", "")
+    if not origin:
+        return True
+
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+
+    return _is_accepted_host(parsed.netloc, bound_host)
+
+
+def _ws_request_is_allowed(ws: "WebSocket") -> bool:
+    """Return True when the WebSocket upgrade matches dashboard boundaries."""
+    return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -3242,6 +3409,7 @@ def _resolve_chat_argv(
     # build unchanged for native CLI usage; only disable mouse tracking for
     # the dashboard PTY path.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
+    env.setdefault("HERMES_TUI_INLINE", "1")
 
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)
@@ -3280,7 +3448,7 @@ async def _broadcast_event(channel: str, payload: str) -> None:
         except Exception:
             # Subscriber went away mid-send; the /api/events finally clause
             # will remove it from the registry on its next iteration.
-            pass
+            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
@@ -3303,7 +3471,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3422,7 +3590,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3454,7 +3622,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3483,7 +3651,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3935,6 +4103,43 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
+def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional[str]:
+    """Validate the manifest's ``api`` field for the plugin loader.
+
+    The web server later imports this file as a Python module via
+    ``importlib.util.spec_from_file_location`` (arbitrary code
+    execution by design — that's how plugins extend the backend).
+    Pre-#29156 the field was used as-is, which meant:
+
+    * An absolute path swallowed the plugin's dashboard directory
+      entirely — ``Path('safe/dashboard') / '/tmp/evil.py'`` resolves
+      to ``/tmp/evil.py``, so any attacker-controlled manifest could
+      point the import at any Python file on disk (GHSA-5qr3-c538-wm9j).
+    * A ``../..`` traversal could climb out of the plugin into
+      neighbouring directories on the search path.
+
+    Return the original string when the resolved path stays under
+    ``dashboard_dir``; return ``None`` (with a warning logged at the
+    call site) otherwise so the plugin still loads its static JS/CSS
+    but its backend ``api`` is rejected.
+    """
+    if not isinstance(api_field, str) or not api_field.strip():
+        return None
+    candidate = Path(api_field)
+    if candidate.is_absolute():
+        return None
+    try:
+        resolved = (dashboard_dir / candidate).resolve()
+        base = dashboard_dir.resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        return None
+    return api_field
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -3953,7 +4158,16 @@ def _discover_dashboard_plugins() -> list:
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
     ]
-    if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
+    # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
+    # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,
+    # and ``=no`` — all of which the agent loader and operators correctly
+    # read as "disabled" — silently *enabled* the untrusted project source
+    # in the web server.  Combined with the absolute-path RCE primitive on
+    # the manifest's ``api`` field (now patched below), this turned the
+    # opt-in into a sticky always-on switch.  Use the shared truthy
+    # semantics (``1`` / ``true`` / ``yes`` / ``on``) so the gate matches
+    # ``hermes_cli/plugins.py`` and the documented user contract.
+    if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
 
     for plugins_root, source in search_dirs:
@@ -3992,6 +4206,23 @@ def _discover_dashboard_plugins() -> list:
                 slots: List[str] = []
                 if isinstance(slots_src, list):
                     slots = [s for s in slots_src if isinstance(s, str) and s]
+                # Validate ``api`` at discovery time so the value cached
+                # on the plugin entry is already safe to feed into the
+                # importer.  An attacker-controlled manifest can name
+                # any absolute path or ``..`` traversal here — the
+                # web server then imports that file as a Python module
+                # (RCE, GHSA-5qr3-c538-wm9j).
+                raw_api = data.get("api")
+                dashboard_dir = child / "dashboard"
+                safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
+                if raw_api and safe_api is None:
+                    _log.warning(
+                        "Plugin %s: refusing unsafe api path %r (must be a "
+                        "relative file inside the plugin's dashboard/ "
+                        "directory); backend routes from this plugin will "
+                        "not be mounted",
+                        name, raw_api,
+                    )
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
@@ -4002,10 +4233,10 @@ def _discover_dashboard_plugins() -> list:
                     "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
                     "css": data.get("css"),
-                    "has_api": bool(data.get("api")),
+                    "has_api": bool(safe_api),
                     "source": source,
-                    "_dir": str(child / "dashboard"),
-                    "_api_file": data.get("api"),
+                    "_dir": str(dashboard_dir),
+                    "_api_file": safe_api,
                 })
             except Exception as exc:
                 _log.warning("Bad dashboard plugin manifest %s: %s", manifest_file, exc)
@@ -4208,12 +4439,13 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
 
 def _validate_plugin_name(name: str) -> str:
     """Reject path-traversal attempts in plugin name URL parameters."""
-    if not name or "/" in name or "\\" in name or ".." in name:
+    name = name.strip("/")
+    if not name or ".." in name or "\\" in name:
         raise HTTPException(status_code=400, detail="Invalid plugin name.")
     return name
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/enable")
+@app.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4225,7 +4457,7 @@ async def post_agent_plugin_enable(request: Request, name: str):
     return result
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/disable")
+@app.post("/api/dashboard/agent-plugins/{name:path}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4237,7 +4469,7 @@ async def post_agent_plugin_disable(request: Request, name: str):
     return result
 
 
-@app.post("/api/dashboard/agent-plugins/{name}/update")
+@app.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4250,7 +4482,7 @@ async def post_agent_plugin_update(request: Request, name: str):
     return result
 
 
-@app.delete("/api/dashboard/agent-plugins/{name}")
+@app.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
@@ -4288,7 +4520,7 @@ class _PluginVisibilityBody(BaseModel):
     hidden: bool
 
 
-@app.post("/api/dashboard/plugins/{name}/visibility")
+@app.post("/api/dashboard/plugins/{name:path}/visibility")
 async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
     """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
     _require_token(request)
@@ -4317,6 +4549,17 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
 
     Only serves files from the plugin's ``dashboard/`` subdirectory.
     Path traversal is blocked by checking ``resolve().is_relative_to()``.
+
+    Restricted to a browser-fetchable suffix allowlist (JS/CSS/JSON/HTML/
+    SVG/PNG/JPG/WOFF). The dashboard loads plugin JS via ``<script src>``
+    and CSS via ``<link href>``, neither of which can attach a custom
+    auth header — so this route stays unauthenticated to keep the SPA
+    working. But user-installed plugins ship a ``plugin_api.py``
+    backend module that the browser never fetches; it's only imported
+    by :func:`_mount_plugin_api_routes` at startup. Without a suffix
+    allowlist, anyone on the loopback port can curl the ``.py`` source
+    of a private third-party plugin. Reject everything outside the
+    browser-asset set.
     """
     plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
@@ -4331,7 +4574,11 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Guess content type
+    # Browser-asset suffix allowlist. Everything outside this set is
+    # rejected with 404 so we don't leak ``.py`` backend sources, README
+    # files, ``.env.example`` templates, etc. — none of which the SPA
+    # actually fetches. Add to this set deliberately when a new asset
+    # type comes up; do NOT change the default fallback.
     suffix = target.suffix.lower()
     content_types = {
         ".js": "application/javascript",
@@ -4342,11 +4589,27 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
         ".svg": "image/svg+xml",
         ".png": "image/png",
         ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".ico": "image/x-icon",
         ".woff2": "font/woff2",
         ".woff": "font/woff",
+        ".ttf": "font/ttf",
+        ".otf": "font/otf",
+        ".map": "application/json",
     }
-    media_type = content_types.get(suffix, "application/octet-stream")
-    return FileResponse(target, media_type=media_type)
+    if suffix not in content_types:
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+    media_type = content_types[suffix]
+    return FileResponse(
+        target,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 def _mount_plugin_api_routes():
@@ -4355,12 +4618,42 @@ def _mount_plugin_api_routes():
     Each plugin's ``api`` field points to a Python file that must expose
     a ``router`` (FastAPI APIRouter).  Routes are mounted under
     ``/api/plugins/<name>/``.
+
+    Backend import is restricted to ``bundled`` and ``user`` sources.
+    Project plugins (``./.hermes/plugins/``) ship with the CWD and are
+    therefore attacker-controlled in any threat model where the user
+    opens a malicious repo; they can extend the dashboard UI via
+    static JS/CSS but their Python ``api`` file is never auto-imported
+    by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
     """
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
-        api_path = Path(plugin["_dir"]) / api_file_name
+        if plugin.get("source") == "project":
+            _log.warning(
+                "Plugin %s: ignoring backend api=%s (project plugins may "
+                "not auto-import Python code; move the plugin to "
+                "~/.hermes/plugins/ if you trust it)",
+                plugin["name"], api_file_name,
+            )
+            continue
+        dashboard_dir = Path(plugin["_dir"])
+        api_path = dashboard_dir / api_file_name
+        try:
+            resolved_api = api_path.resolve()
+            resolved_base = dashboard_dir.resolve()
+            resolved_api.relative_to(resolved_base)
+        except (OSError, RuntimeError, ValueError):
+            # Discovery already filters this, but re-check here in case
+            # ``_dir`` was tampered with after caching or a future caller
+            # bypasses the validator.  Defence in depth keeps the import
+            # primitive contained even if the upstream check regresses.
+            _log.warning(
+                "Plugin %s: refusing to import api file outside its "
+                "dashboard directory (%s)", plugin["name"], api_path,
+            )
+            continue
         if not api_path.exists():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue

@@ -21,7 +21,7 @@ Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `jailbreak`, `red-teaming`, `G0DM0D3`, `Parseltongue`, `GODMODE`, `uncensoring`, `safety-bypass`, `prompt-engineering`, `L1B3RT4S` |
-| Related skills | [`obliteratus`](/docs/user-guide/skills/bundled/mlops/mlops-inference-obliteratus) |
+| Related skills | [`obliteratus`](/user-guide/skills/bundled/mlops/mlops-inference-obliteratus) |
 
 ## Reference: full SKILL.md
 

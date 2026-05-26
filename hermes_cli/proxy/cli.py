@@ -44,9 +44,10 @@ def cmd_proxy_start(args: Any) -> int:
         return 2
 
     if not adapter.is_authenticated():
+        auth_hint = getattr(adapter, "auth_hint", f"hermes login {adapter.name}")
         print(
             f"Not logged into {adapter.display_name}. "
-            f"Run `hermes login {adapter.name}` first.",
+            f"Run `{auth_hint}` first.",
             file=sys.stderr,
         )
         return 2
@@ -122,7 +123,7 @@ def cmd_proxy(args: Any) -> int:
         "OAuth-authenticated provider credentials to outbound requests.\n"
         "\n"
         "Subcommands:\n"
-        "  hermes proxy start [--provider nous] [--host 127.0.0.1] [--port 8645]\n"
+        "  hermes proxy start [--provider nous|xai] [--host 127.0.0.1] [--port 8645]\n"
         "      Run the proxy in the foreground.\n"
         "  hermes proxy status\n"
         "      Show which upstream adapters are ready.\n"

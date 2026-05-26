@@ -59,6 +59,59 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
+    redact_module = types.ModuleType("agent.redact")
+
+    def fail_redaction(*_args, **_kwargs):
+        raise RuntimeError("redaction unavailable")
+
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+
+    assert server._redact_tui_verbose_text("api_key=secret") == ""
+    assert server._tool_args_text({"api_key": "secret"}) == ""
+    assert server._tool_result_text("token=secret") == ""
+
+
+def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
+    monkeypatch.setattr(server, "_TUI_VERBOSE_TEXT_MAX_CHARS", 12)
+    monkeypatch.setattr(server, "_TUI_VERBOSE_TEXT_MAX_LINES", 2)
+
+    capped = server._cap_tui_verbose_text("one\ntwo\nthree\nfour")
+
+    assert capped.startswith("[showing verbose tail; omitted ")
+    assert capped.endswith("three\nfour")
+    assert "one" not in capped
+
+
+def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
+    redact_module = types.ModuleType("agent.redact")
+
+    def fail_redaction(*_args, **_kwargs):
+        raise RuntimeError("redaction unavailable")
+
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "redaction-test",
+        {"tool_progress_mode": "verbose", "tool_started_at": {}},
+    )
+
+    server._on_tool_start("redaction-test", "tool-1", "terminal", {"command": "pwd"})
+    server._on_tool_complete("redaction-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+
+    assert events[0][0] == "tool.start"
+    assert events[1][0] == "tool.complete"
+    assert "args_text" not in events[0][2]
+    assert "result_text" not in events[1][2]
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 
@@ -1476,8 +1529,10 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     set_toggle = server.handle_request(
         {"id": "2", "method": "config.set", "params": {"key": "mouse"}}
     )
-    assert set_toggle["result"] == {"key": "mouse", "value": "on"}
-    assert writes == [("display.mouse_tracking", True)]
+    # /mouse (no arg) toggles between 'all' and 'off'. Starting from
+    # tui_mouse: False (→ 'off'), the toggle flips to 'all'.
+    assert set_toggle["result"] == {"key": "mouse", "value": "all"}
+    assert writes == [("display.mouse_tracking", "all")]
 
     cfg["display"] = {"mouse_tracking": 0, "tui_mouse": True}
     get_canonical = server.handle_request(
@@ -1489,7 +1544,51 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     get_null = server.handle_request(
         {"id": "4", "method": "config.get", "params": {"key": "mouse"}}
     )
-    assert get_null["result"]["value"] == "on"
+    # mouse_tracking present-but-None defers neither to tui_mouse nor to
+    # the legacy off bucket: it falls through to the 'all' default.
+    assert get_null["result"]["value"] == "all"
+
+
+def test_config_mouse_accepts_preset_strings_and_aliases(monkeypatch):
+    cfg = {"display": {"mouse_tracking": "all"}}
+    writes = []
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    # Direct preset.
+    set_wheel = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "wheel"},
+        }
+    )
+    assert set_wheel["result"] == {"key": "mouse", "value": "wheel"}
+    assert writes[-1] == ("display.mouse_tracking", "wheel")
+
+    # Alias for buttons.
+    set_click = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "click"},
+        }
+    )
+    assert set_click["result"] == {"key": "mouse", "value": "buttons"}
+    assert writes[-1] == ("display.mouse_tracking", "buttons")
+
+    # Unknown value → 4002.
+    bad = server.handle_request(
+        {
+            "id": "3",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "rainbows"},
+        }
+    )
+    assert bad["error"]["code"] == 4002
 
 
 def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
@@ -1518,6 +1617,26 @@ def test_complete_slash_includes_provider_alias():
     )
 
     assert any(item["text"] == "provider" for item in resp["result"]["items"])
+
+
+def test_complete_slash_returns_plain_string_fields():
+    # prompt_toolkit hands us FormattedText (a list subclass) for
+    # display/display_meta; the TUI's CompletionItem contract is plain
+    # strings, and shipping the raw list trips Ink's row layout into
+    # 1-char truncation of the next column (/goal → /goa).
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/g"}}
+    )
+
+    items = resp["result"]["items"]
+    goal = next((it for it in items if it["text"] == "goal"), None)
+    assert goal is not None
+    assert isinstance(goal["display"], str), goal["display"]
+    assert isinstance(goal["meta"], str), goal["meta"]
+    assert goal["display"] == "/goal"
+    for item in items:
+        assert isinstance(item["display"], str), item
+        assert isinstance(item["meta"], str), item
 
 
 def test_complete_slash_includes_tui_details_command():
@@ -3914,7 +4033,7 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
+    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
     assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
@@ -3934,7 +4053,7 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
+    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
     assert urls[0] == "http://127.0.0.1:9222/json/version"
 
 
@@ -3977,10 +4096,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
     assert (
         resp["result"]["messages"][0]
-        == "Chrome isn't running with remote debugging — attempting to launch..."
+        == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
     assert any(
-        "No Chrome/Chromium executable was found" in line
+        "No supported Chromium-family browser executable was found" in line
         for line in resp["result"]["messages"]
     )
     assert any(
@@ -4107,8 +4226,8 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
     assert resp["result"]["messages"] == [
-        "Chrome isn't running with remote debugging — attempting to launch...",
-        "Chrome launched and listening on port 9222",
+        "Chromium-family browser isn't running with remote debugging — attempting to launch...",
+        "Chromium-family browser launched and listening on port 9222",
     ]
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
 

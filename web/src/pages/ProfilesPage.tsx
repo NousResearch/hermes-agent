@@ -1,5 +1,18 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronDown, Pencil, Plus, Terminal, Trash2, Users, X } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  ChevronDown,
+  Pencil,
+  Terminal,
+  Trash2,
+  Users,
+  X,
+} from "lucide-react";
 import spinners from "unicode-animations";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
@@ -14,9 +27,10 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { cn, themedBody } from "@/lib/utils";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -131,7 +145,10 @@ export default function ProfilesPage() {
     }
     try {
       await api.renameProfile(renamingFrom, target);
-      showToast(`${t.profiles.renamed}: ${renamingFrom} → ${target}`, "success");
+      showToast(
+        `${t.profiles.renamed}: ${renamingFrom} → ${target}`,
+        "success",
+      );
       setRenamingFrom(null);
       setRenameTo("");
       load();
@@ -215,10 +232,10 @@ export default function ProfilesPage() {
   useLayoutEffect(() => {
     setEnd(
       <Button
+        className="uppercase"
         size="sm"
         onClick={() => setCreateModalOpen(true)}
       >
-        <Plus className="h-3 w-3" />
         {t.common.create}
       </Button>,
     );
@@ -242,10 +259,7 @@ export default function ProfilesPage() {
   }
 
   return (
-    // Profile names, model slugs, and paths are case-sensitive; opt out of
-    // the app shell's global ``uppercase`` so they render as the user typed.
-    // Children that explicitly opt back in (Badges, etc.) keep their casing.
-    <div className="flex flex-col gap-6 normal-case">
+    <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -266,12 +280,14 @@ export default function ProfilesPage() {
         <div
           ref={createModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
-          onClick={(e) => e.target === e.currentTarget && setCreateModalOpen(false)}
+          onClick={(e) =>
+            e.target === e.currentTarget && setCreateModalOpen(false)
+          }
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-profile-title"
         >
-          <div className="relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col">
+          <div className={cn(themedBody, "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col")}>
             <Button
               ghost
               size="icon"
@@ -285,7 +301,7 @@ export default function ProfilesPage() {
             <header className="p-5 pb-3 border-b border-border">
               <h2
                 id="create-profile-title"
-                className="font-display text-base tracking-wider uppercase"
+                className="font-mondwest text-display text-base tracking-wider"
               >
                 {t.profiles.newProfile}
               </h2>
@@ -313,16 +329,30 @@ export default function ProfilesPage() {
                 </p>
               </div>
 
-              <Checkbox
-                id="clone-from-default"
-                checked={cloneFromDefault}
-                onChange={(e) => setCloneFromDefault(e.target.checked)}
-                label={t.profiles.cloneFromDefault}
-              />
+              <div className="flex items-center gap-2.5">
+                <Checkbox
+                  checked={cloneFromDefault}
+                  id="clone-from-default"
+                  onCheckedChange={(checked) =>
+                    setCloneFromDefault(checked === true)
+                  }
+                />
+
+                <Label
+                  className="font-mondwest normal-case tracking-normal text-sm cursor-pointer"
+                  htmlFor="clone-from-default"
+                >
+                  {t.profiles.cloneFromDefault}
+                </Label>
+              </div>
 
               <div className="flex justify-end">
-                <Button size="sm" onClick={handleCreate} disabled={creating}>
-                  <Plus className="h-3 w-3" />
+                <Button
+                  className="uppercase"
+                  size="sm"
+                  onClick={handleCreate}
+                  disabled={creating}
+                >
                   {creating ? t.common.creating : t.common.create}
                 </Button>
               </div>
@@ -426,10 +456,7 @@ export default function ProfilesPage() {
                 <div className="flex items-center gap-1 shrink-0">
                   {isRenaming ? (
                     <>
-                      <Button
-                        size="sm"
-                        onClick={handleRenameSubmit}
-                      >
+                      <Button size="sm" onClick={handleRenameSubmit}>
                         {t.common.save}
                       </Button>
                       <Button
@@ -500,7 +527,7 @@ export default function ProfilesPage() {
                 <div className="border-t border-border px-4 pb-4 pt-3 flex flex-col gap-2">
                   <Label
                     htmlFor={`soul-editor-${p.name}`}
-                    className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground"
+                    className="flex items-center gap-2 font-mondwest text-display text-xs tracking-wider text-muted-foreground"
                   >
                     {t.profiles.soulSection}
                   </Label>
@@ -514,10 +541,11 @@ export default function ProfilesPage() {
                   <div>
                     <Button
                       size="sm"
+                      className="uppercase"
                       onClick={() => handleSaveSoul(p.name)}
                       disabled={soulSaving}
                     >
-                      {soulSaving ? t.common.saving : t.profiles.saveSoul}
+                      {soulSaving ? t.common.saving : t.common.save}
                     </Button>
                   </div>
                 </div>

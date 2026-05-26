@@ -1,9 +1,9 @@
-import { forceRedraw } from '@hermes/ink'
+import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -42,6 +42,30 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
   }
 
   return null
+}
+
+// `/mouse` toggles between full tracking and off when called bare so the
+// old binary muscle-memory still works. Explicit presets (wheel / buttons /
+// all) target the tmux-friendly hover-free subsets.
+const MOUSE_MODE_ALIASES: Record<string, MouseTrackingMode> = {
+  all: 'all',
+  any: 'all',
+  button: 'buttons',
+  buttons: 'buttons',
+  click: 'buttons',
+  full: 'all',
+  off: 'off',
+  on: 'all',
+  scroll: 'wheel',
+  wheel: 'wheel'
+}
+
+const mouseModeFromArg = (arg: string, current: MouseTrackingMode): MouseTrackingMode | null => {
+  if (!arg || arg.trim().toLowerCase() === 'toggle') {
+    return current === 'off' ? 'all' : 'off'
+  }
+
+  return MOUSE_MODE_ALIASES[arg.trim().toLowerCase()] ?? null
 }
 
 const RESET_WORDS = new Set(['reset', 'clear', 'default'])
@@ -86,7 +110,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['exit', 'q'],
+    aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
     run: (_arg, ctx) => ctx.session.die()
@@ -105,20 +129,20 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['scroll'],
-    help: 'toggle mouse/wheel tracking [on|off|toggle]',
+    help: 'set mouse tracking preset [on|off|toggle|wheel|buttons|all]',
     name: 'mouse',
     run: (arg, ctx) => {
       const current = ctx.ui.mouseTracking
-      const next = flagFromArg(arg, current)
+      const next = mouseModeFromArg(arg, current)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /mouse [on|off|toggle]')
+        return ctx.transcript.sys('usage: /mouse [on|off|toggle|wheel|buttons|all]')
       }
 
       patchUiState({ mouseTracking: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next}`))
     }
   },
 
@@ -345,7 +369,7 @@ export const coreCommands: SlashCommand[] = [
           return sys(`copied ${text.length} characters`)
         } else {
           return sys(
-            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence; HERMES_TUI_DEBUG_CLIPBOARD=1 for details'
+            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
           )
         }
       }
@@ -523,6 +547,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['q'],
     help: 'inspect or enqueue a message',
     name: 'queue',
     run: (arg, ctx) => {

@@ -463,6 +463,9 @@ class TestSendVoiceReply:
             "telegram_dm_topic_reply_fallback": True,
             "direct_messages_topic_id": "20197",
             "telegram_reply_to_message_id": "462",
+            # Final voice reply is notify-worthy (issue #27970 Bug 2):
+            # mirrors the final-text path in gateway/platforms/base.py.
+            "notify": True,
         }
 
     @pytest.mark.asyncio
@@ -508,7 +511,7 @@ class TestDiscordPlayTtsSkip:
     """Discord adapter skips play_tts when bot is in a voice channel."""
 
     def _make_discord_adapter(self):
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         from gateway.config import Platform, PlatformConfig
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -596,7 +599,7 @@ class TestVoiceReceiver:
     """Test VoiceReceiver silence detection, SSRC mapping, and lifecycle."""
 
     def _make_receiver(self):
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         mock_vc = MagicMock()
         mock_vc._connection.secret_key = [0] * 32
         mock_vc._connection.dave_session = None
@@ -1063,7 +1066,7 @@ class TestDiscordVoiceChannelMethods:
     """Test DiscordAdapter voice channel methods (join, leave, play, etc.)."""
 
     def _make_adapter(self):
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         from gateway.config import Platform, PlatformConfig
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -1205,7 +1208,7 @@ class TestDiscordVoiceChannelMethods:
 
         pcm_data = b"\x00" * 96000
 
-        with patch("gateway.platforms.discord.VoiceReceiver.pcm_to_wav"), \
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Hello"}), \
              patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
@@ -1220,7 +1223,7 @@ class TestDiscordVoiceChannelMethods:
         callback = AsyncMock()
         adapter._voice_input_callback = callback
 
-        with patch("gateway.platforms.discord.VoiceReceiver.pcm_to_wav"), \
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Thank you."}), \
              patch("tools.voice_mode.is_whisper_hallucination", return_value=True):
@@ -1235,7 +1238,7 @@ class TestDiscordVoiceChannelMethods:
         callback = AsyncMock()
         adapter._voice_input_callback = callback
 
-        with patch("gateway.platforms.discord.VoiceReceiver.pcm_to_wav"), \
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": False, "error": "API error"}):
             await adapter._process_voice_input(111, 42, b"\x00" * 96000)
@@ -1248,7 +1251,7 @@ class TestDiscordVoiceChannelMethods:
         adapter = self._make_adapter()
         adapter._voice_input_callback = AsyncMock()
 
-        with patch("gateway.platforms.discord.VoiceReceiver.pcm_to_wav",
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav",
                    side_effect=RuntimeError("ffmpeg not found")):
             await adapter._process_voice_input(111, 42, b"\x00" * 96000)
         # Should not raise
@@ -1266,7 +1269,7 @@ class TestVoiceReceiverThreadSafety:
     """Verify that VoiceReceiver buffer access is protected by lock."""
 
     def _make_receiver(self):
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         mock_vc = MagicMock()
         mock_vc._connection.secret_key = [0] * 32
         mock_vc._connection.dave_session = None
@@ -1279,7 +1282,7 @@ class TestVoiceReceiverThreadSafety:
     def test_check_silence_holds_lock(self):
         """check_silence must hold lock while iterating buffers."""
         import ast, inspect, textwrap
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         source = textwrap.dedent(inspect.getsource(VoiceReceiver.check_silence))
         tree = ast.parse(source)
         # Find 'with self._lock:' that contains buffer iteration
@@ -1300,7 +1303,7 @@ class TestVoiceReceiverThreadSafety:
     def test_on_packet_buffer_write_holds_lock(self):
         """_on_packet must hold lock when writing to buffers."""
         import ast, inspect, textwrap
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         source = textwrap.dedent(inspect.getsource(VoiceReceiver._on_packet))
         tree = ast.parse(source)
         # Find 'with self._lock:' that contains buffer extend
@@ -1667,7 +1670,7 @@ class TestStopAcquiresLock:
 
     @staticmethod
     def _make_receiver():
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         vc = MagicMock()
         vc._connection.secret_key = [0] * 32
         vc._connection.dave_session = None
@@ -1769,7 +1772,7 @@ class TestPacketDebugCounterIsInstanceLevel:
 
     @staticmethod
     def _make_receiver():
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         vc = MagicMock()
         vc._connection.secret_key = [0] * 32
         vc._connection.dave_session = None
@@ -1802,7 +1805,7 @@ class TestPlayInVoiceChannelUsesRunningLoop:
     def test_source_uses_get_running_loop(self):
         """The method source code calls get_running_loop, not get_event_loop."""
         import inspect
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         source = inspect.getsource(DiscordAdapter.play_in_voice_channel)
         assert "get_running_loop" in source, \
             "play_in_voice_channel should use asyncio.get_running_loop()"
@@ -1846,7 +1849,7 @@ class TestVoiceTimeoutCleansRunnerState:
 
     @staticmethod
     def _make_discord_adapter():
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         from gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -1937,7 +1940,7 @@ class TestPlaybackTimeout:
 
     @staticmethod
     def _make_discord_adapter():
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         from gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -1961,7 +1964,7 @@ class TestPlaybackTimeout:
     def test_source_has_wait_for_timeout(self):
         """The method uses asyncio.wait_for with timeout."""
         import inspect
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         source = inspect.getsource(DiscordAdapter.play_in_voice_channel)
         assert "wait_for" in source, \
             "play_in_voice_channel must use asyncio.wait_for for timeout"
@@ -1970,14 +1973,14 @@ class TestPlaybackTimeout:
 
     def test_playback_timeout_constant_exists(self):
         """PLAYBACK_TIMEOUT constant is defined on DiscordAdapter."""
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         assert hasattr(DiscordAdapter, "PLAYBACK_TIMEOUT")
         assert DiscordAdapter.PLAYBACK_TIMEOUT > 0
 
     @pytest.mark.asyncio
     async def test_playback_timeout_fires(self):
         """When done event is never set, playback times out gracefully."""
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         adapter = self._make_discord_adapter()
 
         mock_vc = MagicMock()
@@ -2005,7 +2008,7 @@ class TestPlaybackTimeout:
     @pytest.mark.asyncio
     async def test_is_playing_wait_has_timeout(self):
         """While loop waiting for previous playback has a timeout."""
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         adapter = self._make_discord_adapter()
 
         mock_vc = MagicMock()
@@ -2121,7 +2124,7 @@ class TestVoiceChannelAwareness:
     """Tests for get_voice_channel_info() and get_voice_channel_context()."""
 
     def _make_adapter(self):
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         from gateway.config import PlatformConfig
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -2264,7 +2267,7 @@ class TestVoiceReception:
 
     @staticmethod
     def _make_receiver(allowed_ids=None, members=None, dave=False, bot_id=9999):
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         vc = MagicMock()
         vc._connection.secret_key = [0] * 32
         vc._connection.dave_session = MagicMock() if dave else None
@@ -2448,7 +2451,7 @@ class TestVoiceReception:
 
     def _make_receiver_with_nacl(self, dave_session=None, mapped_ssrcs=None):
         """Create a receiver that can process _on_packet with mocked NaCl + Opus."""
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         vc = MagicMock()
         vc._connection.secret_key = [0] * 32
         vc._connection.dave_session = dave_session
@@ -2590,7 +2593,7 @@ class TestVoiceTTSPlayback:
 
     @staticmethod
     def _make_discord_adapter():
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         from gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -2763,14 +2766,14 @@ class TestUDPKeepalive:
     """UDP keepalive prevents Discord from dropping the voice session."""
 
     def test_keepalive_interval_is_reasonable(self):
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         interval = DiscordAdapter._KEEPALIVE_INTERVAL
         assert 5 <= interval <= 30, f"Keepalive interval {interval}s should be between 5-30s"
 
     @pytest.mark.asyncio
     async def test_keepalive_sends_silence_frame(self):
         """Listen loop sends silence frame via send_packet after interval."""
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
         from gateway.config import PlatformConfig, Platform
 
         config = PlatformConfig(enabled=True, extra={})
@@ -2792,7 +2795,7 @@ class TestUDPKeepalive:
         adapter._voice_clients[111] = mock_vc
         mock_vc._connection = mock_conn
 
-        from gateway.platforms.discord import VoiceReceiver
+        from plugins.platforms.discord.adapter import VoiceReceiver
         mock_receiver_vc = MagicMock()
         mock_receiver_vc._connection.secret_key = [0] * 32
         mock_receiver_vc._connection.dave_session = None

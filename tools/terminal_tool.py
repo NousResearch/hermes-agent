@@ -904,9 +904,9 @@ Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
 Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
-Background: Set background=true to get a session_id. Two patterns:
-  (1) Long-lived processes that never exit (servers, watchers).
-  (2) Long-running tasks with notify_on_complete=true — you can keep working on other things and the system auto-notifies you when the task finishes. Great for test suites, builds, deployments, or anything that takes more than a minute.
+Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
+  (1) Long-lived processes that never exit (servers, watchers, daemons) — silent is correct, there's no exit to notify on.
+  (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — MUST set notify_on_complete=true. Without it you'll either forget to poll or sit blocked waiting for the user to surface the result.
 For servers/watchers, do NOT use shell-level background wrappers (nohup/disown/setsid/trailing '&') in foreground mode. Use background=true so Hermes can track lifecycle and output.
 After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
 Use process(action="poll") for progress checks, process(action="wait") to block until done.
@@ -1863,12 +1863,13 @@ def terminal_tool(
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
                 # Check if this is an approval_required (gateway ask mode)
-                if approval.get("status") == "approval_required":
+                if approval.get("status") == "pending_approval":
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
-                        "error": approval.get("message", "Waiting for user approval"),
-                        "status": "approval_required",
+                        "error": "",
+                        "status": "pending_approval",
+                        "approval_pending": True,
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
@@ -1958,6 +1959,32 @@ def terminal_tool(
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 
+                # Nudge: background=True without notify_on_complete=True OR
+                # watch_patterns is a silent process. The agent has NO way to
+                # learn it finished short of calling process(action="poll"/"wait")
+                # explicitly. That's correct only for genuine long-lived
+                # processes that never exit (servers, watchers). For every
+                # bounded task (tests, builds, CI pollers, deploys, batch
+                # jobs) the agent almost certainly wanted notification and
+                # forgot the flag. May 2026 PR #31231 incident: bg CI poller
+                # ran fine, exited green, agent never noticed — user had to
+                # surface the result. Cheap nudge here costs ~one read for
+                # server cases (false positive) and prevents silent
+                # blindness for bounded-task cases (false negative).
+                if background and not notify_on_complete and not watch_patterns:
+                    result_data["hint"] = (
+                        "background=true without notify_on_complete=true means "
+                        "this process runs SILENTLY — you will not be told when "
+                        "it exits. If this is a bounded task (test suite, build, "
+                        "CI poller, deploy, anything with a defined end), you "
+                        "almost certainly wanted notify_on_complete=true so the "
+                        "system pings you on exit. Re-launch with "
+                        "notify_on_complete=true, or call process(action='poll') "
+                        "/ process(action='wait') yourself to learn the outcome. "
+                        "Only ignore this hint for genuine long-lived processes "
+                        "that never exit (servers, watchers, daemons)."
+                    )
+
                 # Populate routing metadata on the session so that
                 # watch-pattern and completion notifications can be
                 # routed back to the correct chat/thread.
@@ -1969,11 +1996,13 @@ def terminal_tool(
                         _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
                         _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
                         _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
+                        _gw_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_user_id = _gw_user_id
                         proc_session.watcher_user_name = _gw_user_name
                         proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_message_id = _gw_message_id
 
                 # Mutual exclusion: if both notify_on_complete and watch_patterns
                 # are set, drop watch_patterns. The combination produces duplicate
@@ -2010,6 +2039,7 @@ def terminal_tool(
                             "user_id": proc_session.watcher_user_id,
                             "user_name": proc_session.watcher_user_name,
                             "thread_id": proc_session.watcher_thread_id,
+                            "message_id": proc_session.watcher_message_id,
                             "notify_on_complete": True,
                         })
 
@@ -2318,7 +2348,7 @@ TERMINAL_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "description": "Run the command in the background. Two patterns: (1) Long-lived processes that never exit (servers, watchers). (2) Long-running tasks paired with notify_on_complete=true — you can keep working and get notified when the task finishes. For short commands, prefer foreground with a generous timeout instead.",
+                "description": "Run the command in the background. Almost always pair with notify_on_complete=true — without it, the process runs silently and you'll have no way to learn it finished short of calling process(action='poll') yourself (easy to forget, leading to silent blindness on long jobs). Two legitimate patterns: (1) Long-lived processes that never exit (servers, watchers, daemons) — these stay silent because there's no exit to notify on. (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — these MUST set notify_on_complete=true. For short commands, prefer foreground with a generous timeout instead.",
                 "default": False
             },
             "timeout": {

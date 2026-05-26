@@ -56,6 +56,7 @@ from hermes_cli.config import (
     get_hermes_home,
     load_config,
     load_env,
+    read_raw_config,
     save_config,
     save_env_value,
     remove_env_value,
@@ -65,6 +66,7 @@ from hermes_cli.config import (
     recommended_update_command_for_method,
     redact_key,
     write_platform_config_field,
+    _deep_merge,
 )
 from hermes_cli.memory_providers import (
     MemoryProvider,
@@ -4324,7 +4326,15 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            save_config(_denormalize_config_from_web(body.config))
+            # The dashboard form is schema-driven (see CONFIG_SCHEMA). Any root
+            # key absent from the schema — most visibly ``custom_providers``, but
+            # also ``agent.personalities``, ``terminal.lifetime_seconds``, etc. —
+            # is not sent in the PUT body. A full-replace save would silently
+            # drop those keys. Deep-merge incoming over what's on disk so the
+            # frontend can only overwrite what it explicitly sends.
+            existing = read_raw_config()
+            incoming = _denormalize_config_from_web(body.config)
+            save_config(_deep_merge(existing, incoming))
         return {"ok": True}
     except HTTPException:
         raise

@@ -1,10 +1,27 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import threading
 import time
 import pytest
 from pathlib import Path
 
 from hermes_state import SessionDB
+
+
+class TrackingLock:
+    """Minimal lock wrapper for asserting SessionDB read-path locking."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.enter_count = 0
+
+    def __enter__(self):
+        self.enter_count += 1
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._lock.release()
 
 
 @pytest.fixture()
@@ -121,6 +138,25 @@ class TestSessionLifecycle:
 
         session = db.get_session("s1")
         assert session["model"] == "openai/gpt-5.4"
+
+    def test_handoff_read_paths_hold_sessiondb_lock(self, db):
+        """Gateway handoff polling shares SessionDB with agent worker threads."""
+        db.create_session(session_id="s1", source="cli")
+        assert db.request_handoff("s1", "telegram") is True
+
+        tracking_lock = TrackingLock()
+        db._lock = tracking_lock
+
+        state = db.get_handoff_state("s1")
+        pending = db.list_pending_handoffs()
+
+        assert state == {
+            "state": "pending",
+            "platform": "telegram",
+            "error": None,
+        }
+        assert [row["id"] for row in pending] == ["s1"]
+        assert tracking_lock.enter_count == 2
 
     def test_update_token_counts_preserves_existing_model(self, db):
         db.create_session(session_id="s1", source="cli", model="anthropic/claude-opus-4.6")
@@ -3020,4 +3056,3 @@ class TestFTS5ToolCallMigration:
             assert version == SCHEMA_VERSION
         finally:
             session_db.close()
-

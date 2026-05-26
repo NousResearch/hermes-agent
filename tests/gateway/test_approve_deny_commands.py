@@ -77,6 +77,15 @@ def _clear_approval_state():
     mod._pending.clear()
 
 
+def _wait_for_count(items, count: int, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if len(items) >= count:
+            return True
+        time.sleep(0.05)
+    return len(items) >= count
+
+
 # ------------------------------------------------------------------
 # Blocking gateway approval infrastructure (tools/approval.py)
 # ------------------------------------------------------------------
@@ -360,6 +369,24 @@ class TestBareTextNoLongerApproves:
 class TestBlockingApprovalE2E:
     """Test the full blocking flow: agent thread blocks → user approves → agent resumes."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_external_approval_hooks(self, monkeypatch):
+        # Hook dispatch is covered in tests/test_approval_plugin_hooks.py. These
+        # tests focus on the blocking queue and should not depend on first-load
+        # plugin discovery latency before the gateway notification callback.
+        monkeypatch.setattr(
+            "tools.approval._fire_approval_hook",
+            lambda *args, **kwargs: None,
+        )
+        # Tirith behavior is covered by tests/tools/test_tirith_security.py and
+        # tests/tools/test_command_guards.py. Keeping it out of these gateway
+        # queue tests avoids a synchronous auto-install/network miss before the
+        # approval notification is sent.
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda command: {"action": "allow", "findings": [], "summary": ""},
+        )
+
     def setup_method(self):
         _clear_approval_state()
         os.environ.pop("HERMES_YOLO_MODE", None)
@@ -402,11 +429,7 @@ class TestBlockingApprovalE2E:
         t = threading.Thread(target=agent_thread)
         t.start()
 
-        for _ in range(50):
-            if notified:
-                break
-            time.sleep(0.05)
-
+        assert _wait_for_count(notified, 1)
         assert len(notified) == 1
         assert "rm -rf /important" in notified[0]["command"]
 
@@ -449,10 +472,7 @@ class TestBlockingApprovalE2E:
 
         t = threading.Thread(target=agent_thread)
         t.start()
-        for _ in range(50):
-            if notified:
-                break
-            time.sleep(0.05)
+        assert _wait_for_count(notified, 1)
 
         resolve_gateway_approval(session_key, "deny")
         t.join(timeout=5)
@@ -540,11 +560,7 @@ class TestBlockingApprovalE2E:
             t.start()
 
         # Wait for all 3 to block
-        for _ in range(100):
-            if len(notified) >= 3:
-                break
-            time.sleep(0.05)
-
+        assert _wait_for_count(notified, 3)
         assert len(notified) == 3
         assert len(_gateway_queues.get(session_key, [])) == 3
 

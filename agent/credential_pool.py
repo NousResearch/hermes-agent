@@ -249,6 +249,16 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
         return float(sec_match.group(1))
+    # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits
+    hr_min_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\s+(\d+)\s*min", message, re.IGNORECASE)
+    if hr_min_match:
+        return int(hr_min_match.group(1)) * 3600 + int(hr_min_match.group(2)) * 60
+    hr_only_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\b", message, re.IGNORECASE)
+    if hr_only_match:
+        return int(hr_only_match.group(1)) * 3600
+    min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
+    if min_only_match:
+        return int(min_only_match.group(1)) * 60
     return None
 
 
@@ -1265,9 +1275,21 @@ class CredentialPool:
         *,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        api_key_hint: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
-            entry = self.current() or self._select_unlocked()
+            entry = None
+            if api_key_hint:
+                # Prefer the specific entry whose API key matches the one that
+                # actually failed.  When this pool was freshly loaded from disk
+                # (another process already rotated), current() is None and
+                # _select_unlocked() would return the NEXT key — the wrong one.
+                entry = next(
+                    (e for e in self._entries if e.runtime_api_key == api_key_hint),
+                    None,
+                )
+            if entry is None:
+                entry = self.current() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -1504,6 +1526,48 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                 return changed, active_sources
         except ImportError:
             pass
+
+        # API-key vs OAuth is a user-visible choice at `hermes setup` ("Claude
+        # Pro/Max subscription" vs "Anthropic API key").  The signal that the
+        # user picked the API-key path is: ANTHROPIC_API_KEY set in the env,
+        # AND no OAuth env vars set — `save_anthropic_api_key()` writes the
+        # API key and zeros ANTHROPIC_TOKEN; `save_anthropic_oauth_token()`
+        # does the inverse.  When that signal is present we MUST NOT seed
+        # autodiscovered OAuth tokens (~/.claude/.credentials.json from the
+        # Claude Code CLI, hermes_pkce creds from a previous OAuth login)
+        # into the anthropic pool — otherwise rotation on a 401/429 silently
+        # flips the session onto an OAuth credential, which forces the Claude
+        # Code identity injection, `mcp_` tool-name rewrite, and claude-cli
+        # User-Agent header (`agent/anthropic_adapter.py:2128`).  Users who
+        # explicitly opted into the API-key path are explicitly opting OUT of
+        # that masquerade.  Prefer ~/.hermes/.env over os.environ for the
+        # same reason `_seed_from_env` does — that's the authoritative file
+        # that `hermes setup` writes.
+        _env_file = load_env()
+
+        def _env_val(key: str) -> str:
+            return (_env_file.get(key) or os.environ.get(key) or "").strip()
+
+        anthropic_api_key = _env_val("ANTHROPIC_API_KEY")
+        anthropic_oauth_env = (
+            _env_val("ANTHROPIC_TOKEN") or _env_val("CLAUDE_CODE_OAUTH_TOKEN")
+        )
+        api_key_path_explicit = bool(anthropic_api_key and not anthropic_oauth_env)
+
+        if api_key_path_explicit:
+            # Prune any stale autodiscovered OAuth entries that may have been
+            # seeded into the on-disk pool during a previous OAuth session.
+            # Without this, switching OAuth -> API key at setup leaves the
+            # OAuth entries dormant in auth.json forever and rotation on a
+            # transient 401 could revive them.
+            retained = [
+                entry for entry in entries
+                if entry.source not in {"hermes_pkce", "claude_code"}
+            ]
+            if len(retained) != len(entries):
+                entries[:] = retained
+                changed = True
+            return changed, active_sources
 
         from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
 

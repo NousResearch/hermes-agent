@@ -531,6 +531,13 @@ INVISIBLE_CHARS = {
 # Scanning functions
 # ---------------------------------------------------------------------------
 
+# Pre-compiled regex patterns for THREAT_PATTERNS (avoids re-compiling on every scan_file call)
+_COMPILED_PATTERNS = [
+    (re.compile(pattern, re.IGNORECASE), pid, severity, category, description)
+    for pattern, pid, severity, category, description in THREAT_PATTERNS
+]
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
     Scan a single file for threat patterns and invisible unicode characters.
@@ -558,11 +565,11 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     seen = set()  # (pattern_id, line_number) for deduplication
 
     # Regex pattern matching
-    for pattern, pid, severity, category, description in THREAT_PATTERNS:
+    for compiled_pattern, pid, severity, category, description in _COMPILED_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
                 continue
-            if re.search(pattern, line, re.IGNORECASE):
+            if compiled_pattern.search(line):
                 seen.add((pid, i))
                 matched_text = line.strip()
                 if len(matched_text) > 120:

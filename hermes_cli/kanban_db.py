@@ -4994,11 +4994,17 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT title, body, last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
         return None
+    title_body = f"{row['title'] or ''}\n{row['body'] or ''}".lower()
+    is_review_gate = (
+        "review/merge/close" in title_body
+        or "independent review gate" in title_body
+        or "review gate" in title_body
+    )
 
     # 1. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]
@@ -5017,6 +5023,11 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # Do not apply this to explicit review/merge/close gates: their whole job
+    # is to inspect an active PR, and blocking them on ``active_pr`` strands
+    # the workflow after a remediation task completes.
+    if is_review_gate:
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

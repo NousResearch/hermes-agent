@@ -4419,3 +4419,33 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         )
         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
         assert kb.get_task(conn, t).status == "running"
+
+
+def test_respawn_guard_allows_review_gate_with_active_pr_comment(kanban_home, all_assignees_spawnable):
+    """Review/merge/close gates must be allowed to spawn even when comments
+    contain PR URLs; reviewing an active PR is their purpose.
+    """
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="implementation", assignee="worker")
+        kb.complete_task(conn, parent, summary="opened PR")
+        review = kb.create_task(
+            conn,
+            title="Review/Merge/Close #123: feature",
+            body="Independent review gate for implementation task.",
+            assignee="worker",
+            parents=[parent],
+        )
+        kb.add_comment(
+            conn,
+            review,
+            "worker",
+            "PR is https://github.com/example/repo/pull/123 and needs review",
+        )
+
+        assert kb.check_respawn_guard(conn, review) is None
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert review in [tid for tid, _who, _ws in res.spawned]
+    finally:
+        conn.close()

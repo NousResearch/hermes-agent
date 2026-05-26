@@ -154,8 +154,10 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_TABLE_SEPARATOR_LINE_RE = re.compile(
+    r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$"
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -449,6 +451,94 @@ def _sender_identity(sender: Any) -> frozenset:
 # ---------------------------------------------------------------------------
 # Markdown rendering helpers
 # ---------------------------------------------------------------------------
+
+
+def _split_table_row(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _render_table_as_code_block(table_lines: list[str]) -> str:
+    """Render a GFM pipe table as an aligned plain-text code block.
+
+    Feishu's post-type ``md`` elements cannot render markdown tables, so we
+    convert them to monospaced code blocks with padded columns.  This keeps
+    tables readable without forcing the entire message to plain text.
+    """
+    if len(table_lines) < 3:
+        return "\n".join(table_lines)
+
+    header_cells = _split_table_row(table_lines[0])
+    data_rows = [_split_table_row(line) for line in table_lines[2:]]
+    num_cols = len(header_cells)
+
+    col_widths = [len(h) for h in header_cells]
+    for row in data_rows:
+        for i, cell in enumerate(row[:num_cols]):
+            if i < len(col_widths):
+                col_widths[i] = max(col_widths[i], len(cell))
+
+    def _format_row(cells: list[str]) -> str:
+        padded = []
+        for i in range(num_cols):
+            val = cells[i] if i < len(cells) else ""
+            padded.append(val.ljust(col_widths[i]))
+        return "  ".join(padded)
+
+    lines = [_format_row(header_cells)]
+    lines.append("  ".join("─" * w for w in col_widths))
+    for row in data_rows:
+        lines.append(_format_row(row))
+
+    return "```\n" + "\n".join(lines) + "\n```"
+
+
+def _convert_tables_to_code_blocks(content: str) -> str:
+    """Replace GFM pipe tables in *content* with aligned code blocks.
+
+    Tables inside existing fenced code blocks are left untouched.
+    """
+    if "|" not in content or "-" not in content:
+        return content
+
+    lines = content.split("\n")
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+
+        if (
+            "|" in line
+            and i + 1 < len(lines)
+            and _TABLE_SEPARATOR_LINE_RE.match(lines[i + 1])
+        ):
+            table_block = [line, lines[i + 1]]
+            j = i + 2
+            while j < len(lines) and "|" in lines[j] and lines[j].strip():
+                table_block.append(lines[j])
+                j += 1
+            out.append(_render_table_as_code_block(table_block))
+            i = j
+            continue
+
+        out.append(line)
+        i += 1
+
+    return "\n".join(out)
 
 
 def _escape_markdown_text(text: str) -> str:
@@ -4284,12 +4374,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type 'md' elements do not render markdown tables.
+        # Convert them to aligned code blocks so the rest of the message
+        # keeps its markdown formatting instead of falling back to raw text.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            content = _convert_tables_to_code_blocks(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

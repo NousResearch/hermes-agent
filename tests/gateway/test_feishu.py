@@ -4885,3 +4885,43 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestFeishuTableConversion(unittest.TestCase):
+    """Verify markdown tables are converted to code blocks for Feishu (#32607)."""
+
+    def test_simple_table_converted_to_code_block(self):
+        from gateway.platforms.feishu import _convert_tables_to_code_blocks
+
+        content = (
+            "Here are the results:\n\n"
+            "| Name | Score |\n"
+            "|------|-------|\n"
+            "| Alice | 95 |\n"
+            "| Bob | 87 |\n"
+        )
+        result = _convert_tables_to_code_blocks(content)
+        self.assertIn("```", result)
+        self.assertIn("Alice", result)
+        self.assertNotIn("|", result.split("```")[1])
+
+    def test_non_table_content_unchanged(self):
+        from gateway.platforms.feishu import _convert_tables_to_code_blocks
+
+        content = "Just a **bold** paragraph with no tables."
+        self.assertEqual(_convert_tables_to_code_blocks(content), content)
+
+    def test_table_inside_code_block_left_alone(self):
+        from gateway.platforms.feishu import _convert_tables_to_code_blocks
+
+        content = "```\n| A | B |\n|---|---|\n| 1 | 2 |\n```"
+        self.assertEqual(_convert_tables_to_code_blocks(content), content)
+
+    def test_outbound_payload_uses_post_with_tables(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "Summary:\n| Col | Val |\n|-----|-----|\n| a | 1 |"
+        msg_type, _ = adapter._build_outbound_payload(content)
+        self.assertEqual(msg_type, "post")

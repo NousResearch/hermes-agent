@@ -1364,6 +1364,39 @@ class TestMatrixUploadAndSend:
         assert "file" in sent
         assert sent["file"]["url"] == "mxc://example.org/enc"
 
+    @pytest.mark.asyncio
+    async def test_send_local_file_missing_does_not_post_to_main_room(self, tmp_path, caplog):
+        """Missing local file should warn-and-skip, not post user-visible text.
+
+        Regression for #32503: ``_send_local_file`` previously called
+        ``self.send(room_id, "(file not found: ...)", reply_to)`` without
+        propagating ``metadata`` (containing ``thread_id``), so the error
+        leaked into the main room. Mirror the mattermost #28350 fix: warn
+        and return ``SendResult(success=True, message_id=None)`` so the
+        agent's already-completed turn isn't dragged back to a delivery
+        failure that retries pointlessly.
+        """
+        adapter = _make_adapter()
+        adapter._client = MagicMock()
+        adapter.send = AsyncMock()  # must not be called
+
+        missing = tmp_path / "definitely-not-here.png"
+
+        with caplog.at_level("WARNING"):
+            result = await adapter._send_local_file(
+                "!room:example.org",
+                str(missing),
+                "m.image",
+                caption="hi",
+                reply_to="$thread-root",
+                metadata={"thread_id": "$thread-root"},
+            )
+
+        assert result.success is True
+        assert result.message_id is None
+        adapter.send.assert_not_called()
+        assert any(str(missing) in rec.getMessage() for rec in caplog.records)
+
 
 class TestMatrixEncryptedSendFallback:
     @pytest.mark.asyncio

@@ -1420,9 +1420,14 @@ class MatrixAdapter(BasePlatformAdapter):
         """Read a local file and upload it."""
         p = Path(file_path).expanduser()
         if not p.exists():
-            return await self.send(
-                room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+            # Mirrors the mattermost pattern landed in #28350: surfacing the
+            # error via self.send() bypasses thread routing (metadata is not
+            # threaded through) and posts a confusing user-visible reply to the
+            # main room. The agent has already moved on, so just log and skip.
+            logger.warning(
+                "Matrix: local file not found, skipping: %s", file_path
             )
+            return SendResult(success=True, message_id=None)
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"

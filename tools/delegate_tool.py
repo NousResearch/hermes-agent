@@ -2063,7 +2063,7 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=t.get("model") or creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2429,7 +2429,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider, target_model=configured_model)
+        runtime = resolve_runtime_provider(
+            requested=configured_provider,
+            target_model=configured_model,
+            explicit_api_key=configured_api_key,
+            explicit_base_url=configured_base_url,
+        )
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "

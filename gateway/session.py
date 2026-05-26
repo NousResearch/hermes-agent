@@ -490,6 +490,8 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
+    in_flight_user_message: Optional[str] = None
+    in_flight_marked_at: Optional[datetime] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -515,6 +517,12 @@ class SessionEntry:
             "last_resume_marked_at": (
                 self.last_resume_marked_at.isoformat()
                 if self.last_resume_marked_at
+                else None
+            ),
+            "in_flight_user_message": self.in_flight_user_message,
+            "in_flight_marked_at": (
+                self.in_flight_marked_at.isoformat()
+                if self.in_flight_marked_at
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
@@ -546,6 +554,13 @@ class SessionEntry:
                 last_resume_marked_at = datetime.fromisoformat(_lrma)
             except (TypeError, ValueError):
                 last_resume_marked_at = None
+        in_flight_marked_at = None
+        _ifma = data.get("in_flight_marked_at")
+        if _ifma:
+            try:
+                in_flight_marked_at = datetime.fromisoformat(_ifma)
+            except (TypeError, ValueError):
+                in_flight_marked_at = None
 
         return cls(
             session_key=data["session_key"],
@@ -569,6 +584,8 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            in_flight_user_message=data.get("in_flight_user_message"),
+            in_flight_marked_at=in_flight_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -1031,6 +1048,39 @@ class SessionStore:
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
+            self._save()
+            return True
+
+    def mark_in_flight(self, session_key: str, message: str) -> bool:
+        """Remember the user turn currently being processed by the agent.
+
+        Gateway restart recovery can synthesize an internal resume event before
+        the interrupted user turn has been persisted to the transcript.  Keeping
+        this text on the session entry lets startup auto-resume replay the real
+        pending turn instead of delivering a blank message to the model.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            entry.in_flight_user_message = message
+            entry.in_flight_marked_at = _now()
+            self._save()
+            return True
+
+    def clear_in_flight(self, session_key: str) -> bool:
+        """Clear the remembered in-flight user turn after completion."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or (
+                entry.in_flight_user_message is None
+                and entry.in_flight_marked_at is None
+            ):
+                return False
+            entry.in_flight_user_message = None
+            entry.in_flight_marked_at = None
             self._save()
             return True
 

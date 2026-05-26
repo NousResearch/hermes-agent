@@ -189,6 +189,8 @@ class TestSessionEntryResumeFields:
         assert entry.resume_pending is False
         assert entry.resume_reason is None
         assert entry.last_resume_marked_at is None
+        assert entry.in_flight_user_message is None
+        assert entry.in_flight_marked_at is None
 
     def test_roundtrip_with_resume_fields(self):
         now = datetime(2026, 4, 18, 12, 0, 0)
@@ -200,11 +202,15 @@ class TestSessionEntryResumeFields:
             resume_pending=True,
             resume_reason="restart_timeout",
             last_resume_marked_at=now,
+            in_flight_user_message="[User] run",
+            in_flight_marked_at=now,
         )
         restored = SessionEntry.from_dict(entry.to_dict())
         assert restored.resume_pending is True
         assert restored.resume_reason == "restart_timeout"
         assert restored.last_resume_marked_at == now
+        assert restored.in_flight_user_message == "[User] run"
+        assert restored.in_flight_marked_at == now
 
     def test_from_dict_legacy_without_resume_fields(self):
         """Old sessions.json without the new fields deserialize cleanly."""
@@ -220,6 +226,8 @@ class TestSessionEntryResumeFields:
         assert restored.resume_pending is False
         assert restored.resume_reason is None
         assert restored.last_resume_marked_at is None
+        assert restored.in_flight_user_message is None
+        assert restored.in_flight_marked_at is None
 
     def test_malformed_timestamp_is_tolerated(self):
         now = datetime.now()
@@ -231,12 +239,16 @@ class TestSessionEntryResumeFields:
             "resume_pending": True,
             "resume_reason": "restart_timeout",
             "last_resume_marked_at": "not-a-timestamp",
+            "in_flight_user_message": "run",
+            "in_flight_marked_at": "also-not-a-timestamp",
         }
         restored = SessionEntry.from_dict(data)
         # resume_pending still honoured, only the broken timestamp drops
         assert restored.resume_pending is True
         assert restored.resume_reason == "restart_timeout"
         assert restored.last_resume_marked_at is None
+        assert restored.in_flight_user_message == "run"
+        assert restored.in_flight_marked_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +329,41 @@ class TestClearResumePending:
     def test_returns_false_for_unknown_key(self, tmp_path):
         store = _make_store(tmp_path)
         assert store.clear_resume_pending("no-such-key") is False
+
+
+class TestInFlightUserMessage:
+    def test_mark_and_clear_in_flight(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+
+        assert store.mark_in_flight(entry.session_key, "[User] run") is True
+        marked = store._entries[entry.session_key]
+        assert marked.in_flight_user_message == "[User] run"
+        assert marked.in_flight_marked_at is not None
+
+        assert store.clear_in_flight(entry.session_key) is True
+        cleared = store._entries[entry.session_key]
+        assert cleared.in_flight_user_message is None
+        assert cleared.in_flight_marked_at is None
+
+    def test_in_flight_survives_roundtrip(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+
+        store.mark_in_flight(entry.session_key, "check recent inbound messages")
+
+        store2 = _make_store(tmp_path)
+        store2._ensure_loaded()
+        reloaded = store2._entries[entry.session_key]
+        assert reloaded.in_flight_user_message == "check recent inbound messages"
+        assert reloaded.in_flight_marked_at is not None
+
+    def test_returns_false_for_unknown_key(self, tmp_path):
+        store = _make_store(tmp_path)
+        assert store.mark_in_flight("no-such-key", "run") is False
+        assert store.clear_in_flight("no-such-key") is False
 
 
 # ---------------------------------------------------------------------------
@@ -879,6 +926,8 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
         resume_pending=True,
         resume_reason="restart_timeout",
         last_resume_marked_at=datetime.now(),
+        in_flight_user_message='[Replying to: "check recent inbound messages"]\n\n[User] run',
+        in_flight_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
@@ -893,10 +942,38 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
     assert event.internal is True
     assert event.message_type == MessageType.TEXT
     assert event.source == source
-    # Text is empty — the existing _is_resume_pending branch in
-    # _handle_message_with_agent owns the system-note injection so we don't
-    # double it up.
-    assert event.text == ""
+    assert event.text == '[Replying to: "check recent inbound messages"]\n\n[User] run'
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_uses_nonblank_fallback_without_in_flight_text():
+    """Fallback recovery text must not look like a user-sent empty message."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="resume-chat", thread_id="topic-1")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:group:resume-chat:topic-1",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.text
+    assert "Internal gateway auto-resume" in event.text
+    assert "not a user-sent blank message" in event.text
 
 
 @pytest.mark.asyncio

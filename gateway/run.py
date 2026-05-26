@@ -3787,9 +3787,10 @@ class GatewayRunner:
         ``resume_pending`` already preserves the transcript AND the existing
         ``_is_resume_pending`` branch in ``_handle_message_with_agent``
         injects a reason-aware recovery system note on the next turn.  This
-        method closes the UX gap by synthesizing that next turn once
-        adapters are back online — the event text is empty so the existing
-        injection path owns the wording and we never double up.
+        method closes the UX gap by synthesizing that next turn once adapters
+        are back online.  When the interrupted user message was captured before
+        shutdown, replay it; otherwise send a nonblank continuation instruction
+        so the model does not treat recovery as a user-sent empty message.
 
         Adapters that are not yet ready (adapter missing from
         ``self.adapters``) are skipped silently; their sessions stay
@@ -3828,11 +3829,18 @@ class GatewayRunner:
                 )
                 continue
 
-            # Empty-text internal event — the _is_resume_pending branch in
-            # _handle_message_with_agent prepends the proper reason-aware
-            # system note before the turn runs.
+            resume_text = (getattr(entry, "in_flight_user_message", None) or "").strip()
+            if not resume_text:
+                resume_text = (
+                    "[Internal gateway auto-resume: continue the interrupted "
+                    "turn from the existing conversation history. This is not "
+                    "a user-sent blank message. Do not tell the user their "
+                    "message came through empty or ask them to repeat the same "
+                    "command.]"
+                )
+
             event = MessageEvent(
-                text="",
+                text=resume_text,
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
@@ -8684,6 +8692,11 @@ class GatewayRunner:
         )
         if message_text is None:
             return
+        if session_key:
+            try:
+                self.session_store.mark_in_flight(session_key, message_text)
+            except Exception as _e:
+                logger.debug("mark_in_flight failed for %s: %s", session_key, _e)
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
@@ -8780,6 +8793,13 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug(
                         "clear_resume_pending failed for %s: %s",
+                        session_key, _e,
+                    )
+                try:
+                    self.session_store.clear_in_flight(session_key)
+                except Exception as _e:
+                    logger.debug(
+                        "clear_in_flight failed for %s: %s",
                         session_key, _e,
                     )
 

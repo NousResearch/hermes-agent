@@ -263,6 +263,45 @@ The architecture is intentionally optimized to:
 - keep memory semantics understandable
 - let gateway/ACP/CLI add context without poisoning persistent prompt state
 
+## Grandmaster runtime cleanup implementation-readiness checklist (docs-only)
+
+Use this checklist before proposing any future code or live-runtime cleanup. It is documentation-only guidance; it does not authorize editing Python, changing config, starting services, activating a candidate `SOUL.md`, or clearing overlays.
+
+### R6 terminology alignment
+
+Docs should use the same names for the same prompt surfaces:
+
+- **Base identity:** `HERMES_HOME/SOUL.md`, loaded into the stable identity slot when available.
+- **Built-in fallback:** `DEFAULT_AGENT_IDENTITY`, used when `SOUL.md` is missing, empty, unreadable, or intentionally skipped. If the prompt-injection scanner blocks content, the identity slot may contain a blocked-content marker instead of the original file text.
+- **Project context:** `.hermes.md`/`HERMES.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, and `.cursor/rules/*.mdc`; these are separate from `SOUL.md` and should carry repo/workflow rules.
+- **Persisted personality/config overlays:** `/personality`, `agent.system_prompt`, and `display.personality`; these can affect behavior after startup and may need separate rollback.
+- **Ephemeral API-call-time overlays:** `ephemeral_system_prompt`, `HERMES_EPHEMERAL_SYSTEM_PROMPT`, gateway/channel/session overlays, API instructions, and prefill messages; these preserve the cached prefix but can mask the base identity.
+- **Prompt cache boundary:** base prompt assembly belongs in the cached system prompt; ephemeral overlays are appended immediately before model calls.
+
+### R9 future code-change readiness
+
+Before a code-change batch, prepare an implementation spec that names exact edits and tests for:
+
+- `agent/prompt_builder.py`: `load_soul_md()` path, scanning, truncation, empty/missing fallback, and context-file separation.
+- `agent/system_prompt.py`: prompt assembly order, `load_soul_identity`, `skip_context_files`, and `skip_soul=True` behavior.
+- `agent/chat_completion_helpers.py` and `agent/conversation_loop.py`: API-call-time append behavior for `ephemeral_system_prompt`.
+- `cli.py`, `gateway/run.py`, and `tui_gateway/server.py`: `/personality none`, persisted config fields, and in-memory overlay clearing.
+- `cron/scheduler.py`: `load_soul_identity=True`, job `workdir`, and project-context loading boundaries.
+- `tools/delegate_tool.py`: delegated child `skip_context_files=True`, `skip_memory=True`, and child-specific prompt behavior.
+- `hermes_cli/profiles.py` and `hermes_cli/profile_distribution.py`: clone/copy/reapply behavior for `SOUL.md` and distribution-owned paths.
+
+Candidate tests for a future approved code pass:
+
+- `load_soul_identity=True` still loads base identity when `skip_context_files=True` while keeping project context disabled.
+- `skip_context_files=True` without forced identity falls back predictably.
+- `/personality none` clears persisted and in-memory overlays for CLI, gateway, and TUI as documented.
+- Gateway/TUI updates do not pretend to rebuild the cached base prompt when they only change an ephemeral overlay.
+- Cron loads `SOUL.md` from the scheduler/profile `HERMES_HOME` and only injects project context when `workdir` is configured.
+- Delegated children remain isolated from parent project context and memory unless a future approved design changes that.
+- Distribution-owned `SOUL.md` reapplication is tested for install/update and rollback documentation.
+
+Stop and request review if the proposed code change would alter provider/model/tool settings, read secrets or session bodies, change memory/Honcho behavior, weaken prompt-cache stability, merge base identity with ephemeral overlays, or make rollback depend on hidden chat state.
+
 ## Related docs
 
 - [Context Compression & Prompt Caching](./context-compression-and-caching.md)

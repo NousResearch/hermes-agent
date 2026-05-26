@@ -256,6 +256,52 @@ Possible causes:
 
 Move project instructions into `AGENTS.md` and keep `SOUL.md` focused on identity and style.
 
+## Grandmaster runtime cleanup runbooks (docs-only)
+
+The following runbooks are planning references for future activation or rollback work. They do not activate a candidate `SOUL.md`, change runtime config, clear overlays, start sessions, or authorize code changes by themselves.
+
+### R7 future activation runbook
+
+Before activating a reviewed candidate, collect and record:
+
+- target `HERMES_HOME` and whether it is the default home or a profile-specific home;
+- target runtime surface: CLI, gateway, TUI, cron, delegation, ACP/API, or profile distribution;
+- current `HERMES_HOME/SOUL.md` state and exact rollback source;
+- current overlay state: `/personality`, `agent.system_prompt`, `display.personality`, `HERMES_EPHEMERAL_SYSTEM_PROMPT`, gateway/TUI in-memory overlays, cron job settings, and delegation prompts;
+- profile/distribution ownership: whether `SOUL.md` can be reapplied by profile clone, distribution install/update, or a staged profile update;
+- restart or reset boundary needed for the affected runtime to rebuild the cached prompt.
+
+Required future approval wording:
+
+> Approve activation of the reviewed `SOUL.md` candidate for `[exact HERMES_HOME/profile/runtime]`. Authorized changes: `[exact file/config writes]`. Authorized runtime actions: `[exact restart/reset/session boundary]`. Authorized verification: `[exact CLI/gateway/TUI/cron/delegation checks]`. Rollback source: `[exact previous content/path or fallback]`. No other provider/model/tool/memory/skill/service changes are approved.
+
+Runtime notes:
+
+- **CLI:** base identity changes need a fresh session or agent rebuild. Clear `/personality` separately if it is set.
+- **Gateway:** base identity changes need a gateway runner/session rebuild or restart boundary. Clear persisted and in-memory personality overlays separately.
+- **TUI:** personality changes can update `ephemeral_system_prompt` without rebuilding the cached base prompt; rebuild affected sessions for base identity changes.
+- **Cron:** confirm scheduler/profile `HERMES_HOME` and job `workdir`; project context may differ from base identity loading.
+- **Delegation:** child agents may use `skip_context_files=True` plus child-specific ephemeral prompts; verify child construction separately from the parent session.
+
+### R8 future rollback runbook
+
+Rollback must undo both the base identity change and any overlays that can mask or reapply it:
+
+1. Restore previous `HERMES_HOME/SOUL.md`, remove the candidate file if fallback was the approved source, or restore the exact approved fallback state.
+2. Clear or restore persisted overlays: `agent.system_prompt`, `display.personality`, and any environment-provided `HERMES_EPHEMERAL_SYSTEM_PROMPT`.
+3. Clear in-memory overlays by the runner-specific mechanism: new CLI session, gateway restart/rebuild, TUI session rebuild, or equivalent documented command.
+4. Check profile/distribution reapplication paths. If `SOUL.md` is distribution-owned, update/revoke the distribution source or it can overwrite the rollback on the next update.
+5. Verify each affected runtime surface separately; do not assume CLI behavior proves gateway, TUI, cron, or delegation behavior.
+
+Rollback verification checklist:
+
+- `HERMES_HOME/SOUL.md` matches the approved rollback source or is intentionally absent.
+- `/personality` no longer adds the candidate overlay.
+- `agent.system_prompt`, `display.personality`, and environment overlays are cleared or restored.
+- Profile/distribution update paths no longer reapply the candidate.
+- A fresh prompt assembly uses the expected base identity or built-in fallback.
+- No provider, model, tool, memory, skill, service, or secret setting changed during rollback.
+
 ## Related docs
 
 - [Personality & SOUL.md](/docs/user-guide/features/personality)

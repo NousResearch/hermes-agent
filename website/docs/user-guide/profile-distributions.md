@@ -188,6 +188,16 @@ distribution_owned:
 
 When omitted, the defaults above apply — which is what most distributions want.
 
+### SOUL.md ownership and rollback
+
+`SOUL.md` in a distribution is a live base-identity source for that profile as soon as someone starts chatting with the installed profile. Treat it differently from README text or examples:
+
+- If `SOUL.md` is distribution-owned, `hermes profile update` can reapply it and overwrite a local rollback on the next update.
+- If an installer customizes `SOUL.md` locally, either remove it from `distribution_owned` in the upstream manifest or document that updates will replace it.
+- A rollback plan for a distributed identity must name both the local rollback source and the upstream distribution state that could reapply the candidate.
+- Activation/rollback verification should use the installed profile's `HERMES_HOME`, not the author's working tree.
+- Do not put secrets, user memory, provider credentials, or project-local incident instructions in distributed `SOUL.md`; use `.env.EXAMPLE`, config, skills, cron, or project context files as appropriate.
+
 ---
 
 ## For installers: using a distribution

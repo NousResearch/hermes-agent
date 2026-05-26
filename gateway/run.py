@@ -119,6 +119,13 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+@dataclasses.dataclass(frozen=True)
+class _PrePersistedInboundTurn:
+    session_id: str
+    user_message_id: Optional[int] = None
+    session_meta_id: Optional[int] = None
+
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
     re.IGNORECASE,
@@ -8104,6 +8111,66 @@ class GatewayRunner:
                 pass
         return source
 
+    def _pre_persist_inbound_turn(
+        self,
+        *,
+        session_id: str,
+        message_text: str,
+        event: MessageEvent,
+        history: List[Dict[str, Any]],
+        model: str,
+    ) -> _PrePersistedInboundTurn:
+        """Persist the inbound user turn before running the agent.
+
+        A gateway process can be SIGKILLed/OOM-killed while the model call or
+        context compression is still in progress.  Post-run transcript writes
+        never execute in that case, so the triggering platform message is lost
+        from session history.  This method writes a provisional user row before
+        `_run_agent()` starts; successful turns remove it after the agent has
+        persisted the full conversation, while transient failures keep it as
+        the durable retry context.
+        """
+        session_meta_id: Optional[int] = None
+        user_message_id: Optional[int] = None
+        ts = datetime.now().isoformat()
+
+        if not history:
+            try:
+                session_meta_id = self.session_store.append_to_transcript(
+                    session_id,
+                    {
+                        "role": "session_meta",
+                        "tools": [],
+                        "model": model,
+                        "platform": event.source.platform.value if event.source and event.source.platform else "",
+                        "timestamp": ts,
+                    },
+                )
+            except Exception as exc:
+                logger.debug("Pre-persist session_meta failed for %s: %s", session_id, exc)
+
+        try:
+            user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+            if event.message_id:
+                user_entry["message_id"] = str(event.message_id)
+            user_message_id = self.session_store.append_to_transcript(session_id, user_entry)
+        except Exception as exc:
+            logger.debug("Pre-persist inbound user turn failed for %s: %s", session_id, exc)
+
+        return _PrePersistedInboundTurn(
+            session_id=session_id,
+            user_message_id=user_message_id,
+            session_meta_id=session_meta_id,
+        )
+
+    def _remove_pre_persisted_inbound_turn(self, persisted: Optional[_PrePersistedInboundTurn]) -> None:
+        """Remove provisional inbound rows after full turn persistence wins."""
+        if persisted is None:
+            return
+        for message_id in (persisted.user_message_id, persisted.session_meta_id):
+            if message_id:
+                self.session_store.delete_transcript_message(message_id)
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -8685,6 +8752,14 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        pre_persisted_turn = self._pre_persist_inbound_turn(
+            session_id=session_entry.session_id,
+            message_text=message_text,
+            event=event,
+            history=history,
+            model=_resolve_gateway_model(),
+        )
+
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
@@ -8740,6 +8815,7 @@ class GatewayRunner:
                     )
                 elif _stale_adapter and hasattr(_stale_adapter, "_post_delivery_callbacks"):
                     _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
+                self._remove_pre_persisted_inbound_turn(pre_persisted_turn)
                 return None
 
             response = agent_result.get("final_response") or ""
@@ -8951,6 +9027,17 @@ class GatewayRunner:
                     "Your next message will start a fresh session."
                 )
 
+            if is_context_overflow_failure:
+                # The provisional row was only a crash-recovery marker.  Do
+                # not let context-overflow failures grow an already-broken
+                # transcript; keep the existing anti-loop semantics.
+                self._remove_pre_persisted_inbound_turn(pre_persisted_turn)
+            elif not agent_failed_early:
+                # Successful turns are persisted below/from the agent's own
+                # SQLite flush.  Remove the pre-run crash marker first so the
+                # transcript does not contain a duplicate user message.
+                self._remove_pre_persisted_inbound_turn(pre_persisted_turn)
+
             ts = datetime.now().isoformat()
             
             # If this is a fresh session (no history), write the full tool
@@ -8978,17 +9065,19 @@ class GatewayRunner:
             if is_context_overflow_failure:
                 pass  # handled above — skip all transcript writes
             elif agent_failed_early:
-                # Transient failure (429/timeout/5xx): persist only the user
-                # message so the next message can load a transcript that
-                # reflects what was said.  Skip the assistant error text since
-                # it's a gateway-generated hint, not model output. (#7100)
-                _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
-                if event.message_id:
-                    _user_entry["message_id"] = str(event.message_id)
-                self.session_store.append_to_transcript(
-                    session_entry.session_id,
-                    _user_entry,
-                )
+                # Transient failure (429/timeout/5xx): ensure the user message
+                # remains in the durable transcript so the next message can
+                # load context that reflects what was said.  The pre-run crash
+                # marker normally already did that; append here only if that
+                # best-effort pre-write failed.
+                if not (pre_persisted_turn and pre_persisted_turn.user_message_id):
+                    _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                    if event.message_id:
+                        _user_entry["message_id"] = str(event.message_id)
+                    self.session_store.append_to_transcript(
+                        session_entry.session_id,
+                        _user_entry,
+                    )
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []

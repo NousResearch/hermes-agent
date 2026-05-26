@@ -1542,6 +1542,47 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def delete_message(self, message_id: int) -> bool:
+        """Delete one message row and decrement session counters."""
+        def _do(conn):
+            row = conn.execute(
+                "SELECT session_id, role, tool_calls FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                return False
+
+            tool_calls = row["tool_calls"]
+            tool_delta = 0
+            if tool_calls:
+                try:
+                    parsed = json.loads(tool_calls)
+                    tool_delta = len(parsed) if isinstance(parsed, list) else 1
+                except (json.JSONDecodeError, TypeError):
+                    tool_delta = 1
+            elif row["role"] == "tool":
+                tool_delta = 1
+
+            conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+            if tool_delta > 0:
+                conn.execute(
+                    """UPDATE sessions
+                       SET message_count = MAX(message_count - 1, 0),
+                           tool_call_count = MAX(tool_call_count - ?, 0)
+                       WHERE id = ?""",
+                    (tool_delta, row["session_id"]),
+                )
+            else:
+                conn.execute(
+                    """UPDATE sessions
+                       SET message_count = MAX(message_count - 1, 0)
+                       WHERE id = ?""",
+                    (row["session_id"],),
+                )
+            return True
+
+        return bool(self._execute_write(_do))
+
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
 

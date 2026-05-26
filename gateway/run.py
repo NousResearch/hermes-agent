@@ -15071,6 +15071,26 @@ class GatewayRunner:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
+
+        # Honcho identity-mapping keys live in honcho.json, not user_config.
+        # HonchoSessionManager freezes the resolved peer_name / pin / aliases /
+        # prefix at construction; without busting here, mid-flight honcho.json
+        # edits go unread until the next unrelated cache eviction.
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig
+
+            hcfg = HonchoClientConfig.from_global_config()
+            out["honcho.peer_name"] = hcfg.peer_name
+            out["honcho.pin_peer_name"] = bool(hcfg.pin_peer_name)
+            out["honcho.runtime_peer_prefix"] = hcfg.runtime_peer_prefix or ""
+            aliases = hcfg.user_peer_aliases or {}
+            out["honcho.user_peer_aliases"] = sorted(aliases.items()) if isinstance(aliases, dict) else []
+        except Exception:
+            out["honcho.peer_name"] = None
+            out["honcho.pin_peer_name"] = None
+            out["honcho.runtime_peer_prefix"] = None
+            out["honcho.user_peer_aliases"] = None
+
         return out
 
     @staticmethod

@@ -465,6 +465,25 @@ def cmd_setup(args) -> None:
     print("    skip   -- don't touch identity-mapping config")
     new_shape = _prompt("Deployment shape", default=current_shape).strip().lower()
 
+    # Transitioning single → multi orphans the peerName pool for runtime users
+    # (their resolved peers go from peerName to runtime-derived IDs with empty
+    # history).  Steer the operator toward hybrid so their own continuity is
+    # preserved via alias mappings.
+    if current_shape == "single" and new_shape == "multi":
+        peer_target = hermes_host.get("peerName") or current_peer or "user"
+        print(
+            f"\n  ⚠ Switching from single to multi will orphan memory accumulated\n"
+            f"    under peer '{peer_target}'.  Existing runtime users (Telegram,\n"
+            f"    Discord, etc.) will resolve to fresh, empty peers."
+        )
+        print("    To keep your own continuity, choose 'hybrid' and alias your\n"
+              "    runtime IDs back to peerName.")
+        confirm = _prompt("Continue with multi anyway? (yes/hybrid/no)", default="hybrid").strip().lower()
+        if confirm in {"hybrid", "h"}:
+            new_shape = "hybrid"
+        elif confirm not in {"yes", "y"}:
+            new_shape = "skip"
+
     if new_shape == "single":
         hermes_host["pinPeerName"] = True
         hermes_host.pop("userPeerAliases", None)

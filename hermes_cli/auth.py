@@ -3411,7 +3411,22 @@ def resolve_codex_runtime_credentials(
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store."""
-    data = _read_codex_tokens()
+    try:
+        data = _read_codex_tokens()
+    except AuthError as exc:
+        # Hermes keeps its own OAuth session file; when missing, bootstrap once from
+        # ~/.codex/auth.json so headless / gateway setups work after `codex login`.
+        if getattr(exc, "code", None) != "codex_auth_missing":
+            raise
+        cli_tokens = _import_codex_cli_tokens()
+        if not cli_tokens:
+            raise
+        logger.info(
+            "Bootstrapping Hermes Codex credentials from Codex CLI (~/.codex/auth.json); "
+            "copied into Hermes auth store."
+        )
+        _save_codex_tokens(cli_tokens)
+        data = _read_codex_tokens()
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))

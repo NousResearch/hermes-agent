@@ -62,7 +62,11 @@ from agent.nous_rate_guard import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.retry_utils import jittered_backoff
+from agent.retry_utils import (
+    check_rate_limit_headroom,
+    extract_rate_limit_reset_seconds,
+    jittered_backoff,
+)
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
@@ -1030,6 +1034,7 @@ def run_conversation(
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
         api_kwargs = None  # Guard against UnboundLocalError in except handler
+        _last_response_headers = None  # Track headers for proactive rate limit detection
 
         while retry_count < max_retries:
             # ── Nous Portal rate limit guard ──────────────────────
@@ -1078,6 +1083,42 @@ def run_conversation(
                     pass
                 except Exception:
                     pass  # Never let rate guard break the agent loop
+
+            # ── Proactive OpenRouter rate limit detection ──────────────────
+            # If previous response headers showed critically low headroom
+            # (<2 requests remaining), sleep until reset window to avoid 429s.
+            # This prevents hammering the provider when concurrency is high.
+            if _last_response_headers and agent.provider in {"openrouter", "nous-api"}:
+                _headroom_reset = check_rate_limit_headroom(
+                    _last_response_headers, threshold=2
+                )
+                if _headroom_reset and _headroom_reset > 0:
+                    _wait_until = time.time() + _headroom_reset
+                    agent._emit_status(
+                        f"⏳ Rate limit headroom critical. "
+                        f"Waiting {_headroom_reset:.1f}s for reset..."
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}⏳ Proactive throttle: "
+                        f"x-ratelimit-remaining < 2, sleeping {_headroom_reset:.1f}s until reset",
+                        force=True,
+                    )
+                    while time.time() < _wait_until:
+                        if agent._interrupt_requested:
+                            agent._vprint(
+                                f"{agent.log_prefix}⚡ Interrupt during proactive throttle.",
+                                force=True,
+                            )
+                            agent.clear_interrupt()
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": "Operation interrupted during rate limit wait.",
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "interrupted": True,
+                            }
+                        time.sleep(0.2)
 
             try:
                 agent._reset_stream_delivery_tracking()
@@ -1788,6 +1829,16 @@ def run_conversation(
                         )
                 
                 has_retried_429 = False  # Reset on success
+
+                # Capture response headers for proactive rate limit detection
+                # on next iteration (used by check_rate_limit_headroom).
+                _last_response_headers = None
+                if response and hasattr(response, "headers"):
+                    _last_response_headers = response.headers
+                elif response and hasattr(response, "_response"):
+                    # Some transport wrappers nest the raw response
+                    _last_response_headers = getattr(response._response, "headers", None)
+
                 # Clear Nous rate limit state on successful request —
                 # proves the limit has reset and other sessions can
                 # resume hitting Nous.
@@ -3023,18 +3074,28 @@ def run_conversation(
                         "error": _final_summary,
                     }
 
-                # For rate limits, respect the Retry-After header if present
-                _retry_after = None
+                # For rate limits, prefer x-ratelimit-reset-* headers over Retry-After
+                # x-ratelimit-reset-requests is more precise (OpenRouter-specific).
+                # Cap at 300s (5 min) to cover RPM windows but prevent indefinite waits.
+                _reset_wait = None
                 if is_rate_limited:
                     _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
+                    if _resp_headers:
+                        # Try to parse Retry-After first (some providers only provide this)
+                        _retry_after_raw = None
+                        if hasattr(_resp_headers, "get"):
+                            _retry_after_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
+                        _retry_after = None
+                        if _retry_after_raw:
                             try:
-                                _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
+                                _retry_after = float(_retry_after_raw)
                             except (TypeError, ValueError):
                                 pass
-                wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                        # Prefer reset-requests header (more precise for OpenRouter)
+                        _reset_wait = extract_rate_limit_reset_seconds(
+                            _resp_headers, retry_after=_retry_after, max_cap=300.0
+                        )
+                wait_time = _reset_wait if _reset_wait else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
                     agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                 else:

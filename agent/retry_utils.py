@@ -2,12 +2,14 @@
 
 Replaces fixed exponential backoff with jittered delays to prevent
 thundering-herd retry spikes when multiple sessions hit the same
-rate-limited provider concurrently.
+rate-limited provider concurrently. Also provides proactive rate limit
+awareness via x-ratelimit-* headers.
 """
 
 import random
 import threading
 import time
+from typing import Any, Mapping, Optional
 
 # Monotonic counter for jitter seed uniqueness within the same process.
 # Protected by a lock to avoid race conditions in concurrent retry paths
@@ -55,3 +57,105 @@ def jittered_backoff(
     jitter = rng.uniform(0, jitter_ratio * delay)
 
     return delay + jitter
+
+
+def extract_rate_limit_reset_seconds(
+    headers: Mapping[str, str],
+    *,
+    retry_after: Optional[float] = None,
+    max_cap: float = 300.0,
+    provider: str = "openrouter",
+) -> Optional[float]:
+    """Extract and prioritize rate limit reset time from headers.
+
+    Prefers x-ratelimit-reset-requests (OpenRouter/OpenAI-compatible)
+    over generic Retry-After, as it's more precise. Both are capped
+    at max_cap to prevent indefinite waits during daily limits.
+
+    Args:
+        headers: Response headers (case-insensitive).
+        retry_after: Pre-parsed Retry-After value in seconds (fallback).
+        max_cap: Maximum wait time in seconds (default 300s = 5 min).
+        provider: Provider name for logging context.
+
+    Returns:
+        Wait time in seconds, or None if no rate limit info found.
+    """
+    if not headers:
+        return retry_after
+
+    # Normalize headers to lowercase for case-insensitive lookup
+    lowered = {k.lower(): v for k, v in headers.items()}
+
+    # Prefer x-ratelimit-reset-requests (RPM window reset time)
+    # or x-ratelimit-reset-requests-1h (hourly window reset time).
+    # OpenRouter populates both; we use the minute window first as
+    # it's typically the tighter constraint for free tier (20 RPM).
+    for header_name in [
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-requests-1h",
+        "x-ratelimit-reset-tokens",
+        "x-ratelimit-reset-tokens-1h",
+    ]:
+        raw_value = lowered.get(header_name)
+        if raw_value:
+            try:
+                reset_seconds = float(raw_value)
+                if reset_seconds > 0:
+                    # Cap to prevent infinitely long waits
+                    capped = min(reset_seconds, max_cap)
+                    return capped
+            except (TypeError, ValueError):
+                continue
+
+    # Fallback to Retry-After if provided
+    if retry_after is not None and retry_after > 0:
+        return min(retry_after, max_cap)
+
+    return None
+
+
+def check_rate_limit_headroom(
+    headers: Mapping[str, str],
+    *,
+    threshold: int = 2,
+) -> Optional[float]:
+    """Check if rate limit headroom is critically low.
+
+    Returns the reset time in seconds if remaining requests/tokens
+    fall below threshold, indicating proactive throttling is needed.
+    Used to avoid unnecessary 429 responses.
+
+    Args:
+        headers: Response headers from previous request.
+        threshold: Alert if remaining requests ≤ this value (default 2).
+
+    Returns:
+        Reset time in seconds if low headroom, None otherwise.
+    """
+    if not headers:
+        return None
+
+    lowered = {k.lower(): v for k, v in headers.items()}
+
+    # Check requests/min headroom first (tighter for free tier)
+    try:
+        remaining_req = int(float(lowered.get("x-ratelimit-remaining-requests", threshold + 1)))
+        if remaining_req <= threshold:
+            reset = lowered.get("x-ratelimit-reset-requests")
+            if reset:
+                return float(reset)
+    except (TypeError, ValueError):
+        pass
+
+    # Check tokens/min as secondary signal
+    try:
+        remaining_tok = int(float(lowered.get("x-ratelimit-remaining-tokens", threshold + 1)))
+        if remaining_tok <= threshold:
+            reset = lowered.get("x-ratelimit-reset-tokens")
+            if reset:
+                return float(reset)
+    except (TypeError, ValueError):
+        pass
+
+    return None

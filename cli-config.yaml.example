@@ -586,7 +586,9 @@ agent:
   # to 1 if you use fallback providers and want fast failover on flaky
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
-  # api_max_retries: 3
+  # Increased to 6 for OpenRouter free tier (20 RPM) — allows exponential
+  # backoff to settle within 60s window before fallback.
+  api_max_retries: 6
   
   # Enable verbose logging
   verbose: false

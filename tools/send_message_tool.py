@@ -1544,7 +1544,7 @@ async def _send_wecom(extra, chat_id, message):
 async def _send_weixin(pconfig, chat_id, message, media_files=None):
     """Send via Weixin iLink using the native adapter helper."""
     try:
-        from gateway.platforms.weixin import check_weixin_requirements, send_weixin_direct
+        from gateway.platforms.wxbot import check_weixin_requirements, send_weixin_direct
         if not check_weixin_requirements():
             return {"error": "Weixin requirements not met. Need aiohttp + cryptography."}
     except ImportError:

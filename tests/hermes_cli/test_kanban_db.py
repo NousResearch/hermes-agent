@@ -2108,14 +2108,21 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
 
-    # Clear module cache so a fresh connect() is attempted
+    # Clear module caches so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
+    kb._connection_pool.clear()
 
     real_connect = _sqlite3.connect
 
     class _WalBlockingConnection(_sqlite3.Connection):
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
             if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                # Roll back any implicit transaction before raising,
+                # otherwise the next execute fails with "database is locked".
+                try:
+                    super().rollback()
+                except Exception:
+                    pass
                 raise _sqlite3.OperationalError("locking protocol")
             return super().execute(sql, *args, **kwargs)
 

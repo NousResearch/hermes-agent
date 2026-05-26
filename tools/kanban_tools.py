@@ -165,7 +165,11 @@ def _connect(board: Optional[str] = None):
     """Import + connect lazily so the module imports cleanly in non-kanban
     contexts (e.g. test rigs that import every tool module).
 
-    When ``board`` is provided it's forwarded to :func:`kb.connect`, which
+    Returns a pooled, persistent connection via :func:`kb.get_connection`.
+    The connection lives for the process lifetime — do NOT call ``.close()``
+    on it (previously required; now a no-op).
+
+    When ``board`` is provided it's forwarded to :func:`kb.get_connection`, which
     routes the connection to that board's sqlite file. ``None`` (the
     default) preserves the legacy resolution chain
     (``HERMES_KANBAN_DB`` → ``HERMES_KANBAN_BOARD`` env → current symlink
@@ -173,7 +177,7 @@ def _connect(board: Optional[str] = None):
     the env-pinned active board without restarting Hermes.
     """
     from hermes_cli import kanban_db as kb
-    return kb, kb.connect(board=board)
+    return kb, kb.get_connection(board=board)
 
 
 def _ok(**fields: Any) -> str:
@@ -319,7 +323,7 @@ def _handle_show(args: dict, **kw) -> str:
                 "worker_context": kb.build_worker_context(conn, tid),
             })
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         # Invalid board slug surfaces as ValueError from _normalize_board_slug.
         return tool_error(f"kanban_show: {e}")
@@ -381,7 +385,7 @@ def _handle_list(args: dict, **kw) -> str:
                 "promoted": promoted,
             })
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         return tool_error(f"kanban_list: {e}")
     except Exception as e:
@@ -503,7 +507,7 @@ def _handle_complete(args: dict, **kw) -> str:
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         return tool_error(f"kanban_complete: {e}")
     except Exception as e:
@@ -541,7 +545,7 @@ def _handle_block(args: dict, **kw) -> str:
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         return tool_error(f"kanban_block: {e}")
     except Exception as e:
@@ -592,7 +596,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 )
             return _ok(task_id=tid)
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         return tool_error(f"kanban_heartbeat: {e}")
     except Exception as e:
@@ -628,7 +632,7 @@ def _handle_comment(args: dict, **kw) -> str:
             cid = kb.add_comment(conn, tid, author=author, body=str(body))
             return _ok(task_id=tid, comment_id=cid)
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         return tool_error(f"kanban_comment: {e}")
     except Exception as e:
@@ -712,7 +716,7 @@ def _handle_create(args: dict, **kw) -> str:
                 status=new_task.status if new_task else None,
             )
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         return tool_error(f"kanban_create: {e}")
     except Exception as e:
@@ -740,7 +744,7 @@ def _handle_unblock(args: dict, **kw) -> str:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
             return _ok(task_id=str(tid), status="ready")
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         return tool_error(f"kanban_unblock: {e}")
     except Exception as e:
@@ -761,7 +765,7 @@ def _handle_link(args: dict, **kw) -> str:
             kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
             return _ok(parent_id=parent_id, child_id=child_id)
         finally:
-            conn.close()
+            pass  # pooled connection — lives for process lifetime
     except ValueError as e:
         # Covers cycle + self-parent rejections
         return tool_error(f"kanban_link: {e}")

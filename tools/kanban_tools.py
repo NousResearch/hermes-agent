@@ -91,6 +91,82 @@ def _check_kanban_orchestrator_mode() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Worker privilege guard
+# ---------------------------------------------------------------------------
+
+def _normalize_profile_for_policy(value: Any) -> str:
+    """Normalize profile names before comparing worker create privileges."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        from hermes_cli.profiles import normalize_profile_name
+
+        return normalize_profile_name(text)
+    except Exception:
+        return text
+
+
+def _allowed_cross_profile_assignees() -> set[str]:
+    """Configured assignees a task-scoped worker may delegate to."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        configured = cfg.get("kanban", {}).get(
+            "allowed_cross_profile_assignees", []
+        )
+    except Exception:
+        return set()
+    if not isinstance(configured, (list, tuple, set)):
+        return set()
+    return {
+        normalized
+        for item in configured
+        if (normalized := _normalize_profile_for_policy(item))
+    }
+
+
+def _enforce_worker_create_policy(args: dict, parents: list[str]) -> Optional[str]:
+    """Restrict kanban_create when running inside a task-scoped worker."""
+    current_task = os.environ.get("HERMES_KANBAN_TASK")
+    if not current_task:
+        return None
+
+    if current_task not in parents:
+        return tool_error(
+            "kanban_create from a worker context requires parents to include "
+            f"the current task ({current_task})."
+        )
+
+    workspace_kind = str(args.get("workspace_kind") or "scratch")
+    if workspace_kind != "scratch":
+        return tool_error(
+            "kanban_create from a worker context only supports "
+            f"workspace_kind='scratch' (got {workspace_kind!r})."
+        )
+
+    if args.get("workspace_path"):
+        return tool_error(
+            "kanban_create from a worker context does not support explicit "
+            "workspace_path. Scratch workspaces are auto-allocated."
+        )
+
+    assignee = _normalize_profile_for_policy(args.get("assignee"))
+    worker_profile = _normalize_profile_for_policy(os.environ.get("HERMES_PROFILE"))
+    if not worker_profile or assignee != worker_profile:
+        allowed = _allowed_cross_profile_assignees()
+        if assignee not in allowed:
+            return tool_error(
+                "kanban_create from a worker context can only assign tasks to "
+                "the worker profile or profiles listed in "
+                "kanban.allowed_cross_profile_assignees."
+            )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
@@ -681,6 +757,10 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    parents = [str(parent) for parent in parents]
+    privilege_err = _enforce_worker_create_policy(args, parents)
+    if privilege_err:
+        return privilege_err
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1051,8 +1131,11 @@ KANBAN_CREATE_SCHEMA = {
         "one (pass the current task id in ``parents``). Used by "
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
-        "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "then complete your own task. Task-scoped workers may only create "
+        "scratch child tasks parented to their current task and assigned to "
+        "their own profile unless cross-profile assignees are explicitly "
+        "allowed in config. The dispatcher picks up the new tasks on its "
+        "next tick and spawns the assigned profiles."
     ),
     "parameters": {
         "type": "object",

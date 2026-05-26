@@ -1,0 +1,110 @@
+name: Sync Docker Publish
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/hermes-agent
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Necesario para construir imágenes arm64
+      # desde runners amd64 de GitHub Free
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute Docker tags
+        id: vars
+
+        shell: bash
+
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+
+            VERSION_TAG="${GITHUB_REF#refs/tags/}"
+
+            echo "docker_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
+            echo "publish_latest=true" >> "$GITHUB_OUTPUT"
+
+          elif [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+
+            echo "docker_tag=develop" >> "$GITHUB_OUTPUT"
+            echo "publish_latest=false" >> "$GITHUB_OUTPUT"
+
+          else
+
+            echo "docker_tag=main" >> "$GITHUB_OUTPUT"
+            echo "publish_latest=false" >> "$GITHUB_OUTPUT"
+
+          fi
+
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multiarch image
+        uses: docker/build-push-action@v6
+
+        with:
+          context: .
+          file: Dockerfile
+
+          push: true
+
+          # Compatible con GitHub Free
+          platforms: linux/amd64,linux/arm64
+
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.docker_tag }}
+            ${{ env.IMAGE_NAME }}:sha-${{ steps.vars.outputs.sha_short }}
+
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+          labels: |
+            org.opencontainers.image.title=hermes-agent
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Publish latest tag
+        if: steps.vars.outputs.publish_latest == 'true'
+
+        shell: bash
+
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}:${VERSION_TAG}"
+
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          VERSION_TAG: ${{ steps.vars.outputs.docker_tag }}

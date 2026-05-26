@@ -127,13 +127,41 @@ class TestGuessCategory:
         # Even though it matches test_* pattern, logs/ is excluded.
         assert dg.guess_category(p) is None
 
-    def test_cron_subtree_categorised(self, _isolate_env):
+    def test_cron_output_subtree_categorised(self, _isolate_env):
+        """Artifacts under cron/output/** are disposable cron-output."""
+        dg = _load_lib()
+        output_dir = _isolate_env / "cron" / "output" / "myjob"
+        output_dir.mkdir(parents=True)
+        p = output_dir / "run.md"
+        p.write_text("x")
+        assert dg.guess_category(p) == "cron-output"
+
+    def test_cron_jobs_json_protected_from_cleanup(self, _isolate_env):
+        """jobs.json is the scheduler registry and must never be auto-tracked."""
         dg = _load_lib()
         cron_dir = _isolate_env / "cron"
         cron_dir.mkdir()
-        p = cron_dir / "job_output.md"
-        p.write_text("x")
-        assert dg.guess_category(p) == "cron-output"
+        p = cron_dir / "jobs.json"
+        p.write_text('{"jobs":[]}')
+        assert dg.guess_category(p) is None
+
+    def test_cron_tick_lock_protected_from_cleanup(self, _isolate_env):
+        """The scheduler lock file must never be auto-tracked as cleanup target."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        p = cron_dir / ".tick.lock"
+        p.write_text("")
+        assert dg.guess_category(p) is None
+
+    def test_cron_top_level_file_protected(self, _isolate_env):
+        """Any top-level file directly under cron/ (not under output/) is protected."""
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        p = cron_dir / "state.db"
+        p.write_text("")
+        assert dg.guess_category(p) is None
 
     def test_ordinary_file_returns_none(self, _isolate_env):
         dg = _load_lib()

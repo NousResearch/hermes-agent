@@ -2412,8 +2412,21 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
+        #
+        # Extension allowlist groups (must round-trip both the extract path and
+        # the cleanup regex on line ~3476 of this file — see comment there):
+        #   - images:    png jpe?g gif webp
+        #   - video:     mp4 mov avi mkv webm
+        #   - audio:     ogg opus mp3 wav m4a flac
+        #   - bundles:   epub pdf zip rar 7z apk ipa
+        #   - office:    docx? xlsx? pptx?
+        #   - text/data: txt md markdown json ya?ml toml csv tsv html? xml log
+        #   - source:    sh py js ts
+        # If you add an extension, update the cleanup regex too — otherwise the
+        # path gets stripped from visible text but never reaches send_document,
+        # so the user sees neither the attachment nor an error message.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|md|markdown|json|ya?ml|toml|csv|tsv|html?|xml|log|sh|py|js|ts|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()

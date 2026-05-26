@@ -223,6 +223,14 @@ class _VikingClient:
         except Exception:
             return False
 
+    def validate_auth(self) -> dict:
+        """Validate authenticated OpenViking access without mutating state."""
+        return self.get("/api/v1/system/status")
+
+    def validate_root_access(self) -> dict:
+        """Validate ROOT access against a read-only admin endpoint."""
+        return self.get("/api/v1/admin/accounts")
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas
@@ -564,17 +572,11 @@ def _remember_ovcli_path(provider_config: dict, ovcli_path: Path) -> None:
 def _ovcli_data_from_connection_values(values: dict) -> dict:
     data = {"url": _clean_config_value(values.get("endpoint")) or _DEFAULT_ENDPOINT}
     api_key = _clean_config_value(values.get("api_key"))
-    api_key_type = _clean_config_value(values.get("api_key_type"))
-    root_api_key = _clean_config_value(values.get("root_api_key"))
     account = _clean_config_value(values.get("account"))
     user = _clean_config_value(values.get("user"))
     agent = _clean_config_value(values.get("agent")) or _DEFAULT_AGENT
     if api_key:
         data["api_key"] = api_key
-    if root_api_key:
-        data["root_api_key"] = root_api_key
-    elif api_key and api_key_type == "root":
-        data["root_api_key"] = api_key
     if account:
         data["account"] = account
     if user:
@@ -590,76 +592,217 @@ def _write_ovcli_config(path: Path, values: dict) -> None:
     _restrict_secret_file_permissions(path)
 
 
-def _prompt_manual_connection_values(prompt, select, cancelled):
-    endpoint = _clean_config_value(
-        prompt("OpenViking server URL", default=_DEFAULT_ENDPOINT)
-    ) or _DEFAULT_ENDPOINT
-    is_local = _is_local_openviking_url(endpoint)
+def _validate_openviking_reachability(endpoint: str) -> tuple[bool, str]:
+    endpoint = _clean_config_value(endpoint) or _DEFAULT_ENDPOINT
+    try:
+        client = _VikingClient(endpoint)
+        if client.health():
+            return True, ""
+    except Exception as e:
+        return False, f"OpenViking server is not reachable at {endpoint}: {e}"
+    return False, f"OpenViking server is not reachable at {endpoint}."
 
-    values = {
-        "endpoint": endpoint,
-        "api_key": "",
-        "account": "",
-        "user": "",
-        "agent": "",
-    }
-    if is_local:
-        credential_choice = select(
-            "  OpenViking credential",
-            [
-                ("No API key", "local dev mode"),
-                ("User API key", "server derives account/user automatically"),
-                ("Root API key", "requires account and user IDs"),
-            ],
-            default=0,
-            cancel_returns=cancelled,
-        )
-        if credential_choice == cancelled:
-            return _SETUP_CANCELLED
-        if credential_choice == 0:
-            values["agent"] = _clean_config_value(
-                prompt("OpenViking agent", default=_DEFAULT_AGENT)
-            ) or _DEFAULT_AGENT
-            return values
-        api_key_type = "root" if credential_choice == 2 else "user"
-    else:
-        credential_choice = select(
-            "  OpenViking API key type",
-            [
-                ("User API key", "server derives account/user automatically"),
-                ("Root API key", "requires account and user IDs"),
-            ],
-            default=0,
-            cancel_returns=cancelled,
-        )
-        if credential_choice == cancelled:
-            return _SETUP_CANCELLED
-        api_key_type = "root" if credential_choice == 1 else "user"
 
-    values["api_key_type"] = api_key_type
-    api_key_label = (
-        "OpenViking root API key"
-        if api_key_type == "root"
-        else "OpenViking user API key"
+def _validate_openviking_auth(values: dict) -> tuple[bool, str]:
+    endpoint = _clean_config_value(values.get("endpoint")) or _DEFAULT_ENDPOINT
+    try:
+        client = _VikingClient(
+            endpoint,
+            _clean_config_value(values.get("api_key")),
+            account=_clean_config_value(values.get("account")),
+            user=_clean_config_value(values.get("user")),
+            agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
+        )
+        client.validate_auth()
+    except Exception as e:
+        return False, f"OpenViking authentication validation failed: {e}"
+    return True, ""
+
+
+def _validate_openviking_root_access(values: dict) -> tuple[bool, str]:
+    endpoint = _clean_config_value(values.get("endpoint")) or _DEFAULT_ENDPOINT
+    try:
+        client = _VikingClient(
+            endpoint,
+            _clean_config_value(values.get("api_key")),
+            agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
+        )
+        client.validate_root_access()
+    except Exception as e:
+        return False, f"OpenViking root API key validation failed: {e}"
+    return True, ""
+
+
+def _validate_openviking_user_key_scope(values: dict) -> tuple[bool, str]:
+    root_ok, _message = _validate_openviking_root_access(values)
+    if not root_ok:
+        return True, ""
+    return (
+        False,
+        "That key has ROOT access. Choose Root API key and provide account/user, "
+        "or enter a user API key.",
     )
-    values["api_key"] = _clean_config_value(prompt(api_key_label, secret=True))
-    if not values["api_key"]:
-        print(f"\n  {api_key_label} is required.")
-        print("  No changes saved.\n")
-        return None
 
-    if api_key_type == "root":
-        values["account"] = _clean_config_value(prompt("OpenViking account"))
-        values["user"] = _clean_config_value(prompt("OpenViking user"))
-        if not values["account"] or not values["user"]:
-            print("\n  Root API keys require both OpenViking account and user.")
-            print("  No changes saved.\n")
-            return None
 
-    values["agent"] = _clean_config_value(
-        prompt("OpenViking agent", default=_DEFAULT_AGENT)
-    ) or _DEFAULT_AGENT
-    return values
+def _retry_or_cancel_manual_setup(select, title: str, message: str, cancelled):
+    print(f"  {message}")
+    choice = select(
+        title,
+        [
+            ("Retry", "try this step again"),
+            ("Cancel setup", "no changes saved"),
+        ],
+        default=0,
+        cancel_returns=cancelled,
+    )
+    if choice == 0:
+        return True
+    return _SETUP_CANCELLED
+
+
+def _prompt_manual_connection_values(prompt, select, cancelled):
+    while True:
+        endpoint = _clean_config_value(
+            prompt("OpenViking server URL", default=_DEFAULT_ENDPOINT)
+        ) or _DEFAULT_ENDPOINT
+        reachable, message = _validate_openviking_reachability(endpoint)
+        if reachable:
+            print("  OpenViking server is reachable.")
+            break
+        retry = _retry_or_cancel_manual_setup(
+            select,
+            "  OpenViking server unreachable",
+            message,
+            cancelled,
+        )
+        if retry is _SETUP_CANCELLED:
+            return _SETUP_CANCELLED
+
+    is_local = _is_local_openviking_url(endpoint)
+    while True:
+        values = {
+            "endpoint": endpoint,
+            "api_key": "",
+            "account": "",
+            "user": "",
+            "agent": "",
+        }
+        if is_local:
+            credential_choice = select(
+                "  OpenViking credential",
+                [
+                    ("No API key", "local dev mode"),
+                    ("User API key", "server derives account/user automatically"),
+                    ("Root API key", "requires account and user IDs"),
+                ],
+                default=0,
+                cancel_returns=cancelled,
+            )
+            if credential_choice == cancelled:
+                return _SETUP_CANCELLED
+            if credential_choice == 0:
+                values["agent"] = _clean_config_value(
+                    prompt("OpenViking agent", default=_DEFAULT_AGENT)
+                ) or _DEFAULT_AGENT
+                authenticated, message = _validate_openviking_auth(values)
+                if authenticated:
+                    print("  OpenViking local dev access validated.")
+                    return values
+                retry = _retry_or_cancel_manual_setup(
+                    select,
+                    "  OpenViking credential failed",
+                    message,
+                    cancelled,
+                )
+                if retry is _SETUP_CANCELLED:
+                    return _SETUP_CANCELLED
+                continue
+            api_key_type = "root" if credential_choice == 2 else "user"
+        else:
+            credential_choice = select(
+                "  OpenViking API key type",
+                [
+                    ("User API key", "server derives account/user automatically"),
+                    ("Root API key", "requires account and user IDs"),
+                ],
+                default=0,
+                cancel_returns=cancelled,
+            )
+            if credential_choice == cancelled:
+                return _SETUP_CANCELLED
+            api_key_type = "root" if credential_choice == 1 else "user"
+
+        values["api_key_type"] = api_key_type
+        api_key_label = (
+            "OpenViking root API key"
+            if api_key_type == "root"
+            else "OpenViking user API key"
+        )
+        values["api_key"] = _clean_config_value(prompt(api_key_label, secret=True))
+        if not values["api_key"]:
+            retry = _retry_or_cancel_manual_setup(
+                select,
+                "  OpenViking API key required",
+                f"{api_key_label} is required.",
+                cancelled,
+            )
+            if retry is _SETUP_CANCELLED:
+                return _SETUP_CANCELLED
+            continue
+
+        if api_key_type == "root":
+            root_ok, message = _validate_openviking_root_access(values)
+            if not root_ok:
+                retry = _retry_or_cancel_manual_setup(
+                    select,
+                    "  OpenViking root API key failed",
+                    message,
+                    cancelled,
+                )
+                if retry is _SETUP_CANCELLED:
+                    return _SETUP_CANCELLED
+                continue
+            print("  OpenViking root API key validated.")
+            values["account"] = _clean_config_value(prompt("OpenViking account"))
+            values["user"] = _clean_config_value(prompt("OpenViking user"))
+            if not values["account"] or not values["user"]:
+                retry = _retry_or_cancel_manual_setup(
+                    select,
+                    "  OpenViking tenant identity required",
+                    "Root API keys require both OpenViking account and user.",
+                    cancelled,
+                )
+                if retry is _SETUP_CANCELLED:
+                    return _SETUP_CANCELLED
+                continue
+
+        values["agent"] = _clean_config_value(
+            prompt("OpenViking agent", default=_DEFAULT_AGENT)
+        ) or _DEFAULT_AGENT
+        authenticated, message = _validate_openviking_auth(values)
+        if authenticated:
+            if api_key_type == "user":
+                user_key_ok, message = _validate_openviking_user_key_scope(values)
+                if not user_key_ok:
+                    retry = _retry_or_cancel_manual_setup(
+                        select,
+                        "  OpenViking user API key is root key",
+                        message,
+                        cancelled,
+                    )
+                    if retry is _SETUP_CANCELLED:
+                        return _SETUP_CANCELLED
+                    continue
+            print("  OpenViking API access validated.")
+            return values
+        retry = _retry_or_cancel_manual_setup(
+            select,
+            "  OpenViking API access failed",
+            message,
+            cancelled,
+        )
+        if retry is _SETUP_CANCELLED:
+            return _SETUP_CANCELLED
 
 
 # ---------------------------------------------------------------------------

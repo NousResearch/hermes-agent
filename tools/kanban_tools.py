@@ -659,7 +659,18 @@ def _handle_create(args: dict, **kw) -> str:
     # CLI / dashboard paths and on legacy hosts that don't set the env.
     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
-    workspace_kind = args.get("workspace_kind") or "scratch"
+    workspace_kind = args.get("workspace_kind")
+    if not workspace_kind:
+        # No explicit arg — check config, then hardcoded fallback
+        try:
+            from hermes_cli.config import load_config
+            cfg_ws = load_config().get("kanban", {}).get("default_workspace")
+            if cfg_ws:
+                workspace_kind = cfg_ws
+            else:
+                workspace_kind = "scratch"
+        except Exception:
+            workspace_kind = "scratch"
     workspace_path = args.get("workspace_path")
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:

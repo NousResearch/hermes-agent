@@ -570,13 +570,26 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        # workspace_kind priority: explicit > config > hardcoded default ("scratch")
+        workspace_kind = payload.workspace_kind
+        # Payload default is "scratch" — we can't tell if user set it or it's
+        # the model default. Check config only as an override layer when the
+        # payload value matches the hardcoded default.
+        if workspace_kind == "scratch":
+            try:
+                from hermes_cli.config import load_config
+                cfg_ws = load_config().get("kanban", {}).get("default_workspace")
+                if cfg_ws:
+                    workspace_kind = cfg_ws
+            except Exception:
+                pass
         task_id = kanban_db.create_task(
             conn,
             title=payload.title,
             body=payload.body,
             assignee=payload.assignee,
             created_by="dashboard",
-            workspace_kind=payload.workspace_kind,
+            workspace_kind=workspace_kind,
             workspace_path=payload.workspace_path,
             tenant=payload.tenant,
             priority=payload.priority,

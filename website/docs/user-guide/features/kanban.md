@@ -489,6 +489,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile that owns decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
+| `default_workspace` | `"scratch"` | Default workspace kind for new tasks. Values: `scratch`, `worktree`, `worktree:<path>`, `dir:<path>`. Set to `"worktree"` to isolate worker changes from the main checkout. |
 
 And the two auxiliary LLM slots:
 

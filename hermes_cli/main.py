@@ -12439,6 +12439,22 @@ Examples:
         "which skills will load for that profile.",
     )
 
+    skills_recommend = skills_subparsers.add_parser(
+        "recommend",
+        help="Recommend relevant installed skills for a task (advisory only; does not load them)",
+        description=(
+            "Read-only advisory wrapper around local pgvector skill recall. "
+            "This command prints recommended skills for manual loading; it does not "
+            "autoload skills, mutate prompts, edit config, or install runtime hooks."
+        ),
+    )
+    skills_recommend.add_argument("query", help="Natural-language task/query")
+    skills_recommend.add_argument("--top-k", type=int, default=3, help="Max recommendations (default: 3)")
+    skills_recommend.add_argument("--min-score", type=float, default=0.04, help="Minimum confidence score (default: 0.04)")
+    skills_recommend.add_argument("--no-min-score", action="store_true", help="Disable confidence threshold")
+    skills_recommend.add_argument("--show-scores", action="store_true", help="Show hybrid scores")
+    skills_recommend.add_argument("--wrapper", default=None, help="Override recommendation wrapper path (testing/debugging)")
+
     skills_check = skills_subparsers.add_parser(
         "check", help="Check installed hub skills for updates"
     )

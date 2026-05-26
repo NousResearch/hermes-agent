@@ -650,13 +650,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
+        show_job_id = True
+        show_manage_hint = True
+        try:
+            user_cfg = load_config()
+            show_job_id = user_cfg.get("cron", {}).get("show_job_id", True)
+            show_manage_hint = user_cfg.get("cron", {}).get("show_manage_hint", True)
+        except Exception:
+            pass
+        lines = [f"Cronjob Response: {task_name}\n"]
+        if show_job_id:
+            lines.append(f"(job_id: {job_id})\n")
+        lines.append("-------------\n\n")
+        lines.append(f"{content}\n\n")
+        if show_manage_hint:
+            lines.append(f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\").")
+        delivery_content = "".join(lines)
     else:
         delivery_content = content
 

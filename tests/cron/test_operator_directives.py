@@ -240,6 +240,75 @@ def test_consumed_directive_prerun_script_failure_audited_once(monkeypatch):
     assert events[0]["directive_id"] == directive["directive_id"]
 
 
+def test_consumed_directive_agent_execution_failure_audited_once(monkeypatch):
+    directive = create_operator_directive("job-a", "Do the named slice.", "operator-test", ttl_seconds=600)
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run_conversation(self, prompt):
+            raise RuntimeError("agent execution exploded")
+
+        def close(self):
+            pass
+
+    class FakeSessionDB:
+        def end_session(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeAuthError(Exception):
+        pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        types.SimpleNamespace(AIAgent=FakeAgent),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_state",
+        types.SimpleNamespace(SessionDB=FakeSessionDB),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(
+            resolve_runtime_provider=lambda **kwargs: {
+                "provider": "test",
+                "api_key": "test-key",
+                "base_url": "http://127.0.0.1",
+                "api_mode": "chat_completions",
+            },
+            format_runtime_provider_error=lambda exc: str(exc),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.auth",
+        types.SimpleNamespace(AuthError=FakeAuthError),
+    )
+    monkeypatch.setattr("cron.scheduler._deliver_result", lambda *args, **kwargs: None)
+
+    success, output, final_response, error = run_job(_job())
+
+    assert success is False
+    assert final_response == ""
+    assert "agent execution exploded" in error
+    assert "agent execution exploded" in output
+
+    consumed_events = list_directive_events(job_id="job-a", event_type="consumed")
+    assert len(consumed_events) == 1
+    assert consumed_events[0]["directive_id"] == directive["directive_id"]
+
+    failure_events = list_directive_events(job_id="job-a", event_type="consumed-but-runner-failed")
+    assert len(failure_events) == 1
+    assert failure_events[0]["directive_id"] == directive["directive_id"]
+
+
 def test_no_agent_job_with_manual_directive_fails_closed_before_script(monkeypatch):
     directive = create_operator_directive("job-a", "Do the named slice.", "operator-test", ttl_seconds=600)
 

@@ -1717,6 +1717,16 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Disclosure banner for implicit paid-cloud credentials (#32524).
+        # When the gateway boots and the resolved runtime credential came
+        # from an environment variable (e.g. ANTHROPIC_API_KEY) for a
+        # paid cloud provider that was never explicitly added via
+        # ``hermes auth add`` and isn't pinned in ``providers:`` /
+        # ``custom_providers:``, log a prominent WARNING block so the
+        # operator knows the gateway will bill against that account.
+        # Set to false to silence the warning (the routine INFO line
+        # naming the active provider stays either way).
+        "warn_implicit_paid_credentials": True,
         # Extra directories from which model-emitted bare file paths may be
         # uploaded as native gateway attachments. Files inside the Hermes
         # cache (~/.hermes/cache/{documents,images,audio,video,screenshots})

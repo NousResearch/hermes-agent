@@ -194,3 +194,19 @@ class TestScriptsRunTestsParallel:
             f"{result.stdout}\n{result.stderr}\n"
         )
 
+    def test_run_tests_parallel_has_zero_f541(self):
+        """scripts/run_tests_parallel.py must have zero F541 (f-string without placeholders) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/run_tests_parallel.py has F541 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+

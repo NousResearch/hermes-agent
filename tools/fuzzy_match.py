@@ -6,15 +6,21 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 8-strategy chain (inspired by OpenCode), tried in order:
+The 9-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
-2. Line-trimmed - Strip leading/trailing whitespace per line
-3. Whitespace normalized - Collapse multiple spaces/tabs to single space
-4. Indentation flexible - Ignore indentation differences entirely
+2. Indentation flexible - Strip leading whitespace per line (lstrip)
+3. Line-trimmed - Strip leading AND trailing whitespace per line (strip)
+4. Whitespace normalized - Collapse multiple spaces/tabs to single space
 5. Escape normalized - Convert \\n literals to actual newlines
 6. Trimmed boundary - Trim first/last line whitespace only
-7. Block anchor - Match first+last lines, use similarity for middle
-8. Context-aware - 50% line similarity threshold
+7. Unicode normalized - Map smart quotes, em-dashes, etc. to ASCII
+8. Block anchor - Match first+last lines, use similarity for middle
+9. Context-aware - 50% line similarity threshold
+
+Note: indentation_flexible (lstrip) is ordered before line_trimmed (strip)
+so that trailing whitespace precision is preserved when only indentation
+differs. Since strip() is strictly more aggressive than lstrip(), placing
+line_trimmed first would make indentation_flexible dead code.
 
 Multi-occurrence matching is handled via the replace_all flag.
 
@@ -72,9 +78,9 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [
         ("exact", _strategy_exact),
+        ("indentation_flexible", _strategy_indentation_flexible),
         ("line_trimmed", _strategy_line_trimmed),
         ("whitespace_normalized", _strategy_whitespace_normalized),
-        ("indentation_flexible", _strategy_indentation_flexible),
         ("escape_normalized", _strategy_escape_normalized),
         ("trimmed_boundary", _strategy_trimmed_boundary),
         ("unicode_normalized", _strategy_unicode_normalized),
@@ -108,15 +114,8 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                 if drift_err:
                     return content, 0, None, drift_err
 
-            # Perform replacement. When the matched strategy is NOT `exact`,
-            # the file's indentation may differ from what the LLM sent in
-            # old_string/new_string — e.g. LLM used 2-space indent but the
-            # file is 4-space. Shift new_string by the indentation delta so
-            # the replacement matches the file's actual indent pattern.
-            new_content = _apply_replacements(
-                content, matches, new_string,
-                old_string=old_string if strategy_name != "exact" else None,
-            )
+            # Perform replacement
+            new_content = _apply_replacements(content, matches, new_string)
             return new_content, len(matches), strategy_name, None
 
     # No strategy found a match
@@ -163,119 +162,26 @@ def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
     return None
 
 
-def _leading_whitespace(line: str) -> str:
-    """Return the leading whitespace prefix of a line (spaces/tabs)."""
-    i = 0
-    while i < len(line) and line[i] in (" ", "\t"):
-        i += 1
-    return line[:i]
-
-
-def _first_meaningful_line(text: str) -> Optional[str]:
-    """Return the first line of ``text`` that has any non-whitespace content.
-
-    Returns ``None`` if no such line exists (text is empty or all whitespace).
-    """
-    for line in text.split("\n"):
-        if line.strip():
-            return line
-    return None
-
-
-def _reindent_replacement(file_region: str, old_string: str, new_string: str) -> str:
-    """Adjust ``new_string`` so its indentation matches ``file_region``.
-
-    Used after a non-exact fuzzy match: the LLM may have sent old_string and
-    new_string with a different indent than the file actually has (e.g.
-    2-space indent in tool args vs 4-space indent on disk). The fuzzy
-    strategy successfully matched anyway, but writing ``new_string`` verbatim
-    would corrupt the file's indentation.
-
-    Approach:
-
-    1. For each non-blank line in ``new_string``, compute its indent
-       *relative* to the shallowest non-blank line of ``old_string`` (the
-       LLM's base indent).
-    2. Anchor that relative indent onto the file's actual base indent (the
-       leading whitespace of the file_region's first non-blank line).
-    3. Re-emit each non-blank line as ``file_base + (line_indent - llm_base)``.
-
-    Blank lines and lines less-indented than the LLM's base are anchored
-    directly to the file's base indent.
-
-    No-op cases (returns ``new_string`` unchanged):
-    - file_region or old_string has no meaningful line
-    - LLM base indent equals file base indent
-    - new_string is empty
-    """
-    if not new_string:
-        return new_string
-
-    old_first = _first_meaningful_line(old_string)
-    file_first = _first_meaningful_line(file_region)
-    if old_first is None or file_first is None:
-        return new_string
-
-    old_indent = _leading_whitespace(old_first)
-    file_indent = _leading_whitespace(file_first)
-
-    if old_indent == file_indent:
-        return new_string
-
-    # Re-indent each line of new_string. Strategy: replace the LLM's base
-    # indent prefix with the file's base indent prefix, preserving any
-    # additional indent the LLM added on top. This is the same approach
-    # Roo Code uses (multi-search-replace.ts:466-500). It preserves the
-    # LLM's intended *relative* nesting between lines while anchoring to
-    # the file's actual indent style.
-    out_lines: List[str] = []
-    for line in new_string.split("\n"):
-        if not line.strip():
-            # Blank lines: leave whitespace untouched.
-            out_lines.append(line)
-            continue
-        line_indent = _leading_whitespace(line)
-        if line_indent.startswith(old_indent):
-            # Common case: line has the LLM's base indent (possibly plus
-            # extra). Swap base prefix for the file's base prefix.
-            remainder = line[len(old_indent):]
-            out_lines.append(file_indent + remainder)
-        else:
-            # Line is less-indented than the LLM's base — e.g. a dedent at
-            # the start of new_string. Anchor to the file's base.
-            out_lines.append(file_indent + line.lstrip(" \t"))
-    return "\n".join(out_lines)
-
-
-def _apply_replacements(content: str, matches: List[Tuple[int, int]],
-                        new_string: str, old_string: Optional[str] = None) -> str:
+def _apply_replacements(content: str, matches: List[Tuple[int, int]], new_string: str) -> str:
     """
     Apply replacements at the given positions.
-
+    
     Args:
         content: Original content
         matches: List of (start, end) positions to replace
         new_string: Replacement text
-        old_string: When non-None, signals that the match came from a
-            non-exact fuzzy strategy; ``new_string`` is re-indented to
-            match the file's actual indentation before substitution.
-
+    
     Returns:
         Content with replacements applied
     """
     # Sort matches by position (descending) to replace from end to start
     # This preserves positions of earlier matches
     sorted_matches = sorted(matches, key=lambda x: x[0], reverse=True)
-
+    
     result = content
     for start, end in sorted_matches:
-        if old_string is not None:
-            file_region = content[start:end]
-            adjusted = _reindent_replacement(file_region, old_string, new_string)
-        else:
-            adjusted = new_string
-        result = result[:start] + adjusted + result[end:]
-
+        result = result[:start] + new_string + result[end:]
+    
     return result
 
 

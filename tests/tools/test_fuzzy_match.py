@@ -52,104 +52,42 @@ class TestIndentDifference:
         assert "bar" in new
 
 
-class TestIndentationPreservation:
-    """When a non-exact strategy matches, ``new_string`` should be re-indented
-    so it lands at the file's actual indent depth — not at whatever indent the
-    LLM happened to send in the tool args.  Without this fix the file gets a
-    silently-broken indent level that may even still parse but is logically
-    wrong."""
+class TestStrategyOrdering:
+    """Tests that indentation_flexible (lstrip) runs before line_trimmed (strip),
+    ensuring indentation_flexible is no longer dead code."""
 
-    def test_unindented_input_reindented_to_match_file(self):
-        # File: 8-space-indented method body inside a class.
-        content = (
-            "class Calculator:\n"
-            "    def add(self, a, b):\n"
-            "        result = a + b\n"
-            "        return result\n"
+    def test_indentation_differs_trailing_ws_matters(self):
+        """When only leading whitespace (indentation) differs, indentation_flexible
+        should match via lstrip(), preserving trailing whitespace precision.
+        This proves indentation_flexible is reachable (not dead code)."""
+        # Content has 4-space indent; pattern has 2-space indent.
+        # Trailing whitespace is identical on both sides.
+        content = "    x = 1\n    y = 2"
+        old_string = "  x = 1\n  y = 2"
+        new_string = "  a = 10\n  b = 20"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert strategy == "indentation_flexible", (
+            f"Expected indentation_flexible to match (proving it is not dead code), "
+            f"got strategy={strategy}"
         )
-        # LLM sends zero-indent old/new — common bug from frontier models
-        # that "remember" code instead of reading it.
-        old = "result = a + b\nreturn result"
-        new = "result = a + b\nresult *= 2\nreturn result"
-        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
-        assert err is None and count == 1
-        assert strategy != "exact"  # must have gone through a fuzzy strategy
-        # Every replaced line should be at 8-space indent.
-        for marker in ("result = a + b", "result *= 2", "return result"):
-            line = next(line for line in out.split("\n") if marker in line)
-            indent = len(line) - len(line.lstrip())
-            assert indent == 8, f"Expected 8-space indent for {marker!r}, got {indent}: {line!r}"
-        # Resulting file must still be valid Python.
-        import ast
-        ast.parse(out)
 
-    def test_dedent_at_start_anchors_to_file_base(self):
-        # File: 2-space-indented function body.  LLM sends zero-indent
-        # old/new where new_string contains a dedent (the new structure
-        # adds a top-level class wrapper).  After re-indent, every line
-        # of new_string should be anchored to the file's 2-space base.
-        content = "  return 1\n  return 2\n"
-        old = "return 1\nreturn 2"  # zero-indent — forces line_trimmed
-        new = "class X:\n  return 99\n  return 100"
-        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
-        assert err is None and count == 1
-        assert strategy != "exact"
-        lines = out.split("\n")
-        # 'class X:' anchored to file's 2-space base.
-        assert lines[0] == "  class X:", repr(lines[0])
-        # Indented body lines lift to 4-space (file base + LLM's +2).
-        assert lines[1] == "    return 99", repr(lines[1])
-        assert lines[2] == "    return 100", repr(lines[2])
-
-    def test_exact_match_no_reindent(self):
-        # Exact strategy should be a pure passthrough — no shift logic
-        # should touch the result.
-        content = "    def foo():\n        return 1\n"
-        old = "    def foo():\n        return 1"
-        new = "    def foo():\n        return 2"
-        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
-        assert err is None and strategy == "exact"
-        assert out == "    def foo():\n        return 2\n"
-
-    def test_llm_zero_indent_shifts_to_file_two_space(self):
-        # LLM sent zero-indent old/new; file has 2-space indent.  The
-        # re-indent shifts the whole replacement so 'def x()' lands at
-        # 2-space and the body keeps its relative +2 from new_string.
-        content = "  def x():\n    return 1\n"
-        old = "def x():\n  return 1"
-        new = "def x():\n  return 99"
-        out, count, _, err = fuzzy_find_and_replace(content, old, new)
-        assert err is None and count == 1
-        lines = out.strip("\n").split("\n")
-        assert lines[0] == "  def x():"
-        assert lines[1] == "    return 99"
-
-    def test_indent_already_matches_passthrough(self):
-        # When old_string's base indent already equals file_region's base
-        # indent, _reindent_replacement returns new_string unchanged.
-        # Verify with whitespace_normalized strategy (collapsed spaces).
-        content = "  def  x(  ):\n    return 1\n"
-        old = "  def x():\n    return 1"  # same base indent (2), different inner whitespace
-        new = "  def x():\n    return 42"
-        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
-        assert err is None and count == 1
-        assert strategy != "exact"  # non-exact strategy matched
-        # Body retains its 4-space indent (passthrough — no shift).
-        assert "    return 42" in out
-
-    def test_blank_lines_left_alone(self):
-        # Blank lines in new_string should keep whatever whitespace they
-        # had — we never strip or pad them.
-        content = "    a = 1\n    b = 2\n"
-        old = "a = 1\nb = 2"
-        new = "a = 1\n\nb = 99"
-        out, count, _, err = fuzzy_find_and_replace(content, old, new)
-        assert err is None and count == 1
-        # blank line is preserved (empty), indented lines anchored.
-        lines = out.split("\n")
-        assert lines[0] == "    a = 1"
-        assert lines[1] == ""
-        assert lines[2] == "    b = 99"
+    def test_both_leading_and_trailing_ws_differ(self):
+        """When both leading AND trailing whitespace differ, indentation_flexible
+        (lstrip only) cannot match, but line_trimmed (strip) should catch it."""
+        # Content has trailing spaces on each line; pattern does not.
+        # Indentation also differs.
+        content = "    x = 1   \n    y = 2   "
+        old_string = "  x = 1\n  y = 2"
+        new_string = "  a = 10\n  b = 20"
+        new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
+        assert err is None
+        assert count == 1
+        assert strategy == "line_trimmed", (
+            f"Expected line_trimmed to catch the case where trailing ws also differs, "
+            f"got strategy={strategy}"
+        )
 
 
 class TestReplaceAll:

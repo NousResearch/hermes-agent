@@ -102,6 +102,11 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+_HISTORICAL_WORKSPACE_STATUSES = {"done", "archived"}
+_BODYLESS_SYNTHETIC_TITLES = {"proja", "projb"}
+_DEFAULT_FORBIDDEN_WORKSPACE_ROOTS = (
+    Path("/home/jeremy/work/repos/hermes-agent-kanban-v2026.5.7"),
+)
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
@@ -735,6 +740,19 @@ class Task:
                 row["session_id"] if "session_id" in keys else None
             ),
         )
+
+
+@dataclass(frozen=True)
+class WorkspaceAuthorityFinding:
+    """A workspace path that does not match the private release authority."""
+
+    task_id: str
+    status: str
+    workspace_path: str
+    severity: str
+    classification: str
+    reason: str
+    blocks_dispatch: bool
 
 
 @dataclass
@@ -4007,6 +4025,205 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
+def _canonical_workspace_path(path: Path | str) -> Path:
+    return Path(path).expanduser().resolve(strict=False)
+
+
+def _path_is_under(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _path_list_env(var_name: str) -> list[Path]:
+    raw = os.environ.get(var_name, "").strip()
+    if not raw:
+        return []
+    return [
+        _canonical_workspace_path(item)
+        for item in raw.split(os.pathsep)
+        if item.strip()
+    ]
+
+
+def _agent_repo_root_for_workspace_authority() -> Path:
+    override = os.environ.get("HERMES_AGENT_REPO", "").strip()
+    if override:
+        return _canonical_workspace_path(override)
+    return _canonical_workspace_path(Path(__file__).resolve().parents[1])
+
+
+def approved_workspace_roots(*, board: Optional[str] = None) -> list[Path]:
+    """Return roots from which the dispatcher may spawn workers.
+
+    ``HERMES_AGENT_REPO`` pins the private release checkout whose
+    ``.worktrees`` directory may host worktree tasks. Board scratch
+    workspaces remain approved through ``workspaces_root(board=...)``.
+    Operators can add narrowly scoped roots with
+    ``HERMES_KANBAN_APPROVED_WORKSPACE_ROOTS`` when a private deployment
+    intentionally uses a separate project workspace.
+    """
+    roots = [
+        _agent_repo_root_for_workspace_authority() / ".worktrees",
+        workspaces_root(board=board),
+    ]
+    roots.extend(_path_list_env("HERMES_KANBAN_APPROVED_WORKSPACE_ROOTS"))
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        resolved = _canonical_workspace_path(root)
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(resolved)
+    return out
+
+
+def forbidden_workspace_roots() -> list[Path]:
+    """Return workspace roots that must never dispatch active workers."""
+    roots = [_canonical_workspace_path(root) for root in _DEFAULT_FORBIDDEN_WORKSPACE_ROOTS]
+    roots.extend(_path_list_env("HERMES_KANBAN_FORBIDDEN_WORKSPACE_ROOTS"))
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(root)
+    return out
+
+
+def _workspace_authority_finding(
+    task: Task,
+    *,
+    board: Optional[str] = None,
+) -> Optional[WorkspaceAuthorityFinding]:
+    if not task.workspace_path:
+        return None
+
+    path = _canonical_workspace_path(task.workspace_path)
+    historical = task.status in _HISTORICAL_WORKSPACE_STATUSES
+
+    for root in forbidden_workspace_roots():
+        if _path_is_under(path, root):
+            classification = (
+                "historical_legacy_residue"
+                if historical
+                else "active_legacy_workspace"
+            )
+            reason = (
+                "workspace_authority: legacy checkout workspace is forbidden; "
+                f"path={path}; forbidden_root={root}"
+            )
+            return WorkspaceAuthorityFinding(
+                task_id=task.id,
+                status=task.status,
+                workspace_path=str(path),
+                severity="warning" if historical else "P0",
+                classification=classification,
+                reason=reason,
+                blocks_dispatch=not historical,
+            )
+
+    approved = approved_workspace_roots(board=board)
+    if any(_path_is_under(path, root) for root in approved):
+        return None
+
+    classification = (
+        "historical_unapproved_workspace_residue"
+        if historical
+        else "active_unapproved_workspace"
+    )
+    approved_text = ", ".join(str(root) for root in approved)
+    reason = (
+        "workspace_authority: workspace path is outside approved roots; "
+        f"path={path}; approved_roots=[{approved_text}]"
+    )
+    return WorkspaceAuthorityFinding(
+        task_id=task.id,
+        status=task.status,
+        workspace_path=str(path),
+        severity="warning" if historical else "P0",
+        classification=classification,
+        reason=reason,
+        blocks_dispatch=not historical,
+    )
+
+
+def scan_workspace_authority(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> list[WorkspaceAuthorityFinding]:
+    """Classify persisted workspace paths against private-lane authority."""
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE workspace_path IS NOT NULL "
+        "ORDER BY created_at ASC, id ASC"
+    ).fetchall()
+    findings: list[WorkspaceAuthorityFinding] = []
+    for row in rows:
+        finding = _workspace_authority_finding(Task.from_row(row), board=board)
+        if finding is not None:
+            findings.append(finding)
+    return findings
+
+
+def _bodyless_synthetic_invalid_spec_reason(task: Task) -> Optional[str]:
+    title = (task.title or "").strip().casefold()
+    body = (task.body or "").strip()
+    if title in _BODYLESS_SYNTHETIC_TITLES and not body:
+        return (
+            "invalid_spec_test_noise: bodyless synthetic proja/projb card "
+            "is not dispatchable worker work"
+        )
+    return None
+
+
+def _block_task_before_dispatch(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    event_kind: str,
+    payload: Optional[dict] = None,
+) -> bool:
+    """Fail closed on deterministic preflight blockers before worker spawn."""
+    error = reason[:500]
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status             = 'blocked',
+                   claim_lock         = NULL,
+                   claim_expires      = NULL,
+                   worker_pid         = NULL,
+                   last_failure_error = ?
+             WHERE id = ?
+               AND status IN ('ready', 'review')
+            """,
+            (error, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="blocked",
+            summary=reason,
+            error=error,
+            metadata={"preflight": event_kind},
+        )
+        event_payload = {"reason": reason}
+        if payload:
+            event_payload.update(payload)
+        _append_event(conn, task_id, event_kind, event_payload, run_id=run_id)
+    return True
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -4209,6 +4426,63 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    workspace_authority_blocked: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks blocked before spawn because their workspace path is outside
+    the private release authority roots, as ``(task_id, reason)`` pairs."""
+    invalid_spec_blocked: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks blocked before spawn because their bodyless synthetic spec is
+    test noise rather than dispatchable worker work."""
+
+
+def _apply_dispatch_preflight(
+    conn: sqlite3.Connection,
+    task_id: str,
+    result: DispatchResult,
+    *,
+    board: Optional[str],
+    dry_run: bool,
+) -> bool:
+    """Return True when dispatch should skip this task after preflight."""
+    preflight_task = get_task(conn, task_id)
+    if preflight_task is None:
+        return True
+
+    invalid_reason = _bodyless_synthetic_invalid_spec_reason(preflight_task)
+    if invalid_reason is not None:
+        if dry_run or _block_task_before_dispatch(
+            conn,
+            preflight_task.id,
+            reason=invalid_reason,
+            event_kind="invalid_spec_blocked",
+            payload={"classification": "invalid_spec_test_noise"},
+        ):
+            result.invalid_spec_blocked.append(
+                (preflight_task.id, invalid_reason)
+            )
+        return True
+
+    workspace_finding = _workspace_authority_finding(
+        preflight_task,
+        board=board,
+    )
+    if workspace_finding is not None and workspace_finding.blocks_dispatch:
+        if dry_run or _block_task_before_dispatch(
+            conn,
+            preflight_task.id,
+            reason=workspace_finding.reason,
+            event_kind="workspace_authority_blocked",
+            payload={
+                "classification": workspace_finding.classification,
+                "severity": workspace_finding.severity,
+                "workspace_path": workspace_finding.workspace_path,
+            },
+        ):
+            result.workspace_authority_blocked.append(
+                (preflight_task.id, workspace_finding.reason)
+            )
+        return True
+
+    return False
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5373,6 +5647,14 @@ def dispatch_once(
                         {"reason": guard_reason},
                     )
             continue
+        if _apply_dispatch_preflight(
+            conn,
+            row["id"],
+            result,
+            board=board,
+            dry_run=dry_run,
+        ):
+            continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue
@@ -5451,6 +5733,14 @@ def dispatch_once(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        if _apply_dispatch_preflight(
+            conn,
+            row["id"],
+            result,
+            board=board,
+            dry_run=dry_run,
+        ):
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

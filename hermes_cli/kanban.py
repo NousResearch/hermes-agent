@@ -2108,6 +2108,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "workspace_authority_blocked": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.workspace_authority_blocked
+            ],
+            "invalid_spec_blocked": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.invalid_spec_blocked
+            ],
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2123,6 +2131,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
+    print(f"Workspace authority blocked: {len(res.workspace_authority_blocked)}")
+    for tid, reason in res.workspace_authority_blocked:
+        print(f"  - {tid}: {reason}")
+    print(f"Invalid-spec blocked: {len(res.invalid_spec_blocked)}")
+    for tid, reason in res.invalid_spec_blocked:
+        print(f"  - {tid}: {reason}")
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
@@ -2235,6 +2249,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         did_work = (
             res.reclaimed or res.crashed or res.timed_out or res.promoted
             or res.spawned or res.auto_blocked or res.stale
+            or res.workspace_authority_blocked or res.invalid_spec_blocked
         )
         if did_work:
             print(
@@ -2242,7 +2257,10 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
                 f"timed_out={len(res.timed_out)} stale={len(res.stale)} "
                 f"promoted={res.promoted} spawned={len(res.spawned)} "
-                f"auto_blocked={len(res.auto_blocked)}",
+                f"auto_blocked={len(res.auto_blocked)} "
+                f"workspace_authority_blocked="
+                f"{len(res.workspace_authority_blocked)} "
+                f"invalid_spec_blocked={len(res.invalid_spec_blocked)}",
                 flush=True,
             )
 

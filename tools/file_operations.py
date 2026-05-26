@@ -74,46 +74,6 @@ def _strip_terminal_fence_leaks(text: str) -> str:
     return "".join(cleaned_lines)
 
 
-def _detect_line_ending(sample: str) -> Optional[str]:
-    """Return the dominant line ending in ``sample`` or None if undetermined.
-
-    Looks at the first few line breaks and picks ``\\r\\n`` if any are
-    present (Windows / DOS), otherwise ``\\n`` (Unix).  Returns ``None``
-    for empty / single-line content where we can't tell.  Used to
-    preserve the file's original line endings across write_file and
-    patch operations — without this the agent's bare-LF tool args
-    silently normalize Windows-line-ending files, and patch produces
-    mixed endings when only a substituted region changes.
-    """
-    if not sample:
-        return None
-    # Look at the first chunk — enough to tell, cheap to scan.
-    head = sample[:4096]
-    if "\r\n" in head:
-        return "\r\n"
-    if "\n" in head:
-        return "\n"
-    return None
-
-
-def _normalize_line_endings(text: str, target: str) -> str:
-    """Convert all line endings in ``text`` to ``target`` (``\\n`` or ``\\r\\n``).
-
-    Idempotent: ``_normalize_line_endings(_normalize_line_endings(x, "\\r\\n"), "\\r\\n") == _normalize_line_endings(x, "\\r\\n")``.
-    Strips lone ``\\r`` characters as well, so mixed-ending content is
-    homogenized in a single pass.
-    """
-    # First collapse to LF (handle CRLF and lone CR), then expand if target
-    # is CRLF.  Order matters: doing the replacements separately would
-    # double-convert a CRLF -> LFLF.
-    lf_normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    if target == "\n":
-        return lf_normalized
-    if target == "\r\n":
-        return lf_normalized.replace("\n", "\r\n")
-    return text
-
-
 def _get_safe_write_root() -> Optional[str]:
     """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset.
 
@@ -365,44 +325,6 @@ LINTERS = {
     '.go': 'go vet {file} 2>&1',
     '.rs': 'rustfmt --check {file} 2>&1',
 }
-
-# Extensions where the per-file shell linter is structurally weaker than
-# a real LSP server AND produces phantom errors on real-world projects:
-#
-# - ``.ts``: ``tsc --noEmit FILE.ts`` ignores ``tsconfig.json`` and
-#   defaults to no-lib / ES5, so every ES2015+ stdlib reference
-#   (``Promise``, ``Map``, ``Set``, ``ReadonlySet``, ``Iterable``,
-#   ``Math.imul``, ``Number.isFinite``, etc.) reports as missing.  This
-#   floods the agent's lint field with 20K+ tokens of false positives on
-#   every edit.  No supported tsc flag fixes the single-file invocation;
-#   the canonical replacement is ``tsserver`` via LSP, which respects
-#   tsconfig and gives true diagnostics.
-#
-#   ``.tsx`` is intentionally NOT in ``LINTERS`` (and therefore not
-#   here): it has no shell linter entry, so it falls through to the
-#   ``ext not in LINTERS`` skip case unchanged.  Pre-PR behavior:
-#   ``.tsx`` was implicitly ``skipped``.  Keeping it that way means
-#   ``.tsx`` edits with LSP disabled get no per-file syntax check
-#   (same as before this PR) instead of the broken ``tsc`` invocation
-#   that ``.ts`` used to get.  When LSP is enabled, ``.tsx`` is covered
-#   by the LSP tier via ``_maybe_lsp_diagnostics`` exactly as ``.ts``.
-#
-# - ``.go``: ``go vet FILE.go`` fails outside a module / GOPATH with
-#   "cannot find package" — already partially handled by
-#   ``_LINTER_UNUSABLE_PATTERNS`` but only when the package error is the
-#   ONLY output; mixed real+phantom output still leaks through.
-#   ``gopls`` is the canonical replacement.
-#
-# - ``.rs``: ``rustfmt --check FILE.rs`` is style, not type-checking, and
-#   rejects non-Cargo project files.  ``rust-analyzer`` is the canonical
-#   replacement.
-#
-# When the LSP service is configured AND ``enabled_for(path)`` for this
-# extension's file, ``_check_lint`` skips the shell linter for these
-# extensions — the ``lsp_diagnostics`` channel carries the real signal.
-# Everything else in ``LINTERS`` (Python ``py_compile``, ``node --check``)
-# is fast, file-local, and correct, so it runs unconditionally.
-_SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.go', '.rs'})
 
 
 # Patterns that indicate the linter base command exists on PATH but
@@ -737,29 +659,7 @@ class ShellFileOperations(FileOperations):
         """Escape a string for safe use in shell commands."""
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
-
-    def _detect_file_line_ending(self, path: str, pre_content: Optional[str] = None) -> Optional[str]:
-        """Detect the dominant line ending of a file on disk.
-
-        If ``pre_content`` is already available (we just read the file
-        for lint/LSP purposes), inspect that — zero extra exec calls.
-        Otherwise issue a tiny ``head -c 4096`` to sample the first 4KB.
-
-        Returns ``"\\r\\n"`` for CRLF (Windows), ``"\\n"`` for LF (Unix),
-        or ``None`` if undetermined (new file, empty file, single-line
-        file with no line break in the first chunk).
-        """
-        if pre_content:
-            return _detect_line_ending(pre_content)
-        # File may not exist (new write) — `head` exits 0 with empty
-        # stdout in that case which yields None below.  Cheap probe.
-        head_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
-        head_result = self._exec(head_cmd)
-        if head_result.exit_code != 0 or not head_result.stdout:
-            return None
-        return _detect_line_ending(head_result.stdout)
-
-
+    
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         """Generate unified diff between old and new content."""
         old_lines = old_content.splitlines(keepends=True)
@@ -1037,17 +937,6 @@ class ShellFileOperations(FileOperations):
             if read_result.exit_code == 0 and read_result.stdout:
                 pre_content = read_result.stdout
 
-        # ── Line-ending preservation (Roo Code pattern) ──────────────
-        # If the file existed with CRLF endings and the agent's content
-        # has bare LFs, convert to CRLF before writing.  Otherwise the
-        # write silently normalizes a Windows-line-ending file (and patch
-        # produces mixed endings when only a substituted region changes).
-        # Detect from a small head sample to avoid reading the full file
-        # for line-ending purposes alone.
-        original_ending = self._detect_file_line_ending(path, pre_content)
-        if original_ending == "\r\n":
-            content = _normalize_line_endings(content, "\r\n")
-
         # Snapshot LSP diagnostics for this file (best-effort) so the
         # post-write LSP layer can return only diagnostics introduced
         # by this specific edit.  Mirrors claude-code's
@@ -1155,19 +1044,6 @@ class ShellFileOperations(FileOperations):
             except Exception:
                 pass
             return PatchResult(error=err_msg)
-
-        # ── Line-ending preservation ──────────────────────────────────
-        # Models nearly always send old_string/new_string with bare LF
-        # in tool args (JSON-encoded), but the file may have CRLF on
-        # disk.  After fuzzy_find_and_replace, ``new_content`` is a
-        # mixed-ending string: the substituted region is LF, surrounding
-        # text keeps the file's CRLF.  Normalize the whole thing to the
-        # file's detected line ending so the on-disk file is consistent
-        # and the unified diff below reflects the actual change.
-        file_ending = _detect_line_ending(content)
-        if file_ending:
-            new_content = _normalize_line_endings(new_content, file_ending)
-
         # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:
@@ -1292,19 +1168,6 @@ class ShellFileOperations(FileOperations):
         # Fall back to shell linter.
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
-
-        # If a real LSP server is active and claims this file, skip the
-        # shell linter for extensions whose per-file shell invocation is
-        # structurally weaker / floods phantom errors.  See
-        # ``_SHELL_LINTER_LSP_REDUNDANT`` above for the rationale per ext.
-        # The LSP tier runs separately via ``_maybe_lsp_diagnostics`` and
-        # carries the real diagnostics in ``lsp_diagnostics`` on the
-        # WriteResult / PatchResult.
-        if ext in _SHELL_LINTER_LSP_REDUNDANT and self._lsp_will_handle(path):
-            return LintResult(
-                skipped=True,
-                message=f"LSP server handles {ext} — shell linter skipped",
-            )
 
         linter_cmd = LINTERS[ext]
         # Extract the base command (first word)
@@ -1468,40 +1331,6 @@ class ShellFileOperations(FileOperations):
             if ext_lower in srv.extensions:
                 return True
         return False
-
-    def _lsp_will_handle(self, path: str) -> bool:
-        """Return True iff the LSP service is active AND will lint this file.
-
-        Stronger than :meth:`_lsp_handles_extension` — that one only checks
-        the static server registry.  This one additionally requires the
-        LSP service to be configured/enabled and the file to pass
-        :meth:`agent.lsp.manager.LSPService.enabled_for` (which gates on
-        workspace detection, disabled-server set, and the broken-pair
-        short-circuit).
-
-        Used by :meth:`_check_lint` to decide whether to skip the per-file
-        shell linter for extensions in ``_SHELL_LINTER_LSP_REDUNDANT``.
-
-        Best-effort: any failure path returns False so the shell linter
-        runs as before — never suppress lint based on an LSP probe that
-        couldn't actually answer the question.
-        """
-        if not self._lsp_local_only():
-            return False
-        try:
-            from agent.lsp import get_service
-        except Exception:  # noqa: BLE001
-            return False
-        try:
-            svc = get_service()
-        except Exception:  # noqa: BLE001
-            return False
-        if svc is None:
-            return False
-        try:
-            return bool(svc.enabled_for(path))
-        except Exception:  # noqa: BLE001
-            return False
 
     def _snapshot_lsp_baseline(self, path: str) -> None:
         """Capture pre-edit LSP diagnostics so the post-write delta is correct.
@@ -1687,6 +1516,28 @@ class ShellFileOperations(FileOperations):
                       "https://github.com/BurntSushi/ripgrep#installation"
             )
 
+        # WSL /mnt/ paths are orders of magnitude slower under find through the
+        # 9P (Plan 9) filesystem translation layer.  Warn proactively so the
+        # user gets a clear action instead of a cryptic 60s timeout leak.
+        _wsl_proxy_path = path.replace('\\', '/')
+        if not path.startswith('/mnt/') and '/mnt/' in _wsl_proxy_path:
+            # Path contains /mnt/ but is not itself /mnt/ -- still a WSL concern
+            pass
+        _is_wsl_mnt = _wsl_proxy_path.startswith('/mnt/')
+        if _is_wsl_mnt and not self._has_command('rg'):
+            # Check if we're actually on WSL by probing /proc/version
+            _wsl_check = self._exec("grep -qi microsoft /proc/version 2>/dev/null && echo yes")
+            if _wsl_check.exit_code == 0 and _wsl_check.stdout.strip() == "yes":
+                return SearchResult(
+                    error="File search under WSL /mnt/ paths without ripgrep (rg) is "
+                          "prohibitively slow and will time out. Install ripgrep with:\n"
+                          "  sudo apt install ripgrep   # Debian/Ubuntu\n"
+                          "  sudo pacman -S ripgrep     # Arch\n"
+                          "  brew install ripgrep       # macOS\n"
+                          "Or search within the native WSL filesystem (~) for "
+                          "acceptable performance."
+                )
+
         # Exclude hidden directories (matching ripgrep's default behavior).
         hidden_exclude = "-not -path '*/.*'" if not has_hidden_path_ancestor else ""
         hidden_filter_expr = f" {hidden_exclude}" if hidden_exclude else ""
@@ -1699,15 +1550,33 @@ class ShellFileOperations(FileOperations):
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
         cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
-              f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
+              f"-printf '%T@ %p\\\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
+
+        if result.exit_code == 124:
+            return SearchResult(
+                error="File search timed out. Install ripgrep (rg) for fast "
+                      "parallel search:\n"
+                      "  sudo apt install ripgrep   # Debian/Ubuntu\n"
+                      "  sudo pacman -S ripgrep     # Arch\n"
+                      "  brew install ripgrep       # macOS"
+            )
 
         if not result.stdout.strip():
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
+
+            if result.exit_code == 124:
+                return SearchResult(
+                    error="File search timed out. Install ripgrep (rg) for fast "
+                          "parallel search:\n"
+                          "  sudo apt install ripgrep   # Debian/Ubuntu\n"
+                          "  sudo pacman -S ripgrep     # Arch\n"
+                          "  brew install ripgrep       # macOS"
+                )
 
         files = []
         for line in result.stdout.strip().split('\n'):
@@ -1792,6 +1661,18 @@ class ShellFileOperations(FileOperations):
             return self._search_with_rg(pattern, path, file_glob, limit, offset, 
                                         output_mode, context)
         elif self._has_command('grep'):
+            # Warn if on WSL /mnt/ path without ripgrep
+            _wsl_proxy_path = path.replace('\\', '/')
+            if _wsl_proxy_path.startswith('/mnt/'):
+                _wsl_check = self._exec("grep -qi microsoft /proc/version 2>/dev/null && echo yes")
+                if _wsl_check.exit_code == 0 and _wsl_check.stdout.strip() == "yes":
+                    return SearchResult(
+                        error="Content search under WSL /mnt/ paths without ripgrep (rg) "
+                              "will be slow and may time out. Install ripgrep:\n"
+                              "  sudo apt install ripgrep   # Debian/Ubuntu\n"
+                              "  sudo pacman -S ripgrep     # Arch\n"
+                              "  brew install ripgrep       # macOS"
+                    )
             return self._search_with_grep(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
         else:
@@ -1932,6 +1813,16 @@ class ShellFileOperations(FileOperations):
         
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
+        
+        # Handle timeout (exit code 124 from timeout command)
+        if result.exit_code == 124:
+            return SearchResult(
+                error="Content search timed out. Install ripgrep (rg) for fast "
+                      "parallel search:\n"
+                      "  sudo apt install ripgrep   # Debian/Ubuntu\n"
+                      "  sudo pacman -S ripgrep     # Arch\n"
+                      "  brew install ripgrep       # macOS"
+            )
         
         # grep exit codes: 0=matches found, 1=no matches, 2=error
         if result.exit_code == 2 and not result.stdout.strip():

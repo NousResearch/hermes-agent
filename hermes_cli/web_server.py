@@ -663,6 +663,159 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 # report liveness and exit code without shelling out to ``ps``.
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
 
+# ---------------------------------------------------------------------------
+# Durable action registry (issue #25916, phase 1)
+#
+# In-memory ``_ACTION_PROCS`` is lost when the web process restarts. Persist
+# a small JSON record per action invocation so ``/api/actions/{name}/status``
+# can still report "running elsewhere" (pid alive after web restart),
+# "completed" (recorded exit code), or "lost" (pid gone, no recorded exit)
+# instead of always collapsing to "never started" after a restart.
+#
+# Phase 1 deliberately limits scope:
+#   * keyed by action ``name`` (single record per action — last invocation wins)
+#   * no retention / cleanup yet
+#   * no per-id polling endpoint yet
+#   * unstructured action classification (mirrors current ``name`` keying)
+#
+# Phase 2 follow-ups (left for separate PRs): action_id per invocation,
+# retention/GC, dashboard surfacing, per-action exclusive-class enforcement
+# beyond the simple ``already_running`` guard.
+# ---------------------------------------------------------------------------
+
+_ACTION_REGISTRY_PATH: Path = get_hermes_home() / "actions.json"
+_ACTION_REGISTRY_LOCK = threading.Lock()
+
+
+def _action_registry_path() -> Path:
+    """Resolve the registry path each call so tests can monkeypatch ``get_hermes_home``."""
+    return get_hermes_home() / "actions.json"
+
+
+def _read_action_registry() -> Dict[str, Dict[str, Any]]:
+    """Load the durable action registry. Returns an empty dict on first run
+    or if the file is unreadable / malformed (logged, never raises)."""
+    path = _action_registry_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except (OSError, ValueError) as exc:
+        _log.warning("Action registry %s unreadable, ignoring: %s", path, exc)
+    return {}
+
+
+def _write_action_registry(registry: Dict[str, Dict[str, Any]]) -> None:
+    """Atomically persist the action registry. Failures are logged, not raised:
+    a status query that can't write back to disk is less bad than a 500 on
+    the dashboard."""
+    path = _action_registry_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(registry, fh, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError as exc:
+        _log.warning("Failed to persist action registry %s: %s", path, exc)
+
+
+def _record_action_start(name: str, pid: int, log_path: Path) -> None:
+    """Persist a ``running`` record for *name* before the caller relies on it.
+    Overwrites any previous record for the same name (phase-1 single-slot)."""
+    with _ACTION_REGISTRY_LOCK:
+        registry = _read_action_registry()
+        registry[name] = {
+            "name": name,
+            "pid": pid,
+            "start_time": time.time(),
+            "last_update": time.time(),
+            "status": "running",
+            "exit_code": None,
+            "log_path": str(log_path),
+        }
+        _write_action_registry(registry)
+
+
+def _record_action_finished(name: str, exit_code: Optional[int]) -> None:
+    """Update the registry record with a final exit code."""
+    with _ACTION_REGISTRY_LOCK:
+        registry = _read_action_registry()
+        record = registry.get(name)
+        if not record:
+            return
+        record["status"] = "succeeded" if exit_code == 0 else "failed"
+        record["exit_code"] = exit_code
+        record["last_update"] = time.time()
+        registry[name] = record
+        _write_action_registry(registry)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Best-effort liveness probe via signal 0. Returns False on PermissionError
+    (different uid) since we'd never have spawned a process we can't signal."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False
+    except OSError:
+        return False
+    return True
+
+
+def _resolve_action_state(name: str) -> Dict[str, Any]:
+    """Determine the current state of an action, blending live Popen handles
+    and the durable registry. Phase 1 distinguishes:
+
+      * ``running``   — Popen still live, or registry pid is alive after restart
+      * ``succeeded`` / ``failed`` — finished with recorded exit code
+      * ``lost``      — registry says running but pid is gone (web crashed
+                        mid-action, or process killed externally)
+      * ``never_started`` — no in-memory handle and no registry record
+    """
+    proc = _ACTION_PROCS.get(name)
+    if proc is not None:
+        exit_code = proc.poll()
+        if exit_code is None:
+            return {"status": "running", "running": True, "exit_code": None, "pid": proc.pid}
+        # Process finished — make sure registry reflects it.
+        _record_action_finished(name, exit_code)
+        return {
+            "status": "succeeded" if exit_code == 0 else "failed",
+            "running": False,
+            "exit_code": exit_code,
+            "pid": proc.pid,
+        }
+
+    # No live Popen handle. Fall back to the durable registry.
+    record = _read_action_registry().get(name)
+    if record is None:
+        return {"status": "never_started", "running": False, "exit_code": None, "pid": None}
+
+    pid = record.get("pid")
+    status = record.get("status", "unknown")
+    if status == "running":
+        if isinstance(pid, int) and _pid_is_alive(pid):
+            # Running in a process the web server doesn't own a handle for —
+            # typically because the web restarted while the action was in flight.
+            return {"status": "running", "running": True, "exit_code": None, "pid": pid}
+        # Registry says running but pid is gone: action was lost during restart.
+        return {"status": "lost", "running": False, "exit_code": None, "pid": pid}
+
+    return {
+        "status": status,
+        "running": False,
+        "exit_code": record.get("exit_code"),
+        "pid": pid,
+    }
+
 
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
@@ -697,6 +850,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
 
     proc = subprocess.Popen(cmd, **popen_kwargs)
     _ACTION_PROCS[name] = proc
+    _record_action_start(name, proc.pid, log_path)
     return proc
 
 
@@ -717,6 +871,17 @@ def _tail_lines(path: Path, n: int) -> List[str]:
 @app.post("/api/gateway/restart")
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
+    state = _resolve_action_state("gateway-restart")
+    if state["running"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "ok": False,
+                "name": "gateway-restart",
+                "reason": "already_running",
+                "pid": state.get("pid"),
+            },
+        )
     try:
         proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
     except Exception as exc:
@@ -732,6 +897,17 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    state = _resolve_action_state("hermes-update")
+    if state["running"]:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "ok": False,
+                "name": "hermes-update",
+                "reason": "already_running",
+                "pid": state.get("pid"),
+            },
+        )
     try:
         proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:
@@ -746,7 +922,12 @@ async def update_hermes():
 
 @app.get("/api/actions/{name}/status")
 async def get_action_status(name: str, lines: int = 200):
-    """Tail an action log and report whether the process is still running."""
+    """Tail an action log and report whether the process is still running.
+
+    Blends the in-memory Popen handle with the durable action registry so the
+    endpoint can distinguish completed/lost/running state even after the web
+    process restarts (issue #25916).
+    """
     log_file_name = _ACTION_LOG_FILES.get(name)
     if log_file_name is None:
         raise HTTPException(status_code=404, detail=f"Unknown action: {name}")
@@ -754,21 +935,14 @@ async def get_action_status(name: str, lines: int = 200):
     log_path = _ACTION_LOG_DIR / log_file_name
     tail = _tail_lines(log_path, min(max(lines, 1), 2000))
 
-    proc = _ACTION_PROCS.get(name)
-    if proc is None:
-        running = False
-        exit_code: Optional[int] = None
-        pid: Optional[int] = None
-    else:
-        exit_code = proc.poll()
-        running = exit_code is None
-        pid = proc.pid
+    state = _resolve_action_state(name)
 
     return {
         "name": name,
-        "running": running,
-        "exit_code": exit_code,
-        "pid": pid,
+        "running": state["running"],
+        "exit_code": state["exit_code"],
+        "pid": state["pid"],
+        "status": state["status"],
         "lines": tail,
     }
 

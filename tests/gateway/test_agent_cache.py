@@ -1026,6 +1026,36 @@ class TestAgentCacheIdleResume:
         runner._running_agents = {}
         return runner
 
+    def test_fd_pressure_release_sheds_idle_clients_only(self, monkeypatch):
+        """FD pressure cleanup releases idle provider clients without killing active turns."""
+        runner = self._runner()
+        idle_agent = MagicMock()
+        active_agent = MagicMock()
+        runner._agent_cache["idle"] = (idle_agent, "sig-idle")
+        runner._agent_cache["active"] = (active_agent, "sig-active")
+        runner._running_agents = {"active-session": active_agent}
+
+        aux_shutdowns: list[bool] = []
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(
+            aux,
+            "shutdown_cached_clients",
+            lambda: aux_shutdowns.append(True),
+        )
+
+        detail = runner._release_idle_resources_under_pressure(
+            "high",
+            open_fds=800,
+            soft_limit=1000,
+            ratio=0.8,
+        )
+
+        idle_agent.release_clients.assert_called_once()
+        active_agent.release_clients.assert_not_called()
+        assert aux_shutdowns == [True]
+        assert "idle_agent_clients_released=1" in detail
+
     def test_release_clients_does_not_touch_process_registry(self, monkeypatch):
         """release_clients must not call process_registry.kill_all for task_id."""
         from run_agent import AIAgent

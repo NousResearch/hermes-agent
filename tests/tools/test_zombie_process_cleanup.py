@@ -243,9 +243,13 @@ class TestGatewayCleanupWiring:
         mock_agent_1.close.assert_called()
         mock_agent_2.close.assert_called()
 
-    def test_evict_does_not_call_close(self):
-        """_evict_cached_agent() should NOT call close() — it's also used
-        for non-destructive refreshes (model switch, branch, fallback)."""
+    def test_evict_releases_clients_but_does_not_call_close(self):
+        """_evict_cached_agent() should release provider clients but not close.
+
+        It is used for non-destructive refreshes (model switch, branch,
+        fallback), so terminal/browser/session resources must stay alive.  The
+        AIAgent's provider/httpx clients do need releasing to avoid fd leaks.
+        """
         import threading
         from unittest.mock import MagicMock
 
@@ -259,6 +263,7 @@ class TestGatewayCleanupWiring:
 
         GatewayRunner._evict_cached_agent(runner, "session-key")
 
+        mock_agent.release_clients.assert_called_once()
         mock_agent.close.assert_not_called()
         assert "session-key" not in runner._agent_cache
 

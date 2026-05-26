@@ -354,6 +354,57 @@ class TestFallbackTransportInit:
         assert len(seen_kwargs) == 2
         assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
+    def test_limits_propagated_to_primary_and_fallback_transports(self, monkeypatch):
+        """Regression: ``connection_pool_size`` must reach the inner pools.
+
+        httpx ignores ``AsyncClient(limits=...)`` when a custom transport is
+        supplied. We compensate by forwarding ``httpx.Limits`` into each
+        inner ``AsyncHTTPTransport`` so the effective pool size matches
+        ``HERMES_TELEGRAM_HTTP_POOL_SIZE`` rather than the httpx default
+        (100). Reproduces the regression that caused the 2026-05-25 17:14
+        PDT PoolTimeout cluster.
+        """
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        limits = httpx.Limits(max_connections=512, max_keepalive_connections=512)
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220", "149.154.167.221"], limits=limits
+        )
+
+        assert transport._fallback_ips == ["149.154.167.220", "149.154.167.221"]
+        # 1 primary + 2 fallback transports
+        assert len(seen_kwargs) == 3
+        for kwargs in seen_kwargs:
+            assert kwargs.get("limits") is limits
+
+    def test_limits_omitted_when_not_provided(self, monkeypatch):
+        """Back-compat: callers that don't set ``limits`` must not see it
+        injected. Preserves the historical behaviour where the inner
+        transports use the httpx default ``Limits`` if nothing is supplied."""
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        assert len(seen_kwargs) == 2
+        for kwargs in seen_kwargs:
+            assert "limits" not in kwargs
+
 
 class TestFallbackTransportClose:
     @pytest.mark.asyncio
@@ -465,6 +516,85 @@ class TestAdapterFallbackIps:
     def test_invalid_ips_filtered(self):
         adapter = self._make_adapter(extra={"fallback_ips": ["149.154.167.220", "not-valid"]})
         assert adapter._fallback_ips() == ["149.154.167.220"]
+
+    @pytest.mark.asyncio
+    async def test_connect_threads_pool_limits_into_fallback_transports(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from gateway.config import PlatformConfig
+        from gateway.platforms import telegram as telegram_mod
+
+        captured_requests = []
+        captured_transports = []
+
+        class FakeHTTPXRequest:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                captured_requests.append(kwargs)
+
+        class FakeFallbackTransport:
+            def __init__(self, fallback_ips, *, limits=None, **kwargs):
+                self.fallback_ips = fallback_ips
+                self.limits = limits
+                self.kwargs = kwargs
+                captured_transports.append(self)
+
+        class FakeBuilder:
+            def token(self, token):
+                return self
+
+            def request(self, request):
+                self.request_obj = request
+                return self
+
+            def get_updates_request(self, request):
+                self.get_updates_request_obj = request
+                return self
+
+            def build(self):
+                bot = SimpleNamespace(
+                    delete_webhook=AsyncMock(),
+                    set_my_commands=AsyncMock(),
+                )
+                updater = SimpleNamespace(start_polling=AsyncMock())
+                return SimpleNamespace(
+                    bot=bot,
+                    updater=updater,
+                    initialize=AsyncMock(),
+                    start=AsyncMock(),
+                    add_handler=lambda *args, **kwargs: None,
+                )
+
+        async def fake_discover_fallback_ips():
+            return ["149.154.167.220"]
+
+        monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "321")
+        monkeypatch.delenv("TELEGRAM_WEBHOOK_URL", raising=False)
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(telegram_mod, "HTTPXRequest", FakeHTTPXRequest)
+        monkeypatch.setattr(telegram_mod, "TelegramFallbackTransport", FakeFallbackTransport)
+        monkeypatch.setattr(telegram_mod, "discover_fallback_ips", fake_discover_fallback_ips)
+        monkeypatch.setattr(telegram_mod.Application, "builder", lambda: FakeBuilder())
+        monkeypatch.setattr(telegram_mod.TelegramAdapter, "_acquire_platform_lock", lambda self, *args, **kwargs: True)
+        monkeypatch.setattr(telegram_mod.TelegramAdapter, "_release_platform_lock", lambda self: None)
+        monkeypatch.setattr(telegram_mod.TelegramAdapter, "_setup_dm_topics", AsyncMock())
+
+        adapter = telegram_mod.TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+        assert await adapter.connect() is True
+
+        assert len(captured_requests) == 2
+        assert len(captured_transports) == 2
+        for request_kwargs in captured_requests:
+            assert request_kwargs["connection_pool_size"] == 321
+            assert request_kwargs["httpx_kwargs"]["transport"] in captured_transports
+        for transport in captured_transports:
+            assert transport.fallback_ips == ["149.154.167.220"]
+            assert transport.limits is not None
+            assert transport.limits.max_connections == 321
+            assert transport.limits.max_keepalive_connections == 321
 
 
 # ═══════════════════════════════════════════════════════════════════════════

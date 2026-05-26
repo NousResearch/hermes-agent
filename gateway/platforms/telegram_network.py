@@ -56,13 +56,29 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     connect failures the underlying TCP connection is retried against a known
     reachable IP. This is effectively the programmatic equivalent of
     ``curl --resolve api.telegram.org:443:<ip>``.
+
+    ``limits`` is honoured per inner ``AsyncHTTPTransport`` so the adapter's
+    intended ``connection_pool_size`` actually applies — httpx silently drops
+    the ``AsyncClient(limits=...)`` argument when a custom transport is
+    installed, so the effective pool size would otherwise fall back to the
+    httpx default of 100 (see #18452: 17:14 PDT 2026-05-25 PoolTimeout cluster).
+    If callers pass ``limits`` both as the keyword-only argument and inside
+    ``transport_kwargs``, the explicit transport kwargs win.
     """
 
-    def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
+    def __init__(
+        self,
+        fallback_ips: Iterable[str],
+        *,
+        limits: "httpx.Limits | None" = None,
+        **transport_kwargs,
+    ):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
+        if limits is not None:
+            transport_kwargs.setdefault("limits", limits)
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         self._fallbacks = {
             ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips

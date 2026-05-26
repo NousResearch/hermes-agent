@@ -65,6 +65,7 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
@@ -88,6 +89,7 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
 
@@ -741,6 +743,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
@@ -786,6 +789,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 10.0)
@@ -845,6 +849,7 @@ class TestGatewaySystemServiceRouting:
         calls = []
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -875,6 +880,7 @@ class TestGatewaySystemServiceRouting:
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(
@@ -1630,6 +1636,21 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+    def test_launchd_plist_raises_file_descriptor_limit(self, tmp_path, monkeypatch):
+        """Gateway launchd jobs should not inherit macOS's tiny 256-fd soft limit."""
+        profile_dir = tmp_path / ".hermes"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>HardResourceLimits</key>" in plist
+        assert plist.count("<key>NumberOfFiles</key>") == 2
+        assert plist.count("<integer>4096</integer>") == 2
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

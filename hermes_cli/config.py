@@ -571,6 +571,13 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Cap synthetic resume turns scheduled immediately at gateway startup.
+        # Remaining resume_pending sessions keep their transcript and resume on
+        # the next real user message.  This prevents a restart from bursting
+        # several interrupted chats into provider calls at the same time.
+        # Set 0 to disable startup synthesis entirely; raise only if the
+        # provider/backend has enough headroom for concurrent recovery.
+        "startup_auto_resume_max": 1,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly
@@ -1590,6 +1597,12 @@ DEFAULT_CONFIG = {
         "memory_monitor": {
             "enabled": True,         # Flip to false to silence the periodic line
             "interval_seconds": 300, # Default: every 5 minutes
+            # Active cleanup thresholds for gateway RSS. Crossing these levels
+            # releases idle provider/http clients and runs GC before memory
+            # pressure becomes a model/provider failure source. Set 0 to
+            # disable the corresponding threshold.
+            "rss_high_mb": 1024,
+            "rss_critical_mb": 1536,
         },
     },
 

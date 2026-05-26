@@ -291,6 +291,7 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
 # is still classified fresh.  Override via
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
+_STARTUP_AUTO_RESUME_MAX_DEFAULT = 1
 
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
@@ -344,6 +345,22 @@ def _auto_continue_freshness_window() -> float:
         return float(raw)
     except (TypeError, ValueError):
         return float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
+
+
+def _startup_auto_resume_max() -> int:
+    """Return max synthetic resume turns scheduled at gateway startup.
+
+    Real user messages still resume any remaining ``resume_pending`` sessions.
+    The cap only prevents restart from immediately stampeding provider calls
+    across every interrupted chat at once.
+    """
+    raw = os.environ.get("HERMES_STARTUP_AUTO_RESUME_MAX")
+    if raw is None or raw == "":
+        return _STARTUP_AUTO_RESUME_MAX_DEFAULT
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return _STARTUP_AUTO_RESUME_MAX_DEFAULT
 
 
 def _float_env(name: str, default: float) -> float:
@@ -835,6 +852,10 @@ if _config_path.exists():
             if "gateway_auto_continue_freshness" in _agent_cfg:
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
+                )
+            if "startup_auto_resume_max" in _agent_cfg:
+                os.environ["HERMES_STARTUP_AUTO_RESUME_MAX"] = str(
+                    _agent_cfg["startup_auto_resume_max"]
                 )
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
@@ -3611,9 +3632,20 @@ class GatewayRunner:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0
 
+        max_synthetic_resumes = _startup_auto_resume_max()
+        if max_synthetic_resumes <= 0:
+            if candidates:
+                logger.info(
+                    "Startup auto-resume disabled; %d resume-pending session(s) will wait for user messages",
+                    len(candidates),
+                )
+            return 0
+
         now = datetime.now()
         scheduled = 0
         for entry in candidates:
+            if scheduled >= max_synthetic_resumes:
+                break
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
                 continue
@@ -3644,9 +3676,17 @@ class GatewayRunner:
 
         if scheduled:
             logger.info(
-                "Scheduled auto-resume for %d restart-interrupted session(s)",
+                "Scheduled auto-resume for %d restart-interrupted session(s) (cap=%d, candidates=%d)",
                 scheduled,
+                max_synthetic_resumes,
+                len(candidates),
             )
+            remaining = len(candidates) - scheduled
+            if remaining > 0:
+                logger.info(
+                    "Deferred %d resume-pending session(s) to real user messages to avoid provider/resource pressure",
+                    remaining,
+                )
         return scheduled
 
     async def start(self) -> bool:
@@ -15005,11 +15045,30 @@ class GatewayRunner:
             self._release_running_agent_state(session_key)
 
     def _evict_cached_agent(self, session_key: str) -> None:
-        """Remove a cached agent for a session (called on /new, /model, etc)."""
+        """Remove a cached agent for a session (called on /new, /model, etc).
+
+        Eviction must not fully close session-scoped tool resources (terminal
+        sandboxes, browser daemons, tracked background processes) because many
+        callers use it for non-destructive refreshes such as /model switches,
+        /resume, fallback recovery, and compression-boundary rebuilds.  It does
+        need to release provider/httpx clients owned by the old AIAgent,
+        however: otherwise every refresh leaves sockets open until the gateway
+        process eventually hits EMFILE ("Too many open files"), after which
+        unrelated DNS/network calls start failing too.
+        """
         _lock = getattr(self, "_agent_cache_lock", None)
+        cached = None
         if _lock:
             with _lock:
-                self._agent_cache.pop(session_key, None)
+                cached = self._agent_cache.pop(session_key, None)
+        else:
+            cached = getattr(self, "_agent_cache", {}).pop(session_key, None)
+        if isinstance(cached, tuple) and cached:
+            agent = cached[0]
+        else:
+            agent = cached
+        if agent is not None:
+            self._release_evicted_agent_soft(agent)
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -15051,6 +15110,70 @@ class GatewayRunner:
                 self._cleanup_agent_resources(agent)
         except Exception:
             pass
+
+    def _release_idle_resources_under_pressure(
+        self,
+        level: str,
+        open_fds: int,
+        soft_limit: Optional[int],
+        ratio: Optional[float],
+    ) -> str:
+        """Actively shed idle provider resources when fd/RSS pressure rises.
+
+        This preserves user-facing session state: no terminal sandboxes, browser
+        sessions, process registries, or transcripts are torn down.  Only idle
+        cached agents' provider/http clients and process-global auxiliary
+        clients are released; active turns are skipped.
+        """
+        _cache = getattr(self, "_agent_cache", None)
+        _lock = getattr(self, "_agent_cache_lock", None)
+        released_agent_clients = 0
+        inspected_idle = 0
+        running_ids = {
+            id(a)
+            for a in getattr(self, "_running_agents", {}).values()
+            if a is not None and a is not _AGENT_PENDING_SENTINEL
+        }
+
+        idle_agents: List[tuple[str, Any]] = []
+        if _cache is not None and _lock is not None:
+            with _lock:
+                for key, entry in list(_cache.items()):
+                    agent = entry[0] if isinstance(entry, tuple) and entry else None
+                    if agent is None or id(agent) in running_ids:
+                        continue
+                    idle_agents.append((key, agent))
+
+        for key, agent in idle_agents:
+            inspected_idle += 1
+            try:
+                if hasattr(agent, "release_clients"):
+                    agent.release_clients()
+                    released_agent_clients += 1
+            except Exception as exc:
+                logger.debug("resource-pressure release_clients failed for %s: %s", key, exc)
+
+        auxiliary_released = False
+        try:
+            from agent.auxiliary_client import shutdown_cached_clients
+            shutdown_cached_clients()
+            auxiliary_released = True
+        except Exception as exc:
+            logger.debug("resource-pressure shutdown_cached_clients failed: %s", exc)
+
+        try:
+            import gc
+            collected = gc.collect()
+        except Exception:
+            collected = 0
+
+        limit_text = str(soft_limit) if soft_limit is not None else "unlimited"
+        ratio_text = f"{ratio:.1%}" if ratio is not None else "unknown"
+        return (
+            f"level={level} fds={open_fds}/{limit_text} ({ratio_text}) "
+            f"idle_agents_seen={inspected_idle} idle_agent_clients_released={released_agent_clients} "
+            f"auxiliary_clients_released={auxiliary_released} gc_collected={collected}"
+        )
 
     def _enforce_agent_cache_cap(self) -> None:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
@@ -17947,11 +18070,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from hermes_logging import setup_logging
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
-    # Periodic process memory usage logging (gateway only) — emits a
-    # grep-friendly "[MEMORY] rss=...MB ..." line every N minutes so
-    # slow leaks in the long-lived gateway process show up as a time
-    # series in agent.log / gateway.log.  Ported from cline/cline#10343.
-    # Controlled by the logging.memory_monitor section in config.yaml.
+    # Periodic process resource logging (gateway only).  Start it after the
+    # GatewayRunner exists so fd pressure can trigger active client cleanup.
+    _memory_monitor_module = None
+    _memory_monitor_interval = 300.0
+    _memory_monitor_rss_high_mb: Optional[int] = None
+    _memory_monitor_rss_critical_mb: Optional[int] = None
     try:
         from gateway import memory_monitor as _memory_monitor
 
@@ -17970,9 +18094,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 _mm_interval = float(_mm_cfg.get("interval_seconds", 300))
             except (TypeError, ValueError):
                 _mm_interval = 300.0
-            _memory_monitor.start_memory_monitoring(interval_seconds=_mm_interval)
+            def _optional_int_setting(name: str) -> Optional[int]:
+                try:
+                    value = _mm_cfg.get(name)
+                    if value is None:
+                        return None
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+            _memory_monitor_module = _memory_monitor
+            _memory_monitor_interval = _mm_interval
+            _memory_monitor_rss_high_mb = _optional_int_setting("rss_high_mb")
+            _memory_monitor_rss_critical_mb = _optional_int_setting("rss_critical_mb")
     except Exception as _mm_exc:
-        logger.debug("Failed to start memory monitor: %s", _mm_exc)
+        logger.debug("Failed to configure resource monitor: %s", _mm_exc)
 
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output
@@ -17992,6 +18127,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logging.getLogger().setLevel(_stderr_level)
 
     runner = GatewayRunner(config)
+    if _memory_monitor_module is not None:
+        try:
+            _memory_monitor_module.start_memory_monitoring(
+                interval_seconds=_memory_monitor_interval,
+                pressure_handler=runner._release_idle_resources_under_pressure,
+                rss_high_mb=_memory_monitor_rss_high_mb,
+                rss_critical_mb=_memory_monitor_rss_critical_mb,
+            )
+        except Exception as _mm_exc:
+            logger.debug("Failed to start resource monitor: %s", _mm_exc)
     
     # Track whether an unexpected signal initiated the shutdown. When an
     # unexpected SIGTERM kills the gateway, we exit non-zero so service

@@ -19,8 +19,10 @@ from gateway import memory_monitor as mm
 def _ensure_monitor_stopped():
     """Every test starts from a clean state and leaves one behind."""
     mm.stop_memory_monitoring(timeout=1.0)
+    mm._set_rss_pressure_thresholds(None, None)
     yield
     mm.stop_memory_monitoring(timeout=1.0)
+    mm._set_rss_pressure_thresholds(None, None)
 
 
 def test_log_memory_usage_emits_memory_line(caplog):
@@ -35,9 +37,10 @@ def test_log_memory_usage_has_grep_friendly_format(caplog):
     mm.log_memory_usage()
     msg = caplog.records[-1].getMessage()
     # Grep-friendly contract: line starts with [MEMORY] and carries RSS
-    # (or 'unavailable'), GC counts, thread count, uptime.
+    # (or 'unavailable'), fd usage, GC counts, thread count, uptime.
     assert msg.startswith("[MEMORY]"), msg
     assert "rss=" in msg
+    assert "fds=" in msg
     assert "gc=" in msg
     assert "threads=" in msg
     assert "uptime=" in msg
@@ -48,6 +51,68 @@ def test_log_memory_usage_with_prefix(caplog):
     mm.log_memory_usage(prefix="baseline")
     msg = caplog.records[-1].getMessage()
     assert "[MEMORY] baseline " in msg
+
+
+def test_high_fd_usage_triggers_resource_pressure_handler(caplog, monkeypatch):
+    monkeypatch.setattr(mm, "_get_fd_usage", lambda: (800, 1000, 0.8))
+    calls = []
+    mm.set_resource_pressure_handler(
+        lambda level, open_fds, soft_limit, ratio: calls.append((level, open_fds, soft_limit, ratio)) or "released=1"
+    )
+    caplog.set_level(logging.WARNING, logger="gateway.memory_monitor")
+    mm.log_memory_usage()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert calls == [("high", 800, 1000, 0.8)]
+    assert any("running resource-pressure cleanup" in m for m in messages), messages
+    assert any("resource-pressure cleanup completed: released=1" in m for m in messages), messages
+
+
+def test_critical_fd_usage_triggers_resource_pressure_handler(caplog, monkeypatch):
+    monkeypatch.setattr(mm, "_get_fd_usage", lambda: (950, 1000, 0.95))
+    calls = []
+    mm.set_resource_pressure_handler(
+        lambda level, open_fds, soft_limit, ratio: calls.append((level, open_fds, soft_limit, ratio)) or "released=2"
+    )
+    caplog.set_level(logging.ERROR, logger="gateway.memory_monitor")
+    mm.log_memory_usage()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert calls == [("critical", 950, 1000, 0.95)]
+    assert any("open file descriptor usage critical: 950/1000" in m for m in messages), messages
+
+
+def test_high_rss_usage_triggers_resource_pressure_handler(caplog, monkeypatch):
+    monkeypatch.setattr(mm, "_get_rss_mb", lambda: 1200)
+    monkeypatch.setattr(mm, "_get_fd_usage", lambda: (40, 1000, 0.04))
+    mm._set_rss_pressure_thresholds(high_mb=1000, critical_mb=1500)
+    calls = []
+    mm.set_resource_pressure_handler(
+        lambda level, open_fds, soft_limit, ratio: calls.append((level, open_fds, soft_limit, ratio)) or "released=memory"
+    )
+    caplog.set_level(logging.WARNING, logger="gateway.memory_monitor")
+    mm.log_memory_usage()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert calls == [("memory_high", 40, 1000, 0.04)]
+    assert any("rss usage high: 1200MB >= 1000MB" in m for m in messages), messages
+    assert any("resource-pressure cleanup completed: released=memory" in m for m in messages), messages
+
+
+def test_critical_rss_usage_triggers_resource_pressure_handler(caplog, monkeypatch):
+    monkeypatch.setattr(mm, "_get_rss_mb", lambda: 1700)
+    monkeypatch.setattr(mm, "_get_fd_usage", lambda: (50, 1000, 0.05))
+    mm._set_rss_pressure_thresholds(high_mb=1000, critical_mb=1500)
+    calls = []
+    mm.set_resource_pressure_handler(
+        lambda level, open_fds, soft_limit, ratio: calls.append((level, open_fds, soft_limit, ratio)) or "released=critical"
+    )
+    caplog.set_level(logging.ERROR, logger="gateway.memory_monitor")
+    mm.log_memory_usage()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert calls == [("memory_critical", 50, 1000, 0.05)]
+    assert any("rss usage critical: 1700MB >= 1500MB" in m for m in messages), messages
 
 
 def test_start_logs_baseline_and_returns_true(caplog):

@@ -1391,6 +1391,28 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
+            # httpx silently ignores ``AsyncClient(limits=...)`` when a custom
+            # transport is supplied, so PTB's ``connection_pool_size`` does not
+            # reach our fallback transport. Build the equivalent ``httpx.Limits``
+            # ourselves and pass it through so the inner ``AsyncHTTPTransport``
+            # pools match the intended size. Otherwise the effective per-pool
+            # cap silently drops to httpx's default (100), which produced the
+            # PoolTimeout cluster on 2026-05-25.
+            try:
+                import httpx as _httpx_for_limits
+            except ImportError:
+                logger.warning(
+                    "[%s] httpx unavailable while building Telegram fallback pool limits; "
+                    "fallback transport will use httpx defaults",
+                    self.name,
+                )
+                _fallback_pool_limits = None
+            else:
+                _fallback_pool_limits = _httpx_for_limits.Limits(
+                    max_connections=request_kwargs["connection_pool_size"],
+                    max_keepalive_connections=request_kwargs["connection_pool_size"],
+                )
+
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
@@ -1413,11 +1435,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, limits=_fallback_pool_limits
+                        )
+                    },
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs={
+                        "transport": TelegramFallbackTransport(
+                            fallback_ips, limits=_fallback_pool_limits
+                        )
+                    },
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)

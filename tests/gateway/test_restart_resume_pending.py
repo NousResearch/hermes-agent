@@ -40,6 +40,7 @@ from gateway.run import (
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
+    _startup_auto_resume_max,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
@@ -930,6 +931,89 @@ async def test_startup_auto_resume_includes_crash_recovery():
 
     assert scheduled == 1
     adapter.handle_message.assert_awaited_once()
+
+
+def test_startup_auto_resume_max_env(monkeypatch):
+    monkeypatch.delenv("HERMES_STARTUP_AUTO_RESUME_MAX", raising=False)
+    assert _startup_auto_resume_max() == 1
+    monkeypatch.setenv("HERMES_STARTUP_AUTO_RESUME_MAX", "0")
+    assert _startup_auto_resume_max() == 0
+    monkeypatch.setenv("HERMES_STARTUP_AUTO_RESUME_MAX", "3")
+    assert _startup_auto_resume_max() == 3
+    monkeypatch.setenv("HERMES_STARTUP_AUTO_RESUME_MAX", "oops")
+    assert _startup_auto_resume_max() == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_caps_synthetic_burst(monkeypatch):
+    """Startup should not stampede provider calls across every interrupted chat."""
+    monkeypatch.setenv("HERMES_STARTUP_AUTO_RESUME_MAX", "1")
+    runner, adapter = make_restart_runner()
+    first_source = make_restart_source(chat_id="resume-1")
+    second_source = make_restart_source(chat_id="resume-2")
+    first_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:resume-1",
+        session_id="sid-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=first_source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    second_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:resume-2",
+        session_id="sid-2",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=second_source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {
+        first_entry.session_key: first_entry,
+        second_entry.session_key: second_entry,
+    }
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+    assert first_entry.resume_pending is True
+    assert second_entry.resume_pending is True
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("HERMES_STARTUP_AUTO_RESUME_MAX", "0")
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="resume-disabled")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:resume-disabled",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio

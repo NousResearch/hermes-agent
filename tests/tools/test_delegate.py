@@ -1432,6 +1432,62 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             ["web", "browser"],
         )
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_does_not_preserve_mcp_alias_colliding_with_builtin_toolset(
+        self, mock_cfg
+    ):
+        from tools.registry import registry
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["web", "terminal"]
+
+        with patch.object(
+            registry, "get_toolset_alias_target", return_value="mcp-terminal"
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test narrowed toolsets",
+                context=None,
+                toolsets=["web"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(MockAgent.call_args[1]["enabled_toolsets"], ["web"])
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_does_not_preserve_mcp_alias_colliding_with_special_all(
+        self, mock_cfg
+    ):
+        from tools.registry import registry
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["web", "all"]
+
+        with patch.object(
+            registry, "get_toolset_alias_target", return_value="mcp-all"
+        ), patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test narrowed toolsets",
+                context=None,
+                toolsets=["web"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(MockAgent.call_args[1]["enabled_toolsets"], ["web"])
+
 
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):

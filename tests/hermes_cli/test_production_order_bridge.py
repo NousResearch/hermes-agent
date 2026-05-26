@@ -56,10 +56,13 @@ from hermes_cli.production_order_db import (
     run_auditos_review_complete_bridge,
     run_auditos_review_reject_bridge,
     run_default_final_review_bridge,
+    run_default_final_review_reject_bridge,
     run_devos_complete_bridge,
     run_devos_rework_complete_bridge,
     run_full_bridge,
     run_orchestrator_rework_bridge,
+    run_orchestrator_classification_bridge,
+    run_orchestrator_default_rejection_triage_bridge,
     run_orchestrator_triage_bridge,
     transition_state,
     validate_auditos_rejection_packet,
@@ -68,7 +71,9 @@ from hermes_cli.production_order_db import (
     validate_architect_reconcile_packet,
     validate_brief,
     validate_default_final_review_packet,
+    validate_default_rejection_packet,
     validate_devos_build_packet,
+    validate_orchestrator_classification_packet,
     validate_state_transition,
 )
 from hermes_cli.kanban import _cmd_production_order
@@ -303,6 +308,52 @@ def final_review_packet(
     }
 
 
+def default_rejection_packet(
+    production_order_id: str,
+    source_state: str = "DEFAULT_FINAL_REVIEW",
+) -> dict:
+    """Minimal Default Hermes rejection packet for failure-loop tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "default",
+        "source_state": source_state,
+        "review_result": "rejected",
+        "summary": "Final review found the output does not match the approved brief.",
+        "original_brief_mismatch": "The delivered output misses the requested final behavior.",
+        "rejection_reason": "The work does not satisfy the approved brief.",
+        "evidence": ["final review notes", "brief comparison mismatch"],
+        "recommended_route": "orchestrator_triage",
+        "next_handoff_target": "orchestrator_os",
+    }
+
+
+def orchestrator_classification_packet(
+    production_order_id: str,
+    classification: str,
+    *,
+    source_state: str = "ORCHESTRATOR_TRIAGE",
+) -> dict:
+    """Minimal OrchestratorOS classification packet for default rejection routing."""
+    route_target = "DEV_REWORK" if classification == "implementation_mismatch" else "SPEC_REWORK"
+    next_handoff_target = "dev_os" if route_target == "DEV_REWORK" else "architect_os"
+    route_reason = (
+        "Default rejection indicates an implementation mismatch that DevOS must correct."
+        if route_target == "DEV_REWORK"
+        else "Default rejection indicates a spec or design mismatch that ArchitectOS must correct."
+    )
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "orchestrator_os",
+        "source_state": source_state,
+        "default_rejection_reason": "The delivered output does not match the approved brief.",
+        "classification": classification,
+        "route_target": route_target,
+        "route_reason": route_reason,
+        "next_handoff_target": next_handoff_target,
+        "correction_request": ["Correct the mismatch and preserve the approved scope."],
+    }
+
+
 def create_dev_complete_order(conn, sample_brief) -> ProductionOrder:
     """Advance a fresh production order through Slice 7."""
     po = create_ready_for_dev_order(conn, sample_brief)
@@ -331,6 +382,27 @@ def create_architect_accepted_order(conn, sample_brief) -> ProductionOrder:
         production_order_id=po.production_order_id,
         reconcile_packet=architect_reconcile_packet(po.production_order_id),
     )
+
+
+def create_default_final_review_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order to the Default final review stage."""
+    po = create_architect_accepted_order(conn, sample_brief)
+    transition_state(
+        conn,
+        po,
+        "DEFAULT_FINAL_REVIEW",
+        "default",
+        result="default final review started",
+        next_action="complete_default_final_review",
+        card_id=po.parent_kanban_card_id,
+        event_type="default_final_review_started",
+    )
+    for cid in po.child_kanban_card_ids:
+        conn.execute(
+            "UPDATE tasks SET current_state = ? WHERE id = ?",
+            (po.current_state, cid),
+        )
+    return po
 
 # ---------------------------------------------------------------------------
 # Production Order ID Generation
@@ -565,6 +637,10 @@ def test_valid_state_transitions():
     assert validate_state_transition("ARCHITECT_RECONCILE", "ARCHITECT_ACCEPTED", "architect_os")
     assert validate_state_transition("ARCHITECT_ACCEPTED", "DEFAULT_FINAL_REVIEW", "default")
     assert validate_state_transition("DEFAULT_FINAL_REVIEW", "DONE", "default")
+    assert validate_state_transition("DEFAULT_FINAL_REVIEW", "DEFAULT_REJECTED", "default")
+    assert validate_state_transition("DEFAULT_REJECTED", "ORCHESTRATOR_TRIAGE", "orchestrator_os")
+    assert validate_state_transition("ORCHESTRATOR_TRIAGE", "DEV_REWORK", "orchestrator_os")
+    assert validate_state_transition("ORCHESTRATOR_TRIAGE", "SPEC_REWORK", "orchestrator_os")
 
 
 def test_invalid_state_transition_rejected():
@@ -592,6 +668,10 @@ def test_state_ownership_enforced():
     with pytest.raises(StateTransitionError):
         validate_state_transition("AUDIT_REJECTED", "DEV_REWORK", "audit_os")
 
+    # default cannot advance out of DEFAULT_REJECTED
+    with pytest.raises(StateTransitionError):
+        validate_state_transition("DEFAULT_REJECTED", "ORCHESTRATOR_TRIAGE", "default")
+
 
 def test_auditos_rejection_packet_validation():
     packet = audit_rejection_packet("PO-20260525-REJECT")
@@ -612,6 +692,64 @@ def test_auditos_rejection_packet_validation():
             expected_production_order_id="PO-20260525-REJECT",
             expected_source_state="DEV_COMPLETE",
         )
+
+def test_default_rejection_packet_validation():
+    packet = default_rejection_packet("PO-20260525-DEFAULT-REJECT")
+
+    validated = validate_default_rejection_packet(
+        packet,
+        expected_production_order_id="PO-20260525-DEFAULT-REJECT",
+        expected_source_state="DEFAULT_FINAL_REVIEW",
+    )
+    assert validated["recommended_route"] == "orchestrator_triage"
+    assert validated["next_handoff_target"] == "orchestrator_os"
+    assert validated["review_result"] == "rejected"
+
+    wrong_target = dict(packet)
+    wrong_target["next_handoff_target"] = "dev_os"
+    with pytest.raises(ValueError, match="next_handoff_target"):
+        validate_default_rejection_packet(
+            wrong_target,
+            expected_production_order_id="PO-20260525-DEFAULT-REJECT",
+            expected_source_state="DEFAULT_FINAL_REVIEW",
+        )
+
+
+def test_orchestrator_classification_packet_validation():
+    dev_packet = orchestrator_classification_packet(
+        "PO-20260525-CLASSIFY",
+        "implementation_mismatch",
+    )
+    validated_dev = validate_orchestrator_classification_packet(
+        dev_packet,
+        expected_production_order_id="PO-20260525-CLASSIFY",
+        expected_source_state="ORCHESTRATOR_TRIAGE",
+    )
+    assert validated_dev["route_target"] == "DEV_REWORK"
+    assert validated_dev["next_handoff_target"] == "dev_os"
+
+    spec_packet = orchestrator_classification_packet(
+        "PO-20260525-CLASSIFY-SPEC",
+        "spec_or_design_mismatch",
+    )
+    validated_spec = validate_orchestrator_classification_packet(
+        spec_packet,
+        expected_production_order_id="PO-20260525-CLASSIFY-SPEC",
+        expected_source_state="ORCHESTRATOR_TRIAGE",
+    )
+    assert validated_spec["route_target"] == "SPEC_REWORK"
+    assert validated_spec["next_handoff_target"] == "architect_os"
+
+    wrong_route = dict(dev_packet)
+    wrong_route["route_target"] = "SPEC_REWORK"
+    with pytest.raises(ValueError, match="route_target"):
+        validate_orchestrator_classification_packet(
+            wrong_route,
+            expected_production_order_id="PO-20260525-CLASSIFY",
+            expected_source_state="ORCHESTRATOR_TRIAGE",
+        )
+
+
 def test_invalid_state_transition_empty():
     """Empty from_state or to_state raises ValueError."""
     with pytest.raises(ValueError, match="from_state is required"):
@@ -1440,6 +1578,97 @@ def test_audit_rejection_rework_loop_preserves_history_and_reconstructs(conn, sa
 
 
 @pytest.mark.parametrize(
+    ("classification", "expected_state", "expected_owner", "target_card_index", "expected_target_token"),
+    [
+        ("implementation_mismatch", "DEV_REWORK", "dev_os", 2, '"to_profile": "dev_os"'),
+        ("spec_or_design_mismatch", "SPEC_REWORK", "architect_os", 1, '"to_profile": "architect_os"'),
+    ],
+)
+def test_orchestrator_default_rejection_classification_bridge(
+    conn,
+    sample_brief,
+    classification,
+    expected_state,
+    expected_owner,
+    target_card_index,
+    expected_target_token,
+):
+    po = create_default_final_review_order(conn, sample_brief)
+    default_packet = default_rejection_packet(po.production_order_id)
+
+    rejected = run_default_final_review_reject_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        rejection_packet=default_packet,
+    )
+    assert rejected.current_state == "DEFAULT_REJECTED"
+    assert rejected.current_owner_profile == "orchestrator_os"
+
+    triaged = run_orchestrator_default_rejection_triage_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        rejection_packet=default_packet,
+    )
+    assert triaged.current_state == "ORCHESTRATOR_TRIAGE"
+    assert triaged.current_owner_profile == "orchestrator_os"
+
+    routed = run_orchestrator_classification_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        classification_packet=orchestrator_classification_packet(
+            po.production_order_id,
+            classification,
+        ),
+    )
+    assert routed.current_state == expected_state
+    assert routed.current_owner_profile == expected_owner
+
+    target_card = kb.get_task(conn, po.child_kanban_card_ids[target_card_index])
+    assert target_card is not None
+    assert target_card.body is not None
+    assert '"route_target": ' in target_card.body
+    assert expected_target_token in target_card.body
+    assert '"requested_next_state": ' in target_card.body
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert "retry_started" in event_types
+    assert "handoff_created" in event_types
+    assert "state_transitioned" in event_types
+
+
+def test_orchestrator_classification_bridge_requires_default_rejected_provenance(
+    conn,
+    sample_brief,
+):
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    assert po.current_state == "ORCHESTRATOR_TRIAGE"
+    assert not any(
+        entry.from_state == "DEFAULT_REJECTED" and entry.to_state == "ORCHESTRATOR_TRIAGE"
+        for entry in po.stage_history
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Orchestrator classification routing requires prior DEFAULT_REJECTED triage",
+    ):
+        run_orchestrator_classification_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+            classification_packet=orchestrator_classification_packet(
+                po.production_order_id,
+                "implementation_mismatch",
+            ),
+        )
+
+
+@pytest.mark.parametrize(
     ("mutator", "expected_exception", "expected_message"),
     [
         (lambda po, packet: packet.pop("summary"), ValueError, "summary"),
@@ -1781,6 +2010,51 @@ def test_default_final_review_bridge_moves_existing_order_to_done(conn, sample_b
     ]
 
 
+def test_default_rejection_bridge_routes_to_orchestrator_triage(conn, sample_brief):
+    po = create_default_final_review_order(conn, sample_brief)
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    rejected = run_default_final_review_reject_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        rejection_packet=default_rejection_packet(po.production_order_id),
+    )
+    assert rejected.current_state == "DEFAULT_REJECTED"
+    assert rejected.current_owner_profile == "orchestrator_os"
+    _assert_six_card_graph_preserved(conn, rejected, original_child_ids)
+
+    final_card = kb.get_task(conn, original_child_ids[5])
+    assert final_card is not None
+    assert final_card.body is not None
+    assert final_card.body.count("--- HANDOFF PACKET ---") == 1
+    assert final_card.body.count("--- RESULT PACKET ---") == 1
+    assert '"owner_profile": "default"' in final_card.body
+    assert '"review_result": "rejected"' in final_card.body
+
+    routed = run_orchestrator_default_rejection_triage_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        rejection_packet=default_rejection_packet(po.production_order_id),
+    )
+    assert routed.current_state == "ORCHESTRATOR_TRIAGE"
+    assert routed.current_owner_profile == "orchestrator_os"
+    _assert_six_card_graph_preserved(conn, routed, original_child_ids)
+
+    orchestrator_card = kb.get_task(conn, original_child_ids[0])
+    assert orchestrator_card is not None
+    assert orchestrator_card.body is not None
+    assert orchestrator_card.body.count("--- HANDOFF PACKET ---") == 2
+    assert '"to_profile": "orchestrator_os"' in orchestrator_card.body
+    assert '"requested_next_state": "ORCHESTRATOR_TRIAGE"' in orchestrator_card.body
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert "default_final_review_started" in event_types
+    assert "state_transitioned" in event_types
+    assert "stage_rejected" in event_types
+    assert "handoff_created" in event_types
+    assert event_types[-2:] == ["state_transitioned", "handoff_created"]
+
+
 def test_full_happy_path_chain_from_dev_complete_to_done(conn, sample_brief):
     po = create_dev_complete_order(conn, sample_brief)
     original_parent_id = po.parent_kanban_card_id
@@ -1867,6 +2141,8 @@ def test_remaining_bridge_cli_commands_require_packet_files(capsys, po_action, f
         ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("owner_profile", "audit_os"), "owner_profile"),
         ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("source_state", "ARCHITECT_RECONCILE"), "source_state"),
         ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("final_status", "rejected"), "happy-path"),
+        ("default_reject", create_default_final_review_order, default_rejection_packet, run_default_final_review_reject_bridge, lambda p: p.pop("summary"), "summary"),
+        ("default_reject", create_default_final_review_order, default_rejection_packet, run_default_final_review_reject_bridge, lambda p: p.__setitem__("owner_profile", "hermes"), "owner_profile"),
     ],
 )
 def test_remaining_bridge_packet_failures_do_not_mutate_state(
@@ -1899,6 +2175,8 @@ def test_remaining_bridge_packet_failures_do_not_mutate_state(
             runner(conn, production_order_id=po.production_order_id, review_packet=packet)
         elif bridge_name == "reconcile":
             runner(conn, production_order_id=po.production_order_id, reconcile_packet=packet)
+        elif bridge_name == "default_reject":
+            runner(conn, production_order_id=po.production_order_id, rejection_packet=packet)
         else:
             runner(conn, production_order_id=po.production_order_id, final_packet=packet)
 

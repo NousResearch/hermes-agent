@@ -83,14 +83,14 @@ WORKFLOW_SPEC_SOURCE = (
     "hermes-production-workflow-v1.md"
 )
 
-# Only implemented runtime bridge transitions are wired. Remaining failure-loop
-# transitions become live when each downstream profile uses the full state
-# machine.
+# Only implemented runtime bridge transitions are wired. Remaining
+# failure-loop transitions become live when each downstream profile uses the
+# full state machine.
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "BRIEF_DRAFTED":                {"ACTION_APPROVED"},
     "ACTION_APPROVED":              {"PRODUCTION_ORDER_CREATED"},
     "PRODUCTION_ORDER_CREATED":     {"ORCHESTRATOR_TRIAGE"},
-    "ORCHESTRATOR_TRIAGE":          {"ARCHITECT_SPEC"},
+    "ORCHESTRATOR_TRIAGE":          {"ARCHITECT_SPEC", "DEV_REWORK", "SPEC_REWORK"},
     "ARCHITECT_SPEC":               {"ARCHITECT_READY_FOR_DEV"},
     "ARCHITECT_READY_FOR_DEV":      {"DEV_IMPLEMENTING"},
     "DEV_IMPLEMENTING":             {"DEV_COMPLETE"},
@@ -100,8 +100,24 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "AUDIT_PASSED":                 {"ARCHITECT_RECONCILE"},
     "ARCHITECT_RECONCILE":          {"ARCHITECT_ACCEPTED"},
     "ARCHITECT_ACCEPTED":           {"DEFAULT_FINAL_REVIEW"},
-    "DEFAULT_FINAL_REVIEW":         {"DONE"},
+    "DEFAULT_FINAL_REVIEW":         {"DONE", "DEFAULT_REJECTED"},
+    "DEFAULT_REJECTED":             {"ORCHESTRATOR_TRIAGE"},
     "DEV_REWORK":                   {"DEV_COMPLETE"},
+}
+
+ORCHESTRATOR_CLASSIFICATION_ROUTE_MAP: dict[str, dict[str, str]] = {
+    "implementation_mismatch": {
+        "route_target": "DEV_REWORK",
+        "next_handoff_target": "dev_os",
+        "child_card_index": "2",
+        "route_reason": "Default rejection indicates implementation mismatch that DevOS must correct.",
+    },
+    "spec_or_design_mismatch": {
+        "route_target": "SPEC_REWORK",
+        "next_handoff_target": "architect_os",
+        "child_card_index": "1",
+        "route_reason": "Default rejection indicates a spec or design mismatch that ArchitectOS must correct.",
+    },
 }
 
 # STATE_OWNERS maps each state to the profile permitted to advance the
@@ -122,8 +138,10 @@ STATE_OWNERS: dict[str, str] = {
     "ARCHITECT_RECONCILE":          "architect_os",
     "ARCHITECT_ACCEPTED":           "default",
     "DEFAULT_FINAL_REVIEW":         "default",
+    "DEFAULT_REJECTED":             "orchestrator_os",
     "DONE":                         "default",
     "DEV_REWORK":                   "dev_os",
+    "SPEC_REWORK":                  "architect_os",
 }
 
 WORKFLOW_INITIAL_STATE = "PRODUCTION_ORDER_CREATED"
@@ -321,6 +339,45 @@ REQUIRED_DEFAULT_FINAL_REVIEW_PACKET_FIELDS = {
     "evidence_summary",
     "final_status",
     "next_action",
+}
+
+REQUIRED_DEFAULT_REJECTION_PACKET_FIELDS = {
+    "production_order_id",
+    "owner_profile",
+    "source_state",
+    "review_result",
+    "summary",
+    "original_brief_mismatch",
+    "rejection_reason",
+    "evidence",
+    "recommended_route",
+    "next_handoff_target",
+}
+
+REQUIRED_ORCHESTRATOR_CLASSIFICATION_PACKET_FIELDS = {
+    "production_order_id",
+    "owner_profile",
+    "source_state",
+    "default_rejection_reason",
+    "classification",
+    "route_target",
+    "route_reason",
+    "next_handoff_target",
+    "correction_request",
+}
+
+DEFAULT_REJECTION_HANDOFF_TEMPLATE: dict[str, Any] = {
+    "from_profile": "default",
+    "to_profile": "orchestrator_os",
+    "current_state": "DEFAULT_REJECTED",
+    "requested_next_state": "ORCHESTRATOR_TRIAGE",
+    "reference_workflow_spec": WORKFLOW_SPEC_SOURCE,
+}
+
+ORCHESTRATOR_CLASSIFICATION_HANDOFF_TEMPLATE: dict[str, Any] = {
+    "from_profile": "orchestrator_os",
+    "current_state": "ORCHESTRATOR_TRIAGE",
+    "reference_workflow_spec": WORKFLOW_SPEC_SOURCE,
 }
 
 # Child card definitions for production Kanban graph (from spec section 7 + feature brief section 8)
@@ -974,7 +1031,7 @@ def create_architect_handoff(po: ProductionOrder) -> dict[str, str]:
     production order plus the frozen brief metadata stored on the parent card.
     """
     brief = _parse_source_brief(po.source_brief)
-    packet = dict(ARCHITECT_HANDOFF_TEMPLATE)
+    packet: dict[str, Any] = dict(ARCHITECT_HANDOFF_TEMPLATE)
     packet["production_order_id"] = po.production_order_id
     packet["context"] = (
         f"Frozen production-order brief: {po.title}; "
@@ -1055,7 +1112,7 @@ def create_devos_handoff(
     architect_packet: dict[str, Any],
 ) -> dict[str, Any]:
     """Create the deterministic DevOS handoff packet from ArchitectOS output."""
-    packet = dict(DEVOS_HANDOFF_TEMPLATE)
+    packet: dict[str, Any] = dict(DEVOS_HANDOFF_TEMPLATE)
     packet["production_order_id"] = po.production_order_id
     packet["objective"] = architect_packet["objective"]
     packet["source_truth"] = architect_packet["source_truth"]
@@ -1255,38 +1312,93 @@ def create_auditos_handoff(
 def create_devos_rework_handoff(
     po: ProductionOrder,
     rejection_packet: dict[str, Any],
+    *,
+    source_state: str = "AUDIT_REJECTED",
+    route_reason: str | None = None,
+    route_target: str = "DEV_REWORK",
+    next_handoff_target: str = "dev_os",
 ) -> dict[str, Any]:
-    """Create the deterministic DevOS rework handoff from an AuditOS rejection."""
-    packet = dict(DEVOS_HANDOFF_TEMPLATE)
+    """Create a deterministic DevOS rework handoff from a rejection packet."""
+    packet: dict[str, Any] = dict(DEVOS_HANDOFF_TEMPLATE)
     packet["from_profile"] = "orchestrator_os"
     packet["to_profile"] = "dev_os"
-    packet["current_state"] = "AUDIT_REJECTED"
-    packet["requested_next_state"] = "DEV_REWORK"
+    packet["current_state"] = source_state
+    packet["requested_next_state"] = route_target
     packet["production_order_id"] = po.production_order_id
     packet["context"] = (
-        f"AuditOS rejected the implementation for production order {po.production_order_id}"
+        f"Rework route selected by OrchestratorOS for production order {po.production_order_id}"
     )
-    packet["objective"] = "Apply the AuditOS correction request and rework the implementation"
+    packet["objective"] = "Apply the correction request and rework the implementation"
     packet["expected_output"] = "Reworked implementation report and updated evidence"
     packet["scope"] = str(rejection_packet.get("correction_request", rejection_packet.get("summary", "")))
-    packet["out_of_scope"] = "Any new scope beyond the approved brief and audit correction"
+    packet["out_of_scope"] = "Any new scope beyond the approved brief and correction request"
     packet["inputs"] = (
         f"Parent card ID: {po.parent_kanban_card_id}; "
         f"Child card IDs: {', '.join(po.child_kanban_card_ids)}; "
-        "AuditOS rejection packet frozen on the AuditOS card."
+        "Rejection or classification packet frozen on the originating card."
     )
     packet["acceptance_criteria"] = [
-        "Address the AuditOS rejection reason.",
+        "Address the selected correction request.",
         "Preserve approved scope and repo/workspace boundaries.",
-        "Return to DEV_COMPLETE with credible evidence.",
+        f"Return to DEV_COMPLETE with credible evidence for {next_handoff_target}.",
     ]
     packet["stop_conditions"] = [
-        "AuditOS correction request is ambiguous or missing.",
+        "Correction request is ambiguous or missing.",
         "The rework would expand scope beyond the approved brief.",
         "The repo/workspace target is unavailable.",
     ]
     packet["approval_boundaries"] = ["No scope expansion or destructive changes."]
-    packet["artifact_references"] = ["AuditOS rejection packet"]
+    packet["artifact_references"] = ["Origin rejection packet"]
+    packet["default_rejection_reason"] = rejection_packet.get(
+        "default_rejection_reason",
+        rejection_packet.get("rejection_reason", ""),
+    )
+    packet["correction_request"] = rejection_packet.get("correction_request", [])
+    packet["classification"] = rejection_packet.get("classification", "audit_rework")
+    packet["route_target"] = route_target
+    packet["route_reason"] = route_reason or "Rework route selected by OrchestratorOS"
+    packet["next_handoff_target"] = next_handoff_target
+    return packet
+
+
+def create_architect_rework_handoff(
+    po: ProductionOrder,
+    classification_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the deterministic ArchitectOS spec-rework handoff."""
+    packet: dict[str, Any] = dict(ARCHITECT_HANDOFF_TEMPLATE)
+    packet["from_profile"] = "orchestrator_os"
+    packet["to_profile"] = "architect_os"
+    packet["current_state"] = "ORCHESTRATOR_TRIAGE"
+    packet["requested_next_state"] = "SPEC_REWORK"
+    packet["production_order_id"] = po.production_order_id
+    packet["objective"] = "Correct the spec or design mismatch identified by OrchestratorOS"
+    packet["expected_output"] = "Spec-rework correction packet and updated architecture guidance"
+    packet["scope"] = str(classification_packet.get("correction_request", classification_packet.get("default_rejection_reason", "")))
+    packet["out_of_scope"] = "Any implementation work or workflow completion beyond the spec correction"
+    packet["inputs"] = (
+        f"Parent card ID: {po.parent_kanban_card_id}; "
+        f"Child card IDs: {', '.join(po.child_kanban_card_ids)}; "
+        "OrchestratorOS classification packet frozen on the originating card."
+    )
+    packet["acceptance_criteria"] = [
+        "Address the spec or design mismatch.",
+        "Preserve the approved brief and downstream implementation contract.",
+        "Return ArchitectOS-ready correction guidance.",
+    ]
+    packet["stop_conditions"] = [
+        "The classification packet is incomplete or inconsistent.",
+        "The correction would expand scope beyond the approved brief.",
+        "The repo/workspace target is unavailable.",
+    ]
+    packet["approval_boundaries"] = ["No scope expansion or destructive changes."]
+    packet["artifact_references"] = ["OrchestratorOS classification packet"]
+    packet["classification"] = classification_packet.get("classification", "spec_or_design_mismatch")
+    packet["default_rejection_reason"] = classification_packet.get("default_rejection_reason", "")
+    packet["correction_request"] = classification_packet.get("correction_request", [])
+    packet["route_target"] = "SPEC_REWORK"
+    packet["route_reason"] = classification_packet.get("route_reason", "Spec or design mismatch requires ArchitectOS correction")
+    packet["next_handoff_target"] = "architect_os"
     return packet
 
 
@@ -1557,6 +1669,154 @@ def validate_default_final_review_packet(
         positive_tokens=("done", "complete", "completed", "accept", "accepted", "pass", "passed"),
     )
 
+    return packet
+
+
+def create_default_rejection_handoff(
+    po: ProductionOrder,
+    rejection_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the OrchestratorOS triage handoff from a Default rejection."""
+    packet = dict(DEFAULT_REJECTION_HANDOFF_TEMPLATE)
+    packet["production_order_id"] = po.production_order_id
+    packet["rejection_summary"] = rejection_packet["summary"]
+    packet["original_brief_mismatch"] = rejection_packet["original_brief_mismatch"]
+    packet["rejection_reason"] = rejection_packet["rejection_reason"]
+    packet["evidence"] = rejection_packet["evidence"]
+    packet["recommended_route"] = rejection_packet["recommended_route"]
+    packet["next_handoff_target"] = rejection_packet["next_handoff_target"]
+    packet["input_packet"] = (
+        f"Default rejection packet for production order {po.production_order_id}"
+    )
+    packet["expected_output"] = "OrchestratorOS triage packet"
+    packet["acceptance_criteria"] = [
+        "Route the rejected final review into OrchestratorOS triage.",
+        "Preserve the final-review rejection evidence and mismatch summary.",
+    ]
+    packet["stop_conditions"] = [
+        "The rejection packet is incomplete or inconsistent.",
+        "Routing would bypass OrchestratorOS triage.",
+        "The production order identity does not match.",
+    ]
+    return packet
+
+
+def validate_default_rejection_packet(
+    packet: dict[str, Any],
+    *,
+    expected_production_order_id: str,
+    expected_source_state: str,
+) -> dict[str, Any]:
+    """Validate the explicit Default Hermes rejection packet."""
+    label = "Default rejection packet"
+    if not isinstance(packet, dict):
+        raise ValueError(f"{label} must be a JSON object")
+
+    missing = _missing_required_fields(
+        packet,
+        REQUIRED_DEFAULT_REJECTION_PACKET_FIELDS,
+    )
+    if missing:
+        raise ValueError(
+            f"{label} missing required field(s): " + ", ".join(missing)
+        )
+
+    if packet["production_order_id"] != expected_production_order_id:
+        raise ValueError(
+            f"{label} production_order_id does not match the requested production order"
+        )
+    if packet["owner_profile"] != "default":
+        raise ValueError(f"{label} owner_profile must be 'default'")
+    if packet["source_state"] != "DEFAULT_FINAL_REVIEW":
+        raise ValueError(
+            f"{label} source_state must be 'DEFAULT_FINAL_REVIEW'"
+        )
+    if packet["source_state"] != expected_source_state:
+        raise ValueError(
+            f"{label} source_state must match current production order state "
+            f"{expected_source_state!r}"
+        )
+    if packet["recommended_route"] != "orchestrator_triage":
+        raise ValueError(
+            f"{label} recommended_route must be 'orchestrator_triage'"
+        )
+    if packet["next_handoff_target"] != "orchestrator_os":
+        raise ValueError(
+            f"{label} next_handoff_target must be 'orchestrator_os'"
+        )
+
+    _require_negative_result(
+        packet["review_result"],
+        field_name="review_result",
+        label=label,
+        negative_tokens=("fail", "failed", "reject", "rejected", "block", "blocked", "rework"),
+    )
+    _require_non_empty_field(packet, "summary", label=label)
+    _require_non_empty_field(packet, "original_brief_mismatch", label=label)
+    _require_non_empty_field(packet, "rejection_reason", label=label)
+    _require_non_empty_field(packet, "evidence", label=label)
+
+    return packet
+
+
+def validate_orchestrator_classification_packet(
+    packet: dict[str, Any],
+    *,
+    expected_production_order_id: str,
+    expected_source_state: str,
+) -> dict[str, Any]:
+    """Validate the OrchestratorOS default-rejection classification packet."""
+    label = "OrchestratorOS classification packet"
+    if not isinstance(packet, dict):
+        raise ValueError(f"{label} must be a JSON object")
+
+    missing = _missing_required_fields(
+        packet,
+        REQUIRED_ORCHESTRATOR_CLASSIFICATION_PACKET_FIELDS,
+    )
+    if missing:
+        raise ValueError(
+            f"{label} missing required field(s): " + ", ".join(missing)
+        )
+
+    if packet["production_order_id"] != expected_production_order_id:
+        raise ValueError(
+            f"{label} production_order_id does not match the requested production order"
+        )
+    if packet["owner_profile"] != "orchestrator_os":
+        raise ValueError(f"{label} owner_profile must be 'orchestrator_os'")
+    if packet["source_state"] != "ORCHESTRATOR_TRIAGE":
+        raise ValueError(f"{label} source_state must be 'ORCHESTRATOR_TRIAGE'")
+    if packet["source_state"] != expected_source_state:
+        raise ValueError(
+            f"{label} source_state must match current production order state "
+            f"{expected_source_state!r}"
+        )
+
+    classification = str(packet["classification"]).strip().lower()
+    route_spec = ORCHESTRATOR_CLASSIFICATION_ROUTE_MAP.get(classification)
+    if route_spec is None:
+        allowed = ", ".join(sorted(ORCHESTRATOR_CLASSIFICATION_ROUTE_MAP))
+        raise ValueError(
+            f"{label} classification must be one of: {allowed}"
+        )
+
+    if packet["route_target"] != route_spec["route_target"]:
+        raise ValueError(
+            f"{label} route_target must be {route_spec['route_target']!r} "
+            f"for classification {classification!r}"
+        )
+    if packet["next_handoff_target"] != route_spec["next_handoff_target"]:
+        raise ValueError(
+            f"{label} next_handoff_target must be {route_spec['next_handoff_target']!r} "
+            f"for classification {classification!r}"
+        )
+
+    _require_non_empty_field(packet, "default_rejection_reason", label=label)
+    _require_non_empty_field(packet, "route_reason", label=label)
+    _require_non_empty_field(packet, "correction_request", label=label)
+
+    packet["classification"] = classification
     return packet
 
 
@@ -2096,6 +2356,99 @@ def run_orchestrator_rework_bridge(
     return po
 
 
+def run_orchestrator_classification_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    classification_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Route DEFAULT_REJECTED/ORCHESTRATOR_TRIAGE into a rework lane."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"ORCHESTRATOR_TRIAGE"},
+        expected_owner="orchestrator_os",
+    )
+    if not any(
+        entry.from_state == "DEFAULT_REJECTED" and entry.to_state == "ORCHESTRATOR_TRIAGE"
+        for entry in po.stage_history
+    ):
+        raise ValueError(
+            "Orchestrator classification routing requires prior DEFAULT_REJECTED triage"
+        )
+    packet = validate_orchestrator_classification_packet(
+        classification_packet,
+        expected_production_order_id=production_order_id,
+        expected_source_state=po.current_state,
+    )
+
+    route_target = packet["route_target"]
+    if route_target == "DEV_REWORK":
+        target_card_id = po.child_kanban_card_ids[2]
+        rework_handoff = create_devos_rework_handoff(
+            po,
+            packet,
+            source_state="ORCHESTRATOR_TRIAGE",
+            route_reason=packet["route_reason"],
+            route_target=route_target,
+            next_handoff_target="dev_os",
+        )
+        next_action = "dispatch_dev_rework"
+        handoff_result = "DevOS rework handoff packet attached"
+    elif route_target == "SPEC_REWORK":
+        target_card_id = po.child_kanban_card_ids[1]
+        rework_handoff = create_architect_rework_handoff(po, packet)
+        next_action = "dispatch_spec_rework"
+        handoff_result = "ArchitectOS spec-rework handoff packet attached"
+    else:  # pragma: no cover - validate_orchestrator_classification_packet prevents this
+        raise ValueError(f"Unsupported route_target {route_target!r}")
+
+    freeze_handoff_on_card(conn, target_card_id, rework_handoff)
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "retry_started",
+        from_state="ORCHESTRATOR_TRIAGE",
+        to_state=route_target,
+        owner_profile="orchestrator_os",
+        kanban_card_id=po.parent_kanban_card_id,
+        result=f"OrchestratorOS started {route_target.lower()} routing",
+        next_action=next_action,
+    )
+
+    transition_state(
+        conn,
+        po,
+        route_target,
+        "orchestrator_os",
+        result=f"orchestrator classified default rejection; {route_target.lower()} attached",
+        next_action=next_action,
+        card_id=po.parent_kanban_card_id,
+        event_type="state_transitioned",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="ORCHESTRATOR_TRIAGE",
+        to_state=route_target,
+        owner_profile="orchestrator_os",
+        kanban_card_id=target_card_id,
+        result=handoff_result,
+        next_action=next_action,
+    )
+
+    _sync_child_current_state(conn, po)
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (target_card_id,),
+    )
+    return po
+
+
 def run_devos_rework_complete_bridge(
     conn: sqlite3.Connection,
     *,
@@ -2421,6 +2774,106 @@ def run_default_final_review_bridge(
     conn.execute(
         "UPDATE tasks SET status = 'done' WHERE id = ?",
         (final_card_id,),
+    )
+    return po
+
+
+def run_default_final_review_reject_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    rejection_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance DEFAULT_FINAL_REVIEW to DEFAULT_REJECTED for an existing order."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"DEFAULT_FINAL_REVIEW"},
+        expected_owner="default",
+    )
+    packet = validate_default_rejection_packet(
+        rejection_packet,
+        expected_production_order_id=production_order_id,
+        expected_source_state=po.current_state,
+    )
+
+    final_card_id = po.child_kanban_card_ids[5]
+    freeze_result_on_card(conn, final_card_id, packet)
+
+    transition_state(
+        conn,
+        po,
+        "DEFAULT_REJECTED",
+        "default",
+        result="default final review rejected; triage handoff pending",
+        next_action="route_orchestrator_triage",
+        card_id=po.parent_kanban_card_id,
+        event_type="state_transitioned",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "stage_rejected",
+        from_state="DEFAULT_FINAL_REVIEW",
+        to_state="DEFAULT_REJECTED",
+        owner_profile="default",
+        kanban_card_id=final_card_id,
+        result="Default rejection packet attached",
+        next_action="route_orchestrator_triage",
+    )
+
+    _sync_child_current_state(conn, po)
+    return po
+
+
+def run_orchestrator_default_rejection_triage_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    rejection_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance DEFAULT_REJECTED to ORCHESTRATOR_TRIAGE for an existing order."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"DEFAULT_REJECTED"},
+        expected_owner="orchestrator_os",
+    )
+
+    orchestrator_card_id = po.child_kanban_card_ids[0]
+    triage_handoff = create_default_rejection_handoff(po, rejection_packet)
+    freeze_handoff_on_card(conn, orchestrator_card_id, triage_handoff)
+
+    transition_state(
+        conn,
+        po,
+        "ORCHESTRATOR_TRIAGE",
+        "orchestrator_os",
+        result="default rejection routed to OrchestratorOS triage",
+        next_action="dispatch_orchestrator_triage",
+        card_id=po.parent_kanban_card_id,
+        event_type="state_transitioned",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="DEFAULT_REJECTED",
+        to_state="ORCHESTRATOR_TRIAGE",
+        owner_profile="orchestrator_os",
+        kanban_card_id=orchestrator_card_id,
+        result="OrchestratorOS triage handoff packet attached",
+        next_action="dispatch_orchestrator_triage",
+    )
+
+    _sync_child_current_state(conn, po)
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (orchestrator_card_id,),
     )
     return po
 

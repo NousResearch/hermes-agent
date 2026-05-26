@@ -147,15 +147,29 @@ def _voice_send_command(
     return f"/_send {_chat_ref_for_chat_id(chat_id)} json {payload}"
 
 
-def _native_call_offer_command(chat_id: str, offer: dict, *, media: str = "audio") -> str:
+def _native_call_offer_command(
+    chat_id: str,
+    offer: Any,
+    *,
+    media: str = "audio",
+) -> str:
+    if isinstance(offer, dict):
+        rtc_session = offer.get("rtcSession", "")
+        rtc_ice_candidates = offer.get("rtcIceCandidates", "")
+        capabilities = dict(offer.get("capabilities") or {})
+    else:
+        rtc_session = getattr(offer, "rtc_session", "")
+        rtc_ice_candidates = getattr(offer, "rtc_ice_candidates", "")
+        capabilities = dict(getattr(offer, "capabilities", {}) or {})
+    capabilities.setdefault("encryption", False)
     payload = {
         "callType": {
             "media": media,
-            "capabilities": {"encryption": False},
+            "capabilities": capabilities,
         },
         "rtcSession": {
-            "rtcSession": offer.get("rtcSession", ""),
-            "rtcIceCandidates": offer.get("rtcIceCandidates", ""),
+            "rtcSession": rtc_session,
+            "rtcIceCandidates": rtc_ice_candidates,
         },
     }
     encoded = json.dumps(payload, separators=(",", ":"))
@@ -870,6 +884,22 @@ class SimplexAdapter(BasePlatformAdapter):
     async def _reject_native_call(self, chat_id: str) -> bool:
         """Backward-compatible private alias for native call rejection."""
         return await self.reject_native_call(chat_id)
+
+    async def send_offer(self, contact_id: str, offer: Any) -> None:
+        """NativeCallSignalingPort: send a media offer to a contact."""
+        await self.send_native_call_offer(contact_id, offer)
+
+    async def send_status(self, contact_id: str, status: str) -> None:
+        """NativeCallSignalingPort: send call status to a contact."""
+        await self.send_native_call_status(contact_id, status)
+
+    async def reject(self, contact_id: str, reason_code: str) -> None:
+        """NativeCallSignalingPort: reject a native call."""
+        await self.reject_native_call(contact_id, reason_code)
+
+    async def end(self, contact_id: str) -> None:
+        """NativeCallSignalingPort: end a native call."""
+        await self.end_native_call(contact_id)
 
     async def _fetch_file(self, file_id: Any, file_name: str) -> Optional[str]:
         """Ask the daemon to receive and return a file attachment."""

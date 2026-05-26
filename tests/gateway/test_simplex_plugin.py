@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.calls.native.ports import NativeMediaOffer
 from gateway.platforms.base import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -409,6 +410,33 @@ async def test_send_native_call_offer_sends_exact_command():
 
 
 @pytest.mark.asyncio
+async def test_send_native_call_offer_serializes_native_media_offer():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    sent = []
+
+    async def fake_send_command(cmd):
+        sent.append(cmd)
+        return {"type": "ok"}
+
+    adapter._send_command = fake_send_command  # type: ignore[method-assign]
+    offer = NativeMediaOffer(
+        rtc_session="offer-b64",
+        rtc_ice_candidates="ice-b64",
+        capabilities={"encryption": True},
+    )
+
+    ok = await adapter.send_native_call_offer("42", offer, media="audio")
+
+    assert ok is True
+    assert sent == [
+        '/_call offer @42 {"callType":{"media":"audio","capabilities":{"encryption":true}},'
+        '"rtcSession":{"rtcSession":"offer-b64","rtcIceCandidates":"ice-b64"}}'
+    ]
+
+
+@pytest.mark.asyncio
 async def test_native_call_status_end_and_reject_use_chat_refs():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
@@ -429,6 +457,38 @@ async def test_native_call_status_end_and_reject_use_chat_refs():
         "/_call status @42 connecting",
         "/_call end #99",
         "/_call reject @42",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_call_signaling_port_methods_emit_expected_commands():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    sent = []
+
+    async def fake_send_command(cmd):
+        sent.append(cmd)
+        return {"type": "ok"}
+
+    adapter._send_command = fake_send_command  # type: ignore[method-assign]
+    offer = NativeMediaOffer(
+        rtc_session="offer-b64",
+        rtc_ice_candidates="ice-b64",
+        capabilities={"encryption": False},
+    )
+
+    await adapter.send_offer("42", offer)
+    await adapter.send_status("42", "connecting")
+    await adapter.reject("42", "busy")
+    await adapter.end("42")
+
+    assert sent == [
+        '/_call offer @42 {"callType":{"media":"audio","capabilities":{"encryption":false}},'
+        '"rtcSession":{"rtcSession":"offer-b64","rtcIceCandidates":"ice-b64"}}',
+        "/_call status @42 connecting",
+        "/_call reject @42",
+        "/_call end @42",
     ]
 
 

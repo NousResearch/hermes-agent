@@ -326,8 +326,8 @@ export function StatusRule({
           ) : (
             <Text color={statusColor}>{status}</Text>
           )}
-          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
-          {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
+          <Text color={t.color.text}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
+          {ctxLabel ? <Text color={t.color.text}> │ {ctxLabel}</Text> : null}
           {bar ? (
             <Text color={t.color.muted}>
               {' │ '}
@@ -337,13 +337,13 @@ export function StatusRule({
           {sessionStartedAt ? (
             <Text color={t.color.muted}>
               {' │ '}
-              <SessionDuration startedAt={sessionStartedAt} />
+              <Text color={t.color.text}><SessionDuration startedAt={sessionStartedAt} /></Text>
             </Text>
           ) : null}
           {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
             <Text color={t.color.muted}>
               {' │ '}
-              <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
+              <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.text}>
                 cmp {usage.compressions}
               </Text>
             </Text>
@@ -352,16 +352,16 @@ export function StatusRule({
           {voiceLabel ? (
             <Text
               color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
+                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.text
               }
             >
               {' │ '}
               {voiceLabel}
             </Text>
           ) : null}
-          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
+          {bgCount > 0 ? <Text color={t.color.text}> │ {bgCount} bg</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
+            <Text color={t.color.text}> │ ${usage.cost_usd.toFixed(4)}</Text>
           ) : null}
         </Text>
       </Box>

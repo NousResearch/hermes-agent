@@ -27,6 +27,30 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
+_SEARCH_MAX_LIMIT = 200
+
+
+def _clamp_pagination(
+    limit: int,
+    offset: int,
+    *,
+    default_limit: int = 20,
+    max_limit: int = _SEARCH_MAX_LIMIT,
+) -> tuple[int, int]:
+    """Return safe LIMIT/OFFSET values for session DB list/search queries."""
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError):
+        parsed_limit = default_limit
+    try:
+        parsed_offset = int(offset)
+    except (TypeError, ValueError):
+        parsed_offset = 0
+    safe_limit = max(1, min(max_limit, parsed_limit))
+    safe_offset = max(0, parsed_offset)
+    return safe_limit, safe_offset
+
+
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
@@ -733,6 +757,7 @@ class SessionDB:
         By default, child sessions (subagent runs, compression continuations)
         are excluded.  Pass ``include_children=True`` to include them.
         """
+        limit, offset = _clamp_pagination(limit, offset)
         where_clauses = []
         params = []
 
@@ -1015,6 +1040,8 @@ class SessionDB:
         if not query:
             return []
 
+        limit, offset = _clamp_pagination(limit, offset)
+
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
@@ -1097,6 +1124,7 @@ class SessionDB:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source."""
+        limit, offset = _clamp_pagination(limit, offset)
         with self._lock:
             if source:
                 cursor = self._conn.execute(

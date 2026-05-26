@@ -595,26 +595,35 @@ def _prompt_manual_connection_values(prompt, select, cancelled):
         prompt("OpenViking server URL", default=_DEFAULT_ENDPOINT)
     ) or _DEFAULT_ENDPOINT
     is_local = _is_local_openviking_url(endpoint)
-    api_key_label = (
-        "OpenViking API key (optional for local)"
-        if is_local
-        else "OpenViking API key"
-    )
-    api_key = _clean_config_value(prompt(api_key_label, secret=True))
-    if not api_key and not is_local:
-        print("\n  Remote OpenViking servers require an API key.")
-        print("  No changes saved.\n")
-        return None
 
     values = {
         "endpoint": endpoint,
-        "api_key": api_key,
+        "api_key": "",
         "account": "",
         "user": "",
         "agent": "",
     }
-    if api_key:
-        key_type = select(
+    if is_local:
+        credential_choice = select(
+            "  OpenViking credential",
+            [
+                ("No API key", "local dev mode"),
+                ("User API key", "server derives account/user automatically"),
+                ("Root API key", "requires account and user IDs"),
+            ],
+            default=0,
+            cancel_returns=cancelled,
+        )
+        if credential_choice == cancelled:
+            return _SETUP_CANCELLED
+        if credential_choice == 0:
+            values["agent"] = _clean_config_value(
+                prompt("OpenViking agent", default=_DEFAULT_AGENT)
+            ) or _DEFAULT_AGENT
+            return values
+        api_key_type = "root" if credential_choice == 2 else "user"
+    else:
+        credential_choice = select(
             "  OpenViking API key type",
             [
                 ("User API key", "server derives account/user automatically"),
@@ -623,18 +632,29 @@ def _prompt_manual_connection_values(prompt, select, cancelled):
             default=0,
             cancel_returns=cancelled,
         )
-        if key_type == cancelled:
+        if credential_choice == cancelled:
             return _SETUP_CANCELLED
-        if key_type == 1:
-            values["api_key_type"] = "root"
-            values["account"] = _clean_config_value(prompt("OpenViking account"))
-            values["user"] = _clean_config_value(prompt("OpenViking user"))
-            if not values["account"] or not values["user"]:
-                print("\n  Root API keys require both OpenViking account and user.")
-                print("  No changes saved.\n")
-                return None
-        else:
-            values["api_key_type"] = "user"
+        api_key_type = "root" if credential_choice == 1 else "user"
+
+    values["api_key_type"] = api_key_type
+    api_key_label = (
+        "OpenViking root API key"
+        if api_key_type == "root"
+        else "OpenViking user API key"
+    )
+    values["api_key"] = _clean_config_value(prompt(api_key_label, secret=True))
+    if not values["api_key"]:
+        print(f"\n  {api_key_label} is required.")
+        print("  No changes saved.\n")
+        return None
+
+    if api_key_type == "root":
+        values["account"] = _clean_config_value(prompt("OpenViking account"))
+        values["user"] = _clean_config_value(prompt("OpenViking user"))
+        if not values["account"] or not values["user"]:
+            print("\n  Root API keys require both OpenViking account and user.")
+            print("  No changes saved.\n")
+            return None
 
     values["agent"] = _clean_config_value(
         prompt("OpenViking agent", default=_DEFAULT_AGENT)

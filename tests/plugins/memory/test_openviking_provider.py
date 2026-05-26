@@ -223,7 +223,7 @@ def test_post_setup_manual_remote_root_writes_ovcli_and_links(tmp_path, monkeypa
         "_prompt",
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
-            "OpenViking API key": "root-secret",
+            "OpenViking root API key": "root-secret",
             "OpenViking account": "acct",
             "OpenViking user": "alice",
             "OpenViking agent": "agent",
@@ -272,10 +272,14 @@ def test_post_setup_manual_remote_user_keeps_only_hermes_env(tmp_path, monkeypat
         _prompt_from_values(
             {
                 "OpenViking server URL": "https://openviking.example",
-                "OpenViking API key": "user-secret",
+                "OpenViking user API key": "user-secret",
                 "OpenViking agent": "agent",
             },
-            forbidden={"OpenViking account", "OpenViking user"},
+            forbidden={
+                "OpenViking account",
+                "OpenViking root API key",
+                "OpenViking user",
+            },
         ),
     )
     config = {"memory": {}}
@@ -308,13 +312,18 @@ def test_post_setup_manual_remote_requires_api_key(tmp_path, monkeypatch):
 
     save_config = MagicMock()
     monkeypatch.setattr(hermes_config, "save_config", save_config)
-    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: 2)
+    choices = iter([2, 0])
+    monkeypatch.setattr(
+        memory_setup,
+        "_curses_select",
+        lambda *args, **kwargs: next(choices),
+    )
     monkeypatch.setattr(
         memory_setup,
         "_prompt",
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
-            "OpenViking API key": "",
+            "OpenViking user API key": "",
         }),
     )
     config = {"memory": {"provider": "builtin"}}
@@ -353,7 +362,7 @@ def test_post_setup_manual_root_requires_account_and_user(tmp_path, monkeypatch)
         "_prompt",
         _prompt_from_values({
             "OpenViking server URL": "https://openviking.example",
-            "OpenViking API key": "root-secret",
+            "OpenViking root API key": "root-secret",
             "OpenViking account": "",
             "OpenViking user": "alice",
         }),
@@ -380,7 +389,7 @@ def test_post_setup_manual_local_allows_blank_api_key(tmp_path, monkeypatch):
 
     from hermes_cli import memory_setup
 
-    choices = iter([2, 1])
+    choices = iter([2, 0, 1])
     monkeypatch.setattr(
         memory_setup,
         "_curses_select",
@@ -392,10 +401,14 @@ def test_post_setup_manual_local_allows_blank_api_key(tmp_path, monkeypatch):
         _prompt_from_values(
             {
                 "OpenViking server URL": "http://localhost:1933",
-                "OpenViking API key": "",
                 "OpenViking agent": "agent",
             },
-            forbidden={"OpenViking account", "OpenViking user"},
+            forbidden={
+                "OpenViking account",
+                "OpenViking root API key",
+                "OpenViking user",
+                "OpenViking user API key",
+            },
         ),
     )
     config = {"memory": {}}

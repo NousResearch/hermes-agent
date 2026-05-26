@@ -5360,11 +5360,11 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-def set_config_value(key: str, value: str):
+def set_config_value(key: str, value: str) -> bool:
     """Set a configuration value."""
     if is_managed():
         managed_error("set configuration values")
-        return
+        return False
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
@@ -5381,7 +5381,7 @@ def set_config_value(key: str, value: str):
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
-        return
+        return True
     
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
@@ -5391,9 +5391,21 @@ def set_config_value(key: str, value: str):
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
-        except Exception:
-            user_config = {}
+                loaded_config = yaml.safe_load(f) or {}
+        except Exception as exc:
+            _warn_config_parse_failure(config_path, exc)
+            print(
+                f"✗ Refusing to update {config_path}: existing config.yaml "
+                "is not valid YAML. Fix the file and retry."
+            )
+            return False
+        if not isinstance(loaded_config, dict):
+            print(
+                f"✗ Refusing to update {config_path}: top-level YAML "
+                "must be a mapping."
+            )
+            return False
+        user_config = loaded_config
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -5410,12 +5422,16 @@ def set_config_value(key: str, value: str):
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
 
-    _set_nested(user_config, key, value)
-    
-    # Write only user config back (not the full merged defaults)
-    ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    try:
+        _set_nested(user_config, key, value)
+
+        # Write only user config back (not the full merged defaults)
+        ensure_hermes_home()
+        from utils import atomic_yaml_write
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
+    except Exception as exc:
+        print(f"✗ Failed to set {key}: {exc}")
+        return False
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
@@ -5445,6 +5461,7 @@ def set_config_value(key: str, value: str):
         save_env_value(_config_to_env_sync[key], str(value))
 
     print(f"✓ Set {key} = {value} in {config_path}")
+    return True
 
 
 # =============================================================================

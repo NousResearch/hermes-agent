@@ -214,9 +214,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       applySkin(skin)
     }
 
-    // Set locale from gateway config
+    // Set locale from gateway config (language may be in payload directly)
     if (language) {
       setGatewayLocale(language as Locale)
+    } else if (skin?.language) {
+      setGatewayLocale(skin.language as Locale)
     }
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
@@ -294,10 +296,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     switch (ev.type) {
-      case 'gateway.ready':
-        handleReady(ev.payload?.skin, ev.payload?.language)
-
+      case 'gateway.ready': {
+        const readyPayload = ev.payload as any
+        if (readyPayload) {
+          const skin = readyPayload.skin ?? readyPayload
+          handleReady(skin, readyPayload.language)
+        } else {
+          handleReady()
+        }
         return
+      }
 
       case 'skin.changed':
         if (ev.payload) {

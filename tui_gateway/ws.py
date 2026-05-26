@@ -125,7 +125,7 @@ async def handle_ws(ws: Any) -> None:
             "method": "event",
             "params": {
                 "type": "gateway.ready",
-                "payload": {"skin": server.resolve_skin()},
+                "payload": server.resolve_skin(),
             },
         }
     )

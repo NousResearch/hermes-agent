@@ -757,7 +757,8 @@ def resolve_skin() -> dict:
     try:
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
 
-        init_skin_from_config(_load_cfg())
+        cfg = _load_cfg()
+        init_skin_from_config(cfg)
         skin = get_active_skin()
         return {
             "name": skin.name,
@@ -767,6 +768,7 @@ def resolve_skin() -> dict:
             "banner_hero": skin.banner_hero,
             "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", ""),
+            "language": str((cfg.get("display") or {}).get("language", "en")),
         }
     except Exception:
         return {}

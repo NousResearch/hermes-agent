@@ -219,7 +219,7 @@ def main():
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",
-        "params": {"type": "gateway.ready", "payload": {"skin": resolve_skin()}},
+        "params": {"type": "gateway.ready", "payload": resolve_skin()},
     }):
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)

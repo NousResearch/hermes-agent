@@ -583,6 +583,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        self._disconnecting = False
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -850,8 +851,12 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._slash_commands:
                 self._register_slash_commands()
 
-            # Start the bot in background
+            # Start the bot in background. Monitor the task so discord.py
+            # reconnect exhaustion cannot leave the gateway process alive with
+            # a dead adapter and no fatal-error notification.
+            self._disconnecting = False
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
+            self._bot_task.add_done_callback(self._handle_bot_task_done)
 
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
@@ -868,8 +873,40 @@ class DiscordAdapter(BasePlatformAdapter):
             self._release_platform_lock()
             return False
 
+    def _handle_bot_task_done(self, task: asyncio.Task) -> None:
+        """Notify the gateway when discord.py's long-running task exits.
+
+        ``commands.Bot.start()`` normally runs until the adapter is explicitly
+        disconnected. If it returns while the adapter is running, discord.py has
+        stopped receiving events (for example after reconnect backoff
+        exhaustion), so surface a retryable fatal error to the gateway runner.
+        """
+        if self._disconnecting or not self._running or task.cancelled():
+            return
+
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+
+        if exc is None:
+            message = "Discord bot task stopped unexpectedly"
+            logger.error("[%s] %s", self.name, message)
+        else:
+            message = f"Discord bot task stopped unexpectedly: {exc}"
+            logger.error(
+                "[%s] %s",
+                self.name,
+                message,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+        self._set_fatal_error("discord_bot_task_stopped", message, retryable=True)
+        asyncio.create_task(self._notify_fatal_error())
+
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        self._disconnecting = True
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:

@@ -246,6 +246,99 @@ async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monk
 
 
 @pytest.mark.asyncio
+async def test_bot_task_exit_notifies_gateway_fatal_handler(monkeypatch):
+    """Regression for #32574/#26656: if discord.py gives up reconnecting
+    after the adapter is already marked running, the gateway must be notified
+    instead of leaving a zombie process that still appears active.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    class ExitingBot(FakeBot):
+        def __init__(self, *, intents, proxy=None, allowed_mentions=None, **_):
+            super().__init__(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+            self.stop = asyncio.Event()
+
+        async def start(self, token):
+            if "on_ready" in self._events:
+                await self._events["on_ready"]()
+            await self.stop.wait()
+
+        async def close(self):
+            self.stop.set()
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        bot = ExitingBot(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+        created["bot"] = bot
+        return bot
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    assert await adapter.connect() is True
+
+    assert adapter._bot_task is not None
+    created["bot"].stop.set()
+    await asyncio.wait_for(adapter._bot_task, timeout=1.0)
+    await asyncio.sleep(0)
+
+    assert adapter.fatal_error_code == "discord_bot_task_stopped"
+    assert adapter.fatal_error_retryable is True
+    fatal_handler.assert_awaited_once_with(adapter)
+
+
+@pytest.mark.asyncio
+async def test_bot_task_exit_during_disconnect_does_not_report_fatal(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False,
+        members=False, voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    class ClosingBot(FakeBot):
+        def __init__(self, *, intents, proxy=None, allowed_mentions=None, **_):
+            super().__init__(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+            self.stop = asyncio.Event()
+
+        async def start(self, token):
+            if "on_ready" in self._events:
+                await self._events["on_ready"]()
+            await self.stop.wait()
+
+        async def close(self):
+            self.stop.set()
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", lambda **kwargs: ClosingBot(**kwargs))
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    assert await adapter.connect() is True
+    await adapter.disconnect()
+    await asyncio.sleep(0)
+
+    assert adapter.has_fatal_error is False
+    fatal_handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 

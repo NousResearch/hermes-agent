@@ -282,6 +282,9 @@ class TestRedirectHandlerSshHint:
         monkeypatch.setattr(mco, "_oauth_port", 49202)
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
         monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
         monkeypatch.setattr("webbrowser.open", lambda url, **kw: True)
 
@@ -289,6 +292,22 @@ class TestRedirectHandlerSshHint:
 
         err = capsys.readouterr().err
         assert "ssh -N -L" not in err
+
+    def test_noninteractive_does_not_open_browser(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        opened = []
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        monkeypatch.delenv("HERMES_MCP_OAUTH_ALLOW_BROWSER", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
+        monkeypatch.setattr("webbrowser.open", lambda url, **kw: opened.append(url) or True)
+
+        self._run(_redirect_handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert opened == []
+        assert "headless environment detected" in err.lower()
 
     def test_no_ssh_hint_when_port_not_set(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco

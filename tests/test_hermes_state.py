@@ -2285,6 +2285,29 @@ class TestListSessionsRich:
         ids = [s["id"] for s in sessions]
         assert "branch" in ids, "Branch session should be visible in default list"
 
+    def test_branch_from_ended_parent_still_visible(self, db):
+        """Branch from an already-ended parent (e.g. resumed then /branch)
+        must be visible after the parent gets reopen+re-end('branched').
+        This is the /branch regression: parent ended with 'tui_close',
+        then _handle_branch_command calls reopen_session + end_session('branched')."""
+        db.create_session("parent", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='tui_close' WHERE id=?",
+            (100.0, "parent"),
+        )
+        db._conn.commit()
+        db.reopen_session("parent")
+        db.end_session("parent", "branched")
+        db.create_session("branch", "cli", parent_session_id="parent")
+        db.append_message("branch", "user", "fixing the cache bug")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "branch" in ids, (
+            "Branch from an already-ended parent should be visible "
+            "after reopen+re-end('branched')"
+        )
+
     def test_subagent_session_still_hidden(self, db):
         """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
         db.create_session("root", "cli")

@@ -6864,7 +6864,14 @@ class HermesCLI:
         # Save the current session's state before branching
         parent_session_id = self.session_id
 
-        # End the old session
+        # Reopen the parent if it was already ended (e.g. resumed from a
+        # previous CLI or gateway close), then end it with "branched" so
+        # list_sessions_rich's child filter (which requires parent
+        # end_reason = 'branched') doesn't silently hide the new branch.
+        try:
+            self._session_db.reopen_session(self.session_id)
+        except Exception:
+            pass
         try:
             self._session_db.end_session(self.session_id, "branched")
         except Exception:

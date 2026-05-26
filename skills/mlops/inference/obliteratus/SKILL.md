@@ -1,6 +1,6 @@
 ---
 name: obliteratus
-description: "OBLITERATUS: abliterate LLM refusals (diff-in-means)."
+description: "OBLITERATUS for authorized open-weight model-safety research and refusal-behavior analysis."
 version: 2.0.0
 author: Hermes Agent
 license: MIT
@@ -8,11 +8,23 @@ dependencies: [obliteratus, torch, transformers, bitsandbytes, accelerate, safet
 platforms: [linux, macos]
 metadata:
   hermes:
-    tags: [Abliteration, Uncensoring, Refusal-Removal, LLM, Weight-Projection, SVD, Mechanistic-Interpretability, HuggingFace, Model-Surgery]
+    tags: [Authorized-Model-Safety, Refusal-Analysis, LLM, Weight-Projection, SVD, Mechanistic-Interpretability, HuggingFace, Model-Surgery]
     related_skills: [vllm, gguf, huggingface-tokenizers]
 ---
 
 # OBLITERATUS Skill
+
+## Authorized Safety Gate
+
+Use this skill only for **authorized open-weight model research, interpretability, controlled local evaluation, or safety-differential analysis**. Before running model-surgery or refusal-ablation commands, verify all of the following:
+
+1. **Model ownership/license:** the model weights are local/open-weight and permitted for modification under their license.
+2. **Containment:** outputs stay in a private research sandbox unless a separate release review approves publication. Do not deploy altered models into user-facing, production, client, or public endpoints by default.
+3. **Purpose:** the work is to understand refusal circuits, compare safety behavior, evaluate alignment methods, or build mitigations — not to create a public harmful-content generator.
+4. **Evaluation:** run pre/post safety and capability benchmarks; label the artifact as modified and record the source model, patch method, parameters, and known risks.
+5. **Release boundary:** uploading, distributing, or serving an ablated model is a separate high-risk action requiring explicit confirmation and a written risk note.
+
+If any gate fails, stop and use safer alternatives: activation analysis, refusal-behavior measurement, policy evaluation, or benchmark-only experiments without weight modification.
 
 ## What's inside
 

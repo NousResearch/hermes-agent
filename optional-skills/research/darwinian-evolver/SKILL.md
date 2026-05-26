@@ -1,6 +1,6 @@
 ---
 name: darwinian-evolver
-description: Evolve prompts/regex/SQL/code with Imbue's evolution loop.
+description: "Evolve prompts/regex/SQL/code with Imbue's evolution loop in controlled, test-owned sandboxes."
 version: 0.1.0
 author: Bihruze (Asahi0x), Hermes Agent
 license: MIT
@@ -12,6 +12,18 @@ metadata:
 ---
 
 # Darwinian Evolver
+
+## Controlled Optimization Safety Gate
+
+Use this skill only when the organism, evaluator, dataset, and execution target are **test-owned or explicitly authorized**. Evolutionary search can discover brittle, adversarial, or resource-heavy solutions; keep it contained:
+
+1. **Sandbox first:** run against local fixtures, synthetic data, or a staging target — never production databases, live customer systems, or third-party services by default.
+2. **Bounded fitness:** set max iterations, cost/time limits, rate limits, and deterministic evaluation seeds before launching a loop.
+3. **No evasion goals:** do not optimize for bypassing security controls, spam/fraud success, vulnerability exploitation, scraping protections, or policy evasion.
+4. **Review winners:** inspect evolved prompts/regex/SQL/code before reuse; reject solutions that overfit, leak data, exploit evaluator bugs, or create unsafe side effects.
+5. **Write boundary:** any generated SQL/code that mutates state, reaches networks, or touches credentials requires a separate explicit approval and dry-run evidence.
+
+If the target is not clearly authorized and sandboxed, convert the request into benchmark design or a read-only static analysis task.
 
 Run Imbue's [darwinian_evolver](https://github.com/imbue-ai/darwinian_evolver) — an
 LLM-driven evolutionary search loop — to optimize a **prompt, regex, SQL query,

@@ -1,17 +1,29 @@
 ---
 name: godmode
-description: "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN."
+description: "Authorized LLM red-team prompt testing: Parseltongue, GODMODE, ULTRAPLINIAN."
 version: 1.0.0
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [jailbreak, red-teaming, G0DM0D3, Parseltongue, GODMODE, uncensoring, safety-bypass, prompt-engineering, L1B3RT4S]
+    tags: [authorized-red-team, model-safety, prompt-robustness, G0DM0D3, Parseltongue, GODMODE, prompt-engineering, L1B3RT4S]
     related_skills: [obliteratus]
 ---
 
 # G0DM0D3 Jailbreaking Skill
+
+## Authorized Safety Gate
+
+Use this skill only for **authorized safety research, controlled red-team evaluation, or local/offline model robustness testing**. Before following any operational prompt-bypass recipe, verify all of the following:
+
+1. **Authorization:** the target system/model/account is owned by the user, explicitly assigned for testing, or a local/offline sandbox.
+2. **Purpose:** the goal is defensive evaluation, documentation, benchmarking, or mitigation — not evading a third-party service policy, committing abuse, or helping another party bypass safeguards.
+3. **Containment:** do not persist jailbreak prompts into always-on config, gateway persona, cron jobs, public content, or third-party interactions without a separate explicit approval.
+4. **No harmful payloads:** refuse requests that ask for malware, credential theft, fraud, privacy invasion, weaponization, or instructions to bypass real-world safety controls.
+5. **Reporting:** when testing succeeds, document scope, model/version, prompt class, observed behavior, and mitigation suggestions; do not publish exploit prompts publicly without responsible-disclosure review.
+
+If any gate fails, stop using this skill and switch to a defensive alternative: threat modeling, policy test design, benchmark design, or safe prompt-hardening guidance.
 
 Bypass safety filters on API-served LLMs using techniques from [G0DM0D3](https://github.com/elder-plinius/G0DM0D3) and [L1B3RT4S](https://github.com/elder-plinius/L1B3RT4S). Three attack modes plus Hermes-native configuration for persistent jailbreaking.
 

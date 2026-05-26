@@ -2397,6 +2397,14 @@ _orphan_stdio_pids: set = set()
 # (``os.getpgid`` is POSIX-only).
 _stdio_pgids: Dict[int, int] = {}  # pid -> pgid
 
+# Lazy discovery state -- used when the active platform skips eager discovery
+# (e.g. api_server, whose toolsets include the ``no_mcp`` sentinel). When the
+# gateway marks eager discovery as skipped, the first child agent build that
+# needs MCP toolsets triggers a one-shot, thread-safe lazy discovery instead.
+_eager_discovery_skipped: bool = False
+_lazy_discovery_done: threading.Event = threading.Event()
+_lazy_discovery_lock: threading.Lock = threading.Lock()
+
 
 def _snapshot_child_pids() -> set:
     """Return a set of current child process PIDs.
@@ -3628,6 +3636,45 @@ def discover_mcp_tools() -> List[str]:
         logger.info(summary)
 
     return tool_names
+
+
+def mark_eager_discovery_skipped() -> None:
+    """Called by gateway startup when the active platform uses no_mcp.
+
+    Signals that eager MCP discovery was intentionally skipped.
+    The first call to ensure_mcp_discovered() will trigger lazy discovery.
+    """
+    global _eager_discovery_skipped
+    _eager_discovery_skipped = True
+
+
+def ensure_mcp_discovered() -> None:
+    """Trigger MCP discovery lazily, exactly once, thread-safe.
+
+    Safe to call concurrently from multiple threads. The first caller runs
+    discovery; subsequent callers return immediately once the Event is set.
+
+    If discovery was NOT skipped at startup (eager path already ran), this
+    is a no-op -- the Event is already set or discovery runs as normal.
+
+    On failure: logs a warning, sets the done-Event to prevent retry storms,
+    and returns -- child agents will get an empty/partial MCP toolset
+    (same degradation as a startup discovery failure).
+    """
+    if not _eager_discovery_skipped:
+        # Eager discovery ran at startup (or wasn't needed); nothing to do.
+        return
+    if _lazy_discovery_done.is_set():
+        return
+    with _lazy_discovery_lock:
+        if _lazy_discovery_done.is_set():
+            return
+        try:
+            discover_mcp_tools()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Lazy MCP discovery failed: %s", exc)
+        finally:
+            _lazy_discovery_done.set()
 
 
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:

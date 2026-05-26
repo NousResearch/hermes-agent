@@ -2195,3 +2195,44 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+def test_dashboard_mobile_columns_snap_one_bucket_per_swipe():
+    """Phone-sized screens should snap to one full-width bucket at a time."""
+    repo_root = Path(__file__).resolve().parents[2]
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "scroll-snap-type: x proximity" not in css
+    assert "@media (max-width: 767px)" in css
+    assert "scroll-snap-type: x mandatory" in css
+    assert ".hermes-kanban-column,\n  .hermes-kanban-trash" in css
+    assert "flex-basis: 100%" in css
+    assert "min-width: 100%" in css
+    assert "scroll-snap-align: start" in css
+    assert "scroll-snap-stop: always" in css
+    assert "-webkit-overflow-scrolling: touch" in css
+    assert (
+        ".hermes-kanban-trash:not(.hermes-kanban-trash--active) {\n"
+        "    display: none;\n"
+        "  }"
+    ) in css
+
+
+def test_dashboard_touch_drag_does_not_hijack_swipes():
+    """Touch card dragging must wait for a hold so board swipes stay native."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "const TOUCH_DRAG_HOLD_MS = 300;" in js
+    assert "const TOUCH_DRAG_MOVE_CANCEL_PX = 10;" in js
+    assert "let holdTimer = window.setTimeout(function ()" in js
+    assert "Math.sqrt(dx * dx + dy * dy) > TOUCH_DRAG_MOVE_CANCEL_PX" in js
+    assert "function suppressNextClick()" in js
+    assert "suppressNextClick();\n            cleanup(false);" in js
+    assert "document.addEventListener(\"pointermove\", move, { passive: false });" in js
+    assert "document.addEventListener(\"pointercancel\", cancel);" in js
+    assert "function cancel() {\n        cleanup(false);" in js
+    assert "}, 1200);" in js
+    assert ".hermes-kanban-card" in css
+    assert "touch-action: pan-x pan-y pinch-zoom" in css

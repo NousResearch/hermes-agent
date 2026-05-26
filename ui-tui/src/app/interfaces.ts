@@ -106,6 +106,7 @@ export interface UiState {
   inlineDiffs: boolean
   mouseTracking: MouseTrackingMode
   pasteCollapseLines: number
+  pasteCollapseChars: number
 
   sections: SectionVisibility
   showCost: boolean

@@ -313,7 +313,7 @@ def _remove_qwen_cli(provider: str, removed) -> RemovalResult:
 
 
 def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
-    """Copilot token comes from `gh auth token` or COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN.
+    """Remove or suppress Copilot token sources.
 
     Copilot is special: the same token can be seeded as multiple source
     entries (gh_cli from ``_seed_from_singletons`` plus env:<VAR> from
@@ -322,9 +322,14 @@ def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
     sources here so removal is stable regardless of which entry the
     user clicked.
 
-    We don't touch the user's gh CLI or shell state — just suppress so
-    Hermes stops picking the token up.
+    GitHub CLI credentials are external to Hermes and are only suppressed.
+    Env-sourced credentials are Hermes-owned when present in .env, so they
+    must go through the same cleanup as generic env removals.
     """
+    result = RemovalResult()
+    if removed.source.startswith("env:"):
+        result = _remove_env_source(provider, removed)
+
     # Suppress ALL copilot source variants up-front so no path resurrects
     # the pool entry.  The central dispatcher in auth_remove_command will
     # ALSO suppress removed.source, but it's idempotent so double-calling
@@ -334,11 +339,12 @@ def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
     for env_var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
         suppress_credential_source(provider, f"env:{env_var}")
 
-    return RemovalResult(hints=[
+    result.hints.extend([
         "Suppressed all copilot token sources (gh_cli + env vars) — they will not be re-seeded.",
-        "Note: Your gh CLI / shell environment is unchanged.",
+        "Note: Your gh CLI credentials are unchanged.",
         "Run `hermes auth add copilot` to re-enable if needed.",
     ])
+    return result
 
 
 def _remove_custom_config(provider: str, removed) -> RemovalResult:
@@ -360,9 +366,9 @@ def _register_all_sources() -> None:
 
     ORDER MATTERS — ``find_removal_step`` returns the first match.  Put
     provider-specific steps before the generic ``env:*`` step so that e.g.
-    copilot's ``env:GH_TOKEN`` goes through the copilot removal (which
-    doesn't touch the user's shell), not the generic env-var removal
-    (which would try to clear .env).
+    copilot's ``env:GH_TOKEN`` goes through the copilot removal, which
+    clears env-backed secrets while also suppressing duplicate Copilot
+    sources.
     """
     register(RemovalStep(
         provider="copilot", source_id="gh_cli",

@@ -36,10 +36,36 @@ from cron.jobs import (
 
 
 # ---------------------------------------------------------------------------
-# Cron prompt scanning — critical-severity patterns only, since cron prompts
-# run in fresh sessions with full tool access.
+# Cron prompt scanning
 # ---------------------------------------------------------------------------
+#
+# Two threat surfaces, two scanners:
+#
+#   1. User-supplied cron prompt (small, written as a directive).
+#      Strict scanning is appropriate — a legit cron prompt has no business
+#      saying "cat ~/.hermes/.env" or "rm -rf /". `_scan_cron_prompt()` runs
+#      against this at create/update time and as a runtime defense-in-depth.
+#
+#   2. Assembled prompt that includes loaded skill content (large markdown
+#      bodies, often security docs, postmortems, runbooks discussing attack
+#      patterns in PROSE). Reusing the strict patterns here false-positives
+#      every time a skill *describes* a command — see #3968 follow-up: the
+#      `hermes-agent-dev` skill contains a security postmortem mentioning
+#      `cat ~/.hermes/.env`, which tripped `read_secrets` and silently
+#      killed all PR-scout jobs.
+#
+#      Skill bodies are user-curated and scanned at install time by
+#      `skills_guard.py`. The runtime cron scan only needs to catch the
+#      patterns whose phrasing does NOT survive normal English prose:
+#      classic prompt-injection directives ("ignore previous instructions",
+#      "disregard your rules"), deception directives, and invisible
+#      unicode. `_scan_cron_skill_assembled()` runs against the assembled
+#      prompt with this tighter pattern set.
+#
+# Both scanners share the invisible-unicode check and the GitHub Authorization
+# header exemption.
 
+# Strict patterns — applied to the user prompt only.
 _CRON_THREAT_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
@@ -49,6 +75,20 @@ _CRON_THREAT_PATTERNS = [
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
+]
+
+# Looser pattern set — applied to the assembled prompt when skills are
+# attached. Only patterns whose phrasing is unambiguous in any context;
+# command-shape patterns are dropped because they false-positive on prose
+# in security docs / postmortems. Skill bodies are scanned at install time
+# by `skills_guard.py`, so the runtime cron scan is purely a tripwire for
+# obvious injection directives surviving a malicious skill that slipped
+# through install.
+_CRON_SKILL_ASSEMBLED_PATTERNS = [
+    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
+    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (r'system\s+prompt\s+override', "sys_prompt_override"),
+    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
 ]
 
 _CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
@@ -114,27 +154,75 @@ def _strip_legitimate_emoji_zwj(prompt: str) -> str:
     return ''.join(cleaned)
 
 
-def _scan_cron_prompt(prompt: str) -> str:
-    """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
+def _strip_cron_safe_constructs(prompt: str) -> str:
+    """Strip the GitHub `Authorization: token $GITHUB_TOKEN` auth-header
+    pattern so it doesn't trip the broader curl-auth-header exfil rule.
+
+    Allows the bundled GitHub skill fallback without opening a blanket
+    exemption for arbitrary Authorization-header exfiltration.
+    """
     github_auth_header = re.search(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
         r'\s+["\']?https://api\.github\.com(?:/|\b)',
         prompt,
         re.IGNORECASE,
     )
-    prompt_to_scan = prompt
     if github_auth_header:
-        # Allow the bundled GitHub skill fallback shape without opening a
-        # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
-    prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
+        return prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
+    return prompt
+
+
+def _check_invisible_unicode(prompt: str) -> str:
+    """Return an error string if the prompt contains invisible-unicode
+    injection markers (ZWJ inside legitimate emoji sequences is allowed).
+    """
+    prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt)
     for char in _CRON_INVISIBLE_CHARS:
         if char in prompt_for_invisible_scan:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
+    return ""
+
+
+def _scan_cron_prompt(prompt: str) -> str:
+    """Scan the USER-SUPPLIED cron prompt for critical threats.
+
+    Strict pattern set — used at job create/update time and as a runtime
+    defense-in-depth for prompts authored before the scanner existed.
+    The user prompt is small and directive; bare `cat .env` or `rm -rf /`
+    there is a smoking gun, not prose. Returns an error string when
+    blocked, else empty string.
+    """
+    prompt_to_scan = _strip_cron_safe_constructs(prompt)
+    invisible_err = _check_invisible_unicode(prompt_to_scan)
+    if invisible_err:
+        return invisible_err
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
+        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+            return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+    return ""
+
+
+def _scan_cron_skill_assembled(assembled: str) -> str:
+    """Scan an ASSEMBLED cron prompt that includes loaded skill content.
+
+    Looser pattern set — only catches unambiguous prompt-injection
+    directives and invisible unicode. Drops command-shape patterns
+    (cat .env, rm -rf /, authorized_keys, /etc/sudoers) because they
+    false-positive on legitimate skill markdown that *describes* attack
+    commands in security postmortems and runbooks.
+
+    Skill bodies are user-curated and already scanned at install time
+    by `skills_guard.py`. This scan is the runtime tripwire for an
+    obvious injection directive surviving a malicious install.
+    """
+    prompt_to_scan = _strip_cron_safe_constructs(assembled)
+    invisible_err = _check_invisible_unicode(prompt_to_scan)
+    if invisible_err:
+        return invisible_err
+    for pattern, pid in _CRON_SKILL_ASSEMBLED_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     return ""

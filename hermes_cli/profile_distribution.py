@@ -247,7 +247,7 @@ def _load_yaml(text: str) -> Any:
         import yaml
     except ImportError as exc:  # pragma: no cover — pyyaml is a hard dep
         raise DistributionError("PyYAML is required for distribution manifests") from exc
-    return yaml.safe_load(text)
+    return yaml.safe_load(text) or {}
 
 
 def _dump_yaml(data: Any) -> str:

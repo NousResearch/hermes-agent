@@ -902,7 +902,10 @@ class AIAgent:
 
         env_timeout = os.getenv("HERMES_API_CALL_STALE_TIMEOUT")
         if env_timeout is not None:
-            return float(env_timeout), False
+            try:
+                return float(env_timeout), False
+            except (ValueError, TypeError):
+                logger.warning("Invalid HERMES_API_CALL_STALE_TIMEOUT=%r, using default", env_timeout)
 
         return 90.0, True
 

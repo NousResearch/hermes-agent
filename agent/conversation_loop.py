@@ -4299,6 +4299,20 @@ def run_conversation(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
+    # ── Kanban auto-close hook ──────────────────────────────────────────
+    # After the conversation loop exits, if a kanban_auto_close callback is
+    # registered (injected when HERMES_KANBAN_TASK is set), call it with the
+    # result dict. The callback checks whether the worker called
+    # kanban_complete/kanban_block and auto-completes the task if not.
+    # This is the PRIMARY enforcement layer — it runs in the Python process
+    # after every run_conversation() exit and cannot be bypassed by model
+    # behavior.
+    if getattr(agent, "_kanban_auto_close", None) is not None:
+        try:
+            agent._kanban_auto_close(result)
+        except Exception as exc:
+            logger.warning("kanban_auto_close callback failed: %s", exc)
+
     return result
 
 

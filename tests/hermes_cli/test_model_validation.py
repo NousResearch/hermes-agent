@@ -222,7 +222,7 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
-    def test_copilot_falls_back_to_curated_defaults_without_stale_opus(self):
+    def test_copilot_falls_back_to_curated_defaults_with_opus_1m(self):
         with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
              patch("hermes_cli.models._fetch_github_models", return_value=None):
             ids = provider_model_ids("copilot")
@@ -233,7 +233,10 @@ class TestProviderModelIds:
         assert "claude-sonnet-4.5" in ids
         assert "claude-haiku-4.5" in ids
         assert "gemini-3.1-pro-preview" in ids
-        assert "claude-opus-4.6" not in ids
+        # claude-opus-4.6 and its 1m-context variant are real Copilot models
+        # and should be preserved in the curated fallback list.
+        assert "claude-opus-4.6" in ids
+        assert "claude-opus-4.6-1m" in ids
 
     def test_copilot_acp_falls_back_to_copilot_defaults(self):
         with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
@@ -245,7 +248,7 @@ class TestProviderModelIds:
         assert "claude-sonnet-4" in ids
         assert "gemini-3.1-pro-preview" in ids
         assert "copilot-acp" not in ids
-        assert "claude-opus-4.6" not in ids
+        assert "claude-opus-4.6" in ids
 
 
 # -- fetch_api_models --------------------------------------------------------

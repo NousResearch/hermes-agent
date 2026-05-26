@@ -82,7 +82,6 @@ class TestLintWorkflow:
         # Look for the blocking step's named line + its command.  We want
         # at least one ``ruff check .`` that does NOT have ``--exit-zero``
         # nearby.
-        import re
         # Split into lines and find ruff check invocations
         lines = content.splitlines()
         found_blocking = False
@@ -113,3 +112,26 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestF401UnusedImports:
+    """tests/test_lint_config.py must have zero F401 violations."""
+
+    TARGET = REPO_ROOT / "tests" / "test_lint_config.py"
+
+    def test_lint_config_has_zero_f401(self):
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tests/test_lint_config.py has F401 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+

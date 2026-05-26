@@ -387,8 +387,38 @@ Hermes confirms immediately:
 
 ```
 🔄 Background task started: "Check all servers in the cluster..."
-   Task ID: bg_143022_a1b2c3
+Task ID: bg_143022_a1b2c3
+Follow-up: /bg bg_143022_a1b2c3 <message>
+Status: /bg bg_143022_a1b2c3 status
+Promote: /bg bg_143022_a1b2c3 promote
 ```
+
+You can revisit recent background work:
+
+```text
+/bg list
+/bg bg_143022_a1b2c3 status
+/bg bg_143022_a1b2c3 artifacts
+/bg bg_143022_a1b2c3 also check the production logs
+/bg bg_143022_a1b2c3 promote
+```
+
+A follow-up to a completed background task starts a new background run with the
+previous prompt, latest summary, artifacts, and your new instruction injected as
+context. It does not try to live-interrupt a running agent.
+
+For durable work that should stay addressable as a small project, use a
+sidequest:
+
+```text
+/sidequest audit the checkout funnel and collect screenshots
+/sq
+/sq 1 status
+/sq 1 also compare mobile Safari
+```
+
+Sidequests get a stable `sq_...` id plus a chat-local short alias like `#1` so
+messaging follow-ups stay short.
 
 ### How It Works
 
@@ -429,7 +459,7 @@ HERMES_BACKGROUND_NOTIFICATIONS=result
 - **File operations** — "/background Organize the photos in ~/Downloads by date into folders"
 
 :::tip
-Background tasks on messaging platforms are fire-and-forget — you don't need to wait or check on them. Results arrive in the same chat automatically when the task finishes.
+Background tasks are no longer lost after launch. Keep the `bg_...` handle and use `/bg <id> status` or `/bg <id> <follow-up>` to revisit the work; results still arrive in the same chat automatically when the task finishes.
 :::
 
 ## Service Management

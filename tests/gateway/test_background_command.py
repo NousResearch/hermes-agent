@@ -480,6 +480,12 @@ class TestBackgroundInHelp:
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
         assert "bg" in GATEWAY_KNOWN_COMMANDS
 
+    def test_sidequest_is_known_command(self):
+        """The /sidequest command and /sq alias are gateway-known."""
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        assert "sidequest" in GATEWAY_KNOWN_COMMANDS
+        assert "sq" in GATEWAY_KNOWN_COMMANDS
+
 
 # ---------------------------------------------------------------------------
 # CLI /background command definition
@@ -498,6 +504,12 @@ class TestBackgroundInCLICommands:
         """The /bg alias is in the COMMANDS dict."""
         from hermes_cli.commands import COMMANDS
         assert "/bg" in COMMANDS
+
+    def test_sidequest_commands_dict(self):
+        """The /sidequest command and /sq alias are in the COMMANDS dict."""
+        from hermes_cli.commands import COMMANDS
+        assert "/sidequest" in COMMANDS
+        assert "/sq" in COMMANDS
 
     def test_background_in_session_category(self):
         """The /background command is in the Session category."""

@@ -82,8 +82,8 @@ gateway:
     always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
 
   background:
-    usage:                 "Usage: /background <prompt>\nExample: /background Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
-    started:               "🔄 Background task started: \"{preview}\"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done."
+    usage:                 "Usage: /background <prompt>\nExample: /background Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done. Use /bg list, /bg <id> status, /bg <id> artifacts, /bg <id> <follow-up>, or /bg <id> promote to revisit it."
+    started:               "🔄 Background task started: \"{preview}\"\nTask ID: {task_id}\nFollow-up: /bg {task_id} <message>\nStatus: /bg {task_id} status\nPromote: /bg {task_id} promote\nYou can keep chatting — results will appear when done."
 
   branch:
     db_unavailable:        "Session database not available."

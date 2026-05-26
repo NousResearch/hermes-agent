@@ -191,7 +191,7 @@ class TestWebSearchTavily:
                     "test query",
                     max_results=10,
                     search_depth="advanced",
-                    chunks_per_source=5,
+                    chunks_per_source=3,
                     include_images=True,
                     include_image_descriptions=True,
                 )
@@ -201,7 +201,7 @@ class TestWebSearchTavily:
             assert result["data"]["web"][0]["title"] == "Result"
             payload = mock_post.call_args.kwargs["json"]
             assert payload["search_depth"] == "advanced"
-            assert payload["chunks_per_source"] == 5
+            assert payload["chunks_per_source"] == 3
             assert payload["max_results"] == 10
             assert payload["include_images"] is True
             assert payload["include_image_descriptions"] is True

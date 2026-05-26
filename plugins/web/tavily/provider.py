@@ -175,9 +175,9 @@ class TavilyWebSearchProvider(WebSearchProvider):
                 search_depth = "advanced"
 
             try:
-                chunks_per_source = int(kwargs.get("chunks_per_source", 5))
+                chunks_per_source = int(kwargs.get("chunks_per_source", 3))
             except (TypeError, ValueError):
-                chunks_per_source = 5
+                chunks_per_source = 3
             chunks_per_source = min(max(chunks_per_source, 1), 5)
 
             include_images = bool(kwargs.get("include_images", True))

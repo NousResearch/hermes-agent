@@ -748,7 +748,7 @@ def web_search_tool(
     limit: int = 5,
     max_results: Optional[int] = None,
     search_depth: str = "advanced",
-    chunks_per_source: int = 5,
+    chunks_per_source: int = 3,
     include_images: bool = True,
     include_image_descriptions: bool = True,
 ) -> str:
@@ -764,7 +764,7 @@ def web_search_tool(
     try:
         effective_max_results = int(effective_max_results)
     except (TypeError, ValueError):
-        effective_max_results = 10 if max_results is not None else 5
+        effective_max_results = 5
     effective_max_results = min(max(effective_max_results, 1), 100)
 
     debug_call_data = {
@@ -1498,7 +1498,7 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information. Returns up to 10 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1517,14 +1517,14 @@ WEB_SEARCH_SCHEMA = {
                 "description": "Maximum Tavily chunks to return per source.",
                 "minimum": 1,
                 "maximum": 5,
-                "default": 5
+                "default": 3
             },
             "max_results": {
                 "type": "integer",
-                "description": "Maximum number of results to return. Defaults to 10.",
+                "description": "Maximum number of results to return. Defaults to 5.",
                 "minimum": 1,
-                "maximum": 20,
-                "default": 10
+                "maximum": 100,
+                "default": 5
             },
             "include_images": {
                 "type": "boolean",
@@ -1564,9 +1564,9 @@ registry.register(
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(
         args.get("query", ""),
-        max_results=args.get("max_results", args.get("limit", 10)),
+        max_results=args.get("max_results", args.get("limit", 5)),
         search_depth=args.get("search_depth", "advanced"),
-        chunks_per_source=args.get("chunks_per_source", 5),
+        chunks_per_source=args.get("chunks_per_source", 3),
         include_images=args.get("include_images", True),
         include_image_descriptions=args.get("include_image_descriptions", True),
     ),

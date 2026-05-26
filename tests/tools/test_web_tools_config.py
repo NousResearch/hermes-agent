@@ -465,8 +465,8 @@ class TestWebSearchSchema:
             "include_image_descriptions",
         }
         assert props["search_depth"]["default"] == "advanced"
-        assert props["chunks_per_source"]["default"] == 5
-        assert props["max_results"]["default"] == 10
+        assert props["chunks_per_source"]["default"] == 3
+        assert props["max_results"]["default"] == 5
         assert props["include_images"]["default"] is True
         assert props["include_image_descriptions"]["default"] is True
 
@@ -479,7 +479,7 @@ class TestWebSearchSchema:
                 {
                     "query": "site:example.com docs",
                     "search_depth": "advanced",
-                    "chunks_per_source": 5,
+                    "chunks_per_source": 3,
                     "max_results": 10,
                     "include_images": True,
                     "include_image_descriptions": True,
@@ -491,7 +491,7 @@ class TestWebSearchSchema:
             "site:example.com docs",
             max_results=10,
             search_depth="advanced",
-            chunks_per_source=5,
+            chunks_per_source=3,
             include_images=True,
             include_image_descriptions=True,
         )
@@ -508,7 +508,7 @@ class TestWebSearchSchema:
             "docs",
             max_results=7,
             search_depth="advanced",
-            chunks_per_source=5,
+            chunks_per_source=3,
             include_images=True,
             include_image_descriptions=True,
         )
@@ -523,9 +523,9 @@ class TestWebSearchSchema:
         assert result == '{"success": true}'
         mock_search.assert_called_once_with(
             "docs",
-            max_results=10,
+            max_results=5,
             search_depth="advanced",
-            chunks_per_source=5,
+            chunks_per_source=3,
             include_images=True,
             include_image_descriptions=True,
         )

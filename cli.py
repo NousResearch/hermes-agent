@@ -3480,10 +3480,32 @@ class HermesCLI:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        provider_name = getattr(self, "provider", None) or getattr(self, "requested_provider", None) or ""
+        codex_credential_label = ""
+        if provider_name == "openai-codex":
+            try:
+                source = getattr(self, "_provider_source", None) or ""
+                if isinstance(source, str) and source.startswith("pool:"):
+                    codex_credential_label = source.split(":", 1)[1].strip()
+                if not codex_credential_label:
+                    from agent.credential_pool import load_pool
+
+                    pool = load_pool("openai-codex")
+                    if pool and pool.has_credentials():
+                        entry = pool.select()
+                        if entry is not None:
+                            codex_credential_label = str(getattr(entry, "label", "") or "").strip()
+                if len(codex_credential_label) > 18:
+                    codex_credential_label = f"{codex_credential_label[:15]}..."
+            except Exception:
+                codex_credential_label = ""
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "provider": provider_name,
+            "codex_credential_label": codex_credential_label,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -3755,7 +3777,10 @@ class HermesCLI:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot['model_short']}"]
+                if snapshot.get("codex_credential_label"):
+                    parts.append(f"Codex:{snapshot['codex_credential_label']}")
+                parts.append(percent_label)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3779,6 +3804,8 @@ class HermesCLI:
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if snapshot.get("codex_credential_label"):
+                parts.insert(1, f"Codex:{snapshot['codex_credential_label']}")
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3832,9 +3859,16 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    if snapshot.get("codex_credential_label"):
+                        frags.extend([
+                            ("class:status-bar-dim", " · "),
+                            ("class:status-bar-strong", f"Codex:{snapshot['codex_credential_label']}"),
+                        ])
+                    frags.extend([
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
-                    ]
+                    ])
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -3867,13 +3901,20 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    if snapshot.get("codex_credential_label"):
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-strong", f"Codex:{snapshot['codex_credential_label']}"),
+                        ])
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
-                    ]
+                    ])
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))

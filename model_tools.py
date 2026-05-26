@@ -20,7 +20,6 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
-import os
 import json
 import re
 import asyncio
@@ -28,6 +27,8 @@ import logging
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
+
+from agent.tool_description_compactor import compact_tool_definitions
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
@@ -254,6 +255,17 @@ _LEGACY_TOOLSET_MAP = {
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 
 
+def _compact_tool_descriptions_enabled() -> bool:
+    """Return True when config enables conservative tool-description compaction."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        return bool(cfg_get(cfg, "display", "compact_tool_descriptions", default=False))
+    except Exception:
+        return False
+
+
 def _clear_tool_defs_cache() -> None:
     """Drop memoized get_tool_definitions() results. Called when dynamic
     schema dependencies change (e.g. discord capability cache reset,
@@ -300,7 +312,7 @@ def get_tool_definitions(
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
             cfg_fp,
-            bool(os.environ.get("HERMES_KANBAN_TASK")),
+            _compact_tool_descriptions_enabled(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -336,15 +348,7 @@ def _compute_tool_definitions(
     tools_to_include: set = set()
 
     if enabled_toolsets is not None:
-        effective_enabled_toolsets = list(enabled_toolsets)
-        if os.environ.get("HERMES_KANBAN_TASK") and "kanban" not in effective_enabled_toolsets:
-            # Dispatcher-spawned workers are scoped by HERMES_KANBAN_TASK and
-            # must always receive the lifecycle handoff tools. Assignee
-            # profiles may intentionally restrict their normal chat toolsets
-            # (for token/cost reasons), but that should not strip the kanban
-            # worker's completion/block/heartbeat surface.
-            effective_enabled_toolsets.append("kanban")
-        for toolset_name in effective_enabled_toolsets:
+        for toolset_name in enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
                 tools_to_include.update(resolved)
@@ -468,6 +472,9 @@ def _compute_tool_definitions(
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+
+    if _compact_tool_descriptions_enabled():
+        filtered_tools = compact_tool_definitions(filtered_tools)
 
     # Sanitize schemas for broad backend compatibility. llama.cpp's
     # json-schema-to-grammar converter (used by its OAI server to build
@@ -797,20 +804,6 @@ def handle_function_call(
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
-
-        # ACP/Zed edit approval runs before any file mutation.  The requester
-        # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
-        # are unaffected when it is unset.
-        try:
-            from acp_adapter.edit_approval import maybe_require_edit_approval
-
-            edit_block_message = maybe_require_edit_approval(function_name, function_args)
-            if edit_block_message is not None:
-                return edit_block_message
-        except Exception as _edit_approval_err:
-            logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
-            if function_name in {"write_file", "patch"}:
-                return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).

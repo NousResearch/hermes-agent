@@ -29,30 +29,43 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Context file scanning — detect prompt injection / promptware in AGENTS.md,
-# .cursorrules, SOUL.md before they get injected into the system prompt.
-#
-# Patterns live in ``tools/threat_patterns.py`` — the single source of truth
-# shared with the memory-tool scanner and the tool-result delimiter system.
-# This module just chooses how to react when a match is found (block-with-
-# placeholder; the actual content never reaches the system prompt).
+# Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,
+# SOUL.md before they get injected into the system prompt.
 # ---------------------------------------------------------------------------
 
-from tools.threat_patterns import scan_for_threats as _scan_for_threats
+_CONTEXT_THREAT_PATTERNS = [
+    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
+    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (r'system\s+prompt\s+override', "sys_prompt_override"),
+    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
+    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
+    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
+    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
+    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
+    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+]
+
+_CONTEXT_INVISIBLE_CHARS = {
+    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
+    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+}
 
 
 def _scan_context_content(content: str, filename: str) -> str:
-    """Scan context file content for injection. Returns sanitized content.
+    """Scan context file content for injection. Returns sanitized content."""
+    findings = []
 
-    Uses the "context" scope from the shared threat-pattern library, which
-    covers classic injection + promptware/C2 patterns + role-play hijack.
-    Strict-scope patterns (SSH backdoor, persistence, exfil-URL) are NOT
-    applied here — those are too aggressive for a context file in a
-    cloned repo (security research, infra docs).  Content matching is
-    BLOCKED at this layer because the file would otherwise enter the
-    system prompt verbatim and the user has no chance to intervene.
-    """
-    findings = _scan_for_threats(content, scope="context")
+    # Check invisible unicode
+    for char in _CONTEXT_INVISIBLE_CHARS:
+        if char in content:
+            findings.append(f"invisible unicode U+{ord(char):04X}")
+
+    # Check threat patterns
+    for pattern, pid in _CONTEXT_THREAT_PATTERNS:
+        if re.search(pattern, content, re.IGNORECASE):
+            findings.append(pid)
+
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
@@ -133,6 +146,10 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
     "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
 )
+HERMES_AGENT_HELP_GUIDANCE_COMPACT = (
+    "For Hermes Agent config/setup/use/troubleshooting, load `hermes-agent` before answering. "
+    "Docs: https://hermes-agent.nousresearch.com/docs"
+)
 
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
@@ -156,11 +173,19 @@ MEMORY_GUIDANCE = (
     "cause repeated work or override the user's current request. Procedures and "
     "workflows belong in skills, not memory."
 )
+MEMORY_GUIDANCE_COMPACT = (
+    "You have persistent memory across sessions. Save only durable facts with `memory`: user preferences, stable environment facts, and tool quirks.\n"
+    "Do NOT save task progress, completed-work logs, PRs/SHAs/file counts, or other stale artifacts; use `session_search` for past-session recall.\n"
+    "Write memories as facts, not directives. Procedures belong in skills, not memory."
+)
 
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
     "asking them to repeat themselves."
+)
+SESSION_SEARCH_GUIDANCE_COMPACT = (
+    "If the user references a past conversation, use `session_search` before asking them to repeat it."
 )
 
 SKILLS_GUIDANCE = (
@@ -170,6 +195,19 @@ SKILLS_GUIDANCE = (
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
+)
+SKILLS_GUIDANCE_COMPACT = (
+    "After complex or tricky work, save reusable workflows with `skill_manage`. Patch stale skills immediately; unmaintained skills become liabilities."
+)
+
+SEARCH_ROUTER_GUIDANCE = (
+    "When a task involves non-trivial public/external search — such as broad web research, "
+    "official-source verification, latest developments, policy/result summaries, or multi-source "
+    "cross-checks — prefer `search_router` over direct `web_search`. Use direct `web_search` for "
+    "simple one-hop lookups or quick candidate URL discovery, and use `web_extract` once the URL is known."
+)
+SEARCH_ROUTER_GUIDANCE_COMPACT = (
+    "For non-trivial public/external research, prefer `search_router` over direct `web_search`. Use `web_search` for simple one-hop lookups and `web_extract` once the URL is known."
 )
 
 KANBAN_GUIDANCE = (
@@ -193,12 +231,7 @@ KANBAN_GUIDANCE = (
     "files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
     "every few minutes during long subprocesses (training, encoding, crawling). "
-    "Skip heartbeats for short tasks. **If your task may run longer than 1 hour, "
-    "you MUST call `kanban_heartbeat` at least once an hour** — the dispatcher "
-    "reclaims tasks running past `kanban.dispatch_stale_timeout_seconds` "
-    "(default 4 hours) when no heartbeat has arrived in the last hour. A "
-    "reclaim re-queues the task as `ready` without penalty (no failure counter "
-    "tick), but you lose your current run's progress.\n"
+    "Skip heartbeats for short tasks.\n"
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
@@ -260,16 +293,12 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm")
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
 # Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
-# Also applied to xAI Grok — same failure modes in practice (claims completion
-# without tool calls, suggests workarounds instead of using existing tools,
-# replies with plans/suggestions instead of executing). The body is
-# family-agnostic; the OPENAI_ prefix reflects origin, not exclusivity.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -832,6 +861,93 @@ _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 _SKILLS_SNAPSHOT_VERSION = 1
 
 
+def _compact_skills_prompt_enabled() -> bool:
+    """Return True when config enables compact rendering of the skills index."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        return bool(cfg_get(cfg, "display", "compact_skills_prompt", default=False))
+    except Exception:
+        return False
+
+
+def _compact_guidance_blocks_enabled() -> bool:
+    """Return True when config enables compact rendering of stable guidance blocks."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        return bool(cfg_get(cfg, "display", "compact_guidance_blocks", default=False))
+    except Exception:
+        return False
+
+
+def _compact_context_files_enabled() -> bool:
+    """Return True when config enables prose-only compaction for context files."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        cfg = load_config()
+        return bool(cfg_get(cfg, "display", "compact_context_files", default=False))
+    except Exception:
+        return False
+
+
+def _compact_context_content(content: str) -> str:
+    if not _compact_context_files_enabled():
+        return content
+    try:
+        from agent.context_prompt_compactor import compact_context_prose
+
+        return compact_context_prose(content)
+    except Exception:
+        return content
+
+
+def _build_skills_prompt_preamble(*, compact: bool) -> str:
+    if compact:
+        return (
+            "## Skills (mandatory)\n"
+            "Scan the skill index below before replying. If a skill is relevant, load it with `skill_view(name)` and follow it. "
+            "Prefer loading over guessing.\n"
+            "For Hermes Agent setup/config/tools/providers/gateway/skills/plugins/troubleshooting, load `hermes-agent` first.\n"
+            "If a loaded skill is stale or wrong, fix it with `skill_manage(action='patch')`.\n"
+            "\n"
+            "<available_skills>\n"
+        )
+    return (
+        "## Skills (mandatory)\n"
+        "Before replying, scan the skills below. If a skill matches or is even partially relevant "
+        "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+        "Err on the side of loading — it is always better to have context you don't need "
+        "than to miss critical steps, pitfalls, or established workflows. "
+        "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
+        "and proven workflows that outperform general-purpose approaches. Load the skill "
+        "even if you think you could handle the task with basic tools like web_search or terminal. "
+        "Skills also encode the user's preferred approach, conventions, and quality standards "
+        "for tasks like code review, planning, and testing — load them even for tasks you "
+        "already know how to do, because the skill defines how it should be done here.\n"
+        "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+        "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+        "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+        "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
+        "`hermes setup`) so you don't have to guess or invent workarounds.\n"
+        "If a skill has issues, fix it with skill_manage(action='patch').\n"
+        "After difficult/iterative tasks, offer to save as a skill. "
+        "If a skill you loaded was missing steps, had wrong commands, or needed "
+        "pitfalls you discovered, update it before finishing.\n"
+        "\n"
+        "<available_skills>\n"
+    )
+
+
+def _build_skills_prompt_tail(*, compact: bool) -> str:
+    if compact:
+        return "</available_skills>\n\nOnly proceed without loading a skill if genuinely none are relevant."
+    return "</available_skills>\n\nOnly proceed without loading a skill if genuinely none are relevant to the task."
+
+
 def _skills_prompt_snapshot_path() -> Path:
     return get_hermes_home() / ".skills_prompt_snapshot.json"
 
@@ -1015,6 +1131,7 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    compact = _compact_skills_prompt_enabled()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1022,6 +1139,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        compact,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1176,34 +1294,7 @@ def build_skills_system_prompt(
                 else:
                     index_lines.append(f"    - {name}")
 
-        result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
-            "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
-        )
+        result = _build_skills_prompt_preamble(compact=compact) + "\n".join(index_lines) + "\n" + _build_skills_prompt_tail(compact=compact)
 
     # ── Store in LRU cache ────────────────────────────────────────────
     with _SKILLS_PROMPT_CACHE_LOCK:
@@ -1318,6 +1409,7 @@ def load_soul_md() -> Optional[str]:
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
+        content = _compact_context_content(content)
         content = _truncate_content(content, "SOUL.md")
         return content
     except Exception as e:
@@ -1341,6 +1433,7 @@ def _load_hermes_md(cwd_path: Path) -> str:
         except ValueError:
             pass
         content = _scan_context_content(content, rel)
+        content = _compact_context_content(content)
         result = f"## {rel}\n\n{content}"
         return _truncate_content(result, ".hermes.md")
     except Exception as e:
@@ -1357,6 +1450,7 @@ def _load_agents_md(cwd_path: Path) -> str:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
+                    content = _compact_context_content(content)
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(result, "AGENTS.md")
             except Exception as e:
@@ -1373,6 +1467,7 @@ def _load_claude_md(cwd_path: Path) -> str:
                 content = candidate.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, name)
+                    content = _compact_context_content(content)
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(result, "CLAUDE.md")
             except Exception as e:
@@ -1389,6 +1484,7 @@ def _load_cursorrules(cwd_path: Path) -> str:
             content = cursorrules_file.read_text(encoding="utf-8").strip()
             if content:
                 content = _scan_context_content(content, ".cursorrules")
+                content = _compact_context_content(content)
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
         except Exception as e:
             logger.debug("Could not read .cursorrules: %s", e)
@@ -1401,6 +1497,7 @@ def _load_cursorrules(cwd_path: Path) -> str:
                 content = mdc_file.read_text(encoding="utf-8").strip()
                 if content:
                     content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
+                    content = _compact_context_content(content)
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)
@@ -1449,4 +1546,4 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     if not sections:
         return ""
-    return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+    return "# Project Context\n\nLoaded context files:\n\n" + "\n".join(sections)

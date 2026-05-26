@@ -576,6 +576,44 @@ class TestNewEndpoints:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
+    def test_ops_action_dry_run_endpoint_does_not_execute(self):
+        proposal = {
+            "title": "QA read-only status probe",
+            "project": "Hermes Ops",
+            "profile": "default",
+            "risk_label": "Read-only",
+            "proposed_action": "read_only_status_probe",
+            "target": "read_only_status_probe",
+            "preview": "Dry-run fixed action preflight only.",
+            "reason": "Verify dashboard-assisted action remains non-executing.",
+            "rollback_or_verification": "Response says dry run only and would_execute is false.",
+            "created_by": "pytest",
+        }
+        created = self.client.post("/api/ops/approvals", json=proposal)
+        assert created.status_code == 200
+        approval_id = created.json()["id"]
+        approved = self.client.post(
+            f"/api/ops/approvals/{approval_id}/approve",
+            json={"decided_by": "pytest", "decision_note": "dry-run test"},
+        )
+        assert approved.status_code == 200
+
+        dry_run = self.client.post(f"/api/ops/approvals/{approval_id}/actions/read_only_status_probe/dry-run")
+
+        assert dry_run.status_code == 200
+        data = dry_run.json()
+        assert data["would_execute"] is False
+        assert data["execution_allowed"] is False
+        assert data["message"] == "Dry run only — no action executed"
+        assert data["action"]["name"] == "read_only_status_probe"
+
+    def test_ops_action_execute_route_does_not_exist(self):
+        from hermes_cli.web_server import app
+
+        route_paths = {getattr(route, "path", "") for route in app.routes}
+
+        assert "/api/ops/approvals/{approval_id}/actions/{action_name}/execute" not in route_paths
+
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")
         assert resp.status_code == 200

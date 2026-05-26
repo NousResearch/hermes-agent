@@ -20,7 +20,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, OpsApprovalSummary, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsActionDryRun, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, OpsApprovalSummary, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -39,6 +39,13 @@ type ApprovalItem = {
 };
 
 type ApprovalFilter = "all" | "pending" | "decided";
+
+const FIXED_DRY_RUN_ACTIONS = ["read_only_status_probe"];
+
+function fixedActionForApproval(item: OpsApproval): string | null {
+  if (item.status !== "approved") return null;
+  return FIXED_DRY_RUN_ACTIONS.find((name) => item.target === name || item.proposed_action === name) || null;
+}
 
 const EMPTY_PROPOSAL_FORM: OpsApprovalCreate = {
   title: "",
@@ -202,6 +209,7 @@ export default function ApprovalInboxPage() {
   const [approvalRiskFilter, setApprovalRiskFilter] = useState("all");
   const [approvalProjectFilter, setApprovalProjectFilter] = useState("all");
   const [proposalForm, setProposalForm] = useState<OpsApprovalCreate>(EMPTY_PROPOSAL_FORM);
+  const [dryRunResults, setDryRunResults] = useState<Record<string, OpsActionDryRun>>({});
   const [decisionNote, setDecisionNote] = useState("Approved in dashboard; Jenny must still execute through normal chat/tool flow only.");
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -354,6 +362,19 @@ export default function ApprovalInboxPage() {
     if (!approvalSummary?.review_text) return;
     copyText(approvalSummary.review_text, "pending-approval summary");
   }, [approvalSummary, copyText]);
+
+  const dryRunFixedAction = useCallback((item: OpsApproval, actionName: string) => {
+    setActioningId(`${item.id}:dry-run`);
+    setMessage(null);
+    setError(null);
+    api.dryRunOpsApprovalAction(item.id, actionName)
+      .then((result) => {
+        setDryRunResults((current) => ({ ...current, [item.id]: result }));
+        setMessage(result.message || "Dry run only — no action executed");
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setActioningId(null));
+  }, []);
 
   return (
     <main className="h-full overflow-auto px-4 py-5 lg:px-8">
@@ -567,6 +588,29 @@ export default function ApprovalInboxPage() {
                       <Button ghost onClick={() => decide(item, "reject")} disabled={Boolean(actioningId)}>Reject</Button>
                       <Button ghost onClick={() => decide(item, "clarify")} disabled={Boolean(actioningId)}>Ask clarify</Button>
                       <Button ghost onClick={() => decide(item, "snooze")} disabled={Boolean(actioningId)}>Snooze</Button>
+                    </div>
+                  )}
+
+                  {fixedActionForApproval(item) && (
+                    <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/10 p-3">
+                      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-cyan-200">Fixed action dry run</div>
+                          <div className="mt-1 text-sm leading-6 text-cyan-50/90">Checks named registry action <span className="font-mono text-cyan-100">{fixedActionForApproval(item)}</span>. Dry run only — no action executed.</div>
+                        </div>
+                        <Button ghost onClick={() => dryRunFixedAction(item, fixedActionForApproval(item) || "")} disabled={Boolean(actioningId)} className="w-fit gap-2">
+                          <ShieldCheck className="h-4 w-4" /> Check fixed action
+                        </Button>
+                      </div>
+                      {dryRunResults[item.id] && (
+                        <div className="mt-3 rounded-lg border border-cyan-300/20 bg-black/25 p-3 text-xs leading-5 text-cyan-50/90">
+                          <div>Status: {dryRunResults[item.id].ok ? "Config and approval preflight passed" : "Not executable"}</div>
+                          <div>Reason: {dryRunResults[item.id].reason}</div>
+                          <div>Config: {dryRunResults[item.id].config.reason}</div>
+                          <div>Approval: {dryRunResults[item.id].approval.reason}</div>
+                          <div className="font-semibold text-cyan-100">Dry run only — no action executed.</div>
+                        </div>
+                      )}
                     </div>
                   )}
 

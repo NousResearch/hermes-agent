@@ -353,5 +353,57 @@ def test_approval_api_records_decision_but_has_no_execute_route(_isolate_hermes_
 
     route_paths = {getattr(route, "path", "") for route in app.routes}
     assert f"/api/ops/approvals/{{approval_id}}/execute" not in route_paths
+    assert "/api/ops/approvals/{approval_id}/actions/{action_name}/execute" not in route_paths
     execute_resp = client.post(f"/api/ops/approvals/{approval['id']}/execute")
     assert execute_resp.status_code in {404, 405}
+
+
+def test_approval_action_dry_run_route_preflights_without_execution(_isolate_hermes_home):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    created = client.post("/api/ops/approvals", json=_valid_request(
+        title="Probe status only",
+        risk_label="Read-only",
+        proposed_action="read_only_status_probe",
+        target="read_only_status_probe",
+        preview="Read status metadata only; no restart or write.",
+    )).json()
+    approved = client.post(
+        f"/api/ops/approvals/{created['id']}/approve",
+        json={"decided_by": "Travis", "decision_note": "Approved dry-run check only"},
+    ).json()
+
+    resp = client.post(f"/api/ops/approvals/{approved['id']}/actions/read_only_status_probe/dry-run")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["approval_id"] == approved["id"]
+    assert body["approval"]["approval_ok"] is True
+    assert body["would_execute"] is False
+    assert body["execution_allowed"] is False
+    assert body["message"] == "Dry run only — no action executed"
+    assert body["config"]["allowed"] is False  # default config remains disabled
+
+
+def test_approval_action_dry_run_route_rejects_unknown_action(_isolate_hermes_home):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    created = client.post("/api/ops/approvals", json=_valid_request()).json()
+
+    resp = client.post(f"/api/ops/approvals/{created['id']}/actions/shell/dry-run")
+
+    assert resp.status_code == 400

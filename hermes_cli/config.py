@@ -1107,6 +1107,14 @@ DEFAULT_CONFIG = {
         "show_token_analytics": False,
     },
 
+    # Jenny Ops Center fixed action checks. Default-off: dry-run/preflight can
+    # explain what would be allowed, but no action is executable unless a future
+    # approved execution route explicitly opts in to both fields.
+    "ops_center": {
+        "action_execution_enabled": False,
+        "allowed_actions": [],
+    },
+
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context

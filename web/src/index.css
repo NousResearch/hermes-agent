@@ -213,6 +213,18 @@ code { font-size: 0.875rem; }
   font-family: var(--theme-font-mono);
 }
 
+/* Readability override for dense operations panels. Some dashboard themes use
+   decorative serif/display faces that look good in chrome but are tiring for
+   small status cards. Use a plain system UI stack and normal spacing where the
+   user needs to scan operational text quickly. */
+.font-readable-ui,
+.font-readable-ui :where(*) {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: normal;
+  text-rendering: optimizeLegibility;
+}
+
 /* Subtle grain overlay for badges. */
 .grain {
   position: relative;

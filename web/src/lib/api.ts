@@ -167,6 +167,10 @@ export const api = {
     return fetchJSON<OpsApprovalAuditEvent[]>(`/api/ops/approvals/audit${qs}`);
   },
   getOpsApprovalSummary: () => fetchJSON<OpsApprovalSummary>("/api/ops/approvals/summary"),
+  dryRunOpsApprovalAction: (id: string, actionName: string) =>
+    fetchJSON<OpsActionDryRun>(`/api/ops/approvals/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionName)}/dry-run`, {
+      method: "POST",
+    }),
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
@@ -650,6 +654,32 @@ export interface OpsApprovalSummary {
   blocked_execution: boolean;
   pending: OpsApproval[];
   review_text: string;
+}
+
+export interface OpsActionDryRun {
+  ok: boolean;
+  reason: string;
+  approval_id?: string | null;
+  action: {
+    name: string;
+    title: string;
+    description: string;
+    risk_label: string;
+    verification: string;
+  };
+  config: {
+    allowed: boolean;
+    reason: string;
+    execution_enabled: boolean;
+    allowed_actions: string[];
+  };
+  approval: {
+    approval_ok: boolean;
+    reason: string;
+  };
+  execution_allowed: false;
+  would_execute: false;
+  message: string;
 }
 
 export interface CronJob {

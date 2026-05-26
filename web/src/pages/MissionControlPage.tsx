@@ -260,6 +260,11 @@ const DECISION_QUEUE = [
   },
 ];
 
+const readablePanel = "rounded-xl border border-white/15 bg-[#061f1f]/75 p-4 shadow-sm shadow-black/20";
+const readableTitle = "text-base font-semibold leading-6 text-text-primary";
+const readableBody = "mt-1 text-sm leading-6 text-text-secondary";
+const readableSectionHeading = "text-sm font-semibold uppercase tracking-[0.03em] text-text-primary/90";
+
 function isProblemJob(job: CronJob): boolean {
   const state = getJobState(job).toLowerCase();
   return Boolean(job.last_error || state.includes("error") || state.includes("fail"));
@@ -306,7 +311,7 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
   const platformCount = status?.gateway_platforms ? Object.keys(status.gateway_platforms).length : 0;
 
   return (
-    <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+    <section className="font-readable-ui grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
       <Card className="border-white/10 bg-white/[0.04]">
         <CardContent className="space-y-4 p-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -315,7 +320,7 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
                 <ListChecks className="h-5 w-5" />
                 <H2 className="text-xl">Today view</H2>
               </div>
-              <Typography className="mt-1 text-sm text-text-secondary">
+              <Typography className="mt-1 text-sm leading-6 text-text-secondary">
                 Operator snapshot: what needs Travis, what is active, what failed, and the safest next moves.
               </Typography>
             </div>
@@ -325,44 +330,44 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
           </div>
 
           <div className="grid gap-3 md:grid-cols-3">
-            <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 p-3">
-              <div className="text-xs uppercase tracking-wide text-amber-200">Needs Travis</div>
+            <div className="rounded-xl border border-amber-400/30 bg-amber-500/15 p-4">
+              <div className="text-sm font-semibold uppercase tracking-[0.03em] text-amber-100">Needs Travis</div>
               <div className="mt-2 text-3xl font-semibold text-text-primary">{approvalSummary?.pending_count ?? DECISION_QUEUE.length}</div>
-              <div className="mt-1 text-xs text-text-secondary">pending approval records + standing gates</div>
+              <div className="mt-1 text-sm leading-6 text-text-secondary">pending approval records + standing gates</div>
             </div>
-            <div className="rounded-xl border border-emerald-400/25 bg-emerald-500/10 p-3">
-              <div className="text-xs uppercase tracking-wide text-emerald-200">Active runs</div>
+            <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/15 p-4">
+              <div className="text-sm font-semibold uppercase tracking-[0.03em] text-emerald-100">Active runs</div>
               <div className="mt-2 text-3xl font-semibold text-text-primary">{activeJobs.length}</div>
-              <div className="mt-1 text-xs text-text-secondary">enabled cron/automation entries</div>
+              <div className="mt-1 text-sm leading-6 text-text-secondary">enabled cron/automation entries</div>
             </div>
-            <div className="rounded-xl border border-red-400/25 bg-red-500/10 p-3">
-              <div className="text-xs uppercase tracking-wide text-red-200">Problem runs</div>
+            <div className="rounded-xl border border-red-400/30 bg-red-500/15 p-4">
+              <div className="text-sm font-semibold uppercase tracking-[0.03em] text-red-100">Problem runs</div>
               <div className="mt-2 text-3xl font-semibold text-text-primary">{problemJobs.length}</div>
-              <div className="mt-1 text-xs text-text-secondary">jobs with error/failure state</div>
+              <div className="mt-1 text-sm leading-6 text-text-secondary">jobs with error/failure state</div>
             </div>
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="space-y-2">
-              <div className="text-sm font-semibold text-text-primary">Waiting on approval / do not auto-run</div>
+              <div className={readableSectionHeading}>Waiting on approval / do not auto-run</div>
               {approvalSummary?.pending?.length ? (
                 approvalSummary.pending.slice(0, 4).map((item) => (
-                  <Link key={item.id} to="/approvals" className="block rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 transition hover:border-amber-300/50">
+                  <Link key={item.id} to="/approvals" className="block rounded-xl border border-amber-400/25 bg-amber-500/15 p-4 transition hover:border-amber-300/50">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-sm font-medium text-text-primary">{item.title}</div>
-                        <div className="mt-1 text-xs leading-5 text-text-secondary">{item.target}</div>
+                        <div className={readableTitle}>{item.title}</div>
+                        <div className={readableBody}>{item.target}</div>
                       </div>
                       <Badge tone="outline" className="shrink-0 border-amber-400/30 text-amber-200">{item.risk_label}</Badge>
                     </div>
                   </Link>
                 ))
               ) : DECISION_QUEUE.map((item) => (
-                <div key={item.label} className="rounded-xl border border-white/10 bg-black/25 p-3">
+                <div key={item.label} className={readablePanel}>
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="text-sm font-medium text-text-primary">{item.label}</div>
-                      <div className="mt-1 text-xs leading-5 text-text-secondary">{item.detail}</div>
+                      <div className={readableTitle}>{item.label}</div>
+                      <div className={readableBody}>{item.detail}</div>
                     </div>
                     <Badge tone="outline" className="shrink-0 border-amber-400/30 text-amber-200">{item.risk}</Badge>
                   </div>
@@ -371,17 +376,17 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
             </div>
 
             <div className="space-y-2">
-              <div className="text-sm font-semibold text-text-primary">Next safe project moves</div>
+              <div className={readableSectionHeading}>Next safe project moves</div>
               {nextProjects.map((project) => (
-                <div key={project.name} className="rounded-xl border border-white/10 bg-black/25 p-3">
+                <div key={project.name} className={readablePanel}>
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="text-sm font-medium text-text-primary">{project.name}</div>
-                      <div className="mt-1 text-xs text-text-secondary">{project.phase}</div>
+                      <div className={readableTitle}>{project.name}</div>
+                      <div className={readableBody}>{project.phase}</div>
                     </div>
                     <Badge tone="outline" className={cn("shrink-0", projectHealthTone(project.health))}>{project.health}</Badge>
                   </div>
-                  <div className="mt-2 text-xs leading-5 text-text-secondary">{project.next}</div>
+                  <div className="mt-3 text-sm leading-6 text-text-secondary">{project.next}</div>
                 </div>
               ))}
             </div>
@@ -396,23 +401,23 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
             <H2 className="text-xl">Ops health snapshot</H2>
           </div>
           <div className="grid gap-3 text-sm">
-            <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-              <div className="text-xs uppercase tracking-wide text-text-secondary">Gateway</div>
-              <div className={cn("mt-1 font-semibold", status?.gateway_running ? "text-emerald-300" : "text-red-300")}>
+            <div className={readablePanel}>
+              <div className={readableSectionHeading}>Gateway</div>
+              <div className={cn("mt-1 text-base font-semibold leading-6", status?.gateway_running ? "text-emerald-300" : "text-red-300")}>
                 {status?.gateway_running ? "Running" : "Unknown / needs check"}
               </div>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-              <div className="text-xs uppercase tracking-wide text-text-secondary">Platforms visible</div>
-              <div className="mt-1 text-text-primary">{platformCount || "—"} · {platformSummary(status)}</div>
+            <div className={readablePanel}>
+              <div className={readableSectionHeading}>Platforms visible</div>
+              <div className="mt-1 text-base leading-6 text-text-primary">{platformCount || "—"} · {platformSummary(status)}</div>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-              <div className="text-xs uppercase tracking-wide text-text-secondary">Project homes</div>
-              <div className="mt-1 text-text-primary">{PROJECTS.length} linked to AI Ops Brain source files</div>
+            <div className={readablePanel}>
+              <div className={readableSectionHeading}>Project homes</div>
+              <div className="mt-1 text-base leading-6 text-text-primary">{PROJECTS.length} linked to AI Ops Brain source files</div>
             </div>
-            <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-              <div className="text-xs uppercase tracking-wide text-text-secondary">Phase 1 boundary</div>
-              <div className="mt-1 text-text-primary">Read-only dashboard wiring only — no cron changes, no service restart, no public side effects.</div>
+            <div className={readablePanel}>
+              <div className={readableSectionHeading}>Phase 1 boundary</div>
+              <div className="mt-1 text-base leading-6 text-text-primary">Read-only dashboard wiring only — no cron changes, no service restart, no public side effects.</div>
             </div>
           </div>
         </CardContent>

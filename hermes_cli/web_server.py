@@ -2661,6 +2661,18 @@ async def summarize_ops_approvals():
         raise _approval_error(exc) from exc
 
 
+@app.post("/api/ops/approvals/{approval_id}/actions/{action_name}/dry-run")
+async def dry_run_ops_approval_action(approval_id: str, action_name: str):
+    try:
+        from hermes_cli.ops_actions import dry_run_action
+
+        store = _approval_store()
+        approval = store.get(approval_id)
+        return dry_run_action(action_name, approval)
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.post("/api/ops/approvals/{approval_id}/approve")
 async def approve_ops_approval(approval_id: str, body: ApprovalDecision):
     try:

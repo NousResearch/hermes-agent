@@ -50,6 +50,12 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+try:
+    from hermes_cli.plugins import invoke_hook
+except Exception:  # pragma: no cover - plugin system is optional in isolated imports
+    def invoke_hook(hook_name: str, **kwargs: Any) -> list:
+        return []
+
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
 # graders/*). We expose `OpenAI` here as a thin proxy that imports the SDK on
@@ -4730,6 +4736,42 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _emit_aux_hook(hook_name: str, **payload: Any) -> None:
+    """Emit an auxiliary-client lifecycle hook without coupling callers to plugins."""
+    try:
+        invoke_hook(hook_name, **payload)
+    except Exception as exc:  # pragma: no cover - observability must fail open
+        logger.debug("Auxiliary hook %s failed: %s", hook_name, exc, exc_info=True)
+
+
+def _aux_finish_reason(response: Any) -> str:
+    try:
+        choices = getattr(response, "choices", None) or []
+        return str(getattr(choices[0], "finish_reason", "") or "") if choices else ""
+    except Exception:
+        return ""
+
+
+def _emit_aux_success(hook_payload: Dict[str, Any], response: Any, started_at: float) -> None:
+    payload = dict(hook_payload)
+    payload.update({
+        "response": response,
+        "usage": getattr(response, "usage", None),
+        "finish_reason": _aux_finish_reason(response),
+        "api_duration": time.time() - started_at,
+    })
+    _emit_aux_hook("post_aux_llm_request", **payload)
+
+
+def _emit_aux_error(hook_payload: Dict[str, Any], error: Exception, started_at: float) -> None:
+    payload = dict(hook_payload)
+    payload.update({
+        "error": error,
+        "api_duration": time.time() - started_at,
+    })
+    _emit_aux_hook("aux_llm_error", **payload)
+
+
 def _validate_llm_response(response: Any, task: str = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -4775,6 +4817,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -4886,11 +4929,29 @@ def call_llm(
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    hook_payload = {
+        "task": task or "call",
+        "provider": resolved_provider,
+        "model": final_model,
+        "base_url": _base_info or resolved_base_url or "",
+        "api_mode": resolved_api_mode or "chat_completions",
+        "messages": kwargs.get("messages", messages),
+        "temperature": kwargs.get("temperature", temperature),
+        "max_tokens": kwargs.get("max_tokens", kwargs.get("max_completion_tokens", max_tokens)),
+        "tools": tools,
+        "timeout": effective_timeout,
+        "metadata": dict(metadata or {}),
+    }
+    started_at = time.time()
+    _emit_aux_hook("pre_aux_llm_request", **hook_payload)
+
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
     try:
-        return _validate_llm_response(
+        response = _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
+        _emit_aux_success(hook_payload, response, started_at)
+        return response
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -5145,6 +5206,7 @@ def call_llm(
             except Exception:
                 logger.debug("Auxiliary: cache eviction after connection error failed",
                              exc_info=True)
+        _emit_aux_error(hook_payload, first_err, started_at)
         raise
 
 
@@ -5218,6 +5280,7 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -5294,9 +5357,27 @@ async def async_call_llm(
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
+    hook_payload = {
+        "task": task or "call",
+        "provider": resolved_provider,
+        "model": final_model,
+        "base_url": _client_base or resolved_base_url or "",
+        "api_mode": resolved_api_mode or "chat_completions",
+        "messages": kwargs.get("messages", messages),
+        "temperature": kwargs.get("temperature", temperature),
+        "max_tokens": kwargs.get("max_tokens", kwargs.get("max_completion_tokens", max_tokens)),
+        "tools": tools,
+        "timeout": effective_timeout,
+        "metadata": dict(metadata or {}),
+    }
+    started_at = time.time()
+    _emit_aux_hook("pre_aux_llm_request", **hook_payload)
+
     try:
-        return _validate_llm_response(
+        response = _validate_llm_response(
             await client.chat.completions.create(**kwargs), task)
+        _emit_aux_success(hook_payload, response, started_at)
+        return response
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -5510,4 +5591,5 @@ async def async_call_llm(
             except Exception:
                 logger.debug("Auxiliary (async): cache eviction after connection error failed",
                              exc_info=True)
+        _emit_aux_error(hook_payload, first_err, started_at)
         raise

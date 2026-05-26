@@ -10,5 +10,8 @@ hooks:
   - post_api_request
   - pre_llm_call
   - post_llm_call
+  - pre_aux_llm_request
+  - post_aux_llm_request
+  - aux_llm_error
   - pre_tool_call
   - post_tool_call

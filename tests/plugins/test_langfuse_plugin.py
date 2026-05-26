@@ -5,6 +5,7 @@ import importlib
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,10 +30,11 @@ class TestManifest:
         data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
         assert data["name"] == "langfuse"
         assert data["version"]
-        # All six hooks the plugin implements.
+        # Main-turn hooks plus auxiliary LLM hooks the plugin implements.
         assert set(data["hooks"]) == {
             "pre_api_request", "post_api_request",
             "pre_llm_call", "post_llm_call",
+            "pre_aux_llm_request", "post_aux_llm_request", "aux_llm_error",
             "pre_tool_call", "post_tool_call",
         }
         # Required env vars are the user-facing HERMES_ prefixed keys.
@@ -167,6 +169,9 @@ class TestHooksInert:
         mod.on_pre_llm_call(task_id="t", session_id="s", messages=[{"role": "user", "content": "hi"}])
         mod.on_pre_llm_request(task_id="t", session_id="s", api_call_count=1, request_messages=[])
         mod.on_post_llm_call(task_id="t", session_id="s", api_call_count=1)
+        mod.on_pre_aux_llm_request(task="title_generation", metadata={"session_id": "s"}, messages=[])
+        mod.on_post_aux_llm_request(task="title_generation", metadata={"session_id": "s"}, response=None)
+        mod.on_aux_llm_error(task="title_generation", metadata={"session_id": "s"}, error=RuntimeError("boom"))
         mod.on_pre_tool_call(tool_name="read_file", args={}, task_id="t", session_id="s")
         mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
 
@@ -259,7 +264,17 @@ class TestPlaceholderKeyDetection:
             "HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz"
         ) is None
         assert plugin._validate_langfuse_key(
-            "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz"
+            "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-...-xyz"
+        ) is None
+
+    def test_validate_langfuse_key_accepts_current_self_hosted_prefix(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        plugin = self._fresh_plugin()
+        assert plugin._validate_langfuse_key(
+            "HERMES_LANGFUSE_PUBLIC_KEY", "lf_pk_real_public_xyz"
+        ) is None
+        assert plugin._validate_langfuse_key(
+            "HERMES_LANGFUSE_SECRET_KEY", "lf_sk_real_secret_xyz"
         ) is None
 
     def test_validate_langfuse_key_rejects_wrong_prefix(self, monkeypatch):
@@ -468,6 +483,277 @@ class TestRequestMessageCoercion:
         assert mod._coerce_request_messages(user_message="u") == [{"role": "user", "content": "u"}]
 
 
+class TestAuxiliaryLangfuseHooks:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def _response(self):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content='{"title":"Myah chat"}', reasoning=None, tool_calls=None),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2, total_tokens=5),
+        )
+
+    def test_start_root_trace_passes_user_id_to_langfuse_propagation(self, monkeypatch):
+        mod = self._fresh_plugin()
+        propagate_calls = []
+        observation_calls = []
+
+        class RootSpan:
+            def set_trace_io(self, **kwargs):
+                pass
+
+        class RootContext:
+            def __enter__(self):
+                return RootSpan()
+            def __exit__(self, *args):
+                return False
+
+        class Client:
+            def create_trace_id(self, seed):
+                return f"trace::{seed}"
+            def start_as_current_observation(self, **kwargs):
+                observation_calls.append(kwargs)
+                return RootContext()
+
+        class PropagateContext:
+            def __enter__(self):
+                return None
+            def __exit__(self, *args):
+                return False
+
+        def fake_propagate_attributes(**kwargs):
+            propagate_calls.append(kwargs)
+            return PropagateContext()
+
+        monkeypatch.setattr(mod, "propagate_attributes", fake_propagate_attributes)
+
+        state = mod._start_root_trace(
+            "aux:myah-chat-1:title_generation",
+            task_id="task-1",
+            session_id="myah-chat-1",
+            platform="myah",
+            provider="custom",
+            model="aux-model",
+            api_mode="chat_completions",
+            messages=[{"role": "user", "content": "hi"}],
+            client=Client(),
+            user_id="user-1",
+        )
+
+        assert state.trace_id == "trace::myah-chat-1::task-1"
+        assert propagate_calls[0]["session_id"] == "myah-chat-1"
+        assert propagate_calls[0]["user_id"] == "user-1"
+        assert observation_calls[0]["trace_context"]["session_id"] == "myah-chat-1"
+        assert observation_calls[0]["trace_context"]["user_id"] == "user-1"
+
+    def test_start_root_trace_uses_custom_auxiliary_trace_name_and_tags(self, monkeypatch):
+        mod = self._fresh_plugin()
+        propagate_calls = []
+        observation_calls = []
+
+        class RootSpan:
+            def set_trace_io(self, **kwargs):
+                pass
+
+        class Client:
+            def create_trace_id(self, seed):
+                return f"trace::{seed}"
+            def start_as_current_observation(self, **kwargs):
+                observation_calls.append(kwargs)
+                class RootContext:
+                    def __enter__(self_inner):
+                        return RootSpan()
+                    def __exit__(self_inner, *args):
+                        return False
+                return RootContext()
+
+        class PropagateContext:
+            def __enter__(self):
+                return None
+            def __exit__(self, *args):
+                return False
+
+        def fake_propagate_attributes(**kwargs):
+            propagate_calls.append(kwargs)
+            return PropagateContext()
+
+        monkeypatch.setattr(mod, "propagate_attributes", fake_propagate_attributes)
+
+        mod._start_root_trace(
+            "aux:chat-1:title_generation",
+            task_id="task-1",
+            session_id="chat-1",
+            platform="myah",
+            provider="openai-codex",
+            model="gpt-5.5",
+            api_mode="chat_completions",
+            messages=[{"role": "user", "content": "make a title"}],
+            client=Client(),
+            user_id="user-1",
+            trace_name="Hermes auxiliary",
+            trace_tags=["hermes", "langfuse", "auxiliary", "title_generation"],
+        )
+
+        assert propagate_calls[0]["trace_name"] == "Hermes auxiliary"
+        assert propagate_calls[0]["tags"] == ["hermes", "langfuse", "auxiliary", "title_generation"]
+        assert observation_calls[0]["name"] == "Hermes auxiliary"
+
+    def test_auxiliary_pre_request_starts_auxiliary_named_trace(self, monkeypatch):
+        mod = self._fresh_plugin()
+        client = object()
+        start_calls = []
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+
+        def fake_start_root_trace(*args, **kwargs):
+            start_calls.append({"args": args, "kwargs": kwargs})
+            return mod.TraceState(trace_id="trace-aux", root_ctx=None, root_span=object())
+
+        monkeypatch.setattr(mod, "_start_root_trace", fake_start_root_trace)
+        monkeypatch.setattr(mod, "_start_child_observation", lambda *args, **kwargs: object())
+
+        mod.on_pre_aux_llm_request(
+            task="title_generation",
+            provider="openai-codex",
+            model="gpt-5.5",
+            api_mode="chat_completions",
+            messages=[{"role": "user", "content": "make a title"}],
+            metadata={"session_id": "chat-1", "user_id": "user-1", "platform": "myah"},
+        )
+
+        assert start_calls[0]["kwargs"]["trace_name"] == "Hermes auxiliary"
+        assert start_calls[0]["kwargs"]["trace_tags"] == [
+            "hermes", "langfuse", "auxiliary", "title_generation"
+        ]
+
+    def test_auxiliary_pre_and_post_create_generation_with_myah_correlation(self, monkeypatch):
+        mod = self._fresh_plugin()
+        client = object()
+        observation = object()
+        child_calls = []
+        ended = {}
+        finished = []
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(
+            mod,
+            "_start_root_trace",
+            lambda *args, **kwargs: mod.TraceState(trace_id="trace-aux", root_ctx=None, root_span=object()),
+        )
+
+        def fake_start_child(state, *, client, name, as_type, input_value, metadata=None, model=None, model_parameters=None):
+            child_calls.append({
+                "name": name,
+                "as_type": as_type,
+                "input": input_value,
+                "metadata": metadata,
+                "model": model,
+                "model_parameters": model_parameters,
+            })
+            return observation
+
+        def fake_end(obs, *, output=None, metadata=None, usage_details=None, cost_details=None):
+            ended["obs"] = obs
+            ended["output"] = output
+            ended["metadata"] = metadata
+            ended["usage_details"] = usage_details
+            ended["cost_details"] = cost_details
+
+        monkeypatch.setattr(mod, "_start_child_observation", fake_start_child)
+        monkeypatch.setattr(mod, "_end_observation", fake_end)
+        monkeypatch.setattr(mod, "_usage_and_cost", lambda *args, **kwargs: ({"input": 3, "output": 2}, {"total": 0.01}))
+        monkeypatch.setattr(mod, "_finish_trace", lambda task_key, output=None: finished.append((task_key, output)))
+
+        metadata = {
+            "session_id": "myah-chat-1",
+            "user_id": "user-1",
+            "platform": "myah",
+            "hermes_session_id": "hermes-internal-1",
+        }
+        mod.on_pre_aux_llm_request(
+            task="title_generation",
+            provider="custom",
+            model="aux-model",
+            base_url="https://aux.example/v1",
+            api_mode="chat_completions",
+            messages=[{"role": "user", "content": "make a title"}],
+            temperature=0,
+            max_tokens=80,
+            timeout=12,
+            metadata=metadata,
+        )
+        mod.on_post_aux_llm_request(
+            task="title_generation",
+            provider="custom",
+            model="aux-model",
+            base_url="https://aux.example/v1",
+            api_mode="chat_completions",
+            response=self._response(),
+            metadata=metadata,
+        )
+
+        assert child_calls == [{
+            "name": "Auxiliary: title_generation",
+            "as_type": "generation",
+            "input": [{"role": "user", "content": "make a title"}],
+            "metadata": {
+                "auxiliary_task": "title_generation",
+                "provider": "custom",
+                "platform": "myah",
+                "api_mode": "chat_completions",
+                "base_url": "https://aux.example/v1",
+                "user_id": "user-1",
+                "hermes_session_id": "hermes-internal-1",
+            },
+            "model": "aux-model",
+            "model_parameters": {
+                "api_mode": "chat_completions",
+                "provider": "custom",
+                "temperature": 0,
+                "max_tokens": 80,
+                "timeout": 12,
+            },
+        }]
+        assert ended["obs"] is observation
+        assert ended["output"] == {"content": '{"title":"Myah chat"}', "reasoning": None, "tool_calls": []}
+        assert ended["usage_details"] == {"input": 3, "output": 2}
+        assert ended["cost_details"] == {"total": 0.01}
+        assert ended["metadata"]["finish_reason"] == "stop"
+        assert finished and finished[0][1] == ended["output"]
+
+    def test_auxiliary_error_hook_ends_generation_with_error_metadata(self, monkeypatch):
+        mod = self._fresh_plugin()
+        observation = object()
+        ended = {}
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
+        monkeypatch.setattr(
+            mod,
+            "_start_root_trace",
+            lambda *args, **kwargs: mod.TraceState(trace_id="trace-aux", root_ctx=None, root_span=object()),
+        )
+        monkeypatch.setattr(mod, "_start_child_observation", lambda *args, **kwargs: observation)
+        monkeypatch.setattr(
+            mod,
+            "_end_observation",
+            lambda obs, **kwargs: ended.update({"obs": obs, **kwargs}),
+        )
+
+        metadata = {"session_id": "myah-chat-err", "user_id": "user-err", "platform": "myah"}
+        err = RuntimeError("provider down")
+        mod.on_pre_aux_llm_request(task="follow_up_generation", messages=[], metadata=metadata)
+        mod.on_aux_llm_error(task="follow_up_generation", metadata=metadata, error=err)
+
+        assert ended["obs"] is observation
+        assert ended["metadata"]["status"] == "error"
+        assert ended["metadata"]["error_type"] == "RuntimeError"
+        assert ended["metadata"]["error"] == "provider down"
+
+
 class TestToolCallOutputBackfill:
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
         sys.modules.pop("plugins.observability.langfuse", None)
@@ -532,6 +818,24 @@ class TestToolCallOutputBackfill:
             "tool_call_id": "call-1",
             "content": {"ok": True},
         }]
+
+    def test_serialize_messages_omits_base64_image_data_urls(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "describe image"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJDREVGRw=="}},
+        ]}]
+
+        serialized = mod._serialize_messages(messages)
+        image_url = serialized[0]["content"][1]["image_url"]["url"]
+        assert image_url == {
+            "omitted": True,
+            "media_type": "image/png",
+            "encoding": "base64",
+            "length": len("QUJDREVGRw=="),
+        }
 
     def test_serialize_tool_calls_emits_openai_style_function_shape(self):
         sys.modules.pop("plugins.observability.langfuse", None)

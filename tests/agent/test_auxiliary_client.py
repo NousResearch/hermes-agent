@@ -232,6 +232,229 @@ class TestReadCodexAccessToken:
         assert result == "plain-token-no-jwt"
 
 
+class TestAuxiliaryLlmHooks:
+    def _response(self, content="ok", prompt_tokens=3, completion_tokens=2):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=content, reasoning=None, tool_calls=None),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            ),
+        )
+
+    def _sync_client(self, response=None, error=None):
+        create = MagicMock()
+        if error is not None:
+            create.side_effect = error
+        else:
+            create.return_value = response or self._response()
+        return SimpleNamespace(
+            base_url="https://aux.example/v1",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+        )
+
+    def test_call_llm_emits_pre_and_post_aux_hooks_with_correlation_metadata(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        hook_calls = []
+        response = self._response(content='{"title":"hooked"}')
+        client = self._sync_client(response=response)
+        monkeypatch.setattr(
+            aux_mod,
+            "invoke_hook",
+            lambda name, **kwargs: hook_calls.append((name, kwargs)),
+            raising=False,
+        )
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("custom", "aux-model", "https://aux.example/v1", "secret", "chat_completions")), \
+             patch("agent.auxiliary_client._get_cached_client", return_value=(client, "aux-model")), \
+             patch("agent.auxiliary_client._get_task_extra_body", return_value={}):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "make a title"}],
+                temperature=0,
+                max_tokens=80,
+                timeout=12,
+                metadata={"session_id": "myah-chat-1", "user_id": "user-1", "platform": "myah"},
+            )
+
+        assert result is response
+        assert [name for name, _ in hook_calls] == ["pre_aux_llm_request", "post_aux_llm_request"]
+        pre = hook_calls[0][1]
+        post = hook_calls[1][1]
+        assert pre["task"] == "title_generation"
+        assert pre["provider"] == "custom"
+        assert pre["model"] == "aux-model"
+        assert pre["api_mode"] == "chat_completions"
+        assert pre["base_url"] == "https://aux.example/v1"
+        assert pre["messages"] == [{"role": "user", "content": "make a title"}]
+        assert pre["max_tokens"] == 80
+        assert pre["temperature"] == 0
+        assert pre["timeout"] == 12
+        assert pre["metadata"] == {"session_id": "myah-chat-1", "user_id": "user-1", "platform": "myah"}
+        assert post["task"] == "title_generation"
+        assert post["response"] is response
+        assert post["usage"].total_tokens == 5
+        assert post["metadata"]["session_id"] == "myah-chat-1"
+
+    def test_call_llm_emits_aux_error_hook_when_provider_call_fails(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        hook_calls = []
+        err = RuntimeError("provider down")
+        client = self._sync_client(error=err)
+        monkeypatch.setattr(
+            aux_mod,
+            "invoke_hook",
+            lambda name, **kwargs: hook_calls.append((name, kwargs)),
+            raising=False,
+        )
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("custom", "aux-model", "https://aux.example/v1", "secret", "chat_completions")), \
+             patch("agent.auxiliary_client._get_cached_client", return_value=(client, "aux-model")), \
+             patch("agent.auxiliary_client._get_task_extra_body", return_value={}), \
+             patch("agent.auxiliary_client._is_payment_error", return_value=False), \
+             patch("agent.auxiliary_client._is_connection_error", return_value=False), \
+             patch("agent.auxiliary_client._is_rate_limit_error", return_value=False), \
+             patch("agent.auxiliary_client._is_auth_error", return_value=False):
+            with pytest.raises(RuntimeError, match="provider down"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "compress"}],
+                    max_tokens=40,
+                    metadata={"session_id": "sess-error"},
+                )
+
+        assert [name for name, _ in hook_calls] == ["pre_aux_llm_request", "aux_llm_error"]
+        assert hook_calls[1][1]["task"] == "compression"
+        assert hook_calls[1][1]["error"] is err
+        assert hook_calls[1][1]["metadata"]["session_id"] == "sess-error"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_emits_pre_and_post_aux_hooks(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        hook_calls = []
+        response = self._response(content='{"follow_ups":["next"]}')
+
+        class AsyncCreate:
+            async def create(self, **kwargs):
+                return response
+
+        client = SimpleNamespace(
+            base_url="https://aux.example/v1",
+            chat=SimpleNamespace(completions=AsyncCreate()),
+        )
+        monkeypatch.setattr(
+            aux_mod,
+            "invoke_hook",
+            lambda name, **kwargs: hook_calls.append((name, kwargs)),
+            raising=False,
+        )
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("custom", "aux-model", "https://aux.example/v1", "secret", "chat_completions")), \
+             patch("agent.auxiliary_client._get_cached_client", return_value=(client, "aux-model")), \
+             patch("agent.auxiliary_client._get_task_extra_body", return_value={}):
+            result = await async_call_llm(
+                task="follow_up_generation",
+                messages=[{"role": "user", "content": "suggest"}],
+                max_tokens=120,
+                metadata={"session_id": "myah-chat-2", "user_id": "user-2"},
+            )
+
+        assert result is response
+        assert [name for name, _ in hook_calls] == ["pre_aux_llm_request", "post_aux_llm_request"]
+        assert hook_calls[0][1]["task"] == "follow_up_generation"
+        assert hook_calls[1][1]["response"] is response
+
+    @pytest.mark.parametrize("task_name", [
+        "compression",
+        "web_extract",
+        "session_search",
+        "skills_hub",
+        "approval",
+        "mcp",
+        "title_generation",
+        "follow_up_generation",
+    ])
+    def test_call_llm_aux_hooks_cover_representative_text_tasks(self, monkeypatch, task_name):
+        import agent.auxiliary_client as aux_mod
+
+        hook_calls = []
+        response = self._response(content=f"{task_name} ok")
+        client = self._sync_client(response=response)
+        monkeypatch.setattr(
+            aux_mod,
+            "invoke_hook",
+            lambda name, **kwargs: hook_calls.append((name, kwargs)),
+            raising=False,
+        )
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("custom", "aux-model", "https://aux.example/v1", "secret", "chat_completions")), \
+             patch("agent.auxiliary_client._get_cached_client", return_value=(client, "aux-model")), \
+             patch("agent.auxiliary_client._get_task_extra_body", return_value={}):
+            result = call_llm(
+                task=task_name,
+                messages=[{"role": "user", "content": f"run {task_name}"}],
+                max_tokens=32,
+                metadata={"session_id": f"smoke-{task_name}"},
+            )
+
+        assert result is response
+        assert [name for name, _ in hook_calls] == ["pre_aux_llm_request", "post_aux_llm_request"]
+        assert hook_calls[0][1]["task"] == task_name
+        assert hook_calls[1][1]["task"] == task_name
+        assert hook_calls[1][1]["metadata"]["session_id"] == f"smoke-{task_name}"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_aux_hooks_cover_vision_task_with_image_payload(self, monkeypatch):
+        import agent.auxiliary_client as aux_mod
+
+        hook_calls = []
+        response = self._response(content="vision ok")
+
+        class AsyncCreate:
+            async def create(self, **kwargs):
+                return response
+
+        client = SimpleNamespace(
+            base_url="https://vision.example/v1",
+            chat=SimpleNamespace(completions=AsyncCreate()),
+        )
+        monkeypatch.setattr(
+            aux_mod,
+            "invoke_hook",
+            lambda name, **kwargs: hook_calls.append((name, kwargs)),
+            raising=False,
+        )
+
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "describe this logo"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]}]
+        with patch("agent.auxiliary_client.resolve_vision_provider_client", return_value=("custom", client, "vision-model")), \
+             patch("agent.auxiliary_client._get_task_extra_body", return_value={}):
+            result = await async_call_llm(
+                task="vision",
+                messages=messages,
+                max_tokens=64,
+                metadata={"session_id": "smoke-vision", "platform": "vision-test"},
+            )
+
+        assert result is response
+        assert [name for name, _ in hook_calls] == ["pre_aux_llm_request", "post_aux_llm_request"]
+        pre = hook_calls[0][1]
+        assert pre["task"] == "vision"
+        assert pre["provider"] == "custom"
+        assert pre["model"] == "vision-model"
+        assert pre["messages"] == messages
+        assert hook_calls[1][1]["metadata"]["session_id"] == "smoke-vision"
+
+
 class TestResolveXaiOAuthForAux:
     def test_uses_pool_backed_credentials_without_singleton(self, tmp_path, monkeypatch):
         """Auxiliary xAI OAuth must see pool-only credentials.

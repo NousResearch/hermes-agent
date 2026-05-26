@@ -148,6 +148,7 @@ def init_agent(
     args: list[str] | None = None,
     model: str = "",
     max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+    skill_decay_distance: int = 6,  # Decay <hermes-skill> loads older than N msgs from tail (0 disables)
     tool_delay: float = 1.0,
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
@@ -255,6 +256,10 @@ def init_agent(
 
     agent.model = model
     agent.max_iterations = max_iterations
+    # Skill-decay threshold: <hermes-skill> loads more than N messages from
+    # the tail are replaced with a reload-hint placeholder at request-build
+    # time. 0 (or negative) disables decay entirely.
+    agent.skill_decay_distance = skill_decay_distance
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)

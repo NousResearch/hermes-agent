@@ -359,6 +359,7 @@ class AIAgent:
         args: list[str] | None = None,
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        skill_decay_distance: int = 6,  # Decay <hermes-skill> loads older than N msgs from tail (0 disables)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -428,6 +429,7 @@ class AIAgent:
             args=args,
             model=model,
             max_iterations=max_iterations,
+            skill_decay_distance=skill_decay_distance,
             tool_delay=tool_delay,
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
@@ -4150,6 +4152,41 @@ class AIAgent:
         """Forwarder — see ``agent.chat_completion_helpers.handle_max_iterations``."""
         from agent.chat_completion_helpers import handle_max_iterations
         return handle_max_iterations(self, messages, api_call_count)
+
+    _SKILL_BLOCK_PATTERN = re.compile(
+        r'<hermes-skill name="([^"]+)">.*?</hermes-skill>', re.DOTALL
+    )
+
+    def _decay_skill_content(self, content: Any, *, distance: int) -> Optional[str]:
+        """Return a decayed copy of ``content`` when it holds a stale skill load.
+
+        A ``<hermes-skill name="X">…</hermes-skill>`` block whose message sits
+        more than ``self.skill_decay_distance`` messages from the tail is
+        replaced with a short placeholder pointing the model back at
+        ``skill_view("X")``.  Text outside the block (e.g. steer injections
+        appended after the closing tag) is preserved.
+
+        Returns ``None`` when nothing should change (wrong type, no skill
+        block, or the message is still recent). Callers apply the result to
+        an ephemeral per-request message copy — never to the persistent
+        history — so the stored transcript is untouched and, because a decayed
+        message renders identically on every subsequent turn, the request
+        prefix cache stays stable.
+        """
+        if not isinstance(content, str):
+            return None
+        # A threshold of 0 (or negative) disables decay entirely.
+        if self.skill_decay_distance <= 0 or distance <= self.skill_decay_distance:
+            return None
+        match = self._SKILL_BLOCK_PATTERN.search(content)
+        if not match:
+            return None
+        skill_name = match.group(1)
+        placeholder = (
+            f'[Skill "{skill_name}" content decayed after {distance} messages. '
+            f'Reload with skill_view("{skill_name}").]'
+        )
+        return self._SKILL_BLOCK_PATTERN.sub(placeholder, content)
 
     def run_conversation(
         self,

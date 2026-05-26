@@ -7,6 +7,7 @@ from gateway.config import Platform, PlatformConfig
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+    monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1")
     from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
     cfg = PlatformConfig(
@@ -78,7 +79,7 @@ class TestBlueBubblesHelpers:
         assert all("(" not in chunk for chunk in chunks)
 
     @pytest.mark.asyncio
-    async def test_send_splits_paragraphs_into_multiple_bubbles(self, monkeypatch):
+    async def test_send_preserves_paragraphs_in_one_bubble(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         sent = []
 
@@ -95,7 +96,29 @@ class TestBlueBubblesHelpers:
         result = await adapter.send("user@example.com", "first thought\n\nsecond thought")
 
         assert result.success is True
-        assert sent == ["first thought", "second thought"]
+        assert sent == ["first thought\n\nsecond thought"]
+
+    @pytest.mark.asyncio
+    async def test_send_chunks_only_when_text_exceeds_limit(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(type(adapter), "MAX_MESSAGE_LENGTH", 6)
+        sent = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            sent.append(payload["message"])
+            return {"data": {"guid": f"msg-{len(sent)}"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "abcdefghij")
+
+        assert result.success is True
+        assert len(sent) > 1
+        assert "".join(sent) == "abcdefghij"
 
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -129,6 +152,216 @@ class TestBlueBubblesHelpers:
     def test_server_url_adds_scheme(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, server_url="localhost:1234")
         assert adapter.server_url == "http://localhost:1234"
+
+    def test_webhook_events_default_to_new_and_updated_message(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.webhook_events == ["new-message", "updated-message"]
+
+    def test_webhook_events_can_opt_in_to_updated_message(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            webhook_events=["new-message", "updated-message"],
+        )
+        assert adapter.webhook_events == ["new-message", "updated-message"]
+
+    def test_webhook_events_env_parses_comma_list(self, monkeypatch):
+        monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_EVENTS", "new-message,updated-message")
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.webhook_events == ["new-message", "updated-message"]
+
+    def test_dedup_key_prefers_message_guid_and_text_hash(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        payload = {"type": "new-message", "data": {"guid": "msg-1", "text": "hello"}}
+        record = adapter._extract_payload_record(payload) or {}
+        first = adapter._message_dedup_key(payload, record, "hello")
+        second = adapter._message_dedup_key(payload, record, "hello again")
+        assert first.startswith("guid:msg-1:")
+        assert first != second
+    @pytest.mark.asyncio
+    async def test_webhook_listener_port_conflict_enters_outbound_only_mode(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        cleaned = []
+
+        class Router:
+            def add_get(self, *args, **kwargs):
+                pass
+
+            def add_post(self, *args, **kwargs):
+                pass
+
+        class App:
+            def __init__(self):
+                self.router = Router()
+
+        class Runner:
+            def __init__(self, app, **kwargs):
+                self.app = app
+
+            async def setup(self):
+                pass
+
+            async def cleanup(self):
+                cleaned.append(True)
+
+        class Site:
+            def __init__(self, runner, host, port):
+                pass
+
+            async def start(self):
+                raise OSError(98, "address already in use")
+
+        class Web:
+            Application = App
+            AppRunner = Runner
+            TCPSite = Site
+
+            @staticmethod
+            def Response(text=""):
+                return text
+
+        started = await adapter._start_webhook_listener(Web)
+
+        assert started is False
+        assert adapter._runner is None
+        assert cleaned == [True]
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_webhook_registration_when_listener_is_busy(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        registered = []
+        unregistered = []
+
+        async def fake_api_get(path):
+            if path == "/api/v1/server/info":
+                return {"data": {"private_api": True, "helper_connected": True}}
+            return {"status": 200}
+
+        async def fake_start_listener(web):
+            return False
+
+        async def fake_register():
+            registered.append(True)
+            return True
+
+        async def fake_unregister():
+            unregistered.append(True)
+            return True
+
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(adapter, "_start_webhook_listener", fake_start_listener)
+        monkeypatch.setattr(adapter, "_register_webhook", fake_register)
+        monkeypatch.setattr(adapter, "_unregister_webhook", fake_unregister)
+
+        ok = await adapter.connect()
+        try:
+            assert ok is True
+            assert adapter.is_connected is True
+            assert adapter._owns_webhook_listener is False
+            assert registered == []
+        finally:
+            await adapter.disconnect()
+        assert unregistered == []
+
+
+class _FakeWebhookRequest:
+    def __init__(self, payload, password="secret"):
+        import json
+
+        self.query = {"password": password}
+        self.headers = {}
+        self._raw = json.dumps(payload).encode("utf-8")
+
+    async def read(self):
+        return self._raw
+
+
+class TestBlueBubblesWebhookHandling:
+    @pytest.mark.asyncio
+    async def test_updated_message_status_only_is_acknowledged_but_not_processed(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "updated-message",
+            "data": {
+                "guid": "msg-1",
+                "text": "hello",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;user@example.com"}],
+            },
+        }
+
+        response = await adapter._handle_webhook(_FakeWebhookRequest(payload))
+        await asyncio.sleep(0)
+
+        assert response.text == "ok"
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_updated_message_edit_is_processed_once(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event.text)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "updated-message",
+            "data": {
+                "guid": "msg-edit-1",
+                "text": "hello edited",
+                "dateEdited": 123,
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;user@example.com"}],
+            },
+        }
+
+        response = await adapter._handle_webhook(_FakeWebhookRequest(payload))
+        await asyncio.sleep(0)
+
+        assert response.text == "ok"
+        assert handled == ["hello edited"]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_guid_and_text_only_processes_once(self, monkeypatch):
+        import asyncio
+
+        adapter = _make_adapter(monkeypatch, webhook_events=["new-message", "updated-message"])
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event.text)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-2",
+                "text": "hello",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;user@example.com"}],
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeWebhookRequest(payload))
+        second = await adapter._handle_webhook(_FakeWebhookRequest(payload))
+        await asyncio.sleep(0)
+
+        assert first.text == "ok"
+        assert second.text == "ok"
+        assert handled == ["hello"]
 
 
 class TestBlueBubblesWebhookParsing:
@@ -589,7 +822,7 @@ class TestBlueBubblesWebhookRegistration:
         url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
-                {"id": 7, "url": url, "events": ["new-message"]},
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
             ]},
         )
 

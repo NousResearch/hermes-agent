@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
+    files TEXT,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,
@@ -1452,6 +1453,7 @@ class SessionDB:
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
+        files: Any = None,
         token_count: int = None,
         finish_reason: str = None,
         reasoning: str = None,
@@ -1487,6 +1489,7 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        files_json = json.dumps(files, ensure_ascii=False) if files else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -1499,10 +1502,10 @@ class SessionDB:
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, files, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1510,6 +1513,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
+                    files_json,
                     time.time(),
                     token_count,
                     finish_reason,

@@ -1339,7 +1339,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Extract files parameter — grouped by type: {images: [...], others: [...]}
         files_raw = body.get("files", {})
-        if isinstance(files_raw, dict):
+        _request_files = None
+        if isinstance(files_raw, dict) and (files_raw.get("images") or files_raw.get("others")):
+            _request_files = files_raw
             _append = ""
             for _url in files_raw.get("images", []):
                 _url = str(_url or "").strip()
@@ -1597,6 +1599,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _approval_token=_approval_token,
                 _prev_session_key=_prev_session_key,
                 _prev_gateway_session=_prev_gateway_session,
+                _request_files=_request_files,
                 user_message=user_message,
             )
 
@@ -1671,6 +1674,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     _openai_error(f"Internal server error: {e}", err_type="server_error"),
                     status=500,
                 )
+
+        # 保存请求中的文件元数据（files 参数）到第一条 user 消息
+        if _request_files and session_id:
+            try:
+                _db = self._ensure_session_db()
+                if _db:
+                    _db._conn.execute(
+                        "UPDATE messages SET files = ? WHERE session_id = ? "
+                        "AND role = 'user' AND timestamp = ("
+                        "SELECT MIN(timestamp) FROM messages WHERE session_id = ? AND role = 'user')",
+                        (json.dumps(_request_files, ensure_ascii=False), session_id, session_id),
+                    )
+            except Exception:
+                pass
 
         final_response = result.get("final_response") or ""
         is_partial = bool(result.get("partial"))
@@ -1780,6 +1797,7 @@ class APIServerAdapter(BasePlatformAdapter):
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
         chat_session_key: str = None,
         gateway_session_key: str = None,
+        _request_files=None,
         _sess_tokens=None, _approval_token=None,
         _prev_session_key: str = None, _prev_gateway_session: str = None,
         user_message: str = "",
@@ -1910,6 +1928,20 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
                 result = None
+
+            # 保存文件元数据到第一条 user 消息（SSE 流式路径）
+            if _request_files and session_id:
+                try:
+                    _db = self._ensure_session_db()
+                    if _db:
+                        _db._conn.execute(
+                            "UPDATE messages SET files = ? WHERE session_id = ? "
+                            "AND role = 'user' AND timestamp = ("
+                            "SELECT MIN(timestamp) FROM messages WHERE session_id = ? AND role = 'user')",
+                            (json.dumps(_request_files, ensure_ascii=False), session_id, session_id),
+                        )
+                except Exception:
+                    pass
 
             # Auto-generate session title after first exchange (non-blocking)
             if session_id and self._session_db:
@@ -4326,7 +4358,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # 2. Fetch all messages in chronological order
             msg_cursor = db._conn.execute(
-                "SELECT role, content, tool_calls, tool_name, reasoning, timestamp "
+                "SELECT role, content, tool_calls, tool_name, files, reasoning, timestamp "
                 "FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
                 (session_id,),
             )
@@ -4337,8 +4369,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     "content": row[1],
                     "tool_calls": row[2],
                     "tool_name": row[3],
-                    "reasoning": row[4],
-                    "timestamp": row[5],
+                    "files": row[4],
+                    "reasoning": row[5],
+                    "timestamp": row[6],
                 }
                 # Add tool display metadata (emoji, label) for historical sessions.
                 # During SSE streaming these are sent as hermes.tool.progress events,

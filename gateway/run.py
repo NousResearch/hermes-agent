@@ -5418,6 +5418,8 @@ class GatewayRunner:
             return (resolved, stat.st_mtime_ns, stat.st_size)
 
         def _is_corrupt_board_db_error(exc: Exception) -> bool:
+            if isinstance(exc, _kb.KanbanDbCorruptError):
+                return True
             if not isinstance(exc, sqlite3.DatabaseError):
                 return False
             msg = str(exc).lower()
@@ -5462,15 +5464,15 @@ class GatewayRunner:
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
-            except sqlite3.DatabaseError as exc:
+            except (sqlite3.DatabaseError, _kb.KanbanDbCorruptError) as exc:
                 if _is_corrupt_board_db_error(exc):
                     disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; disabling dispatch for this board "
-                        "until the file changes or the gateway restarts. Move "
-                        "or restore the file, then run `hermes kanban init` if "
-                        "you need a fresh board.",
+                        "kanban dispatcher: board %s database %s is corrupt or "
+                        "not a valid SQLite database; disabling dispatch for "
+                        "this board until the file changes or the gateway "
+                        "restarts. Move or restore the file, then run "
+                        "`hermes kanban init` if you need a fresh board.",
                         slug,
                         fingerprint[0],
                     )

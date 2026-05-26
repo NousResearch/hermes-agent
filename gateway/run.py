@@ -1073,11 +1073,33 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _resolve_suppress_retry_status(platform_key: str) -> bool:
+    """Resolve the ``display.platforms.<platform>.suppress_retry_status`` flag.
+
+    Returns True when the active platform has ``suppress_retry_status`` set to a
+    truthy value in the display config.  Used to silence the ⚠️ empty-response
+    substitution and the generic "no response was generated" warning for
+    deployments where empty model responses are a legitimate outcome (e.g. an
+    agent persona that stays silent when a message is addressed to another
+    participant).
+    """
+    try:
+        from gateway.display_config import resolve_display_setting
+        from hermes_cli.config import load_config as _load_cfg
+        cfg = _load_cfg() or {}
+        return bool(
+            resolve_display_setting(cfg, platform_key, "suppress_retry_status", False)
+        )
+    except Exception:
+        return False
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
     *,
     history_len: int = 0,
+    platform_key: str = "",
 ) -> str:
     """Normalize empty/None agent responses into user-facing messages.
 
@@ -1111,6 +1133,8 @@ def _normalize_empty_agent_response(
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+        if _resolve_suppress_retry_status(platform_key):
+            return response
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."
@@ -7644,11 +7668,14 @@ class GatewayRunner:
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)":
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
+                if _resolve_suppress_retry_status(_platform_name):
+                    response = ""
+                else:
+                    response = (
+                        "⚠️ The model returned no response after processing tool "
+                        "results. This can happen with some models — try again or "
+                        "rephrase your question."
+                    )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -7681,6 +7708,7 @@ class GatewayRunner:
             # the case where agent did work but returned no text. Fix for #18765.
             response = _normalize_empty_agent_response(
                 agent_result, response, history_len=len(history),
+                platform_key=_platform_name,
             )
 
             # If the agent's session_id changed during compression, update

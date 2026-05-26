@@ -41,6 +41,12 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # When true, suppresses retry/empty-response/thinking-only/fallback status
+    # bubbles and the "(empty)" sentinel substitution. Intended for deployments
+    # where agent personas can legitimately produce empty responses (e.g. "stay
+    # silent when addressed to someone else") that the generic retry logic would
+    # otherwise misinterpret as failures. Off by default.
+    "suppress_retry_status": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -194,7 +200,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
-    if setting == "cleanup_progress":
+    if setting in {"cleanup_progress", "suppress_retry_status"}:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)

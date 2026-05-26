@@ -2884,6 +2884,38 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
+    def _should_suppress_retry_status(self) -> bool:
+        """Return True when retry/empty-response status bubbles should be suppressed.
+
+        Reads ``display.platforms.<platform>.suppress_retry_status`` from config.
+        Cached per agent instance.
+        """
+        cached = getattr(self, "_suppress_retry_status_cached", None)
+        if cached is not None:
+            return cached
+        try:
+            from gateway.display_config import resolve_display_setting
+            from hermes_cli.config import load_config as _load_cfg
+            cfg = _load_cfg() or {}
+            platform_key = (self.platform or "").lower().strip() or "cli"
+            result = bool(
+                resolve_display_setting(cfg, platform_key, "suppress_retry_status", False)
+            )
+        except Exception:
+            result = False
+        self._suppress_retry_status_cached = result
+        return result
+
+    def _emit_retry_status(self, message: str) -> None:
+        """Emit a retry/empty-response/fallback status bubble, if not suppressed.
+
+        No-op when ``suppress_retry_status`` is enabled for the active platform.
+        Otherwise identical to ``_emit_status``.
+        """
+        if self._should_suppress_retry_status():
+            return
+        self._emit_status(message)
+
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
@@ -15091,7 +15123,7 @@ class AIAgent:
                                 "Empty response after tool calls — nudging model "
                                 "to continue processing"
                             )
-                            self._emit_status(
+                            self._emit_retry_status(
                                 "⚠️ Model returned empty after tool calls — "
                                 "nudging to continue"
                             )
@@ -15137,7 +15169,7 @@ class AIAgent:
                                 "prefilling to continue (%d/2)",
                                 self._thinking_prefill_retries,
                             )
-                            self._emit_status(
+                            self._emit_retry_status(
                                 f"↻ Thinking-only response — prefilling to continue "
                                 f"({self._thinking_prefill_retries}/2)"
                             )
@@ -15173,7 +15205,7 @@ class AIAgent:
                                 "retry %d/3 (model=%s)",
                                 self._empty_content_retries, self.model,
                             )
-                            self._emit_status(
+                            self._emit_retry_status(
                                 f"⚠️ Empty response from model — retrying "
                                 f"({self._empty_content_retries}/3)"
                             )
@@ -15192,13 +15224,13 @@ class AIAgent:
                                 self._empty_content_retries, self.model,
                                 self.provider,
                             )
-                            self._emit_status(
+                            self._emit_retry_status(
                                 "⚠️ Model returning empty responses — "
                                 "switching to fallback provider..."
                             )
                             if self._try_activate_fallback():
                                 self._empty_content_retries = 0
-                                self._emit_status(
+                                self._emit_retry_status(
                                     f"↻ Switched to fallback: {self.model} "
                                     f"({self.provider})"
                                 )
@@ -15232,7 +15264,7 @@ class AIAgent:
                                 "after exhausting retries and fallback. "
                                 "Reasoning: %s", reasoning_preview,
                             )
-                            self._emit_status(
+                            self._emit_retry_status(
                                 "⚠️ Model produced reasoning but no visible "
                                 "response after all retries. Returning empty."
                             )
@@ -15244,7 +15276,7 @@ class AIAgent:
                                 self._empty_content_retries, self.model,
                                 self.provider,
                             )
-                            self._emit_status(
+                            self._emit_retry_status(
                                 "❌ Model returned no content after all retries"
                                 + (" and fallback attempts." if self._fallback_chain else
                                    ". No fallback providers configured.")

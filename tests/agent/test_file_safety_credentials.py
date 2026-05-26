@@ -246,22 +246,24 @@ def test_mcp_tokens_dir_itself_blocked(fake_home):
     assert "MCP token" in err
 
 
-def test_identically_named_files_outside_hermes_home_not_blocked(
+def test_identically_named_hermes_files_outside_home_not_blocked(
     fake_home, tmp_path
 ):
-    """A project's ``.env``, ``auth.json``, or ``mcp-tokens/`` outside
-    HERMES_HOME must remain readable — the gate is per-location, not
-    per-filename."""
+    """Hermes-specific filenames (``auth.json``, ``mcp-tokens/``, ``google_oauth.json``)
+    outside HERMES_HOME must remain readable — the gate is per-location for
+    those, not per-filename. ``.env`` is the exception: it's blocked anywhere
+    on disk (see test_project_local_env_blocked) because the basename always
+    means \"secret-bearing environment file\" regardless of directory."""
     from agent.file_safety import get_read_block_error
 
     project = tmp_path / "myproject"
     project.mkdir()
-    for rel in (".env", "auth.json"):
-        p = project / rel
-        p.write_text("not secret here", encoding="utf-8")
-        assert get_read_block_error(str(p)) is None, (
-            f"{rel} outside HERMES_HOME should NOT be blocked"
-        )
+    # auth.json outside HERMES_HOME — readable (per-location gate).
+    p = project / "auth.json"
+    p.write_text("not secret here", encoding="utf-8")
+    assert get_read_block_error(str(p)) is None, (
+        "auth.json outside HERMES_HOME should NOT be blocked"
+    )
 
     google_oauth = project / "auth" / "google_oauth.json"
     google_oauth.parent.mkdir()

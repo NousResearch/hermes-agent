@@ -1,0 +1,42 @@
+[package]
+name = "lycus-comm"
+version = "0.1.0"
+edition = "2021"
+description = "Lycus inter-agent communication module using Matrix protocol"
+
+[lib]
+name = "lycus_comm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Matrix client library
+ruma = { version = "0.10", default-features = false, features = ["client-reqwest", "jwt"] }
+ruma-client = { version = "0.10", default-features = false, features = ["native-tls"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# IPC bridge to Python
+pyo3 = { version = "0.20", features = ["extension-module"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Configuration
+config = "0.13"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

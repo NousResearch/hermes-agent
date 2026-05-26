@@ -609,8 +609,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # reasoning fields are present (some models/providers embed thinking
     # directly in the content rather than returning separate API fields).
     if not reasoning_text:
-        content = assistant_message.content or ""
-        think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
+        _raw_extract = assistant_message.content
+        # Normalize list content (DeepSeek V4 thinking mode) to string
+        # before regex extraction.
+        if isinstance(_raw_extract, list):
+            _text_parts = [
+                b.get("text", "") for b in _raw_extract
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            _raw_extract = " ".join(_text_parts) if _text_parts else ""
+        elif not isinstance(_raw_extract, str):
+            _raw_extract = ""
+        think_blocks = re.findall(r'<think>(.*?)</think>', _raw_extract, flags=re.DOTALL)
         if think_blocks:
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None
@@ -635,7 +645,19 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
     # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
     # can return invalid surrogate code points that crash json.dumps() on persist.
-    _raw_content = assistant_message.content or ""
+    _raw_content = assistant_message.content
+    # DeepSeek V4 Pro/Flash thinking mode may return content as a list of typed
+    # blocks ([{"type":"thinking",...}, {"type":"text",...}]).  Extract text from
+    # the list; fall back to empty string for any non-string type so that
+    # _sanitize_surrogates() (which expects str) does not crash.
+    if isinstance(_raw_content, list):
+        _text_parts = [
+            b.get("text", "") for b in _raw_content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        _raw_content = " ".join(_text_parts) if _text_parts else ""
+    elif not isinstance(_raw_content, str):
+        _raw_content = ""
     _san_content = _sanitize_surrogates(_raw_content)
     if reasoning_text:
         reasoning_text = _sanitize_surrogates(reasoning_text)

@@ -1,0 +1,6 @@
+name: slack-bot-bridge
+version: "0.1.0"
+description: "Bot-to-bot ingress over Slack. Lets an external bot (CI runner, webhook relay) hand off a canonical prompt to a Hermes that lives inside a private network, by posting a tagged JSON envelope into a single dedicated bridge channel. Activated via `hermes plugins enable slack-bot-bridge`."
+author: NousResearch
+hooks:
+  - pre_gateway_dispatch

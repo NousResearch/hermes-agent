@@ -16,6 +16,7 @@ from acp.schema import (
     AgentThoughtChunk,
     AuthenticateResponse,
     AvailableCommandsUpdate,
+    CurrentModeUpdate,
     Implementation,
     InitializeResponse,
     ListSessionsResponse,
@@ -901,6 +902,101 @@ class TestSessionConfiguration:
 
         assert isinstance(resp, SetSessionModeResponse)
         assert getattr(state, "mode", None) == "accept_edits"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("requested_mode", "effective_mode"),
+        [
+            ("accept_edits", "accept_edits"),
+            ("Accept_edits", "default"),
+            ("dont_ask ", "dont_ask"),
+        ],
+    )
+    async def test_set_session_mode_emits_effective_current_mode_update(
+        self,
+        agent,
+        requested_mode,
+        effective_mode,
+    ):
+        new_resp = await agent.new_session(cwd="/tmp")
+        mock_conn = MagicMock()
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.set_session_mode(
+            mode_id=requested_mode,
+            session_id=new_resp.session_id,
+        )
+
+        assert isinstance(resp, SetSessionModeResponse)
+        mock_conn.session_update.assert_awaited_once()
+        call = mock_conn.session_update.await_args
+        assert call.kwargs["session_id"] == new_resp.session_id
+        update = call.kwargs["update"]
+        assert isinstance(update, CurrentModeUpdate)
+        assert update.session_update == "current_mode_update"
+        assert update.current_mode_id == effective_mode
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("policy_value", "effective_mode"),
+        [
+            ("workspace_session", "accept_edits"),
+            ("workspace_session ", "default"),
+        ],
+    )
+    async def test_edit_approval_policy_config_emits_effective_current_mode_update(
+        self,
+        agent,
+        policy_value,
+        effective_mode,
+    ):
+        new_resp = await agent.new_session(cwd="/tmp")
+        mock_conn = MagicMock()
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.set_config_option(
+            config_id="edit_approval_policy",
+            session_id=new_resp.session_id,
+            value=policy_value,
+        )
+
+        assert isinstance(resp, SetSessionConfigOptionResponse)
+        mock_conn.session_update.assert_awaited_once()
+        call = mock_conn.session_update.await_args
+        assert call.kwargs["session_id"] == new_resp.session_id
+        update = call.kwargs["update"]
+        assert isinstance(update, CurrentModeUpdate)
+        assert update.session_update == "current_mode_update"
+        assert update.current_mode_id == effective_mode
+
+    @pytest.mark.asyncio
+    async def test_missing_session_mode_update_does_not_emit_current_mode_update(self, agent):
+        mock_conn = MagicMock()
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.set_session_mode(mode_id="accept_edits", session_id="missing")
+
+        assert resp is None
+        mock_conn.session_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_mode_config_option_does_not_emit_current_mode_update(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        mock_conn = MagicMock()
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.set_config_option(
+            config_id="approval_mode",
+            session_id=new_resp.session_id,
+            value="auto",
+        )
+
+        assert isinstance(resp, SetSessionConfigOptionResponse)
+        mock_conn.session_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):

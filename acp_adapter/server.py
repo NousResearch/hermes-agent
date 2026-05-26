@@ -25,6 +25,7 @@ from acp.schema import (
     AvailableCommandsUpdate,
     BlobResourceContents,
     ClientCapabilities,
+    CurrentModeUpdate,
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
     ImageContentBlock,
@@ -739,6 +740,25 @@ class HermesACPAgent(acp.Agent):
             )
         except Exception:
             logger.debug("Could not send ACP session info update for %s", session_id, exc_info=True)
+
+    async def _send_current_mode_update(self, session_id: str, mode_id: str) -> None:
+        """Send the ACP-native current mode notification after mode mutations."""
+        if not self._conn:
+            return
+        try:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=CurrentModeUpdate(
+                    session_update="current_mode_update",
+                    current_mode_id=mode_id,
+                ),
+            )
+        except Exception:
+            logger.debug(
+                "Could not send ACP current mode update for %s",
+                session_id,
+                exc_info=True,
+            )
 
     def _schedule_usage_update(self, state: SessionState) -> None:
         """Schedule native context indicator refresh after ACP responses."""
@@ -1926,6 +1946,7 @@ class HermesACPAgent(acp.Agent):
             normalized_mode = self._MODE_DEFAULT
         setattr(state, "mode", normalized_mode)
         self.session_manager.save_session(session_id)
+        await self._send_current_mode_update(session_id, normalized_mode)
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
 
@@ -1941,12 +1962,16 @@ class HermesACPAgent(acp.Agent):
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
             setattr(state, "mode", mode)
+            emit_current_mode = mode
         else:
+            emit_current_mode = None
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):
                 options = {}
             options[str(config_id)] = value
             setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
+        if emit_current_mode is not None:
+            await self._send_current_mode_update(session_id, emit_current_mode)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])

@@ -956,23 +956,32 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
+    is_cron = env_var_enabled("HERMES_CRON_SESSION")
     is_cli = env_var_enabled("HERMES_INTERACTIVE")
     is_gateway = _is_gateway_approval_context()
 
+    # Cron has no live human approval channel.  Gateway/Web UI processes may
+    # leave HERMES_EXEC_ASK/HERMES_INTERACTIVE set process-wide, but a scheduler
+    # worker must never enqueue an interactive pending approval.  Apply the
+    # cron policy first so cron either denies fast or runs according to
+    # approvals.cron_mode.
+    if is_cron:
+        if _get_cron_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: Command flagged as dangerous ({description}) "
+                    "but cron jobs run without a user present to approve it. "
+                    "Find an alternative approach that avoids this command. "
+                    "To allow dangerous commands in cron jobs, set "
+                    "approvals.cron_mode: approve in config.yaml."
+                ),
+            }
+        return {"approved": True, "message": None}
+
     if not is_cli and not is_gateway:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
-                return {
-                    "approved": False,
-                    "message": (
-                        f"BLOCKED: Command flagged as dangerous ({description}) "
-                        "but cron jobs run without a user present to approve it. "
-                        "Find an alternative approach that avoids this command. "
-                        "To allow dangerous commands in cron jobs, set "
-                        "approvals.cron_mode: approve in config.yaml."
-                    ),
-                }
+        # Preserve the existing non-interactive behavior: outside CLI/gateway
+        # flows, we do not block on approvals. Cron was handled above.
         logger.warning(
             "AUTO-APPROVED dangerous command in non-interactive non-gateway context "
             "(pattern: %s): %s — set HERMES_INTERACTIVE or HERMES_GATEWAY_SESSION to require approval.",
@@ -1089,29 +1098,35 @@ def check_all_command_guards(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
+    is_cron = env_var_enabled("HERMES_CRON_SESSION")
     is_cli = env_var_enabled("HERMES_INTERACTIVE")
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
+    # Cron is non-interactive even when hosted in the same process as Web UI or
+    # gateway sessions.  Apply the cron approval policy before the generic
+    # ask/gateway branch so scheduler jobs never create a pending approval with
+    # no user/listener to resolve it.
+    if is_cron:
+        if _get_cron_approval_mode() == "deny":
+            # Run detection to get a description for the block message
+            is_dangerous, _pk, description = detect_dangerous_command(command)
+            if is_dangerous:
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    ),
+                }
+        return {"approved": True, "message": None}
+
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
-                # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
-                    return {
-                        "approved": False,
-                        "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
-                            "but cron jobs run without a user present to approve it. "
-                            "Find an alternative approach that avoids this command. "
-                            "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
-                        ),
-                    }
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---

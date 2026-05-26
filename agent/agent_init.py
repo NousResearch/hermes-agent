@@ -1077,9 +1077,17 @@ def init_agent(
         except Exception:
             pass  # Memory is optional -- don't break agent init
     
-
+    # Full Tool-Call trajectory plan integration
+    try:
+        _ftc_cfg = _agent_cfg.get("full_toolcall", {})
+        agent._full_toolcall_enabled = bool(_ftc_cfg.get("enabled", False))
+    except Exception:
+        agent._full_toolcall_enabled = False
+    if not agent.quiet_mode and agent._full_toolcall_enabled:
+        _ra().logger.info("Full Tool-Call trajectory plan injection enabled")
 
     # Memory provider plugin (external — one at a time, alongside built-in)
+    agent._memory_manager = None
     # Reads memory.provider from config to select which plugin to activate.
     agent._memory_manager = None
     if not skip_memory:

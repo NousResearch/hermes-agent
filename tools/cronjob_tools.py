@@ -74,7 +74,10 @@ _CRON_THREAT_PATTERNS = [
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
-    (r'rm\s+-rf\s+/', "destructive_root_rm"),
+    # Match executable root-delete commands, not prose that merely mentions the
+    # dangerous string in a safety policy.  A command can appear at prompt start,
+    # after shell separators/newlines, or inside simple wrappers such as sudo/env.
+    (r'(?:^|[;&|\n`]|\$\()\s*(?:sudo\s+(?:-[^\s]+\s+)*)?(?:env\s+(?:\w+=\S*\s+)*)?rm\s+-rf\s+(?:/|/\*)(?:\s|$)', "destructive_root_rm"),
 ]
 
 # Looser pattern set — applied to the assembled prompt when skills are

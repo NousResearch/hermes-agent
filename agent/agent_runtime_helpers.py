@@ -1313,6 +1313,25 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
+    # --- BEGIN chuangagent header block fix ---
+    # Strip x-stainless-* headers and rewrite User-Agent for providers
+    # whose WAF blocks OpenAI SDK headers (chuangagent.eu.cc returns 403).
+    _base_url = str(client_kwargs.get("base_url", ""))
+    if "chuangagent.eu.cc" in _base_url or "5yuantoken" in _base_url:
+        from openai._base_client import SyncAPIClient
+        _orig_bh = SyncAPIClient._build_headers
+        if not getattr(_orig_bh, "_patched_for_header_block", False):
+            def _patched_headers(self, options, *, retries_taken=0):
+                result = _orig_bh(self, options, retries_taken=retries_taken)
+                keys_to_del = [k for k in result if k.lower().startswith("x-stainless-")]
+                for k in keys_to_del:
+                    del result[k]
+                result["user-agent"] = "python-requests/2.32.3"
+                result["accept"] = "*/*"
+                return result
+            _patched_headers._patched_for_header_block = True
+            SyncAPIClient._build_headers = _patched_headers
+    # --- END header block fix ---
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

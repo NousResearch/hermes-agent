@@ -36,7 +36,18 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+import html
 from typing import Any, Dict, List, Optional
+
+try:
+    from agent.apex_runtimeos_audit_summary import summarize_audit
+except Exception:  # pragma: no cover - endpoint reports unavailable at runtime
+    summarize_audit = None  # type: ignore[assignment]
+
+try:
+    from agent.apex_runtimeos_autonomy import summarize_autonomy_status
+except Exception:  # pragma: no cover - endpoint reports unavailable at runtime
+    summarize_autonomy_status = None  # type: ignore[assignment]
 
 try:
     from aiohttp import web
@@ -62,6 +73,170 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+_APEX_RUNTIMEOS_EXPOSE_FIELDS = (
+    "enabled",
+    "mode",
+    "status",
+    "runtime_hook_enabled",
+    "dry_run",
+    "runtime_context_recorded",
+    "blocking",
+    "evm_defect_count",
+    "evm_gate_score",
+    "full_agi_claimed",
+    "autonomous_core_rewrite_enabled",
+    "recommendation_gate",
+    "recommendation_control",
+    "autowrite",
+    "organ_audit",
+)
+
+
+def _render_apex_runtimeos_dashboard_html(summary: Dict[str, Any], *, status: str = "ok") -> str:
+    """Render a small aggregate-only APEX RuntimeOS dashboard card."""
+    records = int(summary.get("records") or 0)
+    bad_lines = int(summary.get("bad_lines") or 0)
+    blocking = int(summary.get("blocking_records") or 0)
+    audit_exists = bool(summary.get("audit_path_exists"))
+    organs = summary.get("organs") if isinstance(summary.get("organs"), dict) else {}
+    stages = summary.get("stages") if isinstance(summary.get("stages"), dict) else {}
+
+    def rows(items: Dict[str, Any]) -> str:
+        if not items:
+            return "<tr><td>-</td><td>0</td><td>0</td><td>{}</td><td>0</td></tr>"
+        out = []
+        for key, data in sorted(items.items()):
+            if not isinstance(data, dict):
+                continue
+            out.append(
+                "<tr>"
+                f"<td>{html.escape(str(key))}</td>"
+                f"<td>{int(data.get('count') or 0)}</td>"
+                f"<td>{int(data.get('blocking') or 0)}</td>"
+                f"<td>{html.escape(json.dumps(data.get('status') or {}, ensure_ascii=False))}</td>"
+                f"<td>{html.escape(str(data.get('avg_elapsed_ms') or 0))}</td>"
+                "</tr>"
+            )
+        return "".join(out) or "<tr><td>-</td><td>0</td><td>0</td><td>{}</td><td>0</td></tr>"
+
+    badge = "正常" if status == "ok" else ("不可用" if status == "unavailable" else "错误")
+    recommendations = summary.get("recommendations") if isinstance(summary.get("recommendations"), dict) else {}
+    recommendations_count = int(recommendations.get("count") or 0)
+    recommendation_gate = str(summary.get("recommendation_gate", "OK"))
+    autonomy_raw = summary.get("autonomy") if isinstance(summary.get("autonomy"), dict) else {}
+    autonomy: Dict[str, Any] = autonomy_raw if isinstance(autonomy_raw, dict) else {}
+    return f"""<!doctype html>
+<html lang=\"zh-CN\">
+<head>
+<meta charset=\"utf-8\">
+<title>APEX RuntimeOS Dashboard</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:24px;background:#0b1020;color:#e8edf8}}
+.card{{max-width:980px;border:1px solid #26324f;border-radius:16px;padding:20px;background:#111936;box-shadow:0 8px 30px rgba(0,0,0,.25)}}
+.grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}}
+.metric{{border:1px solid #2e3b5f;border-radius:12px;padding:12px;background:#151f42}}
+.metric b{{display:block;font-size:24px;margin-top:6px}}
+.badge{{display:inline-block;padding:4px 10px;border-radius:999px;background:#173d2b;color:#9df0bd}}
+table{{width:100%;border-collapse:collapse;margin-top:10px}} th,td{{border-bottom:1px solid #283557;padding:8px;text-align:left}} th{{color:#9fb1d8}}
+.small{{color:#9fb1d8;font-size:13px}}
+</style>
+</head>
+<body>
+<div class=\"card\">
+<h1>APEX RuntimeOS 体征卡片 <span class=\"badge\">{html.escape(badge)}</span></h1>
+<p class=\"small\">只读聚合视图；不显示本地路径、原始对话正文、原始错误、凭据。</p>
+<div class=\"grid\">
+<div class=\"metric\">有效记录<b>{records}</b></div>
+<div class=\"metric\">坏行<b>{bad_lines}</b></div>
+<div class=\"metric\">阻断记录<b>{blocking}</b></div>
+<div class=\"metric\">建议数<b>{recommendations_count}</b></div>
+<div class=\"metric\">建议状态<b>{html.escape(str(recommendation_gate))}</b></div>
+<div class=\"metric\">稳定候选<b>{int(autonomy.get('stable_ready_count') or 0)}</b></div>
+<div class=\"metric\">待回滚<b>{int(autonomy.get('pending_rollbacks') or 0)}</b></div>
+<div class=\"metric\">晋升记录<b>{int(autonomy.get('promotion_count') or 0)}</b></div>
+<div class=\"metric\">audit 文件<b>{'存在' if audit_exists else '不存在'}</b></div>
+</div>
+<h2>Autonomy</h2>
+<table><thead><tr><th>字段</th><th>值</th></tr></thead><tbody>
+<tr><td>mode</td><td>{html.escape(str(autonomy.get('mode', 'unknown')))}</td></tr>
+<tr><td>autopromote_enabled</td><td>{html.escape(str(bool(autonomy.get('autopromote_enabled'))))}</td></tr>
+<tr><td>rollback_enabled</td><td>{html.escape(str(bool(autonomy.get('rollback_enabled'))))}</td></tr>
+<tr><td>candidate_groups</td><td>{int(autonomy.get('candidate_groups') or 0)}</td></tr>
+<tr><td>rollback_events</td><td>{html.escape(json.dumps(autonomy.get('rollback_events') or {}, ensure_ascii=False))}</td></tr>
+<tr><td>cron_dryrun</td><td>{html.escape(json.dumps((autonomy.get('cron_dryrun') or dict()), ensure_ascii=False))}</td></tr>
+<tr><td>health_report</td><td>{html.escape(json.dumps((autonomy.get('health_report') or dict()), ensure_ascii=False))}</td></tr>
+<tr><td>side_effects</td><td>{html.escape(str(autonomy.get('default_side_effects', 'disabled_unless_explicit_enforce')))}</td></tr>
+</tbody></table>
+<h2>Recommendations</h2>
+<table><thead><tr><th>code</th><th>severity</th><th>applied</th><th>mutates runtime</th><th>reason</th></tr></thead><tbody>{''.join(
+    f"<tr><td>{html.escape(str(item.get('code', '')))}</td><td>{html.escape(str(item.get('severity', '')))}</td><td>{html.escape(str(item.get('applied', False)))}</td><td>{html.escape(str(item.get('mutates_runtime', False)))}</td><td>{html.escape(str(item.get('reason', '')))}</td></tr>"
+    for item in (recommendations.get('items') if isinstance(recommendations.get('items'), list) else [])[:6]
+) or '<tr><td>-</td><td>-</td><td>False</td><td>False</td><td>-</td></tr>'}</tbody></table>
+<h2>Organs</h2>
+<table><thead><tr><th>organ</th><th>数量</th><th>阻断</th><th>状态</th><th>平均耗时 ms</th></tr></thead><tbody>{rows(organs)}</tbody></table>
+<h2>Stages</h2>
+<table><thead><tr><th>stage</th><th>数量</th><th>阻断</th><th>状态</th><th>平均耗时 ms</th></tr></thead><tbody>{rows(stages)}</tbody></table>
+</div>
+</body>
+</html>"""
+
+
+def _safe_apex_runtimeos_metadata(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return a stable, non-secret APEX RuntimeOS envelope for API clients.
+
+    The runtime hook writes richer internal metadata including local report paths
+    and error strings. API responses should expose only the contract fields that
+    frontends need for status display and completion/enforce handling.
+    """
+    meta = result.get("apex_runtimeos") if isinstance(result, dict) else None
+    if not isinstance(meta, dict):
+        return None
+    safe = {key: meta.get(key) for key in _APEX_RUNTIMEOS_EXPOSE_FIELDS if key in meta}
+    audit = safe.get("organ_audit")
+    if isinstance(audit, dict):
+        safe["organ_audit"] = {
+            "audit_enabled": bool(audit.get("audit_enabled")),
+            "written": bool(audit.get("written")),
+        }
+    autowrite = safe.get("autowrite")
+    if isinstance(autowrite, dict):
+        safe["autowrite"] = {
+            "enabled": bool(autowrite.get("enabled")),
+            "written": bool(autowrite.get("written")),
+            "candidate_type": autowrite.get("candidate_type"),
+            "promotion_required": bool(autowrite.get("promotion_required")),
+            "applied_to_core_memory_or_skill": bool(autowrite.get("applied_to_core_memory_or_skill")),
+            "reason": autowrite.get("reason"),
+        }
+    control = safe.get("recommendation_control")
+    if isinstance(control, dict):
+        safe_items = []
+        for item in control.get("items", []) if isinstance(control.get("items"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            safe_items.append({
+                "organ": item.get("organ"),
+                "code": item.get("code"),
+                "severity": item.get("severity"),
+                "applied": bool(item.get("applied")),
+                "mutates_runtime": bool(item.get("mutates_runtime")),
+                "control": item.get("control") if isinstance(item.get("control"), dict) else None,
+            })
+        safe["recommendation_control"] = {
+            "status": control.get("status"),
+            "mutates_runtime": bool(control.get("mutates_runtime")),
+            "applied": bool(control.get("applied")),
+            "items": safe_items[:6],
+        }
+    if "blocking" not in safe:
+        safe["blocking"] = False
+    safe["decision"] = "block" if safe.get("blocking") else "allow"
+    if meta.get("status") == "ERROR":
+        safe["error_code"] = "apex_runtimeos_hook_error"
+    elif meta.get("status") == "FAIL":
+        safe["error_code"] = "apex_runtimeos_gate_failed"
+    return safe
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1084,6 +1259,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "apex_runtimeos_audit_summary": summarize_audit is not None,
+                "apex_runtimeos_dashboard": summarize_audit is not None,
+                "apex_runtimeos_recommendation_gate": summarize_audit is not None,
+                "apex_runtimeos_autonomy_status": summarize_autonomy_status is not None,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -1101,8 +1280,149 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "apex_runtimeos_audit_summary": {"method": "GET", "path": "/v1/apex-runtimeos/audit-summary"},
+                "apex_runtimeos_dashboard": {"method": "GET", "path": "/v1/apex-runtimeos/dashboard"},
+                "apex_runtimeos_recommendation_gate": {"method": "GET", "path": "/v1/apex-runtimeos/recommendation-gate"},
+                "apex_runtimeos_autonomy_status": {"method": "GET", "path": "/v1/apex-runtimeos/autonomy-status"},
             },
         })
+
+    async def _handle_apex_runtimeos_audit_summary(self, request: "web.Request") -> "web.Response":
+        """GET /v1/apex-runtimeos/audit-summary — read-only RuntimeOS audit summary."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if summarize_audit is None:
+            return web.json_response(
+                {
+                    "object": "hermes.apex_runtimeos.audit_summary",
+                    "status": "unavailable",
+                    "error_code": "apex_runtimeos_audit_summary_unavailable",
+                },
+                status=503,
+            )
+        raw_limit = request.query.get("limit", "10000")
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"error": {"message": "Invalid 'limit' query parameter", "type": "invalid_request_error"}},
+                status=400,
+            )
+        limit = max(1, min(limit, 100000))
+        try:
+            summary = summarize_audit(limit=limit)
+        except Exception:
+            logger.exception("[%s] Failed to summarize APEX RuntimeOS audit", self.name)
+            return web.json_response(
+                {
+                    "object": "hermes.apex_runtimeos.audit_summary",
+                    "status": "error",
+                    "error_code": "apex_runtimeos_audit_summary_error",
+                },
+                status=500,
+            )
+        summary.pop("audit_path", None)
+        if summarize_autonomy_status is not None:
+            try:
+                summary["autonomy"] = summarize_autonomy_status(limit=limit)
+            except Exception:
+                logger.exception("[%s] Failed to summarize APEX RuntimeOS autonomy", self.name)
+                summary["autonomy"] = {"schema": "ApexRuntimeOSAutonomyStatus/v1", "status": "error", "error_code": "apex_runtimeos_autonomy_status_error"}
+        return web.json_response({
+            "object": "hermes.apex_runtimeos.audit_summary",
+            "status": "ok",
+            "summary": summary,
+        })
+
+    async def _handle_apex_runtimeos_autonomy_status(self, request: "web.Request") -> "web.Response":
+        """GET /v1/apex-runtimeos/autonomy-status — aggregate autonomy state."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if summarize_autonomy_status is None:
+            return web.json_response(
+                {
+                    "object": "hermes.apex_runtimeos.autonomy_status",
+                    "status": "unavailable",
+                    "error_code": "apex_runtimeos_autonomy_status_unavailable",
+                },
+                status=503,
+            )
+        raw_limit = request.query.get("limit", "10000")
+        raw_min = request.query.get("min_occurrences", "2")
+        repair = request.query.get("repair", "").strip().lower() in _TRUE_REQUEST_BOOL_STRINGS
+        try:
+            limit = int(raw_limit)
+            min_occurrences = int(raw_min)
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"error": {"message": "Invalid query parameter", "type": "invalid_request_error"}},
+                status=400,
+            )
+        limit = max(1, min(limit, 100000))
+        min_occurrences = max(1, min(min_occurrences, 1000))
+        try:
+            previous_repair = os.environ.get("APEX_RUNTIMEOS_CRON_LEDGER_REPAIR_ENABLED")
+            if repair:
+                os.environ["APEX_RUNTIMEOS_CRON_LEDGER_REPAIR_ENABLED"] = "1"
+            try:
+                status = summarize_autonomy_status(limit=limit, min_occurrences=min_occurrences)
+            finally:
+                if repair:
+                    if previous_repair is None:
+                        os.environ.pop("APEX_RUNTIMEOS_CRON_LEDGER_REPAIR_ENABLED", None)
+                    else:
+                        os.environ["APEX_RUNTIMEOS_CRON_LEDGER_REPAIR_ENABLED"] = previous_repair
+        except Exception:
+            logger.exception("[%s] Failed to summarize APEX RuntimeOS autonomy", self.name)
+            return web.json_response(
+                {
+                    "object": "hermes.apex_runtimeos.autonomy_status",
+                    "status": "error",
+                    "error_code": "apex_runtimeos_autonomy_status_error",
+                },
+                status=500,
+            )
+        return web.json_response({
+            "object": "hermes.apex_runtimeos.autonomy_status",
+            "status": "ok",
+            "autonomy": status,
+        })
+
+    async def _handle_apex_runtimeos_dashboard(self, request: "web.Request") -> "web.Response":
+        """GET /v1/apex-runtimeos/dashboard — HTML RuntimeOS health card."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if summarize_audit is None:
+            html = _render_apex_runtimeos_dashboard_html({"records": 0, "bad_lines": 0, "blocking_records": 0, "organs": {}, "stages": {}, "audit_path_exists": False}, status="unavailable")
+            return web.Response(text=html, status=503, content_type="text/html")
+        raw_limit = request.query.get("limit", "10000")
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"error": {"message": "Invalid 'limit' query parameter", "type": "invalid_request_error"}},
+                status=400,
+            )
+        limit = max(1, min(limit, 100000))
+        try:
+            summary = summarize_audit(limit=limit)
+        except Exception:
+            logger.exception("[%s] Failed to render APEX RuntimeOS dashboard", self.name)
+            summary = {"records": 0, "bad_lines": 0, "blocking_records": 0, "organs": {}, "stages": {}, "audit_path_exists": False}
+            html = _render_apex_runtimeos_dashboard_html(summary, status="error")
+            return web.Response(text=html, status=500, content_type="text/html")
+        summary.pop("audit_path", None)
+        if summarize_autonomy_status is not None:
+            try:
+                summary["autonomy"] = summarize_autonomy_status(limit=limit)
+            except Exception:
+                logger.exception("[%s] Failed to summarize APEX RuntimeOS autonomy for dashboard", self.name)
+                summary["autonomy"] = {"schema": "ApexRuntimeOSAutonomyStatus/v1", "status": "error", "error_code": "apex_runtimeos_autonomy_status_error"}
+        html = _render_apex_runtimeos_dashboard_html(summary, status="ok")
+        return web.Response(text=html, content_type="text/html")
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -1410,14 +1730,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        apex_runtimeos = _safe_apex_runtimeos_metadata(result)
+        if apex_runtimeos is not None:
+            response_data.setdefault("hermes", {})["apex_runtimeos"] = apex_runtimeos
+            response_headers["X-Hermes-Apex-Status"] = str(apex_runtimeos.get("status", "UNKNOWN"))[:80]
+            response_headers["X-Hermes-Apex-Mode"] = str(apex_runtimeos.get("mode", ""))[:40]
+            response_headers["X-Hermes-Apex-Decision"] = str(apex_runtimeos.get("decision", "allow"))[:40]
+            if apex_runtimeos.get("recommendation_gate") is not None:
+                response_headers["X-Hermes-Apex-Recommendation-Gate"] = str(apex_runtimeos.get("recommendation_gate"))[:40]
         if is_partial or is_failed or not completed:
-            response_data["hermes"] = {
-                "completed": completed,
-                "partial": is_partial,
-                "failed": is_failed,
-                "error": err_msg,
-                "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
-            }
+            response_data.setdefault("hermes", {}).update(
+                {
+                    "completed": completed,
+                    "partial": is_partial,
+                    "failed": is_failed,
+                    "error": err_msg,
+                    "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
+                }
+            )
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg:
@@ -1522,11 +1852,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            agent_result = {}
             try:
-                result, agent_usage = await agent_task
+                agent_result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+
+            apex_runtimeos = _safe_apex_runtimeos_metadata(agent_result)
+            if apex_runtimeos is not None:
+                event_data = json.dumps({"apex_runtimeos": apex_runtimeos}, ensure_ascii=False)
+                await response.write(f"event: hermes.apex_runtimeos\ndata: {event_data}\n\n".encode())
 
             # Finish chunk
             finish_chunk = {
@@ -3492,6 +3828,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/v1/apex-runtimeos/audit-summary", self._handle_apex_runtimeos_audit_summary)
+            self._app.router.add_get("/v1/apex-runtimeos/dashboard", self._handle_apex_runtimeos_dashboard)
+            self._app.router.add_get("/v1/apex-runtimeos/autonomy-status", self._handle_apex_runtimeos_autonomy_status)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

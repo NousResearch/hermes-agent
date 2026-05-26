@@ -64,6 +64,10 @@ from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
+from agent.apex_runtimeos_hook import run_apex_runtimeos_completion_hook
+from agent.apex_runtimeos_organs import run_pre_api_organs
+from agent.apex_runtimeos_audit import persist_checkpoint
+from agent.apex_runtimeos_autonomy import apply_runtime_rewrite
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import display_hermes_home as _dhh_fn, PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
@@ -494,6 +498,42 @@ def run_conversation(
         _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     active_system_prompt = agent._cached_system_prompt
+
+    # ── Full Tool-Call trajectory plan injection ──
+    # MINIMAL integration: if enabled in config, generate a trajectory
+    # plan from the user message and inject it into ephemeral_system_prompt.
+    # The plan is appended to EVERY API call's system prompt for this turn.
+    # No main-loop modification needed—ephemeral_system_prompt is consumed
+    # at line 803-804.
+    if (
+        getattr(agent, '_full_toolcall_enabled', False)
+        and user_message
+        and len(user_message) > 20
+    ):
+        try:
+            from full_toolcall_integration import get_full_toolcall
+            _ftc = get_full_toolcall()
+            _plan = _ftc.plan(
+                input_text=user_message[:2000],
+                goal=user_message[:300],
+            )
+            if _plan.get('success') and _plan.get('plan'):
+                _summary = _plan['summary']
+                _trajectory = _plan.get('plan', {}).get('global_trajectory', [])
+                _inject = (
+                    "\n\n[全局轨迹计划 (Full Tool-Call)]\n"
+                    f"目标: {_summary.get('goal', '')[:200]}\n"
+                    f"步骤数: {_summary.get('steps', len(_trajectory))}\n"
+                    f"风险数: {_summary.get('risks', 0)}\n"
+                    f"并行组: {_summary.get('parallel_groups', 0)}\n"
+                    f"轨迹概览: {' → '.join(t.get('step', '?') for t in _trajectory[:8])}\n"
+                    "注意: 此计划由 sidecar 生成作为参考，不限制实际执行路径"
+                )
+                _ephem = getattr(agent, 'ephemeral_system_prompt', None) or ''
+                agent.ephemeral_system_prompt = (_ephem + _inject).strip()
+                logger.info("Full Tool-Call plan injected (%d steps)", _summary.get('steps', 0))
+        except Exception as _ftc_exc:
+            logger.debug("Full Tool-Call plan skipped: %s", _ftc_exc)
 
     # ── Preflight context compression ──
     # Before entering the main loop, check if the loaded conversation
@@ -1008,6 +1048,54 @@ def run_conversation(
             logging.debug(f"API Request - Model: {agent.model}, Messages: {len(messages)}, Tools: {len(agent.tools) if agent.tools else 0}")
             logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
+
+        apex_pre_api_organs = run_pre_api_organs(
+            {
+                "session_id": agent.session_id or "",
+                "model": agent.model,
+                "provider": agent.provider,
+                "base_url_host": str(agent.base_url or "").split("//")[-1].split("/")[0],
+                "api_mode": agent.api_mode,
+                "api_call_count": api_call_count,
+                "message_count": len(api_messages),
+                "tool_count": len(agent.tools or []),
+                "approx_input_tokens": approx_tokens,
+                "request_char_count": total_chars,
+                "max_tokens": agent.max_tokens,
+                "platform": agent.platform or "",
+            }
+        )
+        persist_checkpoint("pre_api_request", apex_pre_api_organs, session_id=agent.session_id or "")
+        apex_runtime_rewrite = apply_runtime_rewrite(
+            agent=agent,
+            messages=messages,
+            system_message=system_message,
+            active_system_prompt=active_system_prompt,
+            approx_tokens=approx_tokens,
+            task_id=effective_task_id,
+            checkpoint=apex_pre_api_organs,
+        )
+        if apex_runtime_rewrite.get("applied"):
+            messages = apex_runtime_rewrite.get("messages") or messages
+            active_system_prompt = apex_runtime_rewrite.get("active_system_prompt") or active_system_prompt
+            conversation_history = None
+            api_messages = list(messages)
+            if active_system_prompt:
+                api_messages.insert(0, {"role": "system", "content": active_system_prompt})
+            api_messages = agent._sanitize_api_messages(api_messages)
+            api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+            _sanitize_messages_surrogates(api_messages)
+            total_chars = sum(len(str(msg)) for msg in api_messages)
+            approx_tokens = estimate_messages_tokens_rough(api_messages)
+            apex_pre_api_organs["runtime_rewrite"] = {
+                key: value for key, value in apex_runtime_rewrite.items()
+                if key not in {"messages", "active_system_prompt"}
+            }
+            persist_checkpoint("pre_api_runtime_rewrite", apex_pre_api_organs, session_id=agent.session_id or "")
+        if apex_pre_api_organs.get("blocking"):
+            _turn_exit_reason = "apex_runtimeos_pre_api_blocked"
+            final_response = "APEX RuntimeOS blocked this API call in enforce mode."
+            break
         
         api_start_time = time.time()
         retry_count = 0
@@ -4231,6 +4319,20 @@ def run_conversation(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+
+    # APEX RuntimeOS completion gate. Directly integrated into the main
+    # run_conversation result path; default mode is report/warn and does not
+    # alter successful completion unless explicitly set to enforce.
+    result = run_apex_runtimeos_completion_hook(
+        result=result,
+        final_response=final_response,
+        completed=completed,
+        interrupted=interrupted,
+        agent=agent,
+        messages=messages,
+        turn_exit_reason=_turn_exit_reason,
+    )
+
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.
@@ -4266,7 +4368,12 @@ def run_conversation(
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        final_response
+        and not interrupted
+        and (_should_review_memory or _should_review_skills)
+        and getattr(agent, "platform", None) != "cron"
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

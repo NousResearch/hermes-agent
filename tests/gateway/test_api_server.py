@@ -413,6 +413,9 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/v1/apex-runtimeos/audit-summary", adapter._handle_apex_runtimeos_audit_summary)
+    app.router.add_get("/v1/apex-runtimeos/dashboard", adapter._handle_apex_runtimeos_dashboard)
+    app.router.add_get("/v1/apex-runtimeos/autonomy-status", adapter._handle_apex_runtimeos_autonomy_status)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -655,8 +658,14 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["apex_runtimeos_audit_summary"] is True
+            assert data["features"]["apex_runtimeos_dashboard"] is True
+            assert data["features"]["apex_runtimeos_autonomy_status"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["apex_runtimeos_audit_summary"]["path"] == "/v1/apex-runtimeos/audit-summary"
+            assert data["endpoints"]["apex_runtimeos_dashboard"]["path"] == "/v1/apex-runtimeos/dashboard"
+            assert data["endpoints"]["apex_runtimeos_autonomy_status"]["path"] == "/v1/apex-runtimeos/autonomy-status"
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -674,9 +683,163 @@ class TestCapabilitiesEndpoint:
             assert data["auth"]["required"] is True
 
 
-# ---------------------------------------------------------------------------
-# /v1/chat/completions endpoint
-# ---------------------------------------------------------------------------
+class TestApexRuntimeOSAuditSummaryEndpoint:
+    @pytest.mark.asyncio
+    async def test_audit_summary_returns_aggregate_only(self, adapter, tmp_path, monkeypatch):
+        audit_path = tmp_path / "audit.jsonl"
+        monkeypatch.setenv("APEX_RUNTIMEOS_AUDIT_PATH", str(audit_path))
+        audit_path.write_text(
+            json.dumps({
+                "schema": "ApexRuntimeOSCheckpointAudit/v1",
+                "stage": "pre_api_request",
+                "session_id": "s1",
+                "checkpoint": {
+                    "blocking": False,
+                    "results": {
+                        "router": {"status": "PASS", "elapsed_ms": 1.5, "output": {"model": "m1"}}
+                    },
+                },
+            }) + "\nnot-json\n",
+            encoding="utf-8",
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/apex-runtimeos/audit-summary?limit=10")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "hermes.apex_runtimeos.audit_summary"
+            assert data["status"] == "ok"
+            summary = data["summary"]
+            assert summary["records"] == 1
+            assert summary["bad_lines"] == 1
+            assert "autonomy" in summary
+            assert summary["autonomy"]["schema"] == "ApexRuntimeOSAutonomyStatus/v1"
+            assert summary["organs"]["router"]["status"]["PASS"] == 1
+            raw = json.dumps(data)
+            assert str(audit_path) not in raw
+            assert "prompt" not in raw
+            assert "messages" not in raw
+
+    @pytest.mark.asyncio
+    async def test_audit_summary_requires_auth_when_key_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/apex-runtimeos/audit-summary")
+            assert resp.status == 401
+            authed = await cli.get(
+                "/v1/apex-runtimeos/audit-summary",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert authed.status == 200
+
+    @pytest.mark.asyncio
+    async def test_audit_summary_rejects_invalid_limit(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/apex-runtimeos/audit-summary?limit=bad")
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_dashboard_renders_health_card_without_sensitive_fields(self, adapter, tmp_path, monkeypatch):
+        audit_path = tmp_path / "audit.jsonl"
+        monkeypatch.setenv("APEX_RUNTIMEOS_AUDIT_PATH", str(audit_path))
+        audit_path.write_text(
+            json.dumps({
+                "schema": "ApexRuntimeOSCheckpointAudit/v1",
+                "stage": "pre_api_request",
+                "session_id": "s1",
+                "checkpoint": {
+                    "blocking": False,
+                    "results": {
+                        "planner": {"status": "PASS", "elapsed_ms": 3.0, "output": {"model": "m1"}}
+                    },
+                },
+            }) + "\n",
+            encoding="utf-8",
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/apex-runtimeos/dashboard?limit=10")
+            assert resp.status == 200
+            assert resp.content_type == "text/html"
+            text = await resp.text()
+            assert "APEX RuntimeOS 体征卡片" in text
+            assert "有效记录" in text
+            assert "Autonomy" in text
+            assert "稳定候选" in text
+            assert "待回滚" in text
+            assert "cron_dryrun" in text
+            assert "health_report" in text
+            assert "planner" in text
+            assert str(audit_path) not in text
+            assert "prompt" not in text
+            assert "messages" not in text
+            assert "token" not in text.lower()
+            assert "REVIEW" in text or "WATCH" in text or "OK" in text
+
+    @pytest.mark.asyncio
+    async def test_dashboard_requires_auth_when_key_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/apex-runtimeos/dashboard")
+            assert resp.status == 401
+            authed = await cli.get(
+                "/v1/apex-runtimeos/dashboard",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert authed.status == 200
+
+    @pytest.mark.asyncio
+    async def test_autonomy_status_endpoint_returns_aggregate_only(self, adapter, tmp_path, monkeypatch):
+        out_dir = tmp_path / "autowrites"
+        monkeypatch.setenv("APEX_RUNTIMEOS_AUTOWRITE_DIR", str(out_dir))
+        candidates = out_dir / "candidates.jsonl"
+        promotions = out_dir / "promotions.jsonl"
+        out_dir.mkdir(parents=True)
+        candidates.write_text(
+            json.dumps({
+                "schema": "ApexRuntimeOSAutoWriteCandidate/v1",
+                "promotion_required": True,
+                "items": [{"code": "planner_context_heavy", "severity": "warn", "actions": ["compress_context"]}],
+            }) + "\n" +
+            json.dumps({
+                "schema": "ApexRuntimeOSAutoWriteCandidate/v1",
+                "promotion_required": True,
+                "items": [{"code": "planner_context_heavy", "severity": "warn", "actions": ["compress_context"]}],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        promotions.write_text(
+            json.dumps({
+                "schema": "ApexRuntimeOSPromotion/v1",
+                "target": "memory",
+                "content_hash": "abc123",
+                "success": True,
+                "rollback_status": "pending",
+                "rollback": {"old_text": "secret old text"},
+            }) + "\n",
+            encoding="utf-8",
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/apex-runtimeos/autonomy-status?limit=10&min_occurrences=2")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "hermes.apex_runtimeos.autonomy_status"
+            autonomy = data["autonomy"]
+            assert autonomy["schema"] == "ApexRuntimeOSAutonomyStatus/v1"
+            assert autonomy["stable_ready_count"] == 1
+            assert autonomy["promotion_count"] == 1
+            assert autonomy["pending_rollbacks"] == 1
+            assert "cron_dryrun" in autonomy
+            assert "repair_enabled" in autonomy["cron_dryrun"]
+            assert autonomy["health_report"]["schema"] == "ApexRuntimeOSHealthReport/v1"
+            raw = json.dumps(data)
+            assert str(out_dir) not in raw
+            assert "secret old text" not in raw
+            assert "prompt" not in raw
+            assert "messages" not in raw
+
 
 
 class TestChatCompletionsEndpoint:

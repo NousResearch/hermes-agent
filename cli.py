@@ -8511,6 +8511,8 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "apex-runtimeos":
+            self._handle_apex_runtimeos_command(cmd_original)
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
@@ -8753,6 +8755,18 @@ class HermesCLI:
                     _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
         
         return True
+
+    def _handle_apex_runtimeos_command(self, cmd: str) -> None:
+        """Handle /apex-runtimeos diagnostics."""
+        try:
+            from hermes_cli.apex_runtimeos import run_apex_runtimeos_cli
+            parts = cmd.strip().split()[1:]
+            output = run_apex_runtimeos_cli(parts)
+            self._console_print(output)
+        except SystemExit:
+            self._console_print("  Usage: /apex-runtimeos [summary|status|feishu] [--json] [--limit N]")
+        except Exception as exc:
+            self._console_print(f"  APEX RuntimeOS diagnostics failed: {exc}")
     
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

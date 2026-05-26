@@ -228,6 +228,43 @@ def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     assert final_response == SILENT_MARKER
 
 
+def test_run_job_no_agent_watchdog_alert_then_cooldown_is_silent(hermes_env):
+    """Integration: no_agent cron delivers first watchdog alert, then suppresses repeat alert in cooldown."""
+    from cron.jobs import create_job
+    from cron.scheduler import run_job, SILENT_MARKER
+
+    script_path = hermes_env / "scripts" / "apex_watchdog_sim.sh"
+    state_path = hermes_env / "apex_watchdog_state.json"
+    script_path.write_text(
+        f'''#!/usr/bin/env bash
+python - <<'PY'
+import pathlib, sys
+state = pathlib.Path({str(state_path)!r})
+if state.exists():
+    sys.exit(0)
+state.write_text("sent", encoding="utf-8")
+print("# APEX RuntimeOS 健康提醒")
+print("| cron_ledger_bad_lines | warn | 1 | simulated |")
+PY
+''',
+        encoding="utf-8",
+    )
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="apex_watchdog_sim.sh", no_agent=True, deliver="local"
+    )
+    first_success, first_doc, first_response, first_error = run_job(job)
+    second_success, second_doc, second_response, second_error = run_job(job)
+
+    assert first_success is True
+    assert first_error is None
+    assert "APEX RuntimeOS 健康提醒" in first_response
+    assert "cron_ledger_bad_lines" in first_doc
+    assert second_success is True
+    assert second_error is None
+    assert second_response == SILENT_MARKER
+
+
 def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
     """wakeAgent=false gate in stdout triggers a silent run."""
     from cron.jobs import create_job

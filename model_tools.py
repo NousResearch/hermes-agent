@@ -31,6 +31,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
+from agent.trace_hooks import trace_tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -738,6 +739,7 @@ def _coerce_boolean(value: str):
     return value
 
 
+@trace_tool_call
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],

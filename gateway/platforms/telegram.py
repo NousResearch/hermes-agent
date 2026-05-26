@@ -107,6 +107,12 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 
 MAX_COMMANDS_PER_SCOPE = 30
 
+TELEGRAM_QUICK_ACTIONS: tuple[str, ...] = (
+    "status", "usage", "help", "model", "agents", "personality", "whoami", "insights",
+    "new", "retry", "undo", "stop", "compress", "fast", "yolo",
+)
+TELEGRAM_QUICK_CONFIRM = {"stop", "yolo"}
+
 
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
@@ -470,6 +476,9 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        # Quick-action personality state keyed by chat/message so callback_data
+        # stays short while dispatching the selected full personality name.
+        self._palette_personality_state: Dict[str, Dict[str, str]] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -2780,6 +2789,141 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_palette(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render Telegram quick-action buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            buttons = [InlineKeyboardButton({"whoami": "Who Am I", "yolo": "YOLO"}.get(c, c.title()), callback_data=f"qa:{c}") for c in TELEGRAM_QUICK_ACTIONS]
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=int(chat_id),
+                text="Hermes Quick Actions\n\nChoose a button below. Sensitive actions ask for confirmation first.",
+                reply_markup=InlineKeyboardMarkup([buttons[i:i + 3] for i in range(0, len(buttons), 3)]),
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=self._reply_to_mode),
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_palette failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    def _build_fast_palette_keyboard(self):
+        return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"qaf:{value}")] for label, value in (
+            ("Show current mode", "status"), ("Fast / priority", "fast"), ("Normal", "normal"),
+        )])
+
+    def _palette_message_state_key(self, msg) -> Optional[str]:
+        chat_id = getattr(msg, "chat_id", None)
+        message_id = getattr(msg, "message_id", None)
+        if chat_id is None or message_id is None:
+            return None
+        return f"{chat_id}:{message_id}"
+
+    def _build_personality_palette_keyboard(self, *, state_key: Optional[str] = None):
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            personalities = cfg_get(load_config(), "agent", "personalities", default={})
+        except Exception:
+            personalities = {}
+        names = ["none", *(personalities.keys() if isinstance(personalities, dict) else [])]
+        rows = []
+        state: Dict[str, str] = {}
+        for index, raw_name in enumerate(names[:25]):
+            name = str(raw_name)
+            token = str(index)
+            state[token] = name
+            rows.append([
+                InlineKeyboardButton(
+                    "None / default" if name == "none" else name[:64],
+                    callback_data=f"qap:{token}",
+                )
+            ])
+        if state_key is not None:
+            self._palette_personality_state[state_key] = state
+        return InlineKeyboardMarkup(rows)
+
+    async def _dispatch_palette_command(self, query, command_text: str) -> None:
+        event = self._build_message_event(query.message, MessageType.COMMAND)
+        event.text = command_text
+        caller = query.from_user
+        event.source.user_id = str(getattr(caller, "id", "")) or event.source.user_id
+        event.source.user_name = getattr(caller, "full_name", None) or getattr(caller, "first_name", None) or event.source.user_name
+        await self.handle_message(event)
+
+    async def _handle_palette_callback(self, query, data: str) -> None:
+        msg = getattr(query, "message", None)
+        chat_id = getattr(msg, "chat_id", None)
+        chat = getattr(msg, "chat", None)
+        state_key = self._palette_message_state_key(msg)
+        caller = getattr(query, "from_user", None)
+        if not self._is_callback_user_authorized(
+            str(getattr(caller, "id", "")),
+            chat_id=chat_id,
+            chat_type=str(getattr(chat, "type", "")) if chat is not None else None,
+            thread_id=str(getattr(msg, "message_thread_id", "")) if getattr(msg, "message_thread_id", None) is not None else None,
+            user_name=getattr(caller, "first_name", None),
+        ):
+            await query.answer(text="⛔ You are not authorized to use this action.")
+            return
+
+        async def run(command_text: str, *, label: str = "Quick action sent"):
+            await query.edit_message_text(text=f"{label}: {command_text}", reply_markup=None)
+            await query.answer()
+            await self._dispatch_palette_command(query, command_text)
+
+        if data.startswith("qa:"):
+            command_name = data[3:]
+            if command_name in TELEGRAM_QUICK_CONFIRM:
+                await query.edit_message_text(text=f"Run /{command_name}?", reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Confirm", callback_data=f"qac:confirm:{command_name}"),
+                    InlineKeyboardButton("Cancel", callback_data=f"qac:cancel:{command_name}"),
+                ]]))
+                await query.answer()
+            elif command_name == "fast":
+                await query.edit_message_text(text="Choose a fast-mode action:", reply_markup=self._build_fast_palette_keyboard())
+                await query.answer()
+            elif command_name == "personality":
+                await query.edit_message_text(
+                    text="Choose a personality:",
+                    reply_markup=self._build_personality_palette_keyboard(state_key=state_key),
+                )
+                await query.answer()
+            else:
+                await run(f"/{command_name}")
+            return
+
+        if data.startswith("qaf:"):
+            await run(f"/fast {data[4:]}", label="Fast mode action sent")
+            return
+        if data.startswith("qap:"):
+            token = data[4:] or "0"
+            state = self._palette_personality_state.get(state_key) if state_key is not None else None
+            if state is not None:
+                if token not in state:
+                    await query.answer(text="This personality choice is no longer available. Open /palette again.")
+                    return
+                choice = state[token]
+                self._palette_personality_state.pop(state_key, None)
+            elif token.isdigit():
+                await query.answer(text="This personality choice expired. Open /palette again.")
+                return
+            else:
+                choice = token or "none"
+            await run(f"/personality {choice}", label="Personality action sent")
+            return
+        if data.startswith("qac:"):
+            _, choice, command_name = data.split(":", 2)
+            if choice == "cancel":
+                await query.edit_message_text(text="Quick action cancelled.", reply_markup=None)
+                await query.answer()
+            else:
+                await run(f"/{command_name}")
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -3106,6 +3250,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Quick-action palette callbacks ---
+        if data.startswith(("qa:", "qaf:", "qap:", "qac:")):
+            await self._handle_palette_callback(query, data)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
@@ -4980,6 +5129,14 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
+        if event.get_command() == "palette":
+            from gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_source
+
+            await self.send_palette(
+                event.source.chat_id,
+                metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+            )
+            return
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

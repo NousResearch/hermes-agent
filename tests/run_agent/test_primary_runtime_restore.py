@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from run_agent import AIAgent
+from agent.backend_health import record_backend_failure, BackendIdentity, backend_identity_from_runtime, reset_backend_health_registry
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -58,6 +59,11 @@ def _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="fallback-key
     mock_client.api_key = api_key
     mock_client.base_url = base_url
     return mock_client
+
+
+@pytest.fixture(autouse=True)
+def _reset_backend_health_registry():
+    reset_backend_health_registry()
 
 
 # =============================================================================
@@ -122,6 +128,24 @@ class TestRestorePrimaryRuntime:
         agent = _make_agent()
         assert agent._fallback_activated is False
         assert agent._restore_primary_runtime() is False
+
+    def test_skips_restore_when_primary_is_temporarily_down(self):
+        agent = _make_agent()
+        agent._fallback_activated = True
+        identity = backend_identity_from_runtime(
+            provider=agent._primary_runtime["provider"],
+            api_mode=agent._primary_runtime["api_mode"],
+            base_url=agent._primary_runtime["base_url"],
+            model=agent._primary_runtime["model"],
+        )
+        record_backend_failure(identity, RuntimeError("primary transport failed"))
+        record_backend_failure(identity, RuntimeError("primary transport failed again"))
+
+        with patch("run_agent.OpenAI") as mock_openai:
+            assert agent._restore_primary_runtime() is False
+
+        mock_openai.assert_not_called()
+        assert agent._fallback_activated is True
 
     def test_restores_model_and_provider(self):
         agent = _make_agent(

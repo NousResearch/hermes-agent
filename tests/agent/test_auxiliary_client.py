@@ -23,11 +23,18 @@ from agent.auxiliary_client import (
     _try_payment_fallback,
     _resolve_auto,
 )
+from agent.backend_health import (
+    BackendIdentity,
+    backend_identity_from_runtime,
+    record_backend_failure,
+    reset_backend_health_registry,
+)
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""
+    reset_backend_health_registry()
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
@@ -1413,3 +1420,64 @@ class TestAuxiliaryAuthRefreshRetry:
         mock_refresh.assert_called_once_with("anthropic")
         assert stale_client.chat.completions.create.await_count == 1
         assert fresh_client.chat.completions.create.await_count == 1
+
+
+class TestBackendHealthAwareRouting:
+    def test_resolve_provider_client_returns_none_for_excluded_custom_backend(self):
+        excluded = [
+            BackendIdentity(
+                provider="custom",
+                api_mode="openai_chat",
+                base_url="https://facade.example/v1",
+                model_family="claude-sonnet",
+            )
+        ]
+
+        client, model = resolve_provider_client(
+            "custom",
+            model="claude-sonnet-4",
+            explicit_base_url="https://facade.example/v1",
+            explicit_api_key="secret",
+            api_mode="openai_chat",
+            exclude_backends=excluded,
+        )
+
+        assert client is None
+        assert model is None
+
+    def test_resolve_auto_skips_temporarily_down_main_backend(self, monkeypatch):
+        identity = backend_identity_from_runtime(
+            provider="custom",
+            api_mode="openai_chat",
+            base_url="https://facade.example/v1",
+            model="claude-sonnet-4",
+        )
+        record_backend_failure(identity, RuntimeError("gateway failed"))
+        record_backend_failure(identity, RuntimeError("gateway failed again"))
+
+        fallback_client = MagicMock()
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(None, None),
+            ) as mock_main_resolve,
+            patch(
+                "agent.auxiliary_client._get_provider_chain",
+                return_value=[("openrouter", lambda model=None: (fallback_client, model or "openai/gpt-5"))],
+            ),
+        ):
+            client, model = _resolve_auto(
+                {
+                    "provider": "custom",
+                    "model": "claude-sonnet-4",
+                    "base_url": "https://facade.example/v1",
+                    "api_mode": "openai_chat",
+                },
+                None,
+            )
+
+        assert client is fallback_client
+        assert model == "openai/gpt-5"
+        assert mock_main_resolve.call_args.kwargs["exclude_backends"] is None

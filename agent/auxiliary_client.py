@@ -46,6 +46,11 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 
 from openai import OpenAI
 
+from agent.backend_health import (
+    BackendIdentity,
+    backend_identity_from_runtime,
+    is_backend_temporarily_down,
+)
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
@@ -1293,6 +1298,49 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     return normalized
 
 
+def _normalize_excluded_backends(
+    excluded_backends: Optional[List[BackendIdentity]],
+) -> List[BackendIdentity]:
+    normalized: List[BackendIdentity] = []
+    for item in excluded_backends or []:
+        if isinstance(item, BackendIdentity):
+            normalized.append(item)
+        elif isinstance(item, dict):
+            normalized.append(
+                backend_identity_from_runtime(
+                    provider=item.get("provider", ""),
+                    api_mode=item.get("api_mode", ""),
+                    base_url=item.get("base_url", ""),
+                    model=item.get("model") or item.get("model_family"),
+                )
+            )
+    return normalized
+
+
+def _backend_candidate_excluded(
+    *,
+    provider: str,
+    api_mode: str,
+    base_url: str,
+    model: Optional[str],
+    excluded_backends: Optional[List[BackendIdentity]] = None,
+) -> bool:
+    identity = backend_identity_from_runtime(
+        provider=provider,
+        api_mode=api_mode,
+        base_url=base_url,
+        model=model,
+    )
+    for excluded in _normalize_excluded_backends(excluded_backends):
+        if (
+            excluded.provider == identity.provider
+            and excluded.api_mode == identity.api_mode
+            and excluded.base_url == identity.base_url
+        ):
+            return True
+    return is_backend_temporarily_down(identity)
+
+
 def _get_provider_chain() -> List[tuple]:
     """Return the ordered provider detection chain.
 
@@ -1515,7 +1563,10 @@ def _try_payment_fallback(
     return None, None, ""
 
 
-def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _resolve_auto(
+    main_runtime: Optional[Dict[str, Any]] = None,
+    exclude_backends: Optional[List[BackendIdentity]] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
 
     Priority:
@@ -1581,6 +1632,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             explicit_base_url=explicit_base_url,
             explicit_api_key=explicit_api_key,
             api_mode=runtime_api_mode or None,
+            exclude_backends=exclude_backends,
         )
         if client is not None:
             logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -1592,6 +1644,18 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     for label, try_fn in _get_provider_chain():
         client, model = try_fn()
         if client is not None:
+            candidate_base = str(getattr(client, "base_url", "") or "")
+            candidate_provider = "custom" if label == "local/custom" else label
+            candidate_api_mode = "anthropic_messages" if label == "anthropic" else "chat_completions"
+            if _backend_candidate_excluded(
+                provider=candidate_provider,
+                api_mode=candidate_api_mode,
+                base_url=candidate_base,
+                model=model,
+                excluded_backends=exclude_backends,
+            ):
+                tried.append(f"{label} (excluded)")
+                continue
             if tried:
                 logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
                             label, model or "default", ", ".join(tried))
@@ -1685,6 +1749,7 @@ def resolve_provider_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    exclude_backends: Optional[List[BackendIdentity]] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -1753,9 +1818,30 @@ def resolve_provider_client(
             return CodexAuxiliaryClient(client_obj, final_model_str)
         return client_obj
 
+    def _exclude_if_unhealthy(client_obj, final_model_str: str, candidate_provider: str, candidate_api_mode: str):
+        candidate_base = str(getattr(client_obj, "base_url", explicit_base_url or "") or "")
+        if _backend_candidate_excluded(
+            provider=candidate_provider,
+            api_mode=candidate_api_mode,
+            base_url=candidate_base,
+            model=final_model_str,
+            excluded_backends=exclude_backends,
+        ):
+            logger.info(
+                "resolve_provider_client: skipping unhealthy/excluded backend %s (%s) at %s",
+                candidate_provider,
+                candidate_api_mode,
+                candidate_base,
+            )
+            return None, None
+        return client_obj, final_model_str
+
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
-        client, resolved = _resolve_auto(main_runtime=main_runtime)
+        client, resolved = _resolve_auto(
+            main_runtime=main_runtime,
+            exclude_backends=exclude_backends,
+        )
         if client is None:
             return None, None
         # When auto-detection lands on a non-OpenRouter provider (e.g. a
@@ -1781,6 +1867,9 @@ def resolve_provider_client(
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
+        client, final_model = _exclude_if_unhealthy(
+            client, final_model, provider, "chat_completions"
+        )
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -1798,6 +1887,9 @@ def resolve_provider_client(
                            "but Nous Portal not configured (run: hermes auth)")
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
+        client, final_model = _exclude_if_unhealthy(
+            client, final_model, provider, "chat_completions"
+        )
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -1825,6 +1917,9 @@ def resolve_provider_client(
                            "but no Codex OAuth token found (run: hermes model)")
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
+        client, final_model = _exclude_if_unhealthy(
+            client, final_model, provider, "chat_completions"
+        )
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -1860,6 +1955,9 @@ def resolve_provider_client(
                 )
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
+            client, final_model = _exclude_if_unhealthy(
+                client, final_model, "custom", api_mode or "chat_completions"
+            )
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then codex, then API-key providers
@@ -1870,6 +1968,9 @@ def resolve_provider_client(
                 final_model = _normalize_resolved_model(model or default, provider)
                 _cbase = str(getattr(client, "base_url", "") or "")
                 client = _wrap_if_needed(client, final_model, _cbase)
+                client, final_model = _exclude_if_unhealthy(
+                    client, final_model, "custom", api_mode or "chat_completions"
+                )
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
         logger.warning("resolve_provider_client: custom/main requested "
@@ -1920,6 +2021,11 @@ def resolve_provider_client(
                     sync_anthropic = AnthropicAuxiliaryClient(
                         real_client, final_model, custom_key, custom_base, is_oauth=False,
                     )
+                    sync_anthropic, final_model = _exclude_if_unhealthy(
+                        sync_anthropic, final_model, provider, "anthropic_messages"
+                    )
+                    if sync_anthropic is None:
+                        return None, None
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
@@ -1934,6 +2040,9 @@ def resolve_provider_client(
                     client = CodexAuxiliaryClient(client, final_model)
                 else:
                     client = _wrap_if_needed(client, final_model, custom_base)
+                client, final_model = _exclude_if_unhealthy(
+                    client, final_model, provider, entry_api_mode or api_mode or "chat_completions"
+                )
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
             logger.warning(
@@ -1966,6 +2075,9 @@ def resolve_provider_client(
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
             final_model = _normalize_resolved_model(model or default_model, provider)
+            client, final_model = _exclude_if_unhealthy(
+                client, final_model, provider, "anthropic_messages"
+            )
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
 
         creds = resolve_api_key_provider_credentials(provider)
@@ -1992,6 +2104,9 @@ def resolve_provider_client(
             if is_native_gemini_base_url(base_url):
                 client = GeminiNativeClient(api_key=api_key, base_url=base_url)
                 logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+                client, final_model = _exclude_if_unhealthy(
+                    client, final_model, provider, "chat_completions"
+                )
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
 
@@ -2028,6 +2143,12 @@ def resolve_provider_client(
         # codex-family models).  The copilot-specific wrapping above handles
         # copilot; this covers the general case (#6800).
         client = _wrap_if_needed(client, final_model, base_url)
+        client, final_model = _exclude_if_unhealthy(
+            client,
+            final_model,
+            provider,
+            api_mode or ("codex_responses" if isinstance(client, CodexAuxiliaryClient) else "chat_completions"),
+        )
 
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -2062,6 +2183,9 @@ def resolve_provider_client(
                 args=args,
             )
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            client, final_model = _exclude_if_unhealthy(
+                client, final_model, provider, "chat_completions"
+            )
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         logger.warning("resolve_provider_client: external-process provider %s not "
@@ -2098,6 +2222,9 @@ def resolve_provider_client(
             base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
         )
         logger.debug("resolve_provider_client: bedrock (%s, %s)", final_model, region)
+        client, final_model = _exclude_if_unhealthy(
+            client, final_model, provider, "anthropic_messages"
+        )
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -2123,6 +2250,7 @@ def get_text_auxiliary_client(
     task: str = "",
     *,
     main_runtime: Optional[Dict[str, Any]] = None,
+    exclude_backends: Optional[List[BackendIdentity]] = None,
 ) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Return (client, default_model_slug) for text-only auxiliary tasks.
 
@@ -2141,10 +2269,16 @@ def get_text_auxiliary_client(
         explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+        exclude_backends=exclude_backends,
     )
 
 
-def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None):
+def get_async_text_auxiliary_client(
+    task: str = "",
+    *,
+    main_runtime: Optional[Dict[str, Any]] = None,
+    exclude_backends: Optional[List[BackendIdentity]] = None,
+):
     """Return (async_client, model_slug) for async consumers.
 
     For standard providers returns (AsyncOpenAI, model). For Codex returns
@@ -2160,6 +2294,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
         explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+        exclude_backends=exclude_backends,
     )
 
 
@@ -2577,6 +2712,7 @@ def _get_cached_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    exclude_backends: Optional[List[BackendIdentity]] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -2646,6 +2782,7 @@ def _get_cached_client(
         api_mode=api_mode,
         main_runtime=runtime,
         is_vision=is_vision,
+        exclude_backends=exclude_backends,
     )
     if client is not None:
         # For async clients, remember which loop they were created on so we
@@ -2927,6 +3064,7 @@ def call_llm(
     base_url: str = None,
     api_key: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
+    exclude_backends: Optional[List[BackendIdentity]] = None,
     messages: list,
     temperature: float = None,
     max_tokens: int = None,
@@ -2995,6 +3133,7 @@ def call_llm(
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
             main_runtime=main_runtime,
+            exclude_backends=exclude_backends,
         )
         if client is None:
             # When the user explicitly chose a non-OpenRouter provider but no
@@ -3015,8 +3154,17 @@ def call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", main_runtime=main_runtime)
+                client, final_model = _get_cached_client(
+                    "auto",
+                    main_runtime=main_runtime,
+                    exclude_backends=exclude_backends,
+                )
         if client is None:
+            if exclude_backends:
+                raise RuntimeError(
+                    f"No healthy backend available for task={task} provider={resolved_provider} "
+                    f"after excluding failed backends in this turn."
+                )
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")

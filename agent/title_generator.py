@@ -6,9 +6,10 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from agent.auxiliary_client import call_llm
+from agent.backend_health import BackendIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,17 @@ _TITLE_PROMPT = (
 )
 
 
+def _should_suppress_failure_callback(exc: BaseException) -> bool:
+    message = str(exc or "").lower()
+    return "no healthy backend available" in message or "excluding failed backends" in message
+
+
 def generate_title(
     user_message: str,
     assistant_response: str,
     timeout: float = 30.0,
     failure_callback: Optional[FailureCallback] = None,
+    exclude_backends: Optional[Sequence[BackendIdentity]] = None,
 ) -> Optional[str]:
     """Generate a session title from the first exchange.
 
@@ -57,6 +64,7 @@ def generate_title(
             max_tokens=500,
             temperature=0.3,
             timeout=timeout,
+            exclude_backends=list(exclude_backends or []),
         )
         title = (response.choices[0].message.content or "").strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
@@ -72,7 +80,7 @@ def generate_title(
         # Full detail at debug level for operators who need the stack.
         logger.warning("Title generation failed: %s", e)
         logger.debug("Title generation traceback", exc_info=True)
-        if failure_callback is not None:
+        if failure_callback is not None and not _should_suppress_failure_callback(e):
             try:
                 failure_callback("title generation", e)
             except Exception:
@@ -86,6 +94,7 @@ def auto_title_session(
     user_message: str,
     assistant_response: str,
     failure_callback: Optional[FailureCallback] = None,
+    exclude_backends: Optional[Sequence[BackendIdentity]] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -107,7 +116,10 @@ def auto_title_session(
         return
 
     title = generate_title(
-        user_message, assistant_response, failure_callback=failure_callback
+        user_message,
+        assistant_response,
+        failure_callback=failure_callback,
+        exclude_backends=exclude_backends,
     )
     if not title:
         return
@@ -126,6 +138,7 @@ def maybe_auto_title(
     assistant_response: str,
     conversation_history: list,
     failure_callback: Optional[FailureCallback] = None,
+    exclude_backends: Optional[Sequence[BackendIdentity]] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -147,7 +160,10 @@ def maybe_auto_title(
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
-        kwargs={"failure_callback": failure_callback},
+        kwargs={
+            "failure_callback": failure_callback,
+            "exclude_backends": exclude_backends,
+        },
         daemon=True,
         name="auto-title",
     )

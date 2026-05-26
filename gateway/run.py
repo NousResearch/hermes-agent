@@ -348,9 +348,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
+        "model": runtime.get("model"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "resolved_via_fallback": False,
     }
 
 
@@ -384,9 +386,11 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "base_url": runtime.get("base_url"),
                     "provider": runtime.get("provider"),
                     "api_mode": runtime.get("api_mode"),
+                    "model": runtime.get("model") or entry.get("model"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "resolved_via_fallback": True,
                 }
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
@@ -1080,6 +1084,16 @@ class GatewayRunner:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        if runtime_kwargs.get("resolved_via_fallback") and runtime_kwargs.get("model"):
+            fallback_model = str(runtime_kwargs.get("model") or "").strip()
+            if fallback_model and fallback_model != model:
+                logger.info(
+                    "Gateway auth fallback overriding configured model %s -> %s for provider %s",
+                    model or "<empty>",
+                    fallback_model,
+                    runtime_kwargs.get("provider") or "<unknown>",
+                )
+                model = fallback_model
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
@@ -10629,6 +10643,11 @@ class GatewayRunner:
                         final_response,
                         all_msgs,
                         failure_callback=_title_failure_cb,
+                        exclude_backends=(
+                            agent.get_turn_failed_backends()
+                            if hasattr(agent, "get_turn_failed_backends")
+                            else None
+                        ),
                     )
                 except Exception:
                     pass

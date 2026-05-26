@@ -7,7 +7,10 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
+from agent.backend_health import BackendIdentity, backend_identity_from_runtime, record_backend_failure, reset_backend_health_registry
 
 
 def _make_agent(fallback_model=None):
@@ -34,6 +37,11 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
     mock.base_url = base_url
     mock.api_key = api_key
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _reset_backend_health_registry():
+    reset_backend_health_registry()
 
 
 # ── Chain initialisation ──────────────────────────────────────────────────
@@ -181,6 +189,33 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+    def test_skips_temporarily_down_candidate_to_next(self):
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "claude-sonnet-4",
+                "base_url": "https://facade.example/v1",
+                "api_mode": "openai_chat",
+            },
+            {"provider": "openai", "model": "gpt-4o"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        identity = backend_identity_from_runtime(
+            provider="custom",
+            api_mode="openai_chat",
+            base_url="https://facade.example/v1",
+            model="claude-sonnet-4",
+        )
+        record_backend_failure(identity, RuntimeError("gateway failed"))
+        record_backend_failure(identity, RuntimeError("gateway failed again"))
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(base_url="https://api.openai.com/v1"), "gpt-4o")):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.model == "gpt-4o"
+        assert agent._fallback_index == 2
+        assert agent.get_turn_failed_backends() == []
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

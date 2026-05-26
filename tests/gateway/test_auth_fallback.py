@@ -1,7 +1,6 @@
 """Test that AuthError triggers fallback provider resolution (#7230)."""
 
-import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -35,6 +34,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
                 "base_url": "https://openrouter.ai/api/v1",
                 "provider": "openrouter",
                 "api_mode": "openai_chat",
+                "model": "meta-llama/llama-4-maverick",
                 "command": None,
                 "args": None,
                 "credential_pool": None,
@@ -51,6 +51,8 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
 
         assert result["provider"] == "openrouter"
         assert result["api_key"] == "fallback-key"
+        assert result["model"] == "meta-llama/llama-4-maverick"
+        assert result["resolved_via_fallback"] is True
         # Should have been called at least twice (primary + fallback)
         assert call_count["n"] >= 2
 
@@ -71,3 +73,33 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             from gateway.run import _resolve_runtime_agent_kwargs
             with pytest.raises(RuntimeError):
                 _resolve_runtime_agent_kwargs()
+
+    def test_session_runtime_uses_fallback_model_when_provider_falls_back(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model",
+            lambda config=None: "claude-opus-4-7",
+        )
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-codex",
+                "api_key": "fallback-key",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_mode": "codex_responses",
+                "model": "gpt-5.4",
+                "command": None,
+                "args": [],
+                "credential_pool": None,
+                "resolved_via_fallback": True,
+            },
+        )
+
+        model, runtime = runner._resolve_session_agent_runtime(session_key="agent:main:discord:thread:1:2")
+
+        assert model == "gpt-5.4"
+        assert runtime["provider"] == "openai-codex"

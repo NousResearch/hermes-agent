@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.backend_health import BackendIdentity
 from agent.title_generator import (
     generate_title,
     auto_title_session,
@@ -113,6 +114,41 @@ class TestGenerateTitle:
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
 
+    def test_forwards_excluded_backends(self):
+        captured_kwargs = {}
+        excluded = [
+            BackendIdentity(
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                base_url="http://127.0.0.1:8082",
+                model_family="claude-opus",
+            )
+        ]
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Short Title"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("hello", "world", exclude_backends=excluded) == "Short Title"
+
+        assert captured_kwargs["exclude_backends"] == excluded
+
+    def test_suppresses_failure_callback_when_only_failed_backends_are_excluded(self):
+        captured = []
+
+        def _cb(task, exc):
+            captured.append((task, exc))
+
+        exc = RuntimeError("No healthy backend available for task=title_generation provider=auto")
+        with patch("agent.title_generator.call_llm", side_effect=exc):
+            assert generate_title("question", "answer", failure_callback=_cb) is None
+
+        assert captured == []
+
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""
@@ -135,6 +171,35 @@ class TestAutoTitleSession:
         with patch("agent.title_generator.generate_title", return_value="New Title"):
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_called_once_with("sess-1", "New Title")
+
+    def test_forwards_excluded_backends_to_generate_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        excluded = [
+            BackendIdentity(
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                base_url="http://127.0.0.1:8082",
+                model_family="claude-opus",
+            )
+        ]
+
+        with patch("agent.title_generator.generate_title", return_value="New Title") as gen:
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                exclude_backends=excluded,
+            )
+
+        gen.assert_called_once_with(
+            "hi",
+            "hello",
+            failure_callback=None,
+            exclude_backends=excluded,
+        )
+        db.set_session_title.assert_called_once_with("sess-1", "New Title")
 
     def test_skips_if_generation_fails(self):
         db = MagicMock()
@@ -182,7 +247,12 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=None
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=None,
+                exclude_backends=None,
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -202,7 +272,47 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=_cb
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=_cb,
+                exclude_backends=None,
+            )
+
+    def test_forwards_excluded_backends_to_worker(self):
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        excluded = [
+            BackendIdentity(
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                base_url="http://127.0.0.1:8082",
+                model_family="claude-opus",
+            )
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                history,
+                exclude_backends=excluded,
+            )
+            import time
+            time.sleep(0.3)
+            mock_auto.assert_called_once_with(
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=None,
+                exclude_backends=excluded,
             )
 
     def test_skips_if_no_response(self):

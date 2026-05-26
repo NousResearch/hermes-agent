@@ -104,6 +104,12 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.backend_health import (
+    BackendIdentity,
+    backend_identity_from_runtime,
+    is_backend_temporarily_down,
+    record_backend_failure,
+)
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
@@ -2050,6 +2056,7 @@ class AIAgent:
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
+        self._turn_failed_backends: List[BackendIdentity] = []
 
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
@@ -6952,6 +6959,52 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    def _current_backend_identity(self) -> Optional[BackendIdentity]:
+        provider = str(getattr(self, "provider", "") or "").strip().lower()
+        api_mode = str(getattr(self, "api_mode", "") or "").strip().lower()
+        base_url = str(getattr(self, "base_url", "") or "").strip()
+        model = str(getattr(self, "model", "") or "").strip()
+        if not provider and not base_url:
+            return None
+        return backend_identity_from_runtime(
+            provider=provider,
+            api_mode=api_mode,
+            base_url=base_url,
+            model=model,
+        )
+
+    def _record_turn_backend_failure(
+        self,
+        exc: BaseException,
+        *,
+        reason: "FailoverReason | None" = None,
+    ) -> None:
+        identity = self._current_backend_identity()
+        if identity is None:
+            return
+        if identity not in self._turn_failed_backends:
+            self._turn_failed_backends.append(identity)
+        category = "server"
+        if reason in (None, FailoverReason.server_error, FailoverReason.overloaded, FailoverReason.model_not_found, FailoverReason.provider_policy_blocked, FailoverReason.unknown):
+            category = "server"
+        elif reason in (
+            FailoverReason.timeout,
+        ):
+            category = "transport"
+        elif reason in (
+            FailoverReason.rate_limit,
+            FailoverReason.billing,
+            FailoverReason.payload_too_large,
+            FailoverReason.long_context_tier,
+            FailoverReason.thinking_signature,
+            FailoverReason.image_too_large,
+        ):
+            return
+        record_backend_failure(identity, exc, category=category)
+
+    def get_turn_failed_backends(self) -> List[BackendIdentity]:
+        return list(self._turn_failed_backends)
+
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
@@ -6978,12 +7031,28 @@ class AIAgent:
         if self._fallback_index >= len(self._fallback_chain):
             return False
 
+        if reason is not None:
+            self._record_turn_backend_failure(
+                RuntimeError(f"fallback activation: {reason.value}"),
+                reason=reason,
+            )
+
         fb = self._fallback_chain[self._fallback_index]
         self._fallback_index += 1
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
+        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
+        fb_identity = backend_identity_from_runtime(
+            provider=fb_provider,
+            api_mode=(fb.get("api_mode") or "chat_completions"),
+            base_url=fb_base_url_hint or "",
+            model=fb_model,
+        )
+        if is_backend_temporarily_down(fb_identity):
+            logging.info("Skipping fallback %s (%s) because backend is temporarily down", fb_provider, fb_model)
+            return self._try_activate_fallback(reason=reason)
 
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
@@ -6993,7 +7062,6 @@ class AIAgent:
             # Pass base_url and api_key from fallback config so custom
             # endpoints (e.g. Ollama Cloud) resolve correctly instead of
             # falling through to OpenRouter defaults.
-            fb_base_url_hint = (fb.get("base_url") or "").strip() or None
             fb_api_key_hint = (fb.get("api_key") or "").strip() or None
             if not fb_api_key_hint:
                 fb_key_env = (fb.get("key_env") or "").strip()
@@ -7167,6 +7235,15 @@ class AIAgent:
             return False  # primary still in rate-limit cooldown, stay on fallback
 
         rt = self._primary_runtime
+        primary_identity = backend_identity_from_runtime(
+            provider=rt.get("provider", ""),
+            api_mode=rt.get("api_mode", ""),
+            base_url=rt.get("base_url", ""),
+            model=rt.get("model", ""),
+        )
+        if is_backend_temporarily_down(primary_identity):
+            logging.info("Primary runtime restore skipped because backend is temporarily down")
+            return False
         try:
             # ── Core runtime state ──
             self.model = rt["model"]
@@ -9583,6 +9660,7 @@ class AIAgent:
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).
         self._restore_primary_runtime()
+        self._turn_failed_backends = []
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates

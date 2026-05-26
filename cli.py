@@ -8813,6 +8813,11 @@ class HermesCLI:
                         response,
                         self.conversation_history,
                         failure_callback=_title_failure_cb,
+                        exclude_backends=(
+                            self.agent.get_turn_failed_backends()
+                            if self.agent and hasattr(self.agent, "get_turn_failed_backends")
+                            else None
+                        ),
                     )
                 except Exception:
                     pass

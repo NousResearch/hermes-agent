@@ -66,6 +66,33 @@ class TestRuffConfig:
             "verify PLW1514 still fires in a sample test run first."
         )
 
+class TestCleanRUF100:
+    """RUF100 (unused noqa directive) must stay at zero for targeted files.
+
+    RUF100 is a universally-applied rule — it fires whenever a ``# noqa``
+    directive names a rule that ruff's selected rule set doesn't enforce.
+    Accumulated stale noqa directives create noise that buries real issues.
+
+    These tests guard against re-introducing stale noqa directives after
+    they've been cleaned up.
+    """
+
+    TARGET = REPO_ROOT / "acp_adapter" / "entry.py"
+
+    def test_acp_adapter_entry_py_has_zero_ruf100_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=RUF100",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has RUF100 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+
 
 class TestLintWorkflow:
     WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lint.yml"

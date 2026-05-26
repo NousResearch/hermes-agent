@@ -313,3 +313,28 @@ def test_unknown_pkce_provider_rejected_cleanly():
     # 4xx — what we MUST NOT see is a 200 with claude.ai in the body.
     assert resp.status_code >= 400, resp.text
     assert "claude.ai" not in resp.text.lower()
+
+
+def test_oauth_providers_list_includes_copilot_when_gh_cli_token_exists():
+    """Dashboard provider list must surface Copilot when ``gh auth token`` is usable.
+
+    Bug history (2026-05-26): Copilot runtime auth already supported
+    ``gh auth token`` via ``resolve_copilot_token()``, but
+    ``/api/providers/oauth`` omitted any ``copilot`` entry entirely. The
+    dashboard therefore could not show GitHub Copilot as connected even
+    when a valid CLI-backed token existed.
+    """
+    with patch(
+        "hermes_cli.copilot_auth._try_gh_cli_token",
+        return_value="gho_gh_cli_token",
+    ):
+        resp = client.get("/api/providers/oauth", headers=HEADERS)
+
+    assert resp.status_code == 200, resp.text
+    providers = resp.json()["providers"]
+    copilot = next((p for p in providers if p["id"] == "copilot"), None)
+
+    assert copilot is not None, providers
+    assert copilot["name"] == "GitHub Copilot"
+    assert copilot["status"]["logged_in"] is True
+    assert copilot["status"]["source_label"] == "gh auth token"

@@ -1423,6 +1423,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": _claude_code_only_status,
     },
     {
+        "id": "copilot",
+        "name": "GitHub Copilot",
+        "flow": "external",
+        "cli_command": "gh auth login",
+        "docs_url": "https://docs.github.com/en/copilot",
+        "status_fn": None,  # dispatched via auth.get_api_key_provider_status
+    },
+    {
         "id": "nous",
         "name": "Nous Portal",
         "flow": "device_code",
@@ -1491,6 +1499,23 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "expires_at": None,
                 "has_refresh_token": False,
                 "last_refresh": raw.get("last_refresh"),
+            }
+        if provider_id == "copilot":
+            raw = hauth.get_api_key_provider_status("copilot")
+            token_preview = None
+            if raw.get("logged_in"):
+                try:
+                    creds = hauth.resolve_api_key_provider_credentials("copilot")
+                    token_preview = _truncate_token(creds.get("api_key"))
+                except Exception:
+                    token_preview = None
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": "copilot_token",
+                "source_label": raw.get("key_source") or "GitHub token",
+                "token_preview": token_preview,
+                "expires_at": None,
+                "has_refresh_token": False,
             }
         if provider_id == "qwen-oauth":
             raw = hauth.get_qwen_auth_status()

@@ -340,6 +340,59 @@ def _strip_images_from_content(content: Any) -> Any:
     return new_parts
 
 
+_VOICE_MSG_PATTERN = re.compile(
+    r"\[The user sent a voice message[~:]?\s*Here's what they said:\s*\"(.+?)\"\]",
+    re.DOTALL,
+)
+
+
+def _extract_voice_transcripts(
+    turns: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Extract voice message transcriptions from message turns.
+
+    Returns a list of dicts with ``timestamp`` and ``transcript`` keys for
+    every user message that contains a voice-message transcription marker.
+
+    Used by ``ContextCompressor.compress()`` to preserve voice transcripts
+    across context compression -- without this, voice messages are
+    summarized away and the agent loses access to what the user said.
+    """
+    transcripts: List[Dict[str, Any]] = []
+    for msg in turns:
+        if msg.get("role") != "user":
+            continue
+        content = _content_text_for_contains(msg.get("content"))
+        if not content:
+            continue
+        for m in _VOICE_MSG_PATTERN.finditer(content):
+            transcript = m.group(1).strip()
+            if transcript:
+                transcripts.append(
+                    {
+                        "transcript": transcript,
+                        "timestamp": msg.get("timestamp"),
+                    }
+                )
+    return transcripts
+
+
+def _build_voice_appendix(
+    transcripts: List[Dict[str, Any]],
+) -> str:
+    """Build a compact appendix of voice message transcriptions.
+
+    Designed to be appended to the compression summary so voice
+    transcripts survive context window compression.
+    """
+    if not transcripts:
+        return ""
+    lines = ["## Voice Message Log (preserved across compression)"]
+    for t in transcripts:
+        lines.append(f"- \"{t['transcript']}\"")
+    return "\n".join(lines)
+
+
 def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Replace image parts in older messages with placeholder text.
 
@@ -1988,6 +2041,25 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 turns_to_summarize,
                 reason=self._last_summary_error,
             )
+
+        # Phase 3.5: Preserve voice message transcriptions across compression.
+        # Voice messages are transcribed by the gateway STT pipeline and
+        # embedded in user message content as "[The user sent a voice
+        # message~ Here's what they said: "..."]".  Without explicit
+        # preservation, the LLM summarizer may drop or paraphrase these
+        # transcriptions, and the agent loses the user's exact words.
+        # We extract them verbatim and append as a compact appendix to
+        # whatever summary was produced (LLM-generated or fallback).
+        voice_transcripts = _extract_voice_transcripts(turns_to_summarize)
+        if voice_transcripts:
+            voice_appendix = _build_voice_appendix(voice_transcripts)
+            if voice_appendix:
+                summary = summary + "\n\n" + voice_appendix
+                if not self.quiet_mode:
+                    logger.info(
+                        "Preserved %d voice transcript(s) in compression summary",
+                        len(voice_transcripts),
+                    )
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

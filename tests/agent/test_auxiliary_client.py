@@ -676,6 +676,34 @@ class TestBuildCodexClient:
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
 
+    def test_resolve_provider_client_raw_codex_uses_runtime_resolved_base_url(self, monkeypatch):
+        class DummyClient:
+            def __init__(self, *, api_key, base_url, default_headers=None):
+                self.api_key = api_key
+                self.base_url = base_url
+                self.default_headers = default_headers
+
+        monkeypatch.setattr("agent.auxiliary_client.OpenAI", DummyClient)
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_codex_runtime_credentials",
+            lambda refresh_if_expiring=True: {
+                "api_key": "codex-runtime-token",
+                "base_url": "https://runtime.example/codex",
+            },
+        )
+
+        client, model = resolve_provider_client(
+            "openai-codex",
+            "gpt-5.4",
+            async_mode=False,
+            raw_codex=True,
+        )
+
+        assert isinstance(client, DummyClient)
+        assert client.api_key == "codex-runtime-token"
+        assert client.base_url == "https://runtime.example/codex"
+        assert model == "gpt-5.4"
+
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
         from agent.auxiliary_client import _build_codex_client

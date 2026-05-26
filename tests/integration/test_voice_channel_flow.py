@@ -8,14 +8,38 @@ Requires: PyNaCl>=1.5.0, discord.py[voice] (opus codec)
 """
 
 import struct
+import sys
 import time
 import pytest
 
 pytestmark = pytest.mark.integration
 
-# Skip entire module if voice deps are missing
+# Skip entire module if voice deps are missing.  Some gateway unit tests install
+# a lightweight ``discord`` mock at collection time; these integration tests need
+# the real package so Opus decoding is exercised instead of MagicMock iteration.
 pytest.importorskip("nacl.secret", reason="PyNaCl required for voice integration tests")
-discord = pytest.importorskip("discord", reason="discord.py required for voice integration tests")
+
+
+def _import_real_discord():
+    existing = {name: sys.modules.get(name) for name in ("discord", "discord.ext", "discord.ext.commands")}
+    mocked = existing["discord"] is not None and not hasattr(existing["discord"], "__file__")
+    if mocked:
+        for name in existing:
+            sys.modules.pop(name, None)
+    try:
+        return pytest.importorskip("discord", reason="discord.py required for voice integration tests")
+    finally:
+        if mocked:
+            # Keep the broader gateway unit-test mock environment intact while
+            # retaining the real module object returned above for this file.
+            for name in ("discord.ext.commands", "discord.ext", "discord"):
+                if existing[name] is not None:
+                    sys.modules[name] = existing[name]
+                else:
+                    sys.modules.pop(name, None)
+
+
+discord = _import_real_discord()
 
 import nacl.secret
 
@@ -38,7 +62,10 @@ except Exception:
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-from plugins.platforms.discord.adapter import VoiceReceiver
+from plugins.platforms.discord import adapter as discord_platform
+
+discord_platform.discord = discord
+VoiceReceiver = discord_platform.VoiceReceiver
 
 
 # ---------------------------------------------------------------------------

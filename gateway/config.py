@@ -836,6 +836,13 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
                 if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
+                if plat == Platform.DISCORD and "thread_require_mention" in platform_cfg:
+                    env_thread_gate = os.getenv("DISCORD_THREAD_REQUIRE_MENTION")
+                    bridged["thread_require_mention"] = (
+                        _coerce_bool(env_thread_gate, True)
+                        if env_thread_gate is not None
+                        else platform_cfg["thread_require_mention"]
+                    )
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:

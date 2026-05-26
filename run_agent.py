@@ -2057,6 +2057,9 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        if getattr(self, "_memory_shutdown_done", False):
+            return
+        self._memory_shutdown_done = True
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -2244,7 +2247,15 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close the OpenAI/httpx client
+        # 5. Shut down memory providers/context engines at hard session teardown.
+        # release_clients() intentionally does not do this; it is the gateway
+        # cache-eviction path and session state may resume later.
+        try:
+            self.shutdown_memory_provider()
+        except Exception:
+            pass
+
+        # 6. Close the OpenAI/httpx client
         try:
             client = getattr(self, "client", None)
             if client is not None:
@@ -4023,7 +4034,6 @@ class AIAgent:
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
             force=force,
         )
-
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
         if decision.should_halt and self._tool_guardrail_halt_decision is None:

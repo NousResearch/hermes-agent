@@ -42,7 +42,21 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from plugins.platforms.discord import adapter as discord_adapter  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+
+
+VALID_OUTBOUND_BOT_MSG = "\n".join(
+    [
+        "<@777>",
+        "BOT_MSG v1",
+        "reply_expected: true",
+        "kind: status",
+        "correlation_id: out-1",
+        "---",
+        "status body",
+    ]
+)
 
 
 @pytest.mark.asyncio
@@ -158,6 +172,201 @@ async def test_send_does_not_retry_on_unrelated_errors():
     # Only the first attempt happens — no reference-retry replay.
     assert channel.send.await_count == 1
     assert send_calls[0]["reference"] is reference_obj
+
+
+@pytest.mark.asyncio
+async def test_send_disables_replied_user_when_source_is_bot_metadata():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    allowed_mentions_seen = []
+
+    class FakeAllowedMentions:
+        def __init__(self, *, everyone, roles, users, replied_user):
+            self.everyone = everyone
+            self.roles = roles
+            self.users = users
+            self.replied_user = replied_user
+
+    async def fake_send(*, content, reference=None, allowed_mentions=None):
+        allowed_mentions_seen.append(allowed_mentions)
+        return SimpleNamespace(id=1234)
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(return_value=SimpleNamespace(id=99, to_reference=MagicMock(return_value=object()))),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    import gateway.platforms.discord as discord_platform
+    discord_platform.discord.AllowedMentions = FakeAllowedMentions
+
+    result = await adapter.send("555", "hello", reply_to="99", metadata={"source_is_bot": True})
+
+    assert result.success is True
+    assert allowed_mentions_seen
+    assert allowed_mentions_seen[0].replied_user is False
+
+
+@pytest.mark.asyncio
+async def test_send_blocks_raw_allowed_bot_mention_without_bot_msg_protocol(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=1234)),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "plain ping <@777>")
+
+    assert result.success is False
+    assert "BOT_MSG v1" in (result.error or "")
+    assert channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_send_blocks_raw_allowed_bot_mention_even_with_valid_bot_msg_protocol(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=1234)),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", VALID_OUTBOUND_BOT_MSG)
+
+    assert result.success is False
+    assert "send_bot_message" in (result.error or "")
+    assert channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_send_bot_message_rejects_multiple_allowed_bot_mentions(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777,888")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(
+        send=AsyncMock(return_value=SimpleNamespace(id=1234)),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_bot_message(
+        "555",
+        recipient_bot_id="777",
+        body="cc <@888>",
+        reply_expected=True,
+        kind="status",
+        correlation_id="corr-1",
+    )
+
+    assert result.success is False
+    assert "Multiple allowed bot mentions" in (result.error or "")
+    assert channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_send_bot_message_builds_valid_protocol_envelope(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = []
+
+    async def fake_send(*, content, reference=None, allowed_mentions=None):
+        sent.append(content)
+        return SimpleNamespace(id=1234)
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_bot_message(
+        "555",
+        recipient_bot_id="777",
+        body="structured body",
+        reply_expected=False,
+        kind="status",
+        correlation_id="corr-1",
+    )
+
+    assert result.success is True
+    assert sent == [VALID_OUTBOUND_BOT_MSG.replace("reply_expected: true", "reply_expected: false").replace("correlation_id: out-1", "correlation_id: corr-1").replace("status body", "structured body")]
+
+
+@pytest.mark.asyncio
+async def test_send_bot_message_rejects_oversized_protocol_envelope_before_chunking(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    setattr(adapter, "MAX_MESSAGE_LENGTH", 80)
+    channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=1234)))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_bot_message(
+        "555",
+        recipient_bot_id="777",
+        body="x" * 200,
+        reply_expected=True,
+        kind="status",
+        correlation_id="corr-1",
+    )
+
+    assert result.success is False
+    assert "exceeds Discord message length" in (result.error or "")
+    assert channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_send_bot_message_rejects_empty_body_for_non_status_kind(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=1234)))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send_bot_message(
+        "555",
+        recipient_bot_id="777",
+        body="",
+        reply_expected=True,
+        kind="action_required",
+        correlation_id="corr-1",
+    )
+
+    assert result.success is False
+    assert "non-status" in (result.error or "")
+    assert channel.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_connect_rejects_unknown_bot_msg_protocol(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_MSG_PROTOCOL", "v2")
+    monkeypatch.setattr(discord_adapter, "DISCORD_AVAILABLE", True)
+    monkeypatch.setattr(
+        discord_adapter,
+        "discord",
+        SimpleNamespace(opus=SimpleNamespace(is_loaded=lambda: True)),
+    )
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    result = await adapter.connect()
+
+    assert result is False
+    assert adapter._client is None
 
 
 # ---------------------------------------------------------------------------

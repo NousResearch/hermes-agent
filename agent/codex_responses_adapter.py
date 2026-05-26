@@ -244,6 +244,43 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
     return default
 
 
+def _normalize_codex_opaque_item(item: Dict[str, Any], *, seen_ids: Optional[set] = None) -> Optional[Dict[str, Any]]:
+    """Normalize replayable opaque Codex Responses state.
+
+    Reasoning and compaction_summary items carry encrypted_content blobs that
+    are self-contained for replay.  Strip IDs because store=False cannot resolve
+    them server-side; use IDs only for local deduplication.
+    """
+    item_type = item.get("type")
+    if item_type not in {"reasoning", "compaction_summary"}:
+        return None
+    encrypted = item.get("encrypted_content")
+    if not isinstance(encrypted, str) or not encrypted:
+        return None
+    item_id = item.get("id")
+    if isinstance(item_id, str) and item_id:
+        if seen_ids is not None:
+            if item_id in seen_ids:
+                return None
+            seen_ids.add(item_id)
+    replay: Dict[str, Any] = {"type": item_type, "encrypted_content": encrypted}
+    if item_type == "reasoning":
+        # The Responses API requires ``summary`` on replayed reasoning items
+        # (an empty list is accepted). Pass through stored summary parts when
+        # present so coherent reasoning chains survive multi-turn replay.
+        raw_summary = item.get("summary")
+        normalized_summary: List[Dict[str, Any]] = []
+        if isinstance(raw_summary, list):
+            for part in raw_summary:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str):
+                    normalized_summary.append({"type": "summary_text", "text": text})
+        replay["summary"] = normalized_summary
+    return replay
+
+
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
@@ -254,13 +291,11 @@ def _chat_messages_to_responses_input(
     ``is_xai_responses`` is kept for transport signature compatibility but
     no longer suppresses encrypted reasoning replay.  Earlier (PR #26644,
     May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface
-    rejected replayed ``encrypted_content`` reasoning items minted by
-    prior turns, and we stripped them.  That decision was wrong — xAI
-    explicitly relies on Hermes threading encrypted reasoning back across
-    turns for cross-turn coherence (the whole point of their partnership
-    integration).  We now replay encrypted reasoning on every Responses
-    transport (xAI, native Codex, custom relays) and let xAI tell us
-    explicitly if a specific surface ever rejects a payload.
+    rejected replayed ``encrypted_content`` reasoning items minted by prior
+    turns, and we stripped them.  That decision was wrong: xAI relies on
+    Hermes threading encrypted reasoning back across turns for cross-turn
+    coherence.  Replay encrypted reasoning and native Codex compaction items
+    on every Responses transport unless a backend explicitly rejects them.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -285,28 +320,21 @@ def _chat_messages_to_responses_input(
                 content_text = str(content) if content is not None else ""
 
             if role == "assistant":
-                # Replay encrypted reasoning items from previous turns
-                # so the API can maintain coherent reasoning chains.
-                # This applies to every Responses transport including
-                # xAI — see _chat_messages_to_responses_input docstring
-                # for the May 2026 reversal of the earlier xAI gate.
-                codex_reasoning = msg.get("codex_reasoning_items")
-                has_codex_reasoning = False
-                if isinstance(codex_reasoning, list):
-                    for ri in codex_reasoning:
-                        if isinstance(ri, dict) and ri.get("encrypted_content"):
-                            item_id = ri.get("id")
-                            if item_id and item_id in seen_item_ids:
-                                continue
-                            # Strip the "id" field — with store=False the
-                            # Responses API cannot look up items by ID and
-                            # returns 404.  The encrypted_content blob is
-                            # self-contained for reasoning chain continuity.
-                            replay_item = {k: v for k, v in ri.items() if k != "id"}
-                            items.append(replay_item)
-                            if item_id:
-                                seen_item_ids.add(item_id)
-                            has_codex_reasoning = True
+                # Replay encrypted reasoning and compaction items from
+                # previous turns so the API can maintain coherent state.
+                has_opaque_codex_state = False
+                for field_name in ("codex_reasoning_items", "codex_compaction_items"):
+                    raw_items = msg.get(field_name)
+                    if not isinstance(raw_items, list):
+                        continue
+                    for raw_item in raw_items:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        replay_item = _normalize_codex_opaque_item(raw_item, seen_ids=seen_item_ids)
+                        if replay_item is None:
+                            continue
+                        items.append(replay_item)
+                        has_opaque_codex_state = True
 
                 # Replay exact assistant message items (with id/phase) from
                 # previous turns so the API can maintain prefix-cache hits.
@@ -362,9 +390,9 @@ def _chat_messages_to_responses_input(
                     items.append({"role": "assistant", "content": content_parts})
                 elif content_text.strip():
                     items.append({"role": "assistant", "content": content_text})
-                elif has_codex_reasoning:
+                elif has_opaque_codex_state:
                     # The Responses API requires a following item after each
-                    # reasoning item (otherwise: missing_following_item error).
+                    # opaque state item (otherwise: missing_following_item error).
                     # When the assistant produced only reasoning with no visible
                     # content, emit an empty assistant message as the required
                     # following item.
@@ -548,25 +576,10 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             )
             continue
 
-        if item_type == "reasoning":
-            encrypted = item.get("encrypted_content")
-            if isinstance(encrypted, str) and encrypted:
-                item_id = item.get("id")
-                if isinstance(item_id, str) and item_id:
-                    if item_id in seen_ids:
-                        continue
-                    seen_ids.add(item_id)
-                reasoning_item = {"type": "reasoning", "encrypted_content": encrypted}
-                # Do NOT include the "id" in the outgoing item — with
-                # store=False (our default) the API tries to resolve the
-                # id server-side and returns 404.  The id is still used
-                # above for local deduplication via seen_ids.
-                summary = item.get("summary")
-                if isinstance(summary, list):
-                    reasoning_item["summary"] = summary
-                else:
-                    reasoning_item["summary"] = []
-                normalized.append(reasoning_item)
+        if item_type in {"reasoning", "compaction_summary"}:
+            normalized_item = _normalize_codex_opaque_item(item, seen_ids=seen_ids)
+            if normalized_item is not None:
+                normalized.append(normalized_item)
             continue
 
         if item_type == "message":

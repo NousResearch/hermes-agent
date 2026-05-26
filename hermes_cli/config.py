@@ -1509,6 +1509,7 @@ DEFAULT_CONFIG = {
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
+    #   policy — deterministic local policy rules (allow/ask/block), with smart/manual fallback
     #   off    — skip all approval prompts (equivalent to --yolo)
     #
     # cron_mode — what to do when a cron job hits a dangerous command:
@@ -1535,6 +1536,18 @@ DEFAULT_CONFIG = {
         # false.  TUI has its own modal overlay (HERMES_TUI_NO_CONFIRM=1 to
         # opt out there).
         "destructive_slash_confirm": True,
+        # Optional deterministic approval policy. Rules are local regexes plus
+        # optional scope constraints. In approvals.mode: policy, hardline/sudo
+        # guards still block first; then block rules deny, allow rules approve,
+        # and ask rules route through the normal user approval flow.
+        # Example:
+        # "policy": {
+        #   "allow": [{"id": "repo-tests", "commands": ["^pytest\\b"],
+        #               "scope": {"cwd_under": ["/path/to/repo"]}}],
+        #   "ask": [{"id": "push", "commands": ["^git push\\b"]}],
+        #   "block": [{"id": "public-bind", "commands": ["--host\\s+0\\.0\\.0\\.0"]}],
+        # }
+        "policy": {},
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

@@ -23,7 +23,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error
+from agent.auxiliary_client import call_llm, get_text_auxiliary_client, _get_task_timeout, _is_connection_error
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -587,9 +587,10 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
-        # When summary generation fails and a static fallback is inserted,
-        # record how many turns were unrecoverably dropped so callers
-        # (gateway hygiene, /compress) can surface a visible warning.
+        # Historical accounting for summary fallback behavior. Newer safe
+        # fallback semantics preserve original messages when no real summary
+        # or native compaction artifact exists, so these stay zero/false on
+        # ordinary failures.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
         # When summary generation fails we now ABORT compression entirely
@@ -910,6 +911,54 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = self.summary_model
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
+
+    def _is_codex_compression_runtime(self) -> bool:
+        provider = str(self.provider or "").strip().lower()
+        api_mode = str(self.api_mode or "").strip().lower()
+        return provider == "openai-codex" or api_mode == "codex_responses"
+
+    def _generate_native_codex_compaction(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        focus_topic: str = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Compact Codex context via the native Responses compact endpoint.
+
+        Returns replayable Responses items on success.  Returns None on any
+        failure so callers can fall back to plaintext summary or preserving the
+        original history.
+        """
+        if not self._is_codex_compression_runtime():
+            return None
+        try:
+            client, model = get_text_auxiliary_client(
+                "compression",
+                main_runtime={
+                    "model": self.model,
+                    "provider": self.provider,
+                    "base_url": self.base_url,
+                    "api_key": self.api_key,
+                    "api_mode": self.api_mode,
+                },
+            )
+            compact = getattr(client, "compact_messages", None)
+            if not callable(compact):
+                return None
+            compact_items = compact(
+                turns_to_summarize,
+                model=model or self.model,
+                timeout=_get_task_timeout("compression", 120.0),
+                focus_topic=focus_topic,
+            )
+            if isinstance(compact_items, list) and compact_items:
+                return compact_items
+        except Exception as exc:
+            err_text = str(exc).strip() or exc.__class__.__name__
+            if len(err_text) > 220:
+                err_text = err_text[:217].rstrip() + "..."
+            self._last_summary_error = err_text
+            logger.warning("Native Codex context compaction failed: %s", exc)
+        return None
 
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
         """Generate a structured summary of conversation turns.
@@ -1600,33 +1649,41 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 tail_msgs,
             )
 
-        # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        # Phase 3: Generate structured summary or Codex-native compacted state
+        native_compaction_items = self._generate_native_codex_compaction(
+            turns_to_summarize,
+            focus_topic=focus_topic,
+        )
+        summary = None
+        if native_compaction_items:
+            summary = (
+                f"{SUMMARY_PREFIX}\n"
+                "Earlier turns were compacted by Codex native Responses compaction. "
+                "Replay the attached opaque compaction items as canonical context."
+            )
+        else:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
-        # If summary generation failed, behavior splits on
-        # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
-        #   True  → ABORT compression entirely. Return messages unchanged
-        #           and set _last_compress_aborted=True so callers can warn
-        #           the user and stop the auto-compress retry loop.
-        #   False → Fall through to the legacy fallback path below: insert
-        #           a static "summary unavailable" placeholder and drop the
-        #           middle window.  Records _last_summary_fallback_used /
-        #           _last_summary_dropped_count for gateway hygiene to
-        #           surface a warning.
-        # Default is False (historical behavior).
-        if not summary and self.abort_on_summary_failure:
-            n_skipped = compress_end - compress_start
-            self._last_summary_dropped_count = 0  # nothing actually dropped
-            self._last_summary_fallback_used = False
-            self._last_compress_aborted = True
-            if not self.quiet_mode:
-                logger.warning(
-                    "Summary generation failed — aborting compression "
-                    "(compression.abort_on_summary_failure=true). "
-                    "%d message(s) preserved unchanged. Conversation is "
-                    "frozen until the next /compress or /new.",
-                    n_skipped,
-                )
+        # If every compaction path failed, preserve the original messages.
+        # Dropping middle history without a real summary/native artifact is a
+        # correctness bug. When configured, mark the compression as aborted so
+        # callers can warn and stop retry loops; either way, keep context intact.
+        if not summary:
+            if self.abort_on_summary_failure:
+                n_skipped = compress_end - compress_start
+                self._last_summary_dropped_count = 0  # nothing actually dropped
+                self._last_summary_fallback_used = False
+                self._last_compress_aborted = True
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Summary generation failed — aborting compression "
+                        "(compression.abort_on_summary_failure=true). "
+                        "%d message(s) preserved unchanged. Conversation is "
+                        "frozen until the next /compress or /new.",
+                        n_skipped,
+                    )
+            elif not self.quiet_mode:
+                logger.warning("Summary generation failed — preserving original context without compression")
             return messages
 
         # Phase 4: Assemble compressed message list
@@ -1642,23 +1699,6 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                         "\n\n" + _compression_note if isinstance(existing, str) and existing else _compression_note,
                     )
             compressed.append(msg)
-
-        # Legacy fallback path: LLM summary failed and abort_on_summary_failure
-        # is False (the default).  Insert a static placeholder so the model
-        # knows context was lost rather than silently dropping everything.
-        if not summary:
-            if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
-            n_dropped = compress_end - compress_start
-            self._last_summary_dropped_count = n_dropped
-            self._last_summary_fallback_used = True
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
-            )
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
@@ -1682,6 +1722,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 # of inserting a standalone message that breaks alternation.
                 _merge_summary_into_tail = True
 
+        # Native Codex compaction items are replayable opaque Responses state;
+        # keep them on a standalone assistant carrier so the Codex adapter can
+        # emit them before the visible marker on the next turn.
+        if native_compaction_items:
+            summary_role = "assistant"
+            _merge_summary_into_tail = False
+
         # When the summary lands as a standalone role="user" message,
         # weak models read the verbatim "## Active Task" quote of a past
         # user request as fresh input (#11475, #14521). Append the explicit
@@ -1695,7 +1742,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         if not _merge_summary_into_tail:
-            compressed.append({"role": summary_role, "content": summary})
+            summary_message: Dict[str, Any] = {"role": summary_role, "content": summary}
+            if native_compaction_items:
+                summary_message["codex_compaction_items"] = native_compaction_items
+            compressed.append(summary_message)
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()

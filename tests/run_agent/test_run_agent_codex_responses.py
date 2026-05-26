@@ -1777,6 +1777,9 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     assert len(reasoning_indices) == 1
     ri_idx = reasoning_indices[0]
 
+    reasoning_item = items[ri_idx]
+    assert reasoning_item == {"type": "reasoning", "encrypted_content": "enc_abc", "summary": []}
+
     # There must be a following item after the reasoning
     assert ri_idx < len(items) - 1, "Reasoning item must not be the last item (missing_following_item)"
     following = items[ri_idx + 1]
@@ -1986,3 +1989,31 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+def test_chat_messages_to_responses_input_replays_codex_compaction_items():
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    messages = [{
+        "role": "assistant",
+        "content": "",
+        "codex_compaction_items": [
+            {"id": "cmp_1", "type": "compaction_summary", "encrypted_content": "opaque", "summary": []},
+        ],
+    }]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    assert items == [
+        {"type": "compaction_summary", "encrypted_content": "opaque"},
+        {"role": "assistant", "content": ""},
+    ]
+
+def test_preflight_codex_input_items_preserves_compaction_summary():
+    from agent.codex_responses_adapter import _preflight_codex_input_items
+
+    items = _preflight_codex_input_items([
+        {"id": "cmp_1", "type": "compaction_summary", "encrypted_content": "opaque"},
+    ])
+
+    assert items == [{"type": "compaction_summary", "encrypted_content": "opaque"}]

@@ -18,8 +18,8 @@ on:
     types: [edited]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: nix-lockfile-fix-${{ github.event.issue.number || github.event.inputs.pr_number || github.ref }}
@@ -41,10 +41,15 @@ jobs:
   #      always operates on the latest branch state.
   #   4. Uses a GitHub App token (not GITHUB_TOKEN) so the fix commit
   #      triggers downstream nix.yml verification.
+  #   5. Nix setup uses pinned third-party actions rather than repository-local
+  #      action code, so setup cannot be changed by this workflow's own commit.
   auto-fix-main:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: write
+      pull-requests: read
     concurrency:
       group: auto-fix-main
       cancel-in-progress: true
@@ -61,9 +66,15 @@ jobs:
           ref: main
           token: ${{ steps.app-token.outputs.token }}
 
-      - uses: ./.github/actions/nix-setup
+      - name: Install Nix from trusted pinned action
+        uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+
+      - name: Configure Cachix authenticated cache
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
         with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: hermes-agent
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        continue-on-error: true
 
       - name: Apply lockfile hashes
         id: apply
@@ -121,10 +132,12 @@ jobs:
           echo "::error::Failed to push after 3 rebase attempts"
           exit 1
 
-  # ── PR fix (manual / checkbox) ─────────────────────────────────────
-  # Existing behavior: run on manual dispatch OR when a task-list
-  # checkbox in the sticky lockfile-check comment flips from [ ] to [x].
-  fix:
+  # ── PR/manual fix resolution ────────────────────────────────────────
+  # Manual/checkbox PR fixes are split across a no-secret generation job
+  # and a trusted write job. The PR branch is allowed to execute only in
+  # the generation job, which has read-only permissions, no persisted git
+  # credentials, no Cachix auth token, and no repository write token.
+  resolve_pr_fix:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment'
@@ -132,15 +145,27 @@ jobs:
        && contains(github.event.comment.body, '[x] **Apply lockfile fix**')
        && !contains(github.event.changes.body.from, '[x] **Apply lockfile fix**'))
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    outputs:
+      target_owner: ${{ steps.resolve.outputs.target_owner }}
+      target_repo: ${{ steps.resolve.outputs.target_repo }}
+      target_ref: ${{ steps.resolve.outputs.target_ref }}
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+      can_push: ${{ steps.resolve.outputs.can_push }}
+      pr: ${{ steps.resolve.outputs.pr }}
     steps:
-      - name: Authorize & resolve PR
+      - name: Authorize & resolve target
         id: resolve
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
         with:
           script: |
-            // 1. Verify the actor has write access — applies to both checkbox
-            //    clicks and manual dispatch.
+            // Verify the actor has write access — applies to both checkbox
+            // clicks and manual dispatch. This authorizes requesting the fix;
+            // it does not make PR code trusted.
             const { data: perm } =
               await github.rest.repos.getCollaboratorPermissionLevel({
                 owner: context.repo.owner,
@@ -154,7 +179,6 @@ jobs:
               return;
             }
 
-            // 2. Resolve which ref to check out.
             let prNumber = '';
             if (context.eventName === 'issue_comment') {
               prNumber = String(context.payload.issue.number);
@@ -162,10 +186,23 @@ jobs:
               prNumber = context.payload.inputs.pr_number || '';
             }
 
+            const assertSafeRef = (ref) => {
+              if (!/^[A-Za-z0-9._\/-]+$/.test(ref) ||
+                  ref.includes('..') || ref.includes('@{') ||
+                  ref.startsWith('-') || ref.startsWith('/') ||
+                  ref.endsWith('/') || ref.endsWith('.')) {
+                throw new Error(`Unsafe target ref: ${ref}`);
+              }
+            };
+
             if (!prNumber) {
-              core.setOutput('ref', context.ref.replace(/^refs\/heads\//, ''));
-              core.setOutput('repo', context.repo.repo);
-              core.setOutput('owner', context.repo.owner);
+              const ref = context.ref.replace(/^refs\/heads\//, '');
+              assertSafeRef(ref);
+              core.setOutput('target_owner', context.repo.owner);
+              core.setOutput('target_repo', context.repo.repo);
+              core.setOutput('target_ref', ref);
+              core.setOutput('target_sha', context.sha);
+              core.setOutput('can_push', 'true');
               core.setOutput('pr', '');
               return;
             }
@@ -175,14 +212,15 @@ jobs:
               repo: context.repo.repo,
               pull_number: Number(prNumber),
             });
-            core.setOutput('ref', pr.head.ref);
-            core.setOutput('repo', pr.head.repo.name);
-            core.setOutput('owner', pr.head.repo.owner.login);
+            const baseFullName = `${context.repo.owner}/${context.repo.repo}`;
+            assertSafeRef(pr.head.ref);
+            core.setOutput('target_owner', pr.head.repo.owner.login);
+            core.setOutput('target_repo', pr.head.repo.name);
+            core.setOutput('target_ref', pr.head.ref);
+            core.setOutput('target_sha', pr.head.sha);
+            core.setOutput('can_push', pr.head.repo.full_name === baseFullName ? 'true' : 'false');
             core.setOutput('pr', String(pr.number));
 
-      # Wipe the sticky lockfile-check comment to a "running" state as soon
-      # as the job is authorized, so the user sees their click was picked up
-      # before the ~minute of nix build work.
       - name: Mark sticky as running
         if: steps.resolve.outputs.pr != ''
         uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
@@ -194,60 +232,295 @@ jobs:
 
             Triggered by @${{ github.actor }} — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+  generate_pr_fix_patch:
+    needs: resolve_pr_fix
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      changed: ${{ steps.patch.outputs.changed }}
+    steps:
+      - name: Checkout target without credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          repository: ${{ steps.resolve.outputs.owner }}/${{ steps.resolve.outputs.repo }}
-          ref: ${{ steps.resolve.outputs.ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
+          repository: ${{ needs.resolve_pr_fix.outputs.target_owner }}/${{ needs.resolve_pr_fix.outputs.target_repo }}
+          ref: ${{ needs.resolve_pr_fix.outputs.target_sha }}
+          persist-credentials: false
+          fetch-depth: 1
 
-      - uses: ./.github/actions/nix-setup
+      - name: Install Nix from trusted pinned action
+        uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+
+      - name: Configure Cachix read-only cache
+        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c # v17
         with:
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: hermes-agent
+        continue-on-error: true
 
-      - name: Apply lockfile hashes
+      - name: Apply lockfile hashes without secrets
         id: apply
-        run: nix run .#fix-lockfiles
+        env:
+          LINK_SHA: ${{ needs.resolve_pr_fix.outputs.target_sha }}
+        run: nix run .#fix-lockfiles -- --apply
 
-      - name: Commit & push
-        if: steps.apply.outputs.changed == 'true'
+      - name: Validate and create patch artifact
+        id: patch
         shell: bash
         run: |
           set -euo pipefail
+          modified="$(git diff --name-only)"
+          if [ -z "$modified" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          unexpected="$(printf '%s\n' "$modified" | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Unexpected modified files: $unexpected"
+            exit 1
+          fi
+
+          git diff -- nix/tui.nix nix/web.nix > lockfile-fix.patch
+          test -s lockfile-fix.patch
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          ALLOWED_PATHS = {'nix/tui.nix', 'nix/web.nix'}
+          HASH_LINE = re.compile(r'^[+-]\s*hash = "sha256-[A-Za-z0-9+/=._-]+";$')
+          INDEX_LINE = re.compile(r'^index [0-9a-f]+\.\.[0-9a-f]+ 100644$')
+          REJECT_PREFIXES = (
+              'old mode ', 'new mode ', 'deleted file mode ', 'new file mode ',
+              'rename from ', 'rename to ', 'copy from ', 'copy to ',
+              'similarity index ', 'dissimilarity index ', 'Binary files ',
+              'GIT binary patch',
+          )
+
+          def patch_path(token):
+              if token == '/dev/null':
+                  return None
+              if not (token.startswith('a/') or token.startswith('b/')):
+                  return 'INVALID'
+              return token[2:]
+
+          bad = []
+          for line in Path('lockfile-fix.patch').read_text().splitlines():
+              if line.startswith('diff --git '):
+                  parts = line.split()
+                  paths = [patch_path(part) for part in parts[2:4]] if len(parts) == 4 else ['INVALID']
+                  if len(paths) != 2 or any(path not in ALLOWED_PATHS for path in paths):
+                      bad.append(line)
+                  continue
+              if line.startswith(('--- ', '+++ ')):
+                  path = patch_path(line.split(maxsplit=1)[1])
+                  if path not in ALLOWED_PATHS:
+                      bad.append(line)
+                  continue
+              if line.startswith('index '):
+                  if not INDEX_LINE.fullmatch(line):
+                      bad.append(line)
+                  continue
+              if line.startswith(REJECT_PREFIXES):
+                  bad.append(line)
+                  continue
+              if line.startswith('@@') or not line.startswith(('+', '-')):
+                  continue
+              if not HASH_LINE.fullmatch(line.strip()):
+                  bad.append(line)
+          if bad:
+              print('::error::Patch changes non-hash content or unsafe metadata:')
+              for line in bad[:20]:
+                  print(line)
+              raise SystemExit(1)
+          PY
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload lockfile patch
+        if: steps.patch.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: lockfile-fix-patch
+          path: lockfile-fix.patch
+          if-no-files-found: error
+
+  apply_pr_fix:
+    needs: [resolve_pr_fix, generate_pr_fix_patch]
+    if: needs.generate_pr_fix_patch.outputs.changed == 'true' && needs.resolve_pr_fix.outputs.can_push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout target branch for patch application
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.resolve_pr_fix.outputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Download generated patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: lockfile-fix-patch
+          path: patch
+
+      - name: Validate patch touches only lockfile hash files
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="$(git apply --numstat patch/lockfile-fix.patch | awk '{print $3}')"
+          bad="$(printf '%s\n' "$files" | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          if [ -n "$bad" ]; then
+            echo "::error::Patch touches non-lockfile hash paths: $bad"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          ALLOWED_PATHS = {'nix/tui.nix', 'nix/web.nix'}
+          HASH_LINE = re.compile(r'^[+-]\s*hash = "sha256-[A-Za-z0-9+/=._-]+";$')
+          INDEX_LINE = re.compile(r'^index [0-9a-f]+\.\.[0-9a-f]+ 100644$')
+          REJECT_PREFIXES = (
+              'old mode ', 'new mode ', 'deleted file mode ', 'new file mode ',
+              'rename from ', 'rename to ', 'copy from ', 'copy to ',
+              'similarity index ', 'dissimilarity index ', 'Binary files ',
+              'GIT binary patch',
+          )
+
+          def patch_path(token):
+              if token == '/dev/null':
+                  return None
+              if not (token.startswith('a/') or token.startswith('b/')):
+                  return 'INVALID'
+              return token[2:]
+
+          bad = []
+          for line in Path('patch/lockfile-fix.patch').read_text().splitlines():
+              if line.startswith('diff --git '):
+                  parts = line.split()
+                  paths = [patch_path(part) for part in parts[2:4]] if len(parts) == 4 else ['INVALID']
+                  if len(paths) != 2 or any(path not in ALLOWED_PATHS for path in paths):
+                      bad.append(line)
+                  continue
+              if line.startswith(('--- ', '+++ ')):
+                  path = patch_path(line.split(maxsplit=1)[1])
+                  if path not in ALLOWED_PATHS:
+                      bad.append(line)
+                  continue
+              if line.startswith('index '):
+                  if not INDEX_LINE.fullmatch(line):
+                      bad.append(line)
+                  continue
+              if line.startswith(REJECT_PREFIXES):
+                  bad.append(line)
+                  continue
+              if line.startswith('@@') or not line.startswith(('+', '-')):
+                  continue
+              if not HASH_LINE.fullmatch(line.strip()):
+                  bad.append(line)
+          if bad:
+              print('::error::Patch changes non-hash content or unsafe metadata:')
+              for line in bad[:20]:
+                  print(line)
+              raise SystemExit(1)
+          PY
+
+      - name: Apply validated patch
+        shell: bash
+        run: git apply patch/lockfile-fix.patch
+
+      - name: Commit & push
+        shell: bash
+        env:
+          TARGET_REF: ${{ needs.resolve_pr_fix.outputs.target_ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TARGET_REF" =~ ^[A-Za-z0-9._/-]+$ ||
+                "$TARGET_REF" == -* || "$TARGET_REF" == /* ||
+                "$TARGET_REF" == */ || "$TARGET_REF" == *. ||
+                "$TARGET_REF" == *..* || "$TARGET_REF" == *@{* ]]; then
+            echo "::error::Unsafe target ref: $TARGET_REF"
+            exit 1
+          fi
+          git check-ref-format --branch "$TARGET_REF" >/dev/null
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add nix/tui.nix nix/web.nix
           git commit -m "fix(nix): refresh npm lockfile hashes"
-          git push
+          git push origin "HEAD:${TARGET_REF}"
 
       - name: Update sticky (applied)
-        if: steps.apply.outputs.changed == 'true' && steps.resolve.outputs.pr != ''
+        if: needs.resolve_pr_fix.outputs.pr != ''
         uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
         with:
           header: nix-lockfile-check
-          number: ${{ steps.resolve.outputs.pr }}
+          number: ${{ needs.resolve_pr_fix.outputs.pr }}
           message: |
             ### ✅ Lockfile fix applied
 
             Pushed a commit refreshing the npm lockfile hashes — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
-      - name: Update sticky (already current)
-        if: steps.apply.outputs.changed == 'false' && steps.resolve.outputs.pr != ''
+  comment_pr_patch_available:
+    needs: [resolve_pr_fix, generate_pr_fix_patch]
+    if: needs.generate_pr_fix_patch.outputs.changed == 'true' && needs.resolve_pr_fix.outputs.can_push != 'true' && needs.resolve_pr_fix.outputs.pr != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Update sticky (patch available)
         uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
         with:
           header: nix-lockfile-check
-          number: ${{ steps.resolve.outputs.pr }}
+          number: ${{ needs.resolve_pr_fix.outputs.pr }}
+          message: |
+            ### ⚠️ Lockfile patch generated, but not pushed
+
+            This PR comes from a fork, so the workflow will not push with repository write credentials. Download the `lockfile-fix-patch` artifact from the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) and apply it from a trusted checkout.
+
+  update_sticky_current:
+    needs: [resolve_pr_fix, generate_pr_fix_patch]
+    if: needs.generate_pr_fix_patch.outputs.changed == 'false' && needs.resolve_pr_fix.outputs.pr != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Update sticky (already current)
+        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        with:
+          header: nix-lockfile-check
+          number: ${{ needs.resolve_pr_fix.outputs.pr }}
           message: |
             ### ✅ Lockfile hashes already current
 
             Nothing to commit — [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
+  update_sticky_failed:
+    needs: [resolve_pr_fix, generate_pr_fix_patch, apply_pr_fix, comment_pr_patch_available, update_sticky_current]
+    if: |
+      always() &&
+      needs.resolve_pr_fix.outputs.pr != '' &&
+      (needs.resolve_pr_fix.result == 'failure' ||
+       needs.generate_pr_fix_patch.result == 'failure' ||
+       needs.apply_pr_fix.result == 'failure' ||
+       needs.comment_pr_patch_available.result == 'failure' ||
+       needs.update_sticky_current.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
       - name: Update sticky (failed)
-        if: failure() && steps.resolve.outputs.pr != ''
         uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
         with:
           header: nix-lockfile-check
-          number: ${{ steps.resolve.outputs.pr }}
+          number: ${{ needs.resolve_pr_fix.outputs.pr }}
           message: |
             ### ❌ Lockfile fix failed
 

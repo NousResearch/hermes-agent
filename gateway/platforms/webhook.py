@@ -12,7 +12,10 @@ Each route defines:
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
+    Accepts a string (single target) or a list of dicts (multi-target).
+    Multi-target format: [{"type": "telegram", "chat_id": "..."}, ...]
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
+    Only used with single-target string format; ignored when deliver is a list.
   - deliver_only: if true, skip the agent — the rendered prompt IS the
     message that gets delivered.  Use for external push notifications
     (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
@@ -175,12 +178,34 @@ class WebhookAdapter(BasePlatformAdapter):
             # than on the first webhook POST.
             if route.get("deliver_only"):
                 deliver = route.get("deliver", "log")
-                if not deliver or deliver == "log":
-                    raise ValueError(
-                        f"[webhook] Route '{name}' has deliver_only=true but "
-                        f"deliver is '{deliver}'. Direct delivery requires a "
-                        f"real target (telegram, discord, slack, github_comment, etc.)."
-                    )
+                if isinstance(deliver, list):
+                    # Multi-target: every entry must have a valid type != "log"
+                    for i, item in enumerate(deliver):
+                        if not isinstance(item, dict) or "type" not in item:
+                            raise ValueError(
+                                f"[webhook] Route '{name}' deliver[{i}] is invalid. "
+                                f"Each target must be a dict with a 'type' key."
+                            )
+                        item_type = item.get("type", "log")
+                        if not item_type or item_type == "log":
+                            raise ValueError(
+                                f"[webhook] Route '{name}' has deliver_only=true but "
+                                f"deliver[{i}].type is '{item_type}'. Direct delivery "
+                                f"requires a real target (telegram, discord, slack, "
+                                f"github_comment, etc.)."
+                            )
+                    if not deliver:
+                        raise ValueError(
+                            f"[webhook] Route '{name}' has deliver_only=true but "
+                            f"deliver is an empty list."
+                        )
+                else:
+                    if not deliver or deliver == "log":
+                        raise ValueError(
+                            f"[webhook] Route '{name}' has deliver_only=true but "
+                            f"deliver is '{deliver}'. Direct delivery requires a "
+                            f"real target (telegram, discord, slack, github_comment, etc.)."
+                        )
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
@@ -219,34 +244,68 @@ class WebhookAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[webhook] Disconnected")
 
-    async def send(
-        self,
-        chat_id: str,
-        content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Deliver the agent's response to the configured destination.
+    def _normalize_deliver_targets(
+        self, delivery: dict, payload: Optional[dict] = None
+    ) -> List[dict]:
+        """Normalize deliver config into a list of target dicts.
 
-        chat_id is ``webhook:{route}:{delivery_id}``.  The delivery info
-        stored during webhook receipt is read with ``.get()`` (not popped)
-        so that interim status messages emitted before the final response
-        — fallback-model notifications, context-pressure warnings, etc. —
-        do not consume the entry and silently downgrade the final response
-        to the ``log`` deliver type.  TTL cleanup happens on POST.
+        Supports two formats:
+          - Legacy (string):  deliver="telegram", deliver_extra={chat_id: "123"}
+            → [{"type": "telegram", "chat_id": "123"}]
+          - Multi (list):     deliver=[{"type": "telegram", "chat_id": "123"}, ...]
+            → returned as-is (with template rendering applied if payload given)
+
+        Each returned dict has at minimum a "type" key.
         """
-        delivery = self._delivery_info.get(chat_id, {})
-        deliver_type = delivery.get("deliver", "log")
+        raw_deliver = delivery.get("deliver", "log")
+
+        if isinstance(raw_deliver, list):
+            # New multi-target format: each item is a dict with "type" + extras
+            targets: List[dict] = []
+            for item in raw_deliver:
+                if isinstance(item, dict) and "type" in item:
+                    target = dict(item)
+                    # Render template values if payload is available
+                    if payload:
+                        rendered = {}
+                        for k, v in target.items():
+                            if k == "type":
+                                rendered[k] = v
+                            elif isinstance(v, str):
+                                rendered[k] = self._render_prompt(v, payload, "", "")
+                            else:
+                                rendered[k] = v
+                        targets.append(rendered)
+                    else:
+                        targets.append(target)
+                else:
+                    logger.warning(
+                        "[webhook] Invalid deliver target (missing 'type'): %s", item
+                    )
+            return targets if targets else [{"type": "log"}]
+
+        # Legacy single-target format: string deliver + dict deliver_extra
+        deliver_extra = delivery.get("deliver_extra", {})
+        target = {"type": raw_deliver}
+        target.update(deliver_extra)
+        return [target]
+
+    async def _deliver_single_target(
+        self, target: dict, content: str
+    ) -> SendResult:
+        """Deliver content to a single target dict ({"type": ..., ...extras})."""
+        deliver_type = target.get("type", "log")
 
         if deliver_type == "log":
-            logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
+            logger.info("[webhook] Response (log): %s", content[:200])
             return SendResult(success=True)
 
         if deliver_type == "github_comment":
-            return await self._deliver_github_comment(content, delivery)
+            # Construct a delivery-like dict for the existing helper
+            delivery_compat = {"deliver_extra": {k: v for k, v in target.items() if k != "type"}}
+            return await self._deliver_github_comment(content, delivery_compat)
 
         # Cross-platform delivery — any platform with a gateway adapter.
-        # Check both built-in names and plugin-registered platforms.
         _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
         if not _is_known_platform:
             try:
@@ -255,14 +314,91 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception:
                 pass
         if self.gateway_runner and _is_known_platform:
+            delivery_compat = {"deliver_extra": {k: v for k, v in target.items() if k != "type"}}
             return await self._deliver_cross_platform(
-                deliver_type, content, delivery
+                deliver_type, content, delivery_compat
             )
 
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
         return SendResult(
             success=False, error=f"Unknown deliver type: {deliver_type}"
         )
+
+    async def _deliver_to_targets(
+        self, targets: List[dict], content: str
+    ) -> SendResult:
+        """Deliver content to multiple targets concurrently (best-effort).
+
+        All targets are dispatched in parallel.  Individual failures are
+        logged but do not block other deliveries.  Returns success=True if
+        at least one target succeeded; the error field summarizes failures.
+        """
+        if not targets:
+            return SendResult(success=True)
+
+        if len(targets) == 1:
+            return await self._deliver_single_target(targets[0], content)
+
+        # Concurrent delivery to all targets
+        tasks = [self._deliver_single_target(t, content) for t in targets]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        successes = []
+        failures = []
+        for i, result in enumerate(results):
+            target_type = targets[i].get("type", "unknown")
+            if isinstance(result, Exception):
+                failures.append(f"{target_type}: {result}")
+                logger.warning(
+                    "[webhook] Delivery to %s failed: %s", target_type, result
+                )
+            elif result.success:
+                successes.append(target_type)
+            else:
+                failures.append(f"{target_type}: {result.error}")
+                logger.warning(
+                    "[webhook] Delivery to %s failed: %s", target_type, result.error
+                )
+
+        if failures:
+            error_msg = f"{len(failures)} target(s) failed: {'; '.join(failures)}"
+            if successes:
+                logger.info(
+                    "[webhook] Partial delivery: %d succeeded, %d failed",
+                    len(successes), len(failures),
+                )
+            else:
+                logger.error("[webhook] All deliveries failed: %s", error_msg)
+            return SendResult(
+                success=len(successes) > 0,
+                error=error_msg if failures else None,
+            )
+
+        return SendResult(success=True)
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Deliver the agent's response to the configured destination(s).
+
+        chat_id is ``webhook:{route}:{delivery_id}``.  The delivery info
+        stored during webhook receipt is read with ``.get()`` (not popped)
+        so that interim status messages emitted before the final response
+        — fallback-model notifications, context-pressure warnings, etc. —
+        do not consume the entry and silently downgrade the final response
+        to the ``log`` deliver type.  TTL cleanup happens on POST.
+
+        Supports multiple delivery targets when ``deliver`` is a list.
+        All targets are dispatched concurrently (best-effort).
+        """
+        delivery = self._delivery_info.get(chat_id, {})
+        payload = delivery.get("payload")
+        targets = self._normalize_deliver_targets(delivery, payload)
+        return await self._deliver_to_targets(targets, content)
 
     def _prune_delivery_info(self, now: float) -> None:
         """Drop delivery_info entries older than the idempotency TTL.
@@ -518,23 +654,42 @@ class WebhookAdapter(BasePlatformAdapter):
         # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
         # rate limiting, idempotency, and template rendering as agent mode.
         if route_config.get("deliver_only"):
+            raw_deliver = route_config.get("deliver", "log")
             delivery = {
-                "deliver": route_config.get("deliver", "log"),
-                "deliver_extra": self._render_delivery_extra(
-                    route_config.get("deliver_extra", {}), payload
-                ),
+                "deliver": raw_deliver,
                 "payload": payload,
             }
+            # For legacy string format, render deliver_extra with payload
+            if isinstance(raw_deliver, str):
+                delivery["deliver_extra"] = self._render_delivery_extra(
+                    route_config.get("deliver_extra", {}), payload
+                )
+            # For list format, render template values within each target
+            # (_normalize_deliver_targets handles this when payload is in delivery)
+
+            # Build a human-readable target description for logging
+            if isinstance(raw_deliver, list):
+                target_desc = ",".join(
+                    t.get("type", "?") for t in raw_deliver if isinstance(t, dict)
+                )
+            else:
+                target_desc = raw_deliver
+
             logger.info(
                 "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
                 event_type,
                 route_name,
-                delivery["deliver"],
+                target_desc,
                 len(prompt),
                 delivery_id,
             )
             try:
-                result = await self._direct_deliver(prompt, delivery)
+                # For multi-target list, pass payload so templates get rendered
+                if isinstance(raw_deliver, list):
+                    targets = self._normalize_deliver_targets(delivery, payload)
+                    result = await self._deliver_to_targets(targets, prompt)
+                else:
+                    result = await self._direct_deliver(prompt, delivery)
             except Exception:
                 logger.exception(
                     "[webhook] direct-deliver failed route=%s delivery=%s",
@@ -551,7 +706,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     {
                         "status": "delivered",
                         "route": route_name,
-                        "target": delivery["deliver"],
+                        "target": target_desc,
                         "delivery_id": delivery_id,
                     },
                     status=200,
@@ -561,7 +716,7 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.warning(
                 "[webhook] direct-deliver target rejected route=%s target=%s error=%s",
                 route_name,
-                delivery["deliver"],
+                target_desc,
                 result.error,
             )
             return web.json_response(
@@ -576,13 +731,18 @@ class WebhookAdapter(BasePlatformAdapter):
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
         # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
+        raw_deliver = route_config.get("deliver", "log")
         deliver_config = {
-            "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(
-                route_config.get("deliver_extra", {}), payload
-            ),
+            "deliver": raw_deliver,
             "payload": payload,
         }
+        # For legacy string format, render deliver_extra with payload
+        if isinstance(raw_deliver, str):
+            deliver_config["deliver_extra"] = self._render_delivery_extra(
+                route_config.get("deliver_extra", {}), payload
+            )
+        # For list format, _normalize_deliver_targets() handles rendering
+        # at send-time using the payload stored in deliver_config.
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._prune_delivery_info(now)
@@ -807,23 +967,11 @@ class WebhookAdapter(BasePlatformAdapter):
         that the agent-mode ``send()`` flow uses.  All target types that
         work in agent mode work here — Telegram, Discord, Slack, GitHub
         PR comments, etc.
+
+        Supports multiple delivery targets when ``deliver`` is a list.
         """
-        deliver_type = delivery.get("deliver", "log")
-
-        if deliver_type == "log":
-            # Shouldn't reach here — startup validation rejects deliver_only
-            # with deliver=log — but guard defensively.
-            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
-            return SendResult(success=True)
-
-        if deliver_type == "github_comment":
-            return await self._deliver_github_comment(content, delivery)
-
-        # Fall through to the cross-platform dispatcher, which validates the
-        # target name and routes via the gateway runner.
-        return await self._deliver_cross_platform(
-            deliver_type, content, delivery
-        )
+        targets = self._normalize_deliver_targets(delivery)
+        return await self._deliver_to_targets(targets, content)
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict

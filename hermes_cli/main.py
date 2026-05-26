@@ -11942,13 +11942,16 @@ def main():
     )
     wh_sub.add_argument(
         "--deliver",
-        default="log",
-        help="Delivery target: log, telegram, discord, slack, etc.",
+        action="append",
+        default=None,
+        help="Delivery target(s). Use once for single target (e.g. --deliver telegram), "
+        "or multiple times for multi-target (e.g. --deliver telegram:chat_id=123 "
+        "--deliver discord:chat_id=456). Format: type[:key=value,key=value]",
     )
     wh_sub.add_argument(
         "--deliver-chat-id",
         default="",
-        help="Target chat ID for cross-platform delivery",
+        help="Target chat ID for cross-platform delivery (legacy single-target shorthand)",
     )
     wh_sub.add_argument(
         "--secret", default="", help="HMAC secret (auto-generated if omitted)"

@@ -82,8 +82,8 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. |
 | `skills` | No | List of skill names to load for the agent run. |
-| `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
-| `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
+| `deliver` | No | Where to send the response. Accepts a **string** (single target) or a **list** (multi-target). Supported targets: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). See [Multi-Target Delivery](#multi-target-delivery). |
+| `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. Only used with single-target string format; ignored when `deliver` is a list. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
 
 ### Full example
@@ -250,6 +250,88 @@ The `deliver` field controls where the agent's response goes after processing th
 | `bluebubbles` | Routes the response to BlueBubbles (iMessage). Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 
 For cross-platform delivery, the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
+
+---
+
+## Multi-Target Delivery {#multi-target-delivery}
+
+A single webhook route can deliver responses to **multiple platforms simultaneously**. Instead of a string, set `deliver` to a list of target objects. Each target specifies its `type` and any platform-specific config (replacing `deliver_extra`).
+
+### Configuration
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        pr-review:
+          events: ["pull_request"]
+          secret: "webhook-secret"
+          prompt: "Review PR #{number}: {pull_request.title}"
+          deliver:
+            - type: "github_comment"
+              repo: "{repository.full_name}"
+              pr_number: "{number}"
+            - type: "telegram"
+              chat_id: "{notify.telegram_chat_id}"
+            - type: "discord"
+              chat_id: "987654321"
+```
+
+Each target object must include a `type` field. All other fields are target-specific extras (equivalent to `deliver_extra` in the single-target format). Template values use the same `{dot.notation}` syntax and are rendered with the webhook payload.
+
+### Backward compatibility
+
+The single-target string format continues to work unchanged:
+
+```yaml
+# This still works exactly as before
+deliver: "telegram"
+deliver_extra:
+  chat_id: "123456"
+```
+
+When `deliver` is a list, the `deliver_extra` field is ignored (extras are inlined into each target object).
+
+### Delivery semantics
+
+- All targets are dispatched **concurrently** (not sequentially)
+- **Best-effort**: if one target fails, the others still receive the message
+- The agent's response is delivered to all targets — it is not transformed per-target
+- `send()` returns success if **at least one** target succeeded; failures are logged as warnings
+
+### Multi-target with direct delivery
+
+Multi-target works with `deliver_only: true` as well:
+
+```yaml
+routes:
+  alert-fanout:
+    secret: "alert-secret"
+    deliver_only: true
+    prompt: "🚨 Alert: {alert.message}"
+    deliver:
+      - type: "telegram"
+        chat_id: "{alert.telegram_id}"
+      - type: "discord"
+        chat_id: "channel-id"
+      - type: "slack"
+        chat_id: "C0123456789"
+```
+
+Startup validation ensures every target in the list has a valid `type` (not `log`) when `deliver_only` is enabled.
+
+### CLI multi-target
+
+Use `--deliver` multiple times with the `type:key=value,key=value` format:
+
+```bash
+hermes webhook subscribe pr-review \
+  --deliver "github_comment:repo=org/repo,pr_number=42" \
+  --deliver "telegram:chat_id=123456" \
+  --deliver "discord:chat_id=987654"
+```
 
 ---
 

@@ -158,6 +158,31 @@ def webhook_command(args):
         _cmd_test(args)
 
 
+def _parse_deliver_spec(spec: str) -> dict:
+    """Parse a CLI deliver spec string into a target dict.
+
+    Format: type[:key=value,key=value]
+    Examples:
+        "telegram" → {"type": "telegram"}
+        "telegram:chat_id=123" → {"type": "telegram", "chat_id": "123"}
+        "github_comment:repo=org/repo,pr_number=42" → {...}
+    """
+    if ":" not in spec:
+        return {"type": spec.strip()}
+
+    type_part, extras_part = spec.split(":", 1)
+    target = {"type": type_part.strip()}
+
+    if extras_part.strip():
+        for pair in extras_part.split(","):
+            pair = pair.strip()
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                target[key.strip()] = value.strip()
+
+    return target
+
+
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
@@ -170,27 +195,67 @@ def _cmd_subscribe(args):
     secret = args.secret or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
+    # Parse deliver targets
+    raw_delivers = args.deliver  # None, a list from action="append", or a string (legacy/tests)
+    if raw_delivers is None:
+        deliver_value = "log"
+    elif isinstance(raw_delivers, str):
+        # Legacy: direct string value (e.g. from tests or old arg format)
+        deliver_value = raw_delivers if raw_delivers else "log"
+    elif len(raw_delivers) == 1:
+        # Single --deliver: check if it's the simple format (no colon extras)
+        # or the extended format (type:key=val)
+        spec = raw_delivers[0]
+        if ":" not in spec:
+            # Legacy single-target: just a platform name
+            deliver_value = spec.strip()
+        else:
+            # Extended format even for single target → use list format
+            deliver_value = [_parse_deliver_spec(spec)]
+    else:
+        # Multiple --deliver flags → list format
+        deliver_value = [_parse_deliver_spec(spec) for spec in raw_delivers]
+
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
         "secret": secret,
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
-        "deliver": args.deliver or "log",
+        "deliver": deliver_value,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
     if getattr(args, "deliver_only", False):
-        if route["deliver"] == "log":
+        if isinstance(deliver_value, str) and deliver_value == "log":
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'."
             )
             return
+        if isinstance(deliver_value, list):
+            for t in deliver_value:
+                if t.get("type") == "log":
+                    print(
+                        "Error: --deliver-only requires all targets to be real "
+                        "(telegram, discord, slack, github_comment, etc.) — not 'log'."
+                    )
+                    return
         route["deliver_only"] = True
 
+    # Legacy --deliver-chat-id for single string deliver
     if args.deliver_chat_id:
-        route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
+        if isinstance(deliver_value, str):
+            route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
+        elif isinstance(deliver_value, list) and len(deliver_value) == 1:
+            # Apply chat_id to the single target in the list
+            deliver_value[0]["chat_id"] = args.deliver_chat_id
+            route["deliver"] = deliver_value
+        else:
+            print(
+                "Warning: --deliver-chat-id is ignored when multiple "
+                "targets are specified. Use type:chat_id=VALUE instead."
+            )
 
     subs[name] = route
     _save_subscriptions(subs)
@@ -205,7 +270,18 @@ def _cmd_subscribe(args):
         print(f"  Events: {', '.join(events)}")
     else:
         print("  Events: (all)")
-    print(f"  Deliver: {route['deliver']}")
+
+    # Display deliver info
+    if isinstance(deliver_value, list):
+        print(f"  Deliver: {len(deliver_value)} target(s)")
+        for i, t in enumerate(deliver_value):
+            t_type = t.get("type", "?")
+            extras = {k: v for k, v in t.items() if k != "type"}
+            extra_str = f" ({', '.join(f'{k}={v}' for k, v in extras.items())})" if extras else ""
+            print(f"    [{i+1}] {t_type}{extra_str}")
+    else:
+        print(f"  Deliver: {deliver_value}")
+
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
     if route.get("prompt"):
@@ -229,15 +305,22 @@ def _cmd_list(args):
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
         deliver = route.get("deliver", "log")
+        if isinstance(deliver, list):
+            deliver_str = ", ".join(
+                t.get("type", "?") for t in deliver if isinstance(t, dict)
+            )
+            deliver_str = f"[{deliver_str}]"
+        else:
+            deliver_str = deliver
         if route.get("deliver_only"):
-            deliver = f"{deliver} (direct — no agent)"
+            deliver_str = f"{deliver_str} (direct — no agent)"
         desc = route.get("description", "")
         print(f"  ◆ {name}")
         if desc:
             print(f"    {desc}")
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
-        print(f"    Deliver: {deliver}")
+        print(f"    Deliver: {deliver_str}")
         print()
 
 

@@ -37,7 +37,7 @@ vercel = VercelAIGatewayProfile(
         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
         "X-Title": "Hermes Agent",
     },
-    default_aux_model="google/gemini-3-flash",
+    default_aux_model="google/gemini-3.5-flash",
 )
 
 register_provider(vercel)

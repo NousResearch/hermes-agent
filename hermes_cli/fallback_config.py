@@ -48,6 +48,52 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+_GEMINI_35_FLASH_PRIMARY_IDS = {
+    "gemini-3.5-flash",
+    "google/gemini-3.5-flash",
+}
+
+
+def _gemini_preview_fallback_for_primary(provider: str, model: str) -> dict[str, Any] | None:
+    """Return the protective Gemini 3 Flash preview fallback, if applicable."""
+
+    provider = str(provider or "").strip().lower()
+    model = str(model or "").strip()
+    model_l = model.lower()
+    if model_l not in _GEMINI_35_FLASH_PRIMARY_IDS:
+        return None
+    if not provider:
+        return None
+
+    fallback_model = "google/gemini-3-flash-preview" if "/" in model else "gemini-3-flash-preview"
+    return {"provider": provider, "model": fallback_model}
+
+
+def augment_fallback_chain_for_primary(
+    chain: Any,
+    *,
+    provider: str,
+    model: str,
+) -> list[dict[str, Any]]:
+    """Append a narrow protective fallback for Gemini 3.5 Flash primaries.
+
+    ``gemini-3.5-flash`` remains the primary/stable model.  The older
+    ``gemini-3-flash-preview`` is only added as a fallback route, never as a
+    resolver alias or replacement mapping.  Explicit duplicate fallback entries
+    win and are not repeated.
+    """
+
+    augmented = [dict(entry) for entry in (chain or []) if isinstance(entry, dict)]
+    protective = _gemini_preview_fallback_for_primary(provider, model)
+    if not protective:
+        return augmented
+
+    existing = {_entry_identity(entry) for entry in augmented}
+    if _entry_identity(protective) not in existing:
+        augmented.append(protective)
+    return augmented
+
+
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 

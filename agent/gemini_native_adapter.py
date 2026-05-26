@@ -33,6 +33,47 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
+_GEMINI_STREAM_TOOL_GUARD = (
+    "Gemini streamGenerateContent tool-use guard: when a function tool is the "
+    "right next step, call the function tool directly using functionCall parts; "
+    "do not describe the tool call in prose or emit JSON-as-text instead."
+)
+
+
+def _is_gemini_3_flash_family(model: str) -> bool:
+    normalized = (model or "").split("/", 1)[-1].lower()
+    return normalized.startswith("gemini-3") and "flash" in normalized
+
+
+def _strengthen_stream_generate_request(
+    request: Dict[str, Any],
+    *,
+    model: str,
+    has_tools: bool,
+) -> Dict[str, Any]:
+    """Add a narrow Gemini streaming guard while preserving existing prompts."""
+
+    if not has_tools or not _is_gemini_3_flash_family(model):
+        return request
+    if _GEMINI_STREAM_TOOL_GUARD in str(request.get("systemInstruction") or ""):
+        return request
+
+    strengthened = dict(request)
+    system_instruction = strengthened.get("systemInstruction")
+    if not isinstance(system_instruction, dict):
+        system_instruction = {"parts": []}
+    else:
+        system_instruction = dict(system_instruction)
+    parts = system_instruction.get("parts")
+    if not isinstance(parts, list):
+        parts = []
+    else:
+        parts = [dict(part) if isinstance(part, dict) else part for part in parts]
+    parts.append({"text": _GEMINI_STREAM_TOOL_GUARD})
+    system_instruction["parts"] = parts
+    strengthened["systemInstruction"] = system_instruction
+    return strengthened
+
 
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
@@ -896,6 +937,11 @@ class GeminiNativeClient:
         )
 
         if stream:
+            request = _strengthen_stream_generate_request(
+                request,
+                model=model,
+                has_tools=bool(_translate_tools_to_gemini(tools)),
+            )
             return self._stream_completion(model=model, request=request, timeout=timeout)
 
         url = f"{self.base_url}/models/{model}:generateContent"

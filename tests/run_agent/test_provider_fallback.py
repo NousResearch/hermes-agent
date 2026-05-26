@@ -5,8 +5,11 @@ the new list-based ``fallback_providers`` config format and chain
 advancement through multiple providers.
 """
 
+import logging
 from unittest.mock import MagicMock, patch
 
+from agent.error_classifier import FailoverReason
+from hermes_cli.fallback_config import augment_fallback_chain_for_primary
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -37,6 +40,57 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
 
 
 # ── Chain initialisation ──────────────────────────────────────────────────
+
+
+class TestGemini35ProtectiveFallback:
+    def test_adds_preview_fallback_for_direct_gemini_35_primary(self):
+        chain = augment_fallback_chain_for_primary(
+            [], provider="gemini", model="gemini-3.5-flash"
+        )
+        assert chain == [{"provider": "gemini", "model": "gemini-3-flash-preview"}]
+
+    def test_adds_preview_fallback_for_aggregated_gemini_35_primary(self):
+        chain = augment_fallback_chain_for_primary(
+            [], provider="openrouter", model="google/gemini-3.5-flash"
+        )
+        assert chain == [{"provider": "openrouter", "model": "google/gemini-3-flash-preview"}]
+
+    def test_preserves_explicit_chain_and_does_not_duplicate_preview_fallback(self):
+        explicit = [{"provider": "gemini", "model": "gemini-3-flash-preview"}]
+        chain = augment_fallback_chain_for_primary(
+            explicit, provider="gemini", model="gemini-3.5-flash"
+        )
+        assert chain == explicit
+        assert chain is not explicit
+
+    def test_does_not_add_preview_for_preview_primary(self):
+        chain = augment_fallback_chain_for_primary(
+            [], provider="gemini", model="gemini-3-flash-preview"
+        )
+        assert chain == []
+
+
+class TestFallbackTelemetry:
+    def test_logs_provider_model_transition_and_reason(self, caplog):
+        fbs = [{"provider": "gemini", "model": "gemini-3-flash-preview"}]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "gemini"
+        agent.model = "gemini-3.5-flash"
+        agent.base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+        with (
+            caplog.at_level(logging.INFO, logger="agent.chat_completion_helpers"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://generativelanguage.googleapis.com/v1beta"),
+                    "gemini-3-flash-preview",
+                ),
+            ),
+        ):
+            assert agent._try_activate_fallback(reason=FailoverReason.model_not_found) is True
+
+        assert "Fallback activated: gemini/gemini-3.5-flash -> gemini/gemini-3-flash-preview reason=model_not_found" in caplog.text
 
 
 class TestFallbackChainInit:

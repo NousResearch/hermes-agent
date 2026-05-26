@@ -892,6 +892,17 @@ def init_agent(
         agent._fallback_chain = [fallback_model]
     else:
         agent._fallback_chain = []
+    try:
+        from hermes_cli.fallback_config import augment_fallback_chain_for_primary
+
+        agent._fallback_chain = augment_fallback_chain_for_primary(
+            agent._fallback_chain,
+            provider=getattr(agent, "provider", "") or "",
+            model=getattr(agent, "model", "") or "",
+        )
+    except Exception:
+        # Fallback augmentation is best-effort; explicit fallback config still works.
+        pass
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)

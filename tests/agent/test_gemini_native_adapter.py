@@ -247,6 +247,68 @@ def test_native_client_rejects_empty_api_key_with_actionable_message():
         assert "aistudio.google.com" in msg
 
 
+def test_native_stream_request_adds_narrow_tool_guard_without_losing_system_prompt(monkeypatch):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyStreamResponse:
+        status_code = 200
+        text = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_text(self):
+            yield 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n'
+            yield "data: [DONE]\n"
+
+        def read(self):
+            return b""
+
+    class DummyHTTP:
+        def stream(self, method, url, json=None, headers=None, timeout=None):
+            recorded["method"] = method
+            recorded["url"] = url
+            recorded["json"] = json
+            recorded["headers"] = headers
+            return DummyStreamResponse()
+
+        def close(self):
+            return None
+
+    client = GeminiNativeClient(api_key="AIza-test", http_client=DummyHTTP())  # type: ignore[arg-type]
+    stream = client.chat.completions.create(
+        model="gemini-3.5-flash",
+        stream=True,
+        messages=[
+            {"role": "system", "content": "Original system rules."},
+            {"role": "user", "content": "Use the tool if needed."},
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Lookup data",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+    )
+
+    assert [chunk.choices[0].delta.content for chunk in stream if getattr(chunk.choices[0].delta, "content", None)] == ["ok"]
+    assert recorded["url"].endswith("/models/gemini-3.5-flash:streamGenerateContent?alt=sse")
+    system_texts = [part["text"] for part in recorded["json"]["systemInstruction"]["parts"]]
+    combined_system_text = "\n".join(system_texts)
+    assert "Original system rules." in combined_system_text
+    assert "streamGenerateContent" in combined_system_text
+    assert "call the function tool" in combined_system_text
+
+
 @pytest.mark.asyncio
 async def test_async_native_client_streams_without_requiring_async_iterator_from_sync_client():
     from agent.gemini_native_adapter import AsyncGeminiNativeClient

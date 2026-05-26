@@ -87,7 +87,7 @@ opencode_zen = ProviderProfile(
     aliases=("opencode", "opencode_zen", "zen"),
     env_vars=("OPENCODE_ZEN_API_KEY",),
     base_url="https://opencode.ai/zen/v1",
-    default_aux_model="gemini-3-flash",
+    default_aux_model="gemini-3.5-flash",
 )
 
 opencode_go = OpenCodeGoProfile(

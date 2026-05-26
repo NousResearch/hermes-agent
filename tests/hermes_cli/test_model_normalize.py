@@ -230,6 +230,31 @@ class TestDeepseekVSeriesPassThrough:
         assert result == "deepseek-v4-flash"
 
 
+# ── Gemini 3.5 Flash stable-primary invariant ─────────────────────────────
+
+class TestGemini35FlashInvariant:
+    """Gemini 3.5 Flash is the stable primary model ID.
+
+    The older Gemini 3 Flash preview can be configured as a fallback, but the
+    resolver must not silently downgrade or alias the stable ID to preview.
+    """
+
+    def test_native_gemini_preserves_stable_35_flash(self):
+        assert normalize_model_for_provider("gemini-3.5-flash", "gemini") == "gemini-3.5-flash"
+
+    @pytest.mark.parametrize("provider", ["openrouter", "nous", "ai-gateway", "kilocode"])
+    def test_aggregators_prefix_stable_35_flash_with_google_vendor(self, provider):
+        assert normalize_model_for_provider("gemini-3.5-flash", provider) == "google/gemini-3.5-flash"
+
+    def test_preview_model_stays_preview_when_explicitly_selected(self):
+        assert normalize_model_for_provider("gemini-3-flash-preview", "gemini") == "gemini-3-flash-preview"
+        assert normalize_model_for_provider("gemini-3-flash-preview", "openrouter") == "google/gemini-3-flash-preview"
+
+    def test_old_gemini_3_flash_is_not_upgraded_to_35_flash_alias(self):
+        assert normalize_model_for_provider("gemini-3-flash", "gemini") == "gemini-3-flash"
+        assert normalize_model_for_provider("gemini-3-flash", "openrouter") == "google/gemini-3-flash"
+
+
 # ── DeepSeek regressions (existing behaviour still holds) ──────────────
 
 class TestDeepseekCanonicalAndReasonerMapping:

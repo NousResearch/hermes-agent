@@ -771,6 +771,20 @@ class TestNousRecommendedModels:
             model = get_nous_recommended_aux_model(vision=True, free_tier=True)
         assert model == "google/gemini-3-flash-preview"
 
+
+    def test_gemini_35_flash_is_default_stable_model_and_preview_remains_fallback_catalog_entry(self):
+        from hermes_cli.models import get_default_model_for_provider, provider_model_ids
+
+        assert get_default_model_for_provider("gemini") == "gemini-3.5-flash"
+        gemini_models = provider_model_ids("gemini")
+        assert "gemini-3.5-flash" in gemini_models
+        assert "gemini-3-flash-preview" in gemini_models
+        assert "gemini-3-flash" not in gemini_models
+
+        gateway_models = provider_model_ids("ai-gateway")
+        assert "google/gemini-3.5-flash" in gateway_models
+        assert "google/gemini-3-flash" not in gateway_models
+
     def test_get_aux_model_returns_compaction_recommendation(self):
         from hermes_cli.models import get_nous_recommended_aux_model
         payload = dict(self._SAMPLE_PAYLOAD)

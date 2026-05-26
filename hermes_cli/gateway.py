@@ -3327,7 +3327,18 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 
 # Per-platform config: each entry defines the env vars, setup instructions,
 # and prompts needed to configure a messaging platform.
+#
+# Inkbox is intentionally first — it is the recommended Hermes-on-Inkbox
+# onboarding path (email + SMS + voice + identity all behind one API key).
+# Its setup is fully bespoke (`_setup_inkbox` in hermes_cli/setup.py) so the
+# entry here is metadata-only: no `vars` / `setup_instructions` schema.
 _PLATFORMS = [
+    {
+        "key": "inkbox",
+        "label": "Inkbox (email + SMS + voice)",
+        "emoji": "📨📱📞",
+        "token_var": "INKBOX_API_KEY",
+    },
     {
         "key": "telegram",
         "label": "Telegram",
@@ -4744,6 +4755,7 @@ def _builtin_setup_fn(key: str):
     """
     from hermes_cli import setup as _s
     return {
+        "inkbox": _s._setup_inkbox,
         "telegram": _s._setup_telegram,
         # discord moved into the plugin: setup_fn is registered by
         # plugins/platforms/discord/adapter.py::register() and dispatched
@@ -4813,10 +4825,10 @@ def gateway_setup():
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
-    print(color("│             ⚕ Gateway Setup                            │", Colors.MAGENTA))
+    print(color("│             ⚕ Gateway Setup                             │", Colors.MAGENTA))
     print(color("├─────────────────────────────────────────────────────────┤", Colors.MAGENTA))
     print(color("│  Configure messaging platforms and the gateway service. │", Colors.MAGENTA))
-    print(color("│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA))
+    print(color("│  Press Ctrl+C at any time to exit.                      │", Colors.MAGENTA))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
 
     # ── Gateway service status ──

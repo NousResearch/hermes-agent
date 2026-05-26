@@ -66,6 +66,181 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_INKBOX_SMS_HELP_TEXT_DEFAULT = (
+    "Hi, I'm {identity}. Text what you need and I'll help.\n"
+    "Commands: /help, /reset, /status, /stop. Reply STOP to opt out."
+)
+
+_TELEGRAM_NOISY_STATUS_RE = re.compile(
+    r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
+    r"auxiliary\s+.+\s+failed"
+    r"|compression\s+summary\s+failed"
+    r"|fallback\s+context\s+marker"
+    r"|configured\s+compression\s+model\s+.+\s+failed"
+    r"|no\s+auxiliary\s+llm\s+provider\s+configured"
+    r"|auto-lowered\s+compression\s+threshold"
+    r"|preflight\s+compression"
+    r"|rate\s+limited\.\s+waiting\s+\d"
+    r"|retrying\s+in\s+\d"
+    r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
+    r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
+    r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_GATEWAY_PROVIDER_ERROR_RE = re.compile(
+    r"("  # infrastructure/provider error preambles, not ordinary assistant prose
+    r"api\s+(?:call\s+)?failed"
+    r"|provider\s+authentication\s+failed"
+    r"|non-retryable\s+error"
+    r"|rate\s+limited\s+after\s+\d+\s+retries"
+    r"|error\s+code\s*:"
+    r"|\bhttp\s*\d{3}\b"
+    r"|incorrect\s+api\s+key"
+    r"|invalid\s+api\s+key"
+    r")",
+    re.IGNORECASE,
+)
+
+_GATEWAY_PROVIDER_POLICY_RE = re.compile(
+    r"("  # raw provider policy/safety bodies are noisy and may be sensitive
+    r"cybersecurity\s+risk"
+    r"|security\s+policy"
+    r"|safety\s+policy"
+    r"|policy\s+violation"
+    r"|violat(?:e|es|ed|ion)"
+    r"|blocked\s+(?:because|by|under)"
+    r"|request\s+(?:was\s+)?(?:blocked|rejected)"
+    r"|disallowed"
+    r"|moderation"
+    r")",
+    re.IGNORECASE,
+)
+
+_GATEWAY_AUTH_ERROR_RE = re.compile(
+    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key|\b401\b)",
+    re.IGNORECASE,
+)
+
+_GATEWAY_RATE_LIMIT_RE = re.compile(
+    r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
+    re.IGNORECASE,
+)
+
+_GATEWAY_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"),
+    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
+)
+
+
+def _gateway_platform_value(platform: Any) -> str:
+    """Return a normalized gateway platform value for enums or raw strings."""
+    return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def _redact_gateway_user_facing_secrets(text: str) -> str:
+    """Best-effort secret redaction before text can leave the gateway."""
+    redacted = str(text or "")
+    for pattern in _GATEWAY_SECRET_PATTERNS:
+        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
+    return redacted
+
+
+def _gateway_provider_error_reply(text: str) -> str:
+    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    if _GATEWAY_AUTH_ERROR_RE.search(text):
+        return (
+            "⚠️ Provider authentication failed. Check the configured credentials; "
+            "raw provider details are in the gateway logs."
+        )
+    if _GATEWAY_PROVIDER_POLICY_RE.search(text):
+        return (
+            "⚠️ The model provider rejected the request. I kept the raw provider "
+            "error out of chat; check gateway logs for details or try rephrasing."
+        )
+    if _GATEWAY_RATE_LIMIT_RE.search(text):
+        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+    return (
+        "⚠️ The model provider failed after retries. I kept raw provider details "
+        "out of chat; check gateway logs for diagnostics."
+    )
+
+
+_GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
+    r"^\s*(\W*\s*)?("
+    r"api\s+(?:call\s+)?failed"
+    r"|provider\s+authentication\s+failed"
+    r"|non-retryable\s+error"
+    r"|rate\s+limited\s+after\s+\d+\s+retries"
+    r"|error\s+code\s*:"
+    r"|http\s*\d{3}\b"
+    r"|incorrect\s+api\s+key"
+    r"|invalid\s+api\s+key"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_gateway_provider_error(text: str) -> bool:
+    """True when text is infrastructure/provider failure, not normal content.
+
+    Two heuristics combined so the rewrite only fires on actual provider
+    error envelopes, not on assistant prose that happens to mention an
+    HTTP status code:
+
+    1. The text is short — real provider errors are 1–3 lines of envelope
+       text; assistant answers are usually longer.
+    2. AND the error marker appears at the start of the message (optionally
+       behind a punctuation/symbol prefix), not buried mid-paragraph in an
+       explanation like "HTTP 404 means 'not found' — ...".
+    """
+    if not text:
+        return False
+    body = str(text).strip()
+    # Provider failure envelopes are short. Assistant answers that happen
+    # to mention HTTP status codes ("HTTP 404 means...") tend to be longer.
+    if len(body) > 400 or body.count("\n") > 4:
+        return False
+    return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
+
+
+def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+    """Sanitize final gateway replies before sending them to high-noise chats.
+
+    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
+    failure categories instead of raw HTTP bodies, request IDs, or policy text.
+    Other platforms keep the existing behaviour for now.
+    """
+    if not text:
+        return text
+    if _gateway_platform_value(platform) != "telegram":
+        return text
+
+    redacted = _redact_gateway_user_facing_secrets(str(text))
+    if _looks_like_gateway_provider_error(redacted):
+        return _gateway_provider_error_reply(redacted)
+    return redacted
+
+
+def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+    """Filter/sanitize agent status callbacks before platform delivery."""
+    text = str(message or "").strip()
+    if not text:
+        return None
+    if _gateway_platform_value(platform) != "telegram":
+        return text
+
+    text = _redact_gateway_user_facing_secrets(text)
+    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+        return None
+    if _looks_like_gateway_provider_error(text):
+        return _gateway_provider_error_reply(text)
+    return text
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -3072,11 +3247,44 @@ class GatewayRunner:
         except Exception:
             return False
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    @staticmethod
+    def _adapter_busy_followup_policy(adapter: Any, event: MessageEvent) -> Dict[str, Any]:
+        if adapter is None:
+            return {}
+        policy_fn = getattr(type(adapter), "busy_followup_policy", None)
+        if policy_fn is None:
+            return {}
+        try:
+            policy = policy_fn(adapter, event)
+        except Exception as exc:
+            logger.warning("Adapter busy-followup policy failed: %s", exc)
+            return {}
+        if not isinstance(policy, dict):
+            return {}
+        mode = str(policy.get("mode") or "").strip().lower()
+        if mode not in {"interrupt", "queue", "steer"}:
+            mode = ""
+        return {
+            "mode": mode,
+            "merge_text": bool(policy.get("merge_text")),
+        }
+
+    def _queue_or_replace_pending_event(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        *,
+        merge_text: bool = False,
+    ) -> None:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return
-        merge_pending_message_event(adapter._pending_messages, session_key, event)
+        merge_pending_message_event(
+            adapter._pending_messages,
+            session_key,
+            event,
+            merge_text=merge_text,
+        )
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -3100,11 +3308,16 @@ class GatewayRunner:
             adapter = self.adapters.get(event.source.platform)
             if not adapter:
                 return True
+            policy = self._adapter_busy_followup_policy(adapter, event)
 
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
-                self._queue_or_replace_pending_event(session_key, event)
+                self._queue_or_replace_pending_event(
+                    session_key,
+                    event,
+                    merge_text=bool(policy.get("merge_text")),
+                )
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
@@ -3129,6 +3342,9 @@ class GatewayRunner:
             return False  # let default path handle it
 
         running_agent = self._running_agents.get(session_key)
+        policy = self._adapter_busy_followup_policy(adapter, event)
+        policy_mode = policy.get("mode") or ""
+        merge_text = bool(policy.get("merge_text"))
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "queue")
@@ -3143,6 +3359,9 @@ class GatewayRunner:
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
+        # Adapter policy may override the configured default mode (inkbox).
+        effective_mode = policy_mode or self._busy_input_mode
+
         # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
         # to every entry in the parent's ``_active_children`` list and
         # aborts in-flight ``delegate_task`` work. Demote ``interrupt``
@@ -3190,7 +3409,7 @@ class GatewayRunner:
                 adapter._pending_messages,
                 session_key,
                 event,
-                merge_text=event.message_type == MessageType.TEXT,
+                merge_text=merge_text and event.message_type == MessageType.TEXT,
             )
 
         is_queue_mode = effective_mode == "queue"
@@ -3972,6 +4191,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
+            "INKBOX_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
@@ -3987,6 +4207,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
+            "INKBOX_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
@@ -6359,6 +6580,16 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.INKBOX:
+            from gateway.platforms.inkbox import InkboxAdapter, check_inkbox_requirements
+            if not check_inkbox_requirements():
+                logger.warning(
+                    "Inkbox: `inkbox` SDK or aiohttp not installed. "
+                    "Run: pip install inkbox aiohttp",
+                )
+                return None
+            return InkboxAdapter(config)
+
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
             if not WEBSOCKETS_AVAILABLE:
@@ -6435,6 +6666,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.INKBOX: "INKBOX_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -6461,6 +6693,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.INKBOX: "INKBOX_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
@@ -6567,8 +6800,14 @@ class GatewayRunner:
             return True
 
         check_ids = {user_id}
-        if "@" in user_id:
-            check_ids.add(user_id.split("@")[0])
+        # Inkbox sessions are intentionally keyed to the resolved Contact
+        # when one exists, so a phone/email allowlist must still match the
+        # verified inbound channel address carried on the source.
+        if source.platform == Platform.INKBOX and source.user_id_alt:
+            check_ids.add(str(source.user_id_alt))
+        for check_id in list(check_ids):
+            if "@" in check_id:
+                check_ids.add(check_id.split("@")[0])
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
@@ -6634,6 +6873,7 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.INKBOX:   "INKBOX_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (
@@ -7003,7 +7243,7 @@ class GatewayRunner:
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
-            if event.get_command() == "status":
+            if event.get_command() == "status" and not self._is_inkbox_sms_event(event):
                 return await self._handle_status_command(event)
 
             # Resolve the command once for all early-intercept checks below.
@@ -7013,6 +7253,16 @@ class GatewayRunner:
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+
+            if _evt_cmd and self._is_inkbox_sms_event(event):
+                _sms_result = await self._handle_inkbox_sms_user_command(
+                    event,
+                    canonical_command=_cmd_def_inner.name if _cmd_def_inner else _evt_cmd,
+                    typed_command=_evt_cmd,
+                    active_session_key=_quick_key,
+                )
+                if _sms_result is not None:
+                    return _sms_result
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -7229,11 +7479,15 @@ class GatewayRunner:
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
 
+            _busy_adapter = self.adapters.get(source.platform)
+            _busy_policy = self._adapter_busy_followup_policy(_busy_adapter, event)
+            _busy_merge_text = bool(_busy_policy.get("merge_text"))
+            _effective_busy_mode = _busy_policy.get("mode") or self._busy_input_mode
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                if _busy_adapter:
+                    merge_pending_message_event(_busy_adapter._pending_messages, _quick_key, event)
                 return None
 
             _telegram_followup_grace = float(
@@ -7252,10 +7506,9 @@ class GatewayRunner:
                     time.time() - _started_at,
                     _quick_key,
                 )
-                adapter = self.adapters.get(source.platform)
-                if adapter:
+                if _busy_adapter:
                     merge_pending_message_event(
-                        adapter._pending_messages,
+                        _busy_adapter._pending_messages,
                         _quick_key,
                         event,
                         merge_text=True,
@@ -7272,10 +7525,9 @@ class GatewayRunner:
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
                 # agent starts.
-                adapter = self.adapters.get(source.platform)
-                if adapter:
+                if _busy_adapter:
                     merge_pending_message_event(
-                        adapter._pending_messages,
+                        _busy_adapter._pending_messages,
                         _quick_key,
                         event,
                         merge_text=True,
@@ -7283,17 +7535,25 @@ class GatewayRunner:
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
-                    self._queue_or_replace_pending_event(_quick_key, event)
+                    self._queue_or_replace_pending_event(
+                        _quick_key,
+                        event,
+                        merge_text=_busy_merge_text,
+                    )
                 return (
                     f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
-            if self._busy_input_mode == "queue":
+            if _effective_busy_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                self._queue_or_replace_pending_event(
+                    _quick_key,
+                    event,
+                    merge_text=_busy_merge_text,
+                )
                 return None
-            if self._busy_input_mode == "steer":
+            if _effective_busy_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
                 # agent.steer().  Falls back to queue semantics if the payload
                 # is empty, the agent lacks steer(), or steer() rejects.
@@ -7309,7 +7569,11 @@ class GatewayRunner:
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                self._queue_or_replace_pending_event(
+                    _quick_key,
+                    event,
+                    merge_text=_busy_merge_text,
+                )
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
             # as ``_handle_active_session_busy_message``: an interrupt
@@ -7369,6 +7633,15 @@ class GatewayRunner:
                         command = target_command.split()[0] if target_command else target_command
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
+
+        if command and self._is_inkbox_sms_event(event):
+            _sms_result = await self._handle_inkbox_sms_user_command(
+                event,
+                canonical_command=canonical,
+                typed_command=command,
+            )
+            if _sms_result is not None:
+                return _sms_result
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
@@ -10061,8 +10334,107 @@ class GatewayRunner:
         return event.platform_update_id <= recorded_uid
 
 
+    @staticmethod
+    def _is_inkbox_sms_event(event: MessageEvent) -> bool:
+        """Return True for command events originating from Inkbox SMS."""
+        source = getattr(event, "source", None)
+        if getattr(source, "platform", None) != Platform.INKBOX:
+            return False
+        raw = getattr(event, "raw_message", None)
+        if isinstance(raw, dict):
+            event_type = str(raw.get("event_type") or "")
+            if event_type.startswith("text."):
+                return True
+            data = raw.get("data")
+            if isinstance(data, dict) and "text_message" in data:
+                return True
+        user_id_alt = str(getattr(source, "user_id_alt", "") or "")
+        return user_id_alt.startswith("+")
+
+    def _inkbox_sms_help_text(self) -> str:
+        """Return deployment-specific end-user help text for Inkbox SMS.
+
+        Resolution order:
+        1. ``extra.sms_help_text`` on the Inkbox platform config — literal,
+           returned as-is.
+        2. ``INKBOX_SMS_HELP_TEXT`` env var — literal, returned as-is.
+        3. Identity-aware default rendered from the configured Inkbox handle.
+        """
+        platform_cfg = self.config.platforms.get(Platform.INKBOX)
+        extra = getattr(platform_cfg, "extra", {}) if platform_cfg else {}
+
+        override: Optional[Any] = None
+        if isinstance(extra, dict):
+            override = extra.get("sms_help_text")
+        if override is None:
+            override = os.getenv("INKBOX_SMS_HELP_TEXT")
+        if override is not None:
+            rendered = str(override).strip()
+            if rendered:
+                # Operator-supplied copy is treated as literal; no .format() so a
+                # stray '{' in custom text doesn't blow up at render time.
+                return rendered
+
+        identity = ""
+        if isinstance(extra, dict):
+            identity = str(extra.get("identity") or "").strip()
+        if not identity:
+            identity = os.getenv("INKBOX_IDENTITY", "").strip()
+        if not identity:
+            identity = "this agent"
+        return _INKBOX_SMS_HELP_TEXT_DEFAULT.format(identity=identity)
+
+    async def _handle_inkbox_sms_user_command(
+        self,
+        event: MessageEvent,
+        *,
+        canonical_command: Optional[str],
+        typed_command: str,
+        active_session_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Handle the small end-user command surface for Inkbox SMS.
+
+        The full Hermes slash registry is operator/admin oriented and can
+        expose dev controls. SMS humans get a compact product-level surface.
+        """
+        command = (canonical_command or typed_command or "").strip().lower()
+        typed = (typed_command or command).strip().lower()
+        if command in {"help", "commands"}:
+            return self._inkbox_sms_help_text()
+        if command == "status":
+            if active_session_key:
+                return "I'm working on your last message. Send /stop to cancel or /reset to start over."
+            return "I'm online. Text what you need help finding; follow-up details are fine."
+        if command == "stop":
+            if active_session_key:
+                await self._interrupt_and_clear_session(
+                    active_session_key,
+                    event.source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="inkbox_sms_stop_command",
+                )
+                return "Cancelled the current request. Text what you need next, or /reset to start over."
+            return "No active request to cancel. Text STOP to opt out, or /reset to start over."
+        if command == "new":
+            if active_session_key:
+                await self._interrupt_and_clear_session(
+                    active_session_key,
+                    event.source,
+                    interrupt_reason=_INTERRUPT_REASON_RESET,
+                    invalidation_reason="inkbox_sms_reset_command",
+                )
+            await self._handle_reset_command(event)
+            return "Started over. Text what you need help finding."
+        logger.info(
+            "Blocked Inkbox SMS end-user command /%s from general Hermes command surface",
+            typed,
+        )
+        return "I don't know that command. Try /help."
+
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
+        if self._is_inkbox_sms_event(event):
+            return self._inkbox_sms_help_text()
         from hermes_cli.commands import gateway_help_lines
         lines = [
             t("gateway.help.header"),
@@ -10087,6 +10459,9 @@ class GatewayRunner:
         )
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
+        """Handle /commands [page] - paginated list of all commands and skills."""
+        if self._is_inkbox_sms_event(event):
+            return self._inkbox_sms_help_text()
         from hermes_cli.commands import gateway_help_lines
 
         raw_args = event.get_command_args().strip()
@@ -13828,7 +14203,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.INKBOX, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
@@ -15834,6 +16209,27 @@ class GatewayRunner:
                 default=True,
             )
         )
+        # Per-chat opt-out for interim messages — same shape as the
+        # ``supports_progress_updates`` knob a few lines below: adapters
+        # that need to suppress mid-turn natural-language chatter on a
+        # per-chat basis (Inkbox SMS / email, where each status_callback
+        # would land as a fresh SMS or email) expose
+        # ``supports_interim_messages(chat_id) -> bool``.  Absence of the
+        # method preserves today's behavior for every other adapter.
+        if interim_assistant_messages_enabled:
+            _interim_adapter = self.adapters.get(source.platform)
+            _supports_interim = getattr(
+                _interim_adapter, "supports_interim_messages", None,
+            )
+            if callable(_supports_interim):
+                try:
+                    interim_assistant_messages_enabled = bool(
+                        _supports_interim(source.chat_id)
+                    )
+                except Exception:
+                    # Hook blew up — fall through to default rather than
+                    # silently muting on a chat that actually supports it.
+                    pass
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -16007,8 +16403,8 @@ class GatewayRunner:
                 return
 
             # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
+            # editing (e.g. iMessage/BlueBubbles, standalone SMTP email) —
+            # each progress update would become a separate message bubble.
             if type(adapter).edit_message is BasePlatformAdapter.edit_message:
                 while not progress_queue.empty():
                     try:
@@ -16016,6 +16412,29 @@ class GatewayRunner:
                     except Exception:
                         break
                 return
+
+            # Per-chat opt-out: some adapters override edit_message for one
+            # chat type but still can't reasonably show tool progress on
+            # others (Inkbox overrides edit_message for voice-call TTS
+            # streaming, but email replies as separate "🖥️ browser..." messages
+            # is a UX disaster).  Adapters that need this knob expose
+            # ``supports_progress_updates(chat_id) -> bool``; absence of the
+            # method preserves the existing behavior for every other adapter.
+            _supports_progress = getattr(adapter, "supports_progress_updates", None)
+            if callable(_supports_progress):
+                try:
+                    _allowed = bool(_supports_progress(source.chat_id))
+                except Exception:
+                    # Hook blew up — fall through to default behavior rather
+                    # than silently muting tool progress on an editable chat.
+                    _allowed = True
+                if not _allowed:
+                    while not progress_queue.empty():
+                        try:
+                            progress_queue.get_nowait()
+                        except Exception:
+                            break
+                    return
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
@@ -16237,20 +16656,36 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                                 _last_edit_ts = time.monotonic()
+                                # Still emit the latest line as a fresh bubble —
+                                # the user is on an editable platform that just
+                                # got rate-limited, so they expect ongoing
+                                # updates.
+                                _flood_result = await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=msg,
+                                    reply_to=_progress_reply_to,
+                                    metadata=_progress_metadata,
+                                )
+                                if (
+                                    _cleanup_progress
+                                    and getattr(_flood_result, "success", False)
+                                    and getattr(_flood_result, "message_id", None)
+                                ):
+                                    _cleanup_msg_ids.append(str(_flood_result.message_id))
                             else:
+                                # Adapter rejected the edit for non-flood
+                                # reasons — most often the chat doesn't
+                                # support editing at all (e.g. Inkbox SMS:
+                                # InkboxAdapter overrides edit_message for
+                                # voice-call TTS streaming, but returns
+                                # "Not supported" for mail/SMS chats, so the
+                                # top-level `type(adapter).edit_message is
+                                # BasePlatformAdapter.edit_message` guard
+                                # above doesn't fire). Keep the bubble we
+                                # already landed and drop further updates —
+                                # one "agent is working" bubble per turn is
+                                # the contract on non-editable chats.
                                 can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                            if (
-                                _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
-                            ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
@@ -16261,18 +16696,16 @@ class GatewayRunner:
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
-                        else:
-                            # Editing unsupported: send just this line
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(str(result.message_id))
+                            if result.success and result.message_id:
+                                progress_msg_id = result.message_id
+                                if _cleanup_progress:
+                                    _cleanup_msg_ids.append(str(result.message_id))
+                        # else: editing is disabled AND a bubble already
+                        # landed for this turn (progress_msg_id is None only
+                        # when the very first send also failed, which the
+                        # adapter would have logged). Drop this update
+                        # silently — same reasoning as the iMessage /
+                        # BlueBubbles branch at the top of send_progress.
 
                     _last_edit_ts = time.monotonic()
 
@@ -16394,8 +16827,15 @@ class GatewayRunner:
                     _redact_gateway_user_facing_secrets(str(message or ""))[:160],
                 )
                 return
+            # Tag the send so adapters that filter internal chatter on
+            # end-user channels (Inkbox SMS/email) can drop the message
+            # without trying to guess from the body.  Without this tag,
+            # a status line containing legitimate-looking text would
+            # bypass the filter and land in the user's thread.
+            _status_meta = dict(_status_thread_metadata or {})
+            _status_meta["notice_type"] = "status_callback"
             _fut = safe_schedule_threadsafe(
-                _send_or_update_status_coro(_status_adapter, _status_chat_id, event_type, prepared_message, _status_thread_metadata),
+                _send_or_update_status_coro(_status_adapter, _status_chat_id, event_type, prepared_message, _status_meta),
                 _loop_for_step,
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",
@@ -16565,11 +17005,16 @@ class GatewayRunner:
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
                     return
+                # Tag the send so end-user-channel adapters can drop
+                # mid-turn natural-language chatter without guessing
+                # from the body — see ``_status_callback_sync`` above.
+                _interim_meta = dict(_status_thread_metadata or {})
+                _interim_meta["notice_type"] = "interim_assistant"
                 safe_schedule_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
                         text,
-                        metadata=_status_thread_metadata,
+                        metadata=_interim_meta,
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -17393,11 +17838,17 @@ class GatewayRunner:
                         _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
+                # Tag the send so end-user-channel adapters can drop the
+                # ping without re-parsing the body.  The ⏳ prefix already
+                # trips body-based glyph filters, but the explicit tag is
+                # both cheaper and survives prefix stripping upstream.
+                _notify_meta = dict(_status_thread_metadata or {})
+                _notify_meta["notice_type"] = "notify_interval"
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
+                        metadata=_notify_meta,
                     )
                     if (
                         _cleanup_progress

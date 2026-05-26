@@ -311,7 +311,7 @@ class TestSignalSessionSource:
 
 
 # ---------------------------------------------------------------------------
-# Phone Redaction in agent/redact.py
+# Phone numbers in agent/redact.py
 # ---------------------------------------------------------------------------
 
 class TestSignalPhoneRedaction:
@@ -325,31 +325,25 @@ class TestSignalPhoneRedaction:
         monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
-    def test_us_number(self):
+    def test_us_number_not_redacted(self):
         from agent.redact import redact_sensitive_text
-        result = redact_sensitive_text("Call +15551234567 now")
-        assert "+15551234567" not in result
-        assert "+155" in result  # Prefix preserved
-        assert "4567" in result  # Suffix preserved
+        text = "Call +15555551234 now"
+        assert redact_sensitive_text(text) == text
 
-    def test_uk_number(self):
+    def test_uk_number_not_redacted(self):
         from agent.redact import redact_sensitive_text
-        result = redact_sensitive_text("UK: +442071838750")
-        assert "+442071838750" not in result
-        assert "****" in result
+        text = "UK: +442071838750"
+        assert redact_sensitive_text(text) == text
 
-    def test_multiple_numbers(self):
+    def test_multiple_numbers_not_redacted(self):
         from agent.redact import redact_sensitive_text
-        text = "From +15551234567 to +442071838750"
-        result = redact_sensitive_text(text)
-        assert "+15551234567" not in result
-        assert "+442071838750" not in result
+        text = "From +15555551234 to +442071838750"
+        assert redact_sensitive_text(text) == text
 
-    def test_short_number_not_matched(self):
+    def test_short_number_unchanged(self):
         from agent.redact import redact_sensitive_text
-        result = redact_sensitive_text("Code: +12345")
-        # 5 digits after + is below the 7-digit minimum
-        assert "+12345" in result  # Too short to redact
+        text = "Code: +12345"
+        assert redact_sensitive_text(text) == text
 
 
 # ---------------------------------------------------------------------------

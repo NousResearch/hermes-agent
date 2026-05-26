@@ -64,6 +64,13 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  # Inkbox SDK + aiohttp — core to this fork. The gateway-setup wizard
+  # imports `inkbox` unconditionally when configuring the Inkbox platform,
+  # so a base install (no extras) that lacked the SDK would crash with
+  # ModuleNotFoundError. Aiohttp powers the local webhook handler + the
+  # WS bridge target for the SDK's tunnel runtime.
+  "inkbox>=0.4.0,<1",
+  "aiohttp>=3.9.0,<4",
 ]
 
 [project.optional-dependencies]
@@ -117,6 +124,11 @@ sms = ["aiohttp==3.13.3"]
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
 computer-use = ["mcp==1.26.0"]
+# NOTE: `inkbox` + `aiohttp` are now core deps on this fork (see
+# [project] dependencies above). The empty extra is kept so any
+# tooling or doc that still references `hermes-agent[inkbox]` keeps
+# resolving cleanly.
+inkbox = []
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: extra REMOVED 2026-05-12 — `mistralai` PyPI project quarantined
 # after malicious 2.4.6 release (Mini Shai-Hulud worm). Every version of

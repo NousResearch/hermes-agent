@@ -428,14 +428,14 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "<@" in text:
         text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}***>", text)
 
-    # E.164 phone numbers (Signal, WhatsApp)
-    if "+" in text:
-        def _redact_phone(m):
-            phone = m.group(1)
-            if len(phone) <= 8:
-                return phone[:2] + "****" + phone[-2:]
-            return phone[:4] + "****" + phone[-4:]
-        text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+    # E.164 phone helper intentionally left unused here: full phone numbers are
+    # operational identifiers for SMS/call tooling and should remain visible in
+    # tool output unless a platform adapter explicitly redacts its own logs.
+    def _redact_phone(m):
+        phone = m.group(1)
+        if len(phone) <= 8:
+            return phone[:2] + "****" + phone[-2:]
+        return phone[:4] + "****" + phone[-4:]
 
     return text
 

@@ -1280,6 +1280,7 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+    fallback_allowed: bool = True  # False when retrying transformed/plain text cannot help
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
     # ``message_id`` is the LAST visible message id (so subsequent edits target
@@ -1601,6 +1602,15 @@ class BasePlatformAdapter(ABC):
         False or when ``send_draft`` raises.
         """
         return False
+
+    def busy_followup_policy(self, event: MessageEvent) -> Optional[Dict[str, Any]]:
+        """Adapter override for messages that arrive while a session is active.
+
+        Return a small policy dict such as ``{"mode": "queue", "merge_text": True}``
+        to override the gateway's global busy-input mode for this event.
+        Default behavior is controlled by the gateway runner.
+        """
+        return None
 
     async def send_draft(
         self,
@@ -2841,6 +2851,31 @@ class BasePlatformAdapter(ABC):
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
+
+        if not result.fallback_allowed:
+            logger.warning(
+                "[%s] Send failed: %s — not attempting plain-text fallback",
+                self.name, error_str,
+            )
+            raw_response = result.raw_response if isinstance(result.raw_response, dict) else {}
+            if raw_response.get("error_code") == "sms_too_long":
+                notice = (
+                    "That response is too long for SMS, so I did not send it. "
+                    "Ask a narrower question, or use email for a fuller reply."
+                )
+                try:
+                    await self.send(
+                        chat_id=chat_id,
+                        content=notice,
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                except Exception as notify_err:
+                    logger.debug(
+                        "[%s] Could not send SMS-length failure notice: %s",
+                        self.name, notify_err,
+                    )
+            return result
 
         # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)

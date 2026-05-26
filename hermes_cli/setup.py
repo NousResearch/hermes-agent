@@ -275,13 +275,18 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
 
 
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
-    default_str = "Y/n" if default else "y/N"
+    """Prompt for yes/no. Ctrl+C exits, empty input returns default.
+
+    Format: ``[y/n] (default: yes)`` — keeps the y/n in the same case so the
+    default isn't smuggled in via capitalization (which most users don't
+    recognize as a convention).
+    """
+    default_word = "yes" if default else "no"
 
     while True:
         try:
             value = (
-                input(color(f"{question} [{default_str}]: ", Colors.YELLOW))
+                input(color(f"{question} [y/n] (default: {default_word}): ", Colors.YELLOW))
                 .strip()
                 .lower()
             )
@@ -1962,6 +1967,958 @@ def setup_agent_settings(config: dict):
 # =============================================================================
 
 
+def _setup_inkbox():
+    """Configure Inkbox (email + SMS + voice + identity) for this gateway.
+
+    Three branches:
+      • No API key → public agent self-signup → email-verify → done.
+      • API key, agent-scoped → derive identity from list_identities() (the key
+        only sees its own).
+      • API key, admin-scoped → list all identities under the org, let the user
+        pick or create a new one.
+
+    On a brand-new identity we collect the handle, mailbox local part, and an
+    optional phone (provisioned as a *local* number so SMS is supported).
+
+    The final step prompts for / mints a webhook signing key so the gateway
+    can verify HMAC signatures on inbound webhook + tunnel traffic at runtime.
+    """
+    from inkbox import Inkbox
+    from inkbox.exceptions import InkboxAPIError
+    from inkbox.identities.types import IdentityPhoneNumberCreateOptions
+    from inkbox.whoami.types import (
+        AUTH_SUBTYPE_API_KEY_ADMIN_SCOPED,
+        AUTH_SUBTYPE_API_KEY_AGENT_SCOPED_CLAIMED,
+        AUTH_SUBTYPE_API_KEY_AGENT_SCOPED_UNCLAIMED,
+        WhoamiApiKeyResponse,
+    )
+
+    print_header("Inkbox")
+    print_info("API-first email + SMS + voice + identity for AI agents.")
+    print_info("Inkbox is the recommended way to give your Hermes agent")
+    print_info("its own real mailbox, phone number, and contact graph.")
+
+    # If we already have a working config, ask before overwriting.
+    existing_key = get_env_value("INKBOX_API_KEY")
+    existing_identity = get_env_value("INKBOX_IDENTITY")
+    if existing_key and existing_identity:
+        print()
+        print_success(f"Inkbox is already configured for identity '{existing_identity}'.")
+        if not prompt_yes_no("  Reconfigure Inkbox?", False):
+            return
+
+    from gateway.config import INKBOX_BASE_URL_DEFAULT
+    base_url = os.getenv("INKBOX_BASE_URL") or get_env_value("INKBOX_BASE_URL") or INKBOX_BASE_URL_DEFAULT
+
+    # ── Branch by API-key availability ──
+    print()
+    print_info("If you don't have an Inkbox API key yet, that's totally fine —")
+    print_info("we'll create a fresh agent identity for you via self-signup.")
+    has_key = prompt_yes_no("  Do you already have an Inkbox API key?", False)
+
+    api_key: str = ""
+    identity = None  # AgentIdentity at the end of any branch
+    did_provision_phone = False  # gates the SMS-opt-in wait below
+
+    if not has_key:
+        identity, api_key, did_provision_phone = _inkbox_self_signup_flow(
+            base_url, Inkbox, InkboxAPIError,
+        )
+        if identity is None:
+            return  # user aborted or signup failed
+    else:
+        identity, api_key, did_provision_phone = _inkbox_api_key_flow(
+            base_url,
+            Inkbox,
+            InkboxAPIError,
+            WhoamiApiKeyResponse,
+            AUTH_SUBTYPE_API_KEY_ADMIN_SCOPED,
+            AUTH_SUBTYPE_API_KEY_AGENT_SCOPED_CLAIMED,
+            AUTH_SUBTYPE_API_KEY_AGENT_SCOPED_UNCLAIMED,
+            IdentityPhoneNumberCreateOptions,
+        )
+        if identity is None:
+            return
+
+    save_env_value("INKBOX_API_KEY", api_key)
+    save_env_value("INKBOX_IDENTITY", identity.agent_handle)
+
+    # ── Access mode ──
+    # Inkbox already gates inbound at the platform level via contact rules
+    # (mailbox/phone contact rules + contact_access, configured server-side
+    # at console.inkbox.ai). The local Hermes allowlist + DM-pairing flow
+    # would be a second, redundant allowlist for the same decision — so we
+    # bypass it for Inkbox and let any sender Inkbox lets through reach
+    # the agent. Power users who want belt-and-suspenders can flip
+    # INKBOX_ALLOW_ALL_USERS back to "false" in ~/.hermes/.env.
+    save_env_value("INKBOX_ALLOW_ALL_USERS", "true")
+    print()
+    print_info("Inkbox authorization lives server-side via contact rules:")
+    print_info("  https://console.inkbox.ai → Mailboxes / Phone Numbers → Contact Rules")
+    print_info("Anyone Inkbox lets through reaches the agent — no second allowlist to maintain.")
+
+    # ── Seed the identity-state file from what the wizard just confirmed,
+    # so the CLI prompt builder surfaces the right handle / email / phone
+    # the moment setup finishes — gateway running or not. The gateway will
+    # overlay its tunnel URLs on first connect.
+    _inkbox_seed_identity_state(identity)
+
+    # ── Final summary ──
+    _inkbox_print_agent_summary(identity)
+
+    # ── Block until the user has texted START to their new number ──
+    if did_provision_phone:
+        _inkbox_wait_for_sms_opt_in(
+            api_key,
+            base_url,
+            getattr(identity, "phone_number", None),
+        )
+
+    # ── Webhook signing key ──
+    _inkbox_setup_signing_key(api_key, base_url)
+
+    # Hold for the user — gateway_setup() returns to its curses platform
+    # picker right after this and fullscreen-clears everything we just
+    # printed (summary + signing-key outcome).
+    if is_interactive_stdin():
+        print()
+        try:
+            input(color("  Press Enter to continue...", Colors.DIM))
+        except (KeyboardInterrupt, EOFError):
+            print()
+
+
+def _inkbox_setup_signing_key(api_key: str, base_url: str) -> None:
+    """Capture or generate the org-level webhook signing key.
+
+    Asks the user whether they already have an Inkbox signing key. If yes,
+    they paste it. If no, we offer to mint one via ``Inkbox.create_signing_key``
+    (which *rotates* any existing key for the org as a side effect — the
+    server returns the plaintext exactly once). The key is persisted to
+    ``INKBOX_SIGNING_KEY`` and ``INKBOX_REQUIRE_SIGNATURE=true`` so the
+    gateway adapter rejects unsigned inbound webhooks at runtime. Declining
+    sets ``INKBOX_REQUIRE_SIGNATURE=false`` — fine for local dev, unsafe
+    once the gateway is reachable from the public internet.
+
+    Args:
+        api_key: str — the just-captured Inkbox API key. Scopes the SDK
+            client used to mint a new signing key.
+        base_url: str — Inkbox API base URL (production or dev override).
+
+    Returns:
+        None — side effects only (writes ``~/.hermes/.env``, prints status).
+    """
+    from inkbox import Inkbox
+
+    print()
+    print(color("  ─── 🔑 Webhook signing key ───", Colors.CYAN))
+    print_info("  Inkbox signs outbound webhooks with an HMAC over the body.")
+    print_info("  Without the matching key, the gateway can't tell real Inkbox")
+    print_info("  traffic apart from anyone who finds your public tunnel URL.")
+
+    has_key = prompt_yes_no("  Do you already have an Inkbox signing key?", False)
+    if has_key:
+        key = prompt(
+            "  Paste your signing key (starts with whsec_)", password=True
+        ).strip()
+        if not key:
+            print_warning("  No key entered — leaving signature verification off.")
+            save_env_value("INKBOX_REQUIRE_SIGNATURE", "false")
+            return
+        save_env_value("INKBOX_SIGNING_KEY", key)
+        save_env_value("INKBOX_REQUIRE_SIGNATURE", "true")
+        print_success("  Saved signing key. Signature verification enabled.")
+        return
+
+    # No existing key — offer to mint one. Warn that this rotates: any other
+    # gateway / consumer holding the previous key will 401 until it gets
+    # the new value.
+    print_info("  Minting a new key here rotates any existing key for your org.")
+    print_info("  Any other gateway using the old key will 401 until updated.")
+    generate = prompt_yes_no("  Generate a new signing key now?", True)
+    if not generate:
+        print_info("  Skipping — gateway will accept unsigned webhooks.")
+        print_info("  Generate later at https://inkbox.ai/console/signing-keys")
+        save_env_value("INKBOX_REQUIRE_SIGNATURE", "false")
+        return
+
+    # Server returns the plaintext key exactly once — save immediately.
+    try:
+        client = Inkbox(api_key=api_key, base_url=base_url)
+        new_key = client.create_signing_key()
+    except Exception as exc:
+        print_error(f"  Failed to create signing key: {exc}")
+        print_info("  Leaving signature verification off — retry later at")
+        print_info("  https://inkbox.ai/console/signing-keys.")
+        save_env_value("INKBOX_REQUIRE_SIGNATURE", "false")
+        return
+
+    save_env_value("INKBOX_SIGNING_KEY", new_key.signing_key)
+    save_env_value("INKBOX_REQUIRE_SIGNATURE", "true")
+    print_success(
+        f"  Generated + saved signing key (created at {new_key.created_at.isoformat()})."
+    )
+    print_info("  Signature verification enabled.")
+
+
+def _inkbox_wait_for_sms_opt_in(api_key: str, base_url: str, phone) -> None:
+    """Block the wizard until the user has texted START to the local number
+    we just provisioned.
+
+    Local A2P numbers gate outbound SMS on each recipient having texted
+    START at least once — without it, the agent's first outbound SMS
+    weeks later fails with ``recipient_not_opted_in`` and the user has
+    no idea why. Caller is responsible for invoking this only when a
+    phone was actually provisioned in the current wizard pass.
+
+    Polls ``client.texts.list`` every 3s for an inbound 'START'.
+    Ctrl+C skips gracefully.
+
+    Args:
+        api_key: str — Inkbox API key for the SDK client.
+        base_url: str — Inkbox API base URL.
+        phone: ``IdentityPhoneNumber`` (or None). Toll-free / None skip.
+
+    Returns:
+        None — side effects only (prints status, blocks via polling).
+    """
+    if phone is None or getattr(phone, "type", None) != "local":
+        return
+    phone_id = getattr(phone, "id", None)
+    if phone_id is None:
+        return
+
+    from inkbox import Inkbox
+    import sys
+    import time
+
+    def _find_start(texts):
+        for text in texts:
+            direction = (getattr(text, "direction", "") or "").lower()
+            body = (getattr(text, "text", "") or "").strip().upper()
+            if direction == "inbound" and body == "START":
+                return text
+        return None
+
+    try:
+        client = Inkbox(api_key=api_key, base_url=base_url)
+    except Exception:
+        # Can't construct SDK client — skip silently rather than block
+        # the wizard on a transient init failure.
+        return
+
+    print()
+    print(color("  ─── ⏳ Waiting for your START text ───", Colors.YELLOW))
+    print_info(f"  Polling every 3s for an inbound 'START' to {phone.number}.")
+    print_info("  Without it the agent can't send you SMS later (carrier rule).")
+    print_info("  Press Ctrl+C to skip — you can text START anytime.")
+
+    spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    spinner_idx = 0
+    # Poll once now (catches a START sent during the up-front check).
+    next_poll_at = time.monotonic()
+    clear_line = "\r" + " " * 60 + "\r"
+
+    try:
+        while True:
+            now = time.monotonic()
+            if now >= next_poll_at:
+                try:
+                    texts = client.texts.list(phone_id, limit=20)
+                except Exception:
+                    # Network blip / API hiccup — keep polling silently.
+                    texts = []
+                match = _find_start(texts)
+                if match is not None:
+                    remote = getattr(match, "remote_phone_number", "")
+                    sys.stdout.write(clear_line)
+                    sys.stdout.flush()
+                    print_success(f"  Got it — SMS opt-in confirmed from {remote}")
+                    return
+                next_poll_at = now + 3.0
+
+            # 4x/s spinner refresh so the wizard doesn't look frozen
+            # between the (slower) 3s API polls.
+            sys.stdout.write(f"\r  {spinner_chars[spinner_idx]} Listening for START…  ")
+            sys.stdout.flush()
+            spinner_idx = (spinner_idx + 1) % len(spinner_chars)
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        sys.stdout.write(clear_line)
+        sys.stdout.flush()
+        print()
+        print_warning(f"  Skipped. Text START to {phone.number} anytime to enable outbound SMS.")
+
+
+def _inkbox_seed_identity_state(identity) -> None:
+    """Seed ``inkbox_identity_state.json`` so the CLI prompt builder can
+    surface the agent's Inkbox identity *before* the gateway has ever run.
+
+    Previously the wizard deleted this file at the end of setup and relied
+    on the gateway adapter (the "single writer") to repopulate it on first
+    connect. That left the CLI agent blind to its own handle / email / phone
+    in the window between wizard-finish and gateway-first-connect — or
+    forever, if the user skipped the gateway-as-service prompt.
+
+    The gateway adapter still writes the same file on first connect, layering
+    in its ``public_url`` / ``webhook_url`` / ``ws_url``. Those URL fields
+    are unread by anyone except the gateway itself — the only consumer
+    (``prompt_builder.build_inkbox_identity_hint``) reads only ``handle`` /
+    ``email_address`` / ``phone_number``, all of which we know at setup time.
+
+    Args:
+        identity: AgentIdentity-like object with ``.agent_handle``, plus
+            either ``.email_address`` directly or ``.mailbox.email_address``
+            (signup-flow returns a lightweight proxy with the former shape;
+            api-key-flow returns a full SDK ``AgentIdentity``). Phone is
+            optional and may be ``None`` on un-provisioned identities.
+
+    Returns:
+        None — side effects only (atomic tmp+replace write into ``~/.hermes/``).
+    """
+    try:
+        from hermes_cli.config import get_hermes_home
+        import json
+        import os
+        state_path = get_hermes_home() / "inkbox_identity_state.json"
+        mailbox = getattr(identity, "mailbox", None)
+        phone = getattr(identity, "phone_number", None)
+        state = {
+            "handle": getattr(identity, "agent_handle", None),
+            "email_address": (
+                getattr(identity, "email_address", None)
+                or (getattr(mailbox, "email_address", None) if mailbox else None)
+            ),
+            "phone_number": getattr(phone, "number", None) if phone else None,
+            "phone_number_id": str(getattr(phone, "id", "")) if phone else None,
+        }
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write so a concurrent prompt-builder read in another
+        # process can never see a half-written file.
+        tmp_path = state_path.with_suffix(state_path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(state, indent=2) + "\n")
+        os.replace(tmp_path, state_path)
+    except Exception as exc:
+        print_warning(f"  Couldn't seed inkbox_identity_state.json: {exc}")
+        print_info("  Start the gateway and it'll populate the file on connect.")
+
+
+def _inkbox_self_signup_flow(base_url, Inkbox, InkboxAPIError):
+    """Branch: user has no API key → public agent self-signup.
+
+    Returns ``(AgentIdentity-like-object, api_key, did_provision_phone)``
+    on success, or ``(None, "", False)`` on abort/failure. The "identity"
+    returned in this branch is a lightweight proxy with .agent_handle and
+    .email_address — full SDK AgentIdentity isn't accessible until after
+    email verification + initial bootstrap.
+    """
+    print()
+    print_info("No problem — we'll create a fresh agent identity for you.")
+    print_info("You'll get an Inkbox-hosted mailbox plus an API key. A short")
+    print_info("verification email goes to you to claim full capabilities.")
+    print()
+
+    note = "Setting up a Hermes agent on Inkbox."
+    human_email: str = ""
+    handle: str = ""
+
+    # Retry loop. Each known error class re-asks just the field at fault.
+    while True:
+        if not human_email:
+            human_email = prompt("  Your email address (for the verification step)").strip()
+            if not human_email or "@" not in human_email:
+                print_error("  A valid email address is required for signup.")
+                return None, "", False
+
+        if not handle:
+            handle = prompt(
+                "  Desired agent handle (e.g. on-call-agent, recruiting-agent) — "
+                "globally unique, also becomes the mailbox local part"
+            ).strip()
+            if not handle:
+                print_error("  Agent handle is required.")
+                return None, "", False
+
+        print()
+        print_info("Calling agent-signup…")
+        try:
+            resp = Inkbox.signup(
+                human_email=human_email,
+                note_to_human=note,
+                agent_handle=handle,
+                base_url=base_url,
+            )
+            break  # success, fall through to verification
+        except InkboxAPIError as e:
+            detail = str(e.detail or "")
+            detail_lc = detail.lower()
+            print_error(f"  Signup failed: HTTP {e.status_code} {detail}")
+
+            if e.status_code == 429 and "unclaimed agents" in detail_lc:
+                ctx = (
+                    f"Signup blocked: HTTP 429 — {detail}\n\n"
+                    f"Inkbox caps unclaimed agents per human email. To free a slot,\n"
+                    f"verify one of your existing unclaimed agents in the Inkbox console,\n"
+                    f"or use a different email below.\n\n"
+                    f"Email tried: {human_email}"
+                )
+                if _inkbox_retry_or_abort("Try a different email", error_context=ctx):
+                    human_email = ""
+                    continue
+                return None, "", False
+
+            # 409 on signup means the handle collided in the global namespace
+            # (identities / tunnels / platform mailbox local-parts). The
+            # message text was softened server-side to "is unavailable".
+            if e.status_code == 409 or (
+                e.status_code == 422 and ("handle" in detail_lc or "unavailable" in detail_lc)
+            ):
+                ctx = (
+                    f"Signup blocked: HTTP {e.status_code} — {detail}\n\n"
+                    f"Agent handles are globally unique (shared namespace with\n"
+                    f"tunnels and platform mailbox local parts). Pick another.\n\n"
+                    f"Handle tried: {handle}"
+                )
+                if _inkbox_retry_or_abort("Pick a different handle", error_context=ctx):
+                    handle = ""
+                    continue
+                return None, "", False
+
+            ctx = (
+                f"Signup failed: HTTP {e.status_code} — {detail}\n\n"
+                f"Inputs tried:\n"
+                f"  Email:  {human_email}\n"
+                f"  Handle: {handle}"
+            )
+            if _inkbox_retry_or_abort("Re-enter all details and try again", error_context=ctx):
+                human_email = handle = ""
+                continue
+            return None, "", False
+        except Exception as e:
+            print_error(f"  Signup failed: {e}")
+            return None, "", False
+
+    print_success(f"Agent created — mailbox: {resp.email_address}")
+    print_info(f"  Handle: {resp.agent_handle}")
+    print_info(f"  A verification email was sent to {human_email}.")
+    print_info("  Enter the 6-digit code from that email to claim the agent.")
+    print()
+
+    # Verification is REQUIRED. An unverified agent is rate-limited, can't
+    # provision a phone, and can't send to arbitrary recipients — i.e. it
+    # can't actually run. We loop here until the code is accepted or the
+    # user explicitly aborts. No silent fallthrough.
+    #
+    # The server caps a single code at 3 wrong attempts before it becomes
+    # dead. We track the same count locally so we can stop offering "try
+    # again" and force the user toward resend / abort once that's the case.
+    MAX_ATTEMPTS = 3
+    attempts_used = 0
+    verified = False
+    # Single inline prompt that accepts a 6-digit code OR the keyword "resend".
+    # No curses menu — wrong-code feedback prints right above the next prompt
+    # so the user can see what happened without the screen redrawing.
+    while True:
+        attempts_left = MAX_ATTEMPTS - attempts_used
+        if attempts_left <= 0:
+            prompt_text = "  Type 'resend' for a new code (Ctrl+C to abort)"
+        else:
+            prompt_text = (
+                f"  Verification code, or 'resend' for a new email "
+                f"({attempts_left}/{MAX_ATTEMPTS} attempts left)"
+            )
+
+        entry = prompt(prompt_text).strip()
+
+        if entry.lower() in ("resend", "r"):
+            if _inkbox_try_resend(Inkbox, InkboxAPIError, resp.api_key, base_url, human_email):
+                attempts_used = 0
+            continue
+
+        if not entry:
+            print_warning("  Type the 6-digit code, or 'resend' for a fresh email.")
+            continue
+
+        if attempts_left <= 0:
+            print_warning("  This code is dead — type 'resend' before trying another code.")
+            continue
+
+        try:
+            verify = Inkbox.verify_signup(
+                api_key=resp.api_key,
+                verification_code=entry,
+                base_url=base_url,
+            )
+            print_success(f"  Verified — claim status: {verify.claim_status}")
+            verified = True
+            break
+        except InkboxAPIError as e:
+            attempts_used += 1
+            print_error(
+                f"  Wrong code: HTTP {e.status_code} {e.detail} "
+                f"({attempts_used}/{MAX_ATTEMPTS} attempts used)"
+            )
+            if attempts_used >= MAX_ATTEMPTS:
+                print_warning("  This code is now dead. Type 'resend' for a fresh one.")
+        except Exception as e:
+            print_error(f"  Verification failed: {e}")
+
+    # ── Optional: provision a phone number for the new agent ──
+    # signup() only creates a mailbox; phones are a separate provisioning call.
+    # Restricted (unverified) keys typically can't provision, so we only offer
+    # this when verification succeeded.
+    provisioned_phone = None
+    if verified:
+        print()
+        print_info("📞 Phone number — optional, but unlocks SMS + voice.")
+        print_info("   We provision a *local* US number so SMS is supported")
+        print_info("   (toll-free numbers don't support SMS without 10DLC/TFV).")
+        if prompt_yes_no("  Provision a phone number for this agent?", True):
+            try:
+                client = Inkbox(api_key=resp.api_key, base_url=base_url)
+                provisioned_phone = client.phone_numbers.provision(
+                    agent_handle=resp.agent_handle,
+                    type="local",
+                )
+                print_success(f"  Provisioned: {provisioned_phone.number}")
+            except InkboxAPIError as e:
+                print_warning(f"  Phone provisioning failed: HTTP {e.status_code} {e.detail}")
+                print_info("  You can provision a number later in the Inkbox console.")
+            except Exception as e:
+                print_warning(f"  Phone provisioning failed: {e}")
+
+    # Self-signup doesn't return a full AgentIdentity. Build a tiny shim that
+    # quacks like one for the summary printer (handle / email / phone-if-any).
+    class _MailboxShim:
+        email_address = resp.email_address
+        display_name = None
+
+    class _PhoneShim:
+        def __init__(self, p):
+            self.number = p.number
+            self.type = getattr(p, "type", "local")
+            self.sms_status = getattr(p, "sms_status", None)
+            self.id = getattr(p, "id", None)
+
+    class _SignupIdentityShim:
+        agent_handle = resp.agent_handle
+        email_address = resp.email_address
+        mailbox = _MailboxShim()
+        phone_number = _PhoneShim(provisioned_phone) if provisioned_phone else None
+
+    return _SignupIdentityShim(), resp.api_key, provisioned_phone is not None
+
+
+def _inkbox_retry_or_abort(retry_label: str, *, error_context: str = "") -> bool:
+    """Two-option menu for signup-attempt failures. Returns True to retry, False to abort.
+
+    ``error_context`` is rendered inside the curses menu (via the
+    ``description`` slot) so the user can see WHY they're being prompted —
+    plain ``print_*`` output above the menu gets covered by the curses redraw.
+    """
+    print()
+    choice = prompt_choice(
+        "  What now?",
+        [retry_label, "Abort — keep existing Inkbox configuration unchanged"],
+        0,
+        description=error_context or None,
+    )
+    if choice == 0:
+        return True
+    print_warning("  Aborted — no credentials saved.")
+    print_info("  Your existing INKBOX_IDENTITY in .env is unchanged.")
+    return False
+
+
+def _inkbox_try_resend(Inkbox, InkboxAPIError, api_key, base_url, human_email):
+    """Trigger a resend of the verification email. Returns True on success."""
+    try:
+        Inkbox.resend_signup_verification(api_key=api_key, base_url=base_url)
+        print_success(f"  Resent — check {human_email}.")
+        return True
+    except InkboxAPIError as e:
+        print_warning(f"  Resend failed: HTTP {e.status_code} {e.detail}")
+        if e.status_code == 429:
+            print_info("  Wait out the cooldown before trying again.")
+        return False
+    except Exception as e:
+        print_warning(f"  Resend failed: {e}")
+        return False
+
+
+def _inkbox_api_key_flow(
+    base_url,
+    Inkbox,
+    InkboxAPIError,
+    WhoamiApiKeyResponse,
+    ADMIN_SCOPED,
+    AGENT_CLAIMED,
+    AGENT_UNCLAIMED,
+    IdentityPhoneNumberCreateOptions,
+):
+    """Branch: user has an API key → whoami-driven flow.
+
+    Returns ``(AgentIdentity, api_key, did_provision_phone)`` on success,
+    ``(None, "", False)`` on abort.
+    """
+    print()
+    api_key = prompt("  Paste your Inkbox API key (ApiKey_…)", password=True).strip()
+    if not api_key:
+        print_error("  No key provided.")
+        return None, "", False
+
+    try:
+        client = Inkbox(api_key=api_key, base_url=base_url)
+        info = client.whoami()
+    except InkboxAPIError as e:
+        print_error(f"  whoami failed: HTTP {e.status_code} {e.detail}")
+        print_info("  Double-check the key (and the environment it was issued in).")
+        return None, "", False
+    except Exception as e:
+        print_error(f"  whoami failed: {e}")
+        return None, "", False
+
+    if not isinstance(info, WhoamiApiKeyResponse):
+        print_error("  This wizard requires an API key, but the credential is a JWT.")
+        return None, "", False
+
+    subtype = info.auth_subtype or ""
+    print_success(f"  Key validated — org {info.organization_id}, scope: {subtype or 'unknown'}")
+
+    if subtype in (AGENT_CLAIMED, AGENT_UNCLAIMED):
+        return _inkbox_pick_agent_scoped(client, api_key)
+    if subtype == ADMIN_SCOPED:
+        return _inkbox_pick_admin_scoped(
+            client, api_key, IdentityPhoneNumberCreateOptions, InkboxAPIError
+        )
+
+    print_warning(f"  Unrecognized API-key subtype: {subtype!r}.")
+    print_info("  Falling back to list_identities()…")
+    return _inkbox_pick_admin_scoped(
+        client, api_key, IdentityPhoneNumberCreateOptions, InkboxAPIError
+    )
+
+
+def _inkbox_pick_agent_scoped(client, api_key):
+    """Agent-scoped key path: list_identities() returns just this agent's row.
+
+    Returns ``(identity, api_key, did_provision_phone)`` on success,
+    ``(None, "", False)`` on abort.
+    """
+    try:
+        ids = client.list_identities()
+    except Exception as e:
+        print_error(f"  list_identities failed: {e}")
+        return None, "", False
+
+    if not ids:
+        print_error("  Agent-scoped key but no identity returned. Server bug?")
+        return None, "", False
+    if len(ids) > 1:
+        print_warning(f"  Agent-scoped key returned {len(ids)} identities — using the first.")
+
+    summary = ids[0]
+    try:
+        identity = client.get_identity(summary.agent_handle)
+    except Exception as e:
+        print_error(f"  get_identity failed: {e}")
+        return None, "", False
+
+    print()
+    print_info(f"  This API key is bound to identity: {identity.agent_handle}")
+    identity, did_provision_phone = _inkbox_offer_phone_for_existing(client, identity)
+    return identity, api_key, did_provision_phone
+
+
+def _inkbox_mint_agent_scoped_key(client, identity, admin_key, InkboxAPIError):
+    """Mint a fresh agent-scoped API key bound to ``identity`` via the admin key.
+
+    Uses ``client.api_keys.create(scoped_identity_id=...)`` so the resulting
+    key only has authority to operate as that one agent. The caller's admin
+    key is used purely for auth on this single request and is never
+    persisted to disk — only the minted key reaches ``.env``.
+
+    Returns the new key string on success, ``None`` on failure (in which
+    case the wizard aborts rather than fall back to writing the admin key).
+    """
+    try:
+        created = client.api_keys.create(
+            label=f"Hermes gateway · {identity.agent_handle}",
+            description=(
+                "Auto-minted by `hermes setup gateway` — scoped to one "
+                "agent identity so the gateway never holds the admin "
+                "key on disk."
+            ),
+            scoped_identity_id=identity.id,
+        )
+    except InkboxAPIError as e:
+        print_error(
+            f"  Couldn't mint agent-scoped key: HTTP {e.status_code} {e.detail}"
+        )
+        return None
+    except Exception as e:
+        print_error(f"  Couldn't mint agent-scoped key: {e}")
+        return None
+    return created.api_key
+
+
+def _inkbox_pick_admin_scoped(client, api_key, IdentityPhoneNumberCreateOptions, InkboxAPIError):
+    """Admin-scoped key path: pick existing identity or create a new one.
+
+    Returns ``(identity, agent_key, did_provision_phone)`` on success,
+    ``(None, "", False)`` on abort.
+    """
+    try:
+        ids = client.list_identities()
+    except Exception as e:
+        print_error(f"  list_identities failed: {e}")
+        return None, "", False
+
+    print()
+    if ids:
+        # Fetch full identity records so the menu can show mailbox + phone for
+        # each. This is N+1 against /identities/{handle} but typical orgs have
+        # a handful of identities, so it's fine.
+        print_info(f"  Found {len(ids)} identity(ies). Fetching mailbox + phone details…")
+        full_records: list = []
+        for s in ids:
+            try:
+                full_records.append(client.get_identity(s.agent_handle))
+            except Exception as e:
+                print_warning(f"    {s.agent_handle}: details unavailable ({e})")
+                full_records.append(None)
+
+        choices = []
+        for s, full in zip(ids, full_records):
+            mailbox_str = (full.email_address if full else None) or s.email_address or "no mailbox"
+            phone_str = "no phone"
+            if full and getattr(full, "phone_number", None) is not None:
+                phone_str = full.phone_number.number
+            choices.append(f"{s.agent_handle}  ·  {mailbox_str}  ·  {phone_str}")
+        choices.append("➕ Create a new identity")
+
+        idx = prompt_choice("  Select the identity this Hermes gateway should run as:", choices, 0)
+        if idx < len(ids):
+            # Reuse the already-fetched record if present; only re-query on failure.
+            identity = full_records[idx]
+            if identity is None:
+                try:
+                    identity = client.get_identity(ids[idx].agent_handle)
+                except Exception as e:
+                    print_error(f"  get_identity failed: {e}")
+                    return None, "", False
+            identity, did_provision_phone = _inkbox_offer_phone_for_existing(client, identity)
+            # Down-scope: replace the admin key with a fresh agent-scoped one
+            # before persisting. The admin key never lands in .env.
+            agent_key = _inkbox_mint_agent_scoped_key(
+                client, identity, api_key, InkboxAPIError,
+            )
+            if agent_key is None:
+                return None, "", False
+            return identity, agent_key, did_provision_phone
+        # Fall through to create-new
+    else:
+        print_info("  No identities exist yet under this org. Let's create the first one.")
+
+    identity, _, did_provision_phone = _inkbox_create_identity(
+        client, api_key, IdentityPhoneNumberCreateOptions, InkboxAPIError,
+    )
+    if identity is None:
+        return None, "", False
+    agent_key = _inkbox_mint_agent_scoped_key(
+        client, identity, api_key, InkboxAPIError,
+    )
+    if agent_key is None:
+        return None, "", False
+    return identity, agent_key, did_provision_phone
+
+
+def _inkbox_create_identity(client, api_key, IdentityPhoneNumberCreateOptions, InkboxAPIError):
+    """Collect handle / display-name / optional-phone and call create_identity().
+
+    Mailbox and tunnel are provisioned atomically by the server; on the
+    platform domain the mailbox local part is forced to ``agent_handle``,
+    so we no longer prompt for one separately.
+
+    Returns ``(identity, api_key, did_provision_phone)`` on success,
+    ``(None, "", False)`` on abort.
+    """
+    # Imported here rather than at module scope to keep the inkbox
+    # dependency lazy (matches every other inkbox import in this file).
+    from inkbox.identities.exceptions import HandleUnavailableError
+
+    print()
+    print_header("Create new agent identity")
+
+    while True:
+        handle = prompt(
+            "  Agent handle (e.g. on-call-agent, recruiting-agent) — "
+            "globally unique, also the mailbox local part"
+        ).strip()
+        if not handle:
+            print_error("  Handle is required.")
+            continue
+        break
+
+    display_name = prompt(
+        "  Display name for the identity (shown to recipients, optional)"
+    ).strip()
+
+    print()
+    print_info("📞 Phone number — optional, but unlocks SMS + voice.")
+    print_info("   We provision a *local* US number so SMS is supported")
+    print_info("   (toll-free numbers don't support SMS without 10DLC/TFV).")
+    create_phone = prompt_yes_no("  Provision a phone number for this agent?", True)
+
+    phone_opts = None
+    if create_phone:
+        phone_opts = IdentityPhoneNumberCreateOptions(
+            type="local",
+            incoming_call_action="auto_reject",  # adapter overrides at runtime
+        )
+
+    print()
+    print_info("Creating identity…")
+    while True:
+        try:
+            identity = client.create_identity(
+                handle,
+                display_name=display_name or None,
+                phone_number=phone_opts,
+            )
+            break
+        except HandleUnavailableError as e:
+            # Globally-unique handles share namespace with tunnels + platform
+            # mailboxes; ``blocking_namespace`` tells us which side rejected.
+            ns = e.blocking_namespace or "the global namespace"
+            print_error(f"  Handle '{handle}' is unavailable in {ns}.")
+            handle = prompt("  Pick a different handle").strip()
+            if not handle:
+                return None, "", False
+            continue
+        except InkboxAPIError as e:
+            print_error(f"  Creation failed: HTTP {e.status_code} {e.detail}")
+            return None, "", False
+        except Exception as e:
+            print_error(f"  Creation failed: {e}")
+            return None, "", False
+
+    print_success(f"  Created identity '{identity.agent_handle}'")
+    # Phone is freshly provisioned iff the user opted in AND create_identity
+    # actually returned one attached.
+    did_provision_phone = create_phone and getattr(identity, "phone_number", None) is not None
+    return identity, api_key, did_provision_phone
+
+
+def _inkbox_offer_phone_for_existing(client, identity):
+    """If ``identity`` has no phone, offer to provision a local one inline.
+
+    Used in the agent-scoped and admin-pick-existing branches — the
+    create-new branch already collects phone preferences inline.
+
+    Returns:
+        ``(identity, did_provision_phone)``. ``identity`` is the same
+        passed-in identity with ``phone_number`` patched on success, or
+        the original untouched identity on skip / failure.
+        ``did_provision_phone`` is ``True`` only when this call actually
+        provisioned a new phone — callers thread this up to gate the
+        SMS-opt-in wait step.
+    """
+    if getattr(identity, "phone_number", None) is not None:
+        return identity, False
+
+    print()
+    print_info("  This agent has no phone number attached.")
+    print_info("  📞 A local US number unlocks SMS + voice for this agent.")
+    if not prompt_yes_no("  Provision a local phone number now?", True):
+        return identity, False
+
+    try:
+        provisioned = client.phone_numbers.provision(
+            agent_handle=identity.agent_handle,
+            type="local",
+        )
+        print_success(f"  Provisioned: {provisioned.number}")
+    except Exception as e:
+        print_warning(f"  Phone provisioning failed: {e}")
+        print_info("  You can provision a number later in the Inkbox console.")
+        return identity, False
+
+    # Re-fetch so the summary printer sees the new phone via the same
+    # _AgentIdentityData shape it expects (with full IdentityPhoneNumber
+    # fields like sms_status). Falls back to a quick shim if get_identity
+    # fails — shouldn't, but the summary should still print something.
+    try:
+        return client.get_identity(identity.agent_handle), True
+    except Exception:
+        class _PhoneShim:
+            def __init__(self, p):
+                self.number = p.number
+                self.type = getattr(p, "type", "local")
+                self.sms_status = getattr(p, "sms_status", None)
+                self.id = getattr(p, "id", None)
+        identity.phone_number = _PhoneShim(provisioned)
+        return identity, True
+
+
+def _inkbox_print_agent_summary(identity):
+    """Pretty-print the final agent stats so the user can see what they got."""
+    print()
+    print(color("┌─────────────────────────────────────────────────────────┐", Colors.GREEN))
+    print(color("│            ✓ Inkbox configured                          │", Colors.GREEN))
+    print(color("└─────────────────────────────────────────────────────────┘", Colors.GREEN))
+    print()
+    # Handle / Mailbox / Phone — these are the bits the user wants to see
+    # most, so render them in the same vibrant green as the ✓ banner above.
+    print(color(f"  Handle:   {identity.agent_handle}", Colors.GREEN, Colors.BOLD))
+
+    mailbox = getattr(identity, "mailbox", None)
+    email = getattr(identity, "email_address", None) or (mailbox.email_address if mailbox else None)
+    if email:
+        print(color(f"  Mailbox:  {email}", Colors.GREEN, Colors.BOLD))
+    else:
+        print_info("  Mailbox:  (none — set up later in the Inkbox console)")
+
+    phone = getattr(identity, "phone_number", None)
+    if phone is not None:
+        sms_status = getattr(phone, "sms_status", None)
+        sms_value = sms_status.value if hasattr(sms_status, "value") else sms_status
+        sms_str = f" · SMS: {sms_value}" if sms_status else ""
+        print(color(f"  Phone:    {phone.number} ({phone.type}){sms_str}", Colors.GREEN, Colors.BOLD))
+        if sms_value == "pending":
+            print_info("            (telephone carrier propagation can take a few minutes)")
+    else:
+        print_info("  Phone:    (none — provision later in the Inkbox console)")
+
+    print()
+    print_info("  Wrote INKBOX_API_KEY, INKBOX_IDENTITY to .env.")
+    print_info("  Start the gateway with:  hermes gateway start")
+
+    # SMS opt-in: text START from any phone you want to message this agent
+    # from. Carriers drop inbound SMS to local numbers until the sender opts
+    # in this way. Surfaced whenever the agent has a *local* number attached.
+    if phone is not None and getattr(phone, "type", None) == "local":
+        print()
+        print(color("  ─── 📲 SMS opt-in ───", Colors.YELLOW))
+        print_info(f"  Text  START  to  {phone.number}  to enable SMS from this agent")
+        print_info(f"  to your phone. Do this from every phone you want to message it from.")
+
+    # Reachability — point the user at the Inkbox console to manage which
+    # senders/callers actually reach this agent. By default the mailbox and
+    # phone number accept inbound traffic from anyone; the console is where
+    # you tighten that down.
+    print()
+    print(color("  ─── 🛡  Reachability rules ───", Colors.CYAN))
+    print_info("  Open the Inkbox console to control who can reach this agent:")
+    print_info("    https://inkbox.ai/console/contact-rules")
+    print_info("  You can allow or block:")
+    print_info("    • specific contacts and contact domains")
+    print_info("    • specific phone numbers")
+    print_info("    • specific email addresses and email domains")
+    print_info("  Per-mailbox and per-number filter modes (whitelist vs blacklist)")
+    print_info("  decide whether unmatched senders are allowed by default or rejected.")
+
+
 def _setup_telegram():
     """Configure Telegram bot credentials and allowlist."""
     print_header("Telegram")
@@ -2389,13 +3346,16 @@ def setup_gateway(config: dict):
 
     platforms = _all_platforms()
 
-    # Build checklist, pre-selecting already-configured platforms.
+    # Build checklist, pre-selecting already-configured platforms — plus
+    # Inkbox by default, since wiring up Inkbox is the whole reason this
+    # fork exists. A user can still untoggle it if they really don't want
+    # email + SMS + voice on their agent.
     items = []
     pre_selected = []
     for i, plat in enumerate(platforms):
         status = _platform_status(plat)
         items.append(f"{plat['emoji']} {plat['label']}  ({status})")
-        if status == "configured":
+        if status == "configured" or plat.get("key") == "inkbox":
             pre_selected.append(i)
 
     selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
@@ -2441,6 +3401,8 @@ def setup_gateway(config: dict):
             missing_home.append("Slack")
         if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
             missing_home.append("BlueBubbles")
+        if get_env_value("INKBOX_API_KEY") and not get_env_value("INKBOX_HOME_CHANNEL"):
+            missing_home.append("Inkbox")
         if get_env_value("QQ_APP_ID") and not (
             get_env_value("QQBOT_HOME_CHANNEL") or get_env_value("QQ_HOME_CHANNEL")
         ):

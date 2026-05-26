@@ -282,3 +282,48 @@ class TestSendWithRetryFallback:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2)
         assert not result.success
         assert len(adapter._send_calls) == 2  # original + fallback only
+
+    @pytest.mark.asyncio
+    async def test_non_network_error_can_disable_plain_text_fallback(self):
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="provider provisioning disabled",
+                fallback_allowed=False,
+            ),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry(
+                "chat1", "**bold**", max_retries=2, base_delay=0,
+            )
+        mock_sleep.assert_not_called()
+        assert not result.success
+        assert len(adapter._send_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_sms_too_long_sends_short_notice_without_plain_text_fallback(self):
+        adapter = _StubAdapter()
+        long_sms = "x" * 2000
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error=(
+                    "Inkbox SMS send failed [sms_too_long]: "
+                    f"SMS content is {len(long_sms)} characters; maximum is 1600."
+                ),
+                raw_response={"error_code": "sms_too_long"},
+                fallback_allowed=False,
+            ),
+            SendResult(success=True, message_id="notice-ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry(
+                "chat1", long_sms, max_retries=2, base_delay=0,
+            )
+
+        mock_sleep.assert_not_called()
+        assert not result.success
+        assert len(adapter._send_calls) == 2
+        assert "too long for SMS" in adapter._send_calls[1][1]
+        assert "plain text" not in adapter._send_calls[1][1].lower()

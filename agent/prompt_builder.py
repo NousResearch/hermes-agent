@@ -481,7 +481,8 @@ PLATFORM_HINTS = {
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
-        "characters, so be brief and direct."
+        "characters, so be brief and direct. Do not split long explanations into "
+        "many messages; ask a follow-up question or offer to send details another way."
     ),
     "bluebubbles": (
         "You are chatting via iMessage (BlueBubbles). iMessage does not render "
@@ -489,6 +490,73 @@ PLATFORM_HINTS = {
         "appear as text messages. You can send media files natively: include "
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
+    ),
+    "inkbox": (
+        "You are reaching the user through Inkbox — a unified email + SMS + voice "
+        "channel routed to a single contact. Each session represents one human "
+        "contact; messages may arrive as email, SMS, or live voice transcripts. "
+        "Every inbound message is prefixed with a routing marker on its own "
+        "line so you know which modality the user used:\n"
+        "  [inkbox:email from=... subject='...'] — write clear prose, plain "
+        "text only (no markdown), the reply is delivered as a threaded email\n"
+        "  [inkbox:sms from=...] — write plain text under 1600 chars, no "
+        "markdown, no greetings/sign-offs, the reply is delivered as SMS. "
+        "If the complete answer would be long, ask a short follow-up or offer "
+        "to send details another way instead of sending a multi-message essay\n"
+        "  [inkbox:sms_burst messages=N ...] — several rapid SMS fragments "
+        "merged into one turn; read them in order and treat later fragments "
+        "as corrections or follow-ups when applicable\n"
+        "  [inkbox:voice_call call_id=...] — speak naturally in short sentences, "
+        "no markdown, no code blocks, no URLs read aloud verbatim — Inkbox "
+        "TTS reads your reply to the caller in real time\n"
+        "Treat the marker line as routing metadata: never echo it, never quote "
+        "it, never reference it in your reply. Just use it to pick the right "
+        "register and respond to the message that follows it.\n"
+        "\n"
+        "VOICE-CALL LATENCY DISCIPLINE: when the marker says ``voice_call`` "
+        "the caller is on the line and silence > 2 seconds is unacceptable. "
+        "Hard rules for live calls:\n"
+        "  • Answer in 1-2 sentences, ~25 words max. Never give a long "
+        "monologue — interactive turns only.\n"
+        "  • Do NOT call session_search during a live call. It is slow and "
+        "the caller hears dead air. Answer from short-term memory or "
+        "honestly say you'd need to look it up after the call.\n"
+        "  • Avoid heavy tools mid-call (web fetch, large file reads, "
+        "execute_code over the SDK). If you absolutely must use a tool, "
+        "use one quick lookup max, then answer.\n"
+        "  • Contact info — name, company, phone, email — is already in the "
+        "marker on every voice transcript; read it, do not look it up. If "
+        "the marker says ``contact=unknown_in_inkbox`` it really is unknown; "
+        "ask the caller for their name rather than guessing.\n"
+        "Email and SMS turns can take their time; voice turns must not.\n"
+        "\n"
+        "SMS / EMAIL CHANNEL CLEANLINESS (Inkbox): the user's SMS thread and "
+        "inbox are reserved for actual replies, not for runtime status. Hard "
+        "rules:\n"
+        "  • When you schedule a cron whose ACTION is the delivery (placing "
+        "an outbound call, sending an email, writing a note), set "
+        "``deliver: \"local\"`` on the cron so its final response is NOT "
+        "echoed back through the originating SMS/email thread. The action "
+        "itself (the call ringing, the email landing) is the deliverable. "
+        "Use ``deliver: \"origin\"`` only when the cron's text output IS the "
+        "deliverable (a reminder, a summary, an answer to an earlier "
+        "question).\n"
+        "  • Do not double-confirm: if you've already replied \"OK, I'll "
+        "call you in 2 minutes\" in the originating thread, the cron must "
+        "not also send \"Calling you now.\" Pick one.\n"
+        "  • For outbound voice calls, ALWAYS attach call-purpose context "
+        "via the ``?context_token=`` URL mechanism documented in the "
+        "inkbox skill. The in-call agent has no memory of the "
+        "originating SMS/email; without context it will sound like a "
+        "stranger calling for no reason.\n"
+        "  • Hermes runtime banners (\"⏳ Still working…\", \"⚡ Interrupting "
+        "current task…\", \"📬 No home channel…\") are CLI/TUI chatter and are "
+        "filtered before send, but you should not generate them either.\n"
+        "\n"
+        "After every call the adapter enqueues a ``[call_ended]`` turn. "
+        "Use it to follow through on commitments you made during the call "
+        "via tool calls — text replies here are suppressed. Reply "
+        "``[SILENT]`` if there's nothing to do."
     ),
     "mattermost": (
         "You are in a Mattermost workspace communicating with your user. "
@@ -815,6 +883,97 @@ def build_environment_hints() -> str:
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
     return "\n\n".join(hints)
+
+
+def build_inkbox_identity_hint() -> str:
+    """Return a paragraph describing the Inkbox identity bound to this gateway.
+
+    Unlike ``PLATFORM_HINTS["inkbox"]`` (which only fires for messages that
+    arrive via the Inkbox platform), this hint is platform-agnostic — it tells
+    the agent which email address + phone number it can be reached on, so a
+    CLI/Telegram/Discord user asking "what's your phone number?" gets the
+    answer that matches the gateway's actual reachability.
+
+    Returns an empty string when Inkbox isn't configured for this gateway.
+    """
+    try:
+        from hermes_cli.config import get_hermes_home
+        state_path = get_hermes_home() / "inkbox_identity_state.json"
+        if not state_path.exists():
+            return ""
+        import json as _json
+        state = _json.loads(state_path.read_text())
+    except Exception:
+        return ""
+
+    handle = state.get("handle")
+    if not handle:
+        return ""
+
+    # Defend against a stale state file disagreeing with INKBOX_IDENTITY.
+    # If they diverge (e.g. the wizard wrote .env but the gateway hasn't
+    # repopulated the JSON yet, or vice versa), we'd otherwise lie to the
+    # agent about which identity it owns. Empty hint > wrong hint.
+    import os as _os
+    env_handle = (_os.environ.get("INKBOX_IDENTITY") or "").strip()
+    if env_handle and env_handle != handle:
+        return ""
+
+    parts = [f"You are bound to an Inkbox identity (handle: {handle})."]
+    email = state.get("email_address")
+    phone = state.get("phone_number")
+    if email:
+        parts.append(f"Inbound email arrives at {email}.")
+    if phone:
+        parts.append(f"Inbound SMS messages and voice calls arrive at {phone}.")
+    if email or phone:
+        parts.append(
+            "When asked what email address or phone number you have, "
+            "answer with these — they are real, reachable channels routed "
+            "back into your sessions via Inkbox webhooks."
+        )
+        parts.append(
+            "You can send outbound email or SMS through these channels via "
+            "send_message with platform='inkbox' (target a contact UUID or "
+            "raw email/E.164 phone)."
+        )
+    parts.append(
+        "\n\n"
+        "INKBOX SOURCE OF TRUTH — every inbound message is prefixed with a "
+        "marker that includes the resolved Inkbox Contact (contact_id, "
+        "contact_name, contact_emails, contact_phones) when the sender "
+        "matches one in the org's contact list, or 'contact=unknown_in_inkbox' "
+        "otherwise. Read this on every turn — that IS who you are talking to.\n\n"
+        "For factual questions about the live state of your Inkbox channels — "
+        "what messages were sent or received, when, to whom, with what "
+        "delivery status, or what contacts exist — DO NOT rely on session_search. "
+        "Session memory holds summaries that may be stale, partial, or wrong. "
+        "Inkbox is the source of truth and the SDK is already installed and "
+        "authenticated via INKBOX_API_KEY. Use execute_code to call it directly:\n\n"
+        "    from inkbox import Inkbox\n"
+        "    import os\n"
+        "    with Inkbox(api_key=os.environ['INKBOX_API_KEY']) as ink:\n"
+        "        identity = ink.get_identity(os.environ['INKBOX_IDENTITY'])\n"
+        "        # Last N emails to/from this identity:\n"
+        "        emails = list(identity.iter_emails())[:N]\n"
+        "        # Last N SMS messages on this identity's phone number:\n"
+        "        texts = ink.texts.list(identity.phone_number.id, limit=N)\n"
+        "        # Look up a contact by email or phone:\n"
+        "        contacts = ink.contacts.lookup(email='alice@example.com')\n"
+        "        # Create a contact you don't have yet:\n"
+        "        ink.contacts.create(preferred_name='Alice',\n"
+        "            emails=[{'value': 'alice@example.com', 'is_primary': True}],\n"
+        "            phones=[{'value_e164': '+15555551234', 'is_primary': True}])\n"
+        "\n"
+        "If the inbound marker says contact=unknown_in_inkbox AND the "
+        "conversation suggests an ongoing relationship, offer to remember "
+        "this person by creating a Contact via the SDK — don't silently "
+        "guess at their identity from past sessions.\n\n"
+        "The full SDK reference is auto-loaded as the 'inkbox' skill "
+        "at the start of every new Inkbox session — consult it for shapes "
+        "and options before writing code."
+    )
+    return " ".join(parts)
 
 
 CONTEXT_FILE_MAX_CHARS = 20_000

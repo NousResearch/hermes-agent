@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.config import Platform
+
 # ---------------------------------------------------------------------------
 # Minimal stubs so we can import gateway code without heavy deps
 # ---------------------------------------------------------------------------
@@ -88,6 +90,35 @@ def _make_adapter(platform_val="telegram"):
     adapter._text_debounce = {}
     adapter._busy_text_debounce_seconds = 0.6
     return adapter
+
+
+class _PolicyAdapter:
+    def __init__(self):
+        self._pending_messages = {}
+        self._send_with_retry = AsyncMock()
+        self.config = MagicMock()
+        self.config.extra = {}
+        self.platform = Platform.INKBOX
+
+    def busy_followup_policy(self, event):
+        if (event.text or "").lstrip().startswith("[inkbox:sms"):
+            return {"mode": "queue", "merge_text": True}
+        return None
+
+
+def _make_inkbox_sms_event(text, message_id="sms-1"):
+    source = SessionSource(
+        platform=Platform.INKBOX,
+        chat_id="contact-123",
+        chat_type="dm",
+        user_id="contact-123",
+    )
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id=message_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +245,43 @@ class TestBusySessionAck:
         assert sk not in adapter._pending_messages
         agent.interrupt.assert_not_called()
         adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_adapter_policy_can_queue_and_merge_without_interrupt(self):
+        """Inkbox SMS follow-ups should merge while active even if global mode interrupts."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _PolicyAdapter()
+
+        first = _make_inkbox_sms_event(
+            "[inkbox:sms from=+15555550101 | contact=Alex]\nfirst",
+            message_id="sms-1",
+        )
+        second = _make_inkbox_sms_event(
+            "[inkbox:sms from=+15555550101 | contact=Alex]\nsecond",
+            message_id="sms-2",
+        )
+        sk = build_session_key(first.source)
+        runner.adapters[Platform.INKBOX] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
+
+        agent.interrupt.assert_not_called()
+        assert adapter._pending_messages[sk].text == (
+            "[inkbox:sms from=+15555550101 | contact=Alex]\n"
+            "first\n"
+            "[inkbox:sms from=+15555550101 | contact=Alex]\n"
+            "second"
+        )
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Queued for the next turn" in content
+        assert "Interrupting" not in content
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):

@@ -1181,6 +1181,11 @@ AUTHOR_MAP = {
     "279959838+BROCCOLO1D@users.noreply.github.com": "BROCCOLO1D",  # PR #26796 (docs: spotify + HA)
     "m@matthewlai.ca": "matthewlai",  # PR #25293 (feat: gemma 4 reasoning allowlist)
     "4296245+matthewlai@users.noreply.github.com": "matthewlai",
+    # Inkbox fork maintainers
+    "dima@vectorly.app": "dimavrem22",
+    "dimavrem22@gmail.com": "dimavrem22",
+    "mfzeidan@gmail.com": "mfzeidan",
+    "mark@zeidan.ai": "mfzeidan",
     "109617724+0xchainer@users.noreply.github.com": "0xchainer",  # PR #27154/27138/27147 salvage
     "201800237+kronexoi@users.noreply.github.com": "kronexoi",  # PR #27167 salvage (Teams port fallback)
     "283442588+EloquentBrush0x@users.noreply.github.com": "EloquentBrush0x",  # PR #26642 salvage (post_setup parity)

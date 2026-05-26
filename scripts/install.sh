@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -43,8 +43,8 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+REPO_URL_SSH="git@github.com:inkbox-ai/hermes-agent.git"
+REPO_URL_HTTPS="https://github.com/inkbox-ai/hermes-agent.git"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -70,7 +70,7 @@ DETECTED_BROWSER_EXECUTABLE=""
 USE_VENV=true
 RUN_SETUP=true
 SKIP_BROWSER=false
-BRANCH="main"
+BRANCH="inkbox"
 ENSURE_DEPS=""
 POSTINSTALL_MODE=false
 
@@ -128,7 +128,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
-            echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --branch NAME  Git branch to install (default: inkbox)"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -337,7 +337,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)"
+            log_info "  irm https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.ps1 | iex"
             exit 1
             ;;
         *)
@@ -908,12 +908,16 @@ clone_repo() {
             cd "$INSTALL_DIR"
 
             local autostash_ref=""
-            if [ -n "$(git status --porcelain)" ]; then
-                local stash_name
+            local stash_name=""
+            # Only stash if there are TRACKED changes. Untracked files survive a
+            # fast-forward pull on their own and don't need to be moved aside —
+            # stashing them just to immediately reapply causes spurious "local
+            # changes detected" runs on every install of a clean checkout.
+            if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Local changes detected, stashing before update..."
-                git stash push --include-untracked -m "$stash_name"
-                autostash_ref="stash@{0}"
+                git stash push -m "$stash_name"
+                autostash_ref="$(git rev-parse --verify refs/stash)"
             fi
 
             git fetch origin
@@ -937,7 +941,15 @@ clone_repo() {
                 if [ "$restore_now" = "yes" ]; then
                     log_info "Restoring local changes..."
                     if git stash apply "$autostash_ref"; then
-                        git stash drop "$autostash_ref" >/dev/null
+                        # `git stash drop` strictly requires a stash@{N} reflog ref;
+                        # the raw SHA captured at push time is rejected. Look up the
+                        # current reflog selector by our unique stash message.
+                        local stash_reflog_ref
+                        stash_reflog_ref="$(git stash list --format='%gd%x09%gs' \
+                            | awk -F'\t' -v name="$stash_name" '$2 ~ name {print $1; exit}')"
+                        if [ -n "$stash_reflog_ref" ]; then
+                            git stash drop "$stash_reflog_ref" >/dev/null 2>&1 || true
+                        fi
                         log_warn "Local changes were restored on top of the updated codebase."
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else
@@ -1717,8 +1729,10 @@ run_setup_wizard() {
 
     cd "$INSTALL_DIR"
 
-    # Run hermes setup using the venv Python directly (no activation needed).
-    # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
+    # `hermes setup` (broad wizard) walks the model/provider, terminal,
+    # gateway (incl. Inkbox self-signup + service install), tools, and
+    # agent-settings sections in one pass. Redirect stdin from /dev/tty
+    # so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
         "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
     else
@@ -1734,7 +1748,7 @@ maybe_start_gateway() {
     fi
 
     HAS_MESSAGING=false
-    for VAR in TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED; do
+    for VAR in TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN WHATSAPP_ENABLED INKBOX_API_KEY; do
         VAL=$(grep "^${VAR}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-)
         if [ -n "$VAL" ] && [ "$VAL" != "your-token-here" ]; then
             HAS_MESSAGING=true

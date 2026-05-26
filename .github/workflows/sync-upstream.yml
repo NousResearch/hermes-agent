@@ -1,0 +1,193 @@
+name: Sync inkbox with upstream main
+
+# Two-phase upstream sync, daily:
+#   1. Fast-forward our `main` to match `NousResearch/hermes-agent@main`.
+#      Our `main` is a pure passthrough mirror — no inkbox commits ever
+#      land on it, so a fast-forward push is always safe (and reviewing a
+#      pure-upstream diff is the wrong audience anyway).
+#   2. Open or update a rolling PR `main → inkbox` so the human-reviewed
+#      diff is exactly "latest upstream vs our inkbox customizations."
+
+on:
+  schedule:
+    # Daily at 09:00 UTC — upstream ships fast, keep the gap small.
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  # GITHUB_TOKEN is constrained by org policy and can't be elevated to
+  # pull-requests: write — instead we mint an installation token from
+  # the On-call Hermes Agent GitHub App (see "Mint App token" step).
+  # The block stays here so any future maintainer sees what the workflow
+  # actually needs, and so the workflow degrades gracefully if the App
+  # secrets get yanked.
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    # Don't run on other forks if they pull this workflow file in.
+    if: github.repository == 'inkbox-ai/hermes-agent'
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: NousResearch/hermes-agent
+      UPSTREAM_BRANCH: main
+      MIRROR_BRANCH: main
+      TARGET_BRANCH: inkbox
+      SYNC_BRANCH: sync/upstream-main
+    steps:
+      - name: Mint App token
+        id: app_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3.1.1
+        with:
+          app-id: ${{ secrets.HERMES_APP_ID }}
+          private-key: ${{ secrets.HERMES_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # Start on inkbox; we'll switch branches as needed.
+          ref: ${{ env.TARGET_BRANCH }}
+          # Full history so merges have a valid base.
+          fetch-depth: 0
+          # App-minted token; configures git's HTTP credentials for the
+          # subsequent push steps too.
+          token: ${{ steps.app_token.outputs.token }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream + origin main
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+          git fetch origin "${MIRROR_BRANCH}"
+
+      # ────────────────────────────────────────────────────────────────
+      # Phase 1 — sync our mirror `main` to upstream/main
+      # ────────────────────────────────────────────────────────────────
+      - name: Phase 1 — fast-forward main to upstream/main
+        id: sync_main
+        run: |
+          # Force-create the local `main` from origin/main. Plain
+          # `git checkout main` is ambiguous because both origin/main
+          # and upstream/main exist as remote-tracking branches.
+          git checkout -B "${MIRROR_BRANCH}" "origin/${MIRROR_BRANCH}"
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
+            echo "main_changed=false" >> "$GITHUB_OUTPUT"
+            echo "main already matches upstream/${UPSTREAM_BRANCH}; nothing to push."
+            exit 0
+          fi
+          # Fast-forward only. If main has commits upstream doesn't have,
+          # someone direct-committed to our mirror — abort loudly rather
+          # than nuke their work with a force push.
+          if ! git merge --ff-only "upstream/${UPSTREAM_BRANCH}"; then
+            echo "::error::main has diverged from upstream/${UPSTREAM_BRANCH} (non-FF). Refusing to force-push the mirror. Investigate manually."
+            exit 1
+          fi
+          git push origin "${MIRROR_BRANCH}"
+          echo "main_changed=true" >> "$GITHUB_OUTPUT"
+          echo "Fast-forwarded main and pushed."
+
+      # ────────────────────────────────────────────────────────────────
+      # Phase 2 — propose main → inkbox via rolling PR
+      # ────────────────────────────────────────────────────────────────
+      - name: Phase 2 — check whether inkbox needs main
+        id: check
+        run: |
+          git checkout "${TARGET_BRANCH}"
+          if git merge-base --is-ancestor "origin/${MIRROR_BRANCH}" HEAD; then
+            echo "in_sync=true" >> "$GITHUB_OUTPUT"
+            echo "${TARGET_BRANCH} already contains every commit on ${MIRROR_BRANCH}; no PR needed."
+          else
+            new_commits=$(git rev-list --count "HEAD..origin/${MIRROR_BRANCH}")
+            echo "in_sync=false" >> "$GITHUB_OUTPUT"
+            echo "new_commits=${new_commits}" >> "$GITHUB_OUTPUT"
+            echo "${TARGET_BRANCH} is behind ${MIRROR_BRANCH} by ${new_commits} commit(s)."
+          fi
+
+      - name: Phase 2 — merge main into rolling sync branch
+        if: steps.check.outputs.in_sync == 'false'
+        id: merge
+        run: |
+          git checkout -B "${SYNC_BRANCH}" "${TARGET_BRANCH}"
+          # --no-ff preserves the merge commit so the audit trail is clear.
+          if git merge --no-ff --no-edit \
+              -m "Merge ${MIRROR_BRANCH} into ${TARGET_BRANCH}" \
+              "origin/${MIRROR_BRANCH}"; then
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+          else
+            # Commit the conflict markers so reviewers see the conflict
+            # as a normal diff in the PR (instead of a failed workflow).
+            conflict_files=$(git diff --name-only --diff-filter=U)
+            {
+              echo 'conflict_files<<EOF'
+              echo "$conflict_files"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+            git add -A
+            git commit -m "Merge ${MIRROR_BRANCH} into ${TARGET_BRANCH} (CONFLICTS)" \
+                       -m "Conflicted files (markers in tree, resolve manually):" \
+                       -m "$conflict_files"
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Phase 2 — push sync branch
+        if: steps.check.outputs.in_sync == 'false'
+        run: git push origin "${SYNC_BRANCH}" --force
+
+      - name: Phase 2 — open or update sync PR
+        if: steps.check.outputs.in_sync == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+          NEW_COMMITS: ${{ steps.check.outputs.new_commits }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$CONFLICTS" == "true" ]]; then
+            title="⚠️  Sync ${TARGET_BRANCH} with ${MIRROR_BRANCH} (CONFLICTS)"
+            body=$(printf '## Upstream sync — CONFLICTS\n\nMerging `%s` (mirror of `%s@%s`) into `%s` hit conflicts. Conflict markers are committed in the tree so the diff is reviewable.\n\n**To resolve:** pull this branch locally, fix the marked files, and force-push.\n\n```bash\ngit fetch origin %s\ngit checkout %s\n# resolve conflicts in the files below\ngit add -A && git commit --amend --no-edit\ngit push --force origin %s\n```\n\n### Conflicted files\n\n```\n%s\n```\n\n_Opened by `.github/workflows/sync-upstream.yml`._' \
+              "$MIRROR_BRANCH" "$UPSTREAM_REPO" "$UPSTREAM_BRANCH" "$TARGET_BRANCH" "$SYNC_BRANCH" "$SYNC_BRANCH" "$SYNC_BRANCH" "$CONFLICT_FILES")
+          else
+            title="Sync ${TARGET_BRANCH} with ${MIRROR_BRANCH}"
+            body=$(printf '## Upstream sync\n\nClean merge of `%s` (mirror of `%s@%s`) into `%s`. New upstream commits: **%s**.\n\nReview the upstream diff, then merge.\n\n_Opened by `.github/workflows/sync-upstream.yml`._' \
+              "$MIRROR_BRANCH" "$UPSTREAM_REPO" "$UPSTREAM_BRANCH" "$TARGET_BRANCH" "$NEW_COMMITS")
+          fi
+
+          # Speak REST not GraphQL: `gh pr create` goes through the
+          # GraphQL `createPullRequest` mutation which our App token
+          # gets "Resource not accessible by integration" on, despite
+          # holding pull-requests:write. The REST `POST /pulls` endpoint
+          # honors the same permission scope correctly.
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          accept='Accept: application/vnd.github+json'
+          auth="Authorization: Bearer ${GH_TOKEN}"
+
+          existing=$(curl -sS -H "$auth" -H "$accept" \
+            "${api}/pulls?state=open&base=${TARGET_BRANCH}&head=${OWNER}:${SYNC_BRANCH}" \
+            | jq -r '.[0].number // ""')
+
+          if [[ -n "$existing" ]]; then
+            curl -sS -X PATCH -H "$auth" -H "$accept" \
+              "${api}/pulls/${existing}" \
+              -d "$(jq -n --arg t "$title" --arg b "$body" '{title:$t, body:$b}')" \
+              > /dev/null
+            echo "Updated PR #${existing}."
+          else
+            resp=$(curl -sS -X POST -H "$auth" -H "$accept" \
+              "${api}/pulls" \
+              -d "$(jq -n --arg t "$title" --arg b "$body" \
+                          --arg h "$SYNC_BRANCH" --arg base "$TARGET_BRANCH" \
+                          '{title:$t, body:$b, head:$h, base:$base}')")
+            number=$(echo "$resp" | jq -r '.number // empty')
+            if [[ -z "$number" ]]; then
+              echo "::error::PR create failed. Response body:"
+              echo "$resp"
+              exit 1
+            fi
+            echo "Opened PR #${number}."
+          fi

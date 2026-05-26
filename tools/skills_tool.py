@@ -452,7 +452,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     Also works for external skill dirs configured via skills.external_dirs.
     """
     # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
-    # then fall back to external dirs from config.
+    # then fall back to user-configured external dirs.
     dirs_to_check = [SKILLS_DIR]
     try:
         from agent.skill_utils import get_external_skills_dirs
@@ -566,11 +566,13 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
+    # Scan local first, then bundled-with-the-fork (e.g. inkbox skills), then
+    # user-configured external dirs.  Earlier dirs take precedence on
+    # name collisions because we dedup via ``seen_names``.
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
+    if SKILLS_DIR.is_dir():
         dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+    dirs_to_scan.extend(d for d in get_external_skills_dirs() if d.is_dir())
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -939,7 +941,8 @@ def skill_view(
 
         from agent.skill_utils import get_external_skills_dirs
 
-        # Build list of all skill directories to search
+        # Build list of all skill directories to search — local first, then
+        # user-configured external dirs.
         all_dirs = []
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)

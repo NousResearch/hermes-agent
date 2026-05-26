@@ -37,6 +37,13 @@ class _FakeAdapter:
             event.set()
 
 
+class _PolicyAdapter(_FakeAdapter):
+    def busy_followup_policy(self, event):
+        if (event.text or "").lstrip().startswith("[inkbox:sms"):
+            return {"mode": "queue", "merge_text": True}
+        return None
+
+
 def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -298,6 +305,45 @@ async def test_recent_telegram_followups_append_in_pending_queue():
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
     assert adapter._pending_messages[session_key].text == "part one\npart two"
+
+
+@pytest.mark.asyncio
+async def test_adapter_busy_policy_applies_on_running_agent_fast_path():
+    runner = _make_runner()
+    adapter = _PolicyAdapter()
+    runner.adapters[Platform.INKBOX] = adapter
+
+    source = SessionSource(
+        platform=Platform.INKBOX,
+        chat_id="contact-123",
+        chat_type="dm",
+        user_id="contact-123",
+    )
+    first = MessageEvent(
+        text="[inkbox:sms from=+15555550101 | contact=Alex]\nfirst",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    second = MessageEvent(
+        text="[inkbox:sms from=+15555550101 | contact=Alex]\nsecond",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    session_key = build_session_key(source)
+
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+
+    await runner._handle_message(first)
+    await runner._handle_message(second)
+
+    fake_agent.interrupt.assert_not_called()
+    assert adapter._pending_messages[session_key].text == (
+        "[inkbox:sms from=+15555550101 | contact=Alex]\n"
+        "first\n"
+        "[inkbox:sms from=+15555550101 | contact=Alex]\n"
+        "second"
+    )
 
 
 # ------------------------------------------------------------------

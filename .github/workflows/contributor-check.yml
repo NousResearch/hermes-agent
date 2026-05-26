@@ -2,7 +2,7 @@ name: Contributor Attribution Check
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, inkbox]
     paths:
       # Only run when code files change (not docs-only PRs)
       - '*.py'

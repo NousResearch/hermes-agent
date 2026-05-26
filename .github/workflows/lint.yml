@@ -10,13 +10,13 @@ name: Lint (ruff + ty)
 
 on:
   push:
-    branches: [main]
+    branches: [main, inkbox]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
       - "website/**"
   pull_request:
-    branches: [main]
+    branches: [main, inkbox]
     paths-ignore:
       - "**/*.md"
       - "docs/**"

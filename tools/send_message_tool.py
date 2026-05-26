@@ -16,6 +16,11 @@ from email.utils import formatdate
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
+# gateway/platforms/inkbox.py wraps every optional SDK/aiohttp import in
+# try/except at its own module top, so importing these names here is safe
+# even when the inkbox extra isn't installed — they're always defined,
+# and check_inkbox_requirements() is the runtime gate.
+from gateway.platforms.inkbox import check_inkbox_requirements, send_inkbox_direct
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +46,10 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+_EMAIL_TARGET_RE = re.compile(r"^\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*$")
+_UUID_TARGET_RE = re.compile(
+    r"^\s*[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\s*$",
+)
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -390,6 +399,17 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+    if platform_name == "inkbox":
+        # Inkbox accepts a contact UUID, an email address, or an E.164 phone
+        # number as a direct send target.  send_inkbox_direct() detects which
+        # of the three was supplied and routes mail vs SMS accordingly.
+        stripped = target_ref.strip()
+        if (
+            _UUID_TARGET_RE.fullmatch(stripped)
+            or _EMAIL_TARGET_RE.fullmatch(stripped)
+            or _E164_TARGET_RE.fullmatch(stripped)
+        ):
+            return stripped, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
@@ -773,6 +793,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.INKBOX:
+            result = await _send_inkbox(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
@@ -1560,6 +1582,16 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
         )
     except Exception as e:
         return _error(f"Weixin send failed: {e}")
+
+
+async def _send_inkbox(extra, chat_id, message):
+    """Send via Inkbox (email/SMS) using the SDK directly — no aiohttp server."""
+    if not check_inkbox_requirements():
+        return {"error": "Inkbox requirements not met. Run: pip install inkbox aiohttp."}
+    try:
+        return await send_inkbox_direct(extra=extra or {}, chat_id=chat_id, message=message)
+    except Exception as e:
+        return _error(f"Inkbox send failed: {e}")
 
 
 async def _send_bluebubbles(extra, chat_id, message):

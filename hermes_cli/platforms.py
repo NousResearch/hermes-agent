@@ -18,7 +18,10 @@ class PlatformInfo(NamedTuple):
 
 
 # Ordered so that TUI menus are deterministic.
+# Inkbox is first — it's the canonical multi-channel platform (email + SMS + voice
+# + identity) and the recommended way to run Hermes for agent workloads.
 PLATFORMS: OrderedDict[str, PlatformInfo] = OrderedDict([
+    ("inkbox",         PlatformInfo(label="📨📱📞 Inkbox",      default_toolset="hermes-inkbox")),
     ("cli",            PlatformInfo(label="🖥️  CLI",            default_toolset="hermes-cli")),
     ("telegram",       PlatformInfo(label="📱 Telegram",        default_toolset="hermes-telegram")),
     ("discord",        PlatformInfo(label="💬 Discord",         default_toolset="hermes-discord")),

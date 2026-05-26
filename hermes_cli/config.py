@@ -4362,6 +4362,9 @@ def read_raw_config() -> Dict[str, Any]:
 
         if not isinstance(data, dict):
             data = {}
+        # Expand ${VAR} references from environment so callers like
+        # _resolve_gateway_model get resolved values, not literal strings.
+        data = _expand_env_vars(data)
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
         return data
 

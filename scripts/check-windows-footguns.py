@@ -342,11 +342,7 @@ def should_scan_file(path: Path) -> bool:
     if rel in EXCLUDED_FILES:
         return False
     # Only scan text files (rough heuristic — .py, .md, .sh, .ps1, .yaml, etc.)
-    if path.suffix in {".py", ".pyw", ".pyi"}:
-        return True
-    # Other file types are read but only Python-specific patterns would match;
-    # that's fine and cheap to skip.
-    return False
+    return path.suffix in {".py", ".pyw", ".pyi"}
 
 
 def iter_files(paths: Iterable[Path]) -> Iterable[Path]:

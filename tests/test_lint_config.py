@@ -210,3 +210,25 @@ class TestScriptsRunTestsParallel:
             f"{result.stdout}\n{result.stderr}\n"
         )
 
+
+class TestScriptsCheckWindowsFootguns:
+    """scripts/check-windows-footguns.py must have zero SIM103 violations."""
+
+    TARGET = REPO_ROOT / "scripts" / "check-windows-footguns.py"
+
+    def test_check_windows_footguns_has_zero_sim103(self):
+        """scripts/check-windows-footguns.py must have zero SIM103 (return-condition-directly) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM103",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/check-windows-footguns.py has SIM103 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+

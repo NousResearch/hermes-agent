@@ -17,7 +17,6 @@ Usage:
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -30,7 +29,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from release import AUTHOR_MAP, resolve_author  # noqa: E402
+from release import resolve_author
 
 REPO_ROOT = SCRIPT_DIR.parent
 
@@ -262,9 +261,7 @@ def collect_salvaged_contributors(since_tag, until="HEAD"):
         body = pr.get("body") or ""
         pr_number = pr.get("number", "?")
 
-        # Also credit the PR author
-        pr_author = pr.get("author", {})
-        pr_author_login = pr_author.get("login", "") if isinstance(pr_author, dict) else ""
+
 
         for pattern in SALVAGE_PATTERNS:
             for match in pattern.finditer(body):

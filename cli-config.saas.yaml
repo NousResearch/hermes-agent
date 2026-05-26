@@ -10,7 +10,18 @@
 #   - Minimal: just what the cloud gateway needs. Plan 009 owns this file.
 
 model:
-  default: us.anthropic.claude-sonnet-4-6
+  # Plan 010-B (2026-05-26): swap from Sonnet 4.6 to Llama 3.3 70B Bedrock
+  # for ~50-60% cost reduction + alignment with OSS-model thesis.
+  #
+  # Why 3.3-70B specifically: Llama 3.2 90B was marked LEGACY by AWS Bedrock
+  # mid-2026 (deprecation policy: "use it or lose it" — accounts that haven't
+  # called it in 30 days get ACCESS DENIED). Llama 3.1 70B has the same risk.
+  # Llama 3.3 70B is the current generation as of 2026-05-26 with confirmed
+  # tool-use support. Verified working via `aws bedrock-runtime converse`.
+  #
+  # Rollback: change to us.anthropic.claude-sonnet-4-6 + rebuild + redeploy.
+  # The bedrock_adapter call path is identical — only the model ID changes.
+  default: us.meta.llama3-3-70b-instruct-v1:0
   provider: bedrock
 
 # No providers / fallback_providers / credential_pool_strategies needed for

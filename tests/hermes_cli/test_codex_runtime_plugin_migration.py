@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 
 import pytest
 
+import hermes_cli.codex_runtime_plugin_migration as migration
 from hermes_cli.codex_runtime_plugin_migration import (
     MIGRATION_MARKER,
     MIGRATION_END_MARKER,
     _build_hermes_tools_mcp_entry,
     _format_toml_value,
+    _hermes_tools_python_executable,
     _looks_like_test_tempdir,
     _strip_existing_managed_block,
     _strip_unmanaged_plugin_tables,
@@ -121,6 +125,55 @@ class TestTranslateOneServer:
     def test_non_dict_input(self):
         cfg, skipped = _translate_one_server("x", "notadict")  # type: ignore[arg-type]
         assert cfg is None
+
+
+class TestHermesToolsPythonExecutable:
+    def test_prefers_repo_venv_python_over_current_interpreter(self, tmp_path):
+        root = tmp_path / "hermes-agent"
+        venv_python = root / "venv" / "bin" / "python3"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("#!/bin/sh\n")
+
+        chosen = _hermes_tools_python_executable(root, fallback="/usr/bin/python")
+
+        assert chosen == str(venv_python)
+
+    def test_falls_back_when_no_repo_venv_exists(self, tmp_path):
+        assert _hermes_tools_python_executable(tmp_path, fallback="/usr/bin/python") == "/usr/bin/python"
+
+    def test_ignores_non_file_venv_candidate(self, tmp_path):
+        root = tmp_path / "hermes-agent"
+        (root / "venv" / "bin" / "python3").mkdir(parents=True)
+        windows_python = root / "venv" / "Scripts" / "python.exe"
+        windows_python.parent.mkdir(parents=True)
+        windows_python.write_text("", encoding="utf-8")
+
+        chosen = _hermes_tools_python_executable(root, fallback="/usr/bin/python")
+
+        assert chosen == str(windows_python)
+
+
+class TestHermesToolsMcpEntry:
+    def test_entry_pins_source_root_cwd_and_pythonpath(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv(
+            "PYTHONPATH",
+            os.pathsep.join([
+                "/existing/path",
+                str(Path(migration.__file__).resolve().parent.parent),
+            ]),
+        )
+
+        entry = _build_hermes_tools_mcp_entry()
+
+        source_root = Path(migration.__file__).resolve().parent.parent
+        assert entry["args"] == ["-m", "agent.transports.hermes_tools_mcp_server"]
+        assert entry["cwd"] == str(source_root)
+        assert entry["command"] == _hermes_tools_python_executable(source_root)
+        assert entry["env"]["PYTHONPATH"].split(os.pathsep)[:2] == [
+            str(source_root),
+            "/existing/path",
+        ]
 
 
 # ---- TOML rendering ----
@@ -499,6 +552,11 @@ class TestMigrate:
         text = (tmp_path / "config.toml").read_text()
         assert "[mcp_servers.hermes-tools]" in text
         assert "hermes_tools_mcp_server" in text
+        # The callback must be launchable even when Hermes was invoked via
+        # /usr/bin/python and Codex starts the MCP server from an arbitrary
+        # project directory.
+        assert "cwd = " in text
+        assert "PYTHONPATH" in text
         # Must include startup + tool timeouts so codex doesn't give up
         assert "startup_timeout_sec" in text
         assert "tool_timeout_sec" in text

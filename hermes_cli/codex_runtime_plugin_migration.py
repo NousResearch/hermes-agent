@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -554,18 +555,41 @@ def _looks_like_test_tempdir(path: str) -> bool:
     return any(needle in normalized for needle in needles)
 
 
+def _hermes_tools_python_executable(source_root: Path, fallback: Optional[str] = None) -> str:
+    """Choose a Python that can run Hermes' hermes-tools MCP server.
+
+    The migration can be invoked from helper scripts running under a generic
+    system Python. Prefer the checkout's venv when present so the spawned MCP
+    server has Hermes' optional deps (notably mcp), then fall back to the
+    current interpreter for packaged installs.
+    """
+    candidates = [
+        source_root / "venv" / "bin" / "python3",
+        source_root / ".venv" / "bin" / "python3",
+        source_root / "venv" / "bin" / "python",
+        source_root / ".venv" / "bin" / "python",
+        source_root / "venv" / "Scripts" / "python.exe",
+        source_root / ".venv" / "Scripts" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return fallback or sys.executable
+
+
 def _build_hermes_tools_mcp_entry() -> dict:
     """Build the codex stdio-transport entry that launches Hermes' own
     tool surface as an MCP server. Codex's subprocess will call back into
     this for browser/web/delegate_task/vision/memory/skills tools.
 
-    The command runs the worktree's Python via the current sys.executable
-    so a hermes installed under /opt/, /usr/local/, or a venv all work.
-    HERMES_HOME and PYTHONPATH are passed through so the spawned process
-    sees the same config + module layout the user is running."""
-    import sys
+    Prefer the checkout venv Python when present, otherwise fall back to the
+    current interpreter so packaged installs still work. HERMES_HOME and
+    PYTHONPATH are passed through so the spawned process sees the same config
+    + module layout the user is running.
+    """
 
     env: dict[str, str] = {}
+
     # HERMES_HOME passes through IF SET so the MCP subprocess sees the same
     # config / auth / sessions DB as the parent CLI. Read from os.environ
     # (not get_hermes_home()) on purpose: when the env var is unset we want
@@ -584,18 +608,26 @@ def _build_hermes_tools_mcp_entry() -> dict:
         hermes_home = ""
     if hermes_home:
         env["HERMES_HOME"] = hermes_home
+    source_root = Path(__file__).resolve().parent.parent
     # PYTHONPATH passes through so a worktree-launched hermes finds the
-    # branch's modules instead of the installed package.
+    # branch's modules instead of the installed package. Always prepend the
+    # current source root too: Codex may launch this MCP server from an
+    # arbitrary project directory, and Hermes may have been invoked through a
+    # generic /usr/bin/python where -m agent.transports... is not otherwise
+    # importable.
+    pythonpath_parts = [str(source_root)]
     pythonpath = os.environ.get("PYTHONPATH")
     if pythonpath:
-        env["PYTHONPATH"] = pythonpath
+        pythonpath_parts.extend(p for p in pythonpath.split(os.pathsep) if p)
+    env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath_parts))
     # Quiet mode + redaction defaults so the MCP wire stays clean.
     env["HERMES_QUIET"] = "1"
     env["HERMES_REDACT_SECRETS"] = env.get("HERMES_REDACT_SECRETS", "true")
 
     out: dict[str, Any] = {
-        "command": sys.executable,
+        "command": _hermes_tools_python_executable(source_root),
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+        "cwd": str(source_root),
     }
     if env:
         out["env"] = env

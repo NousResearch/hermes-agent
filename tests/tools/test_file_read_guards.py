@@ -16,6 +16,7 @@ from unittest.mock import patch, MagicMock
 
 from tools.file_tools import (
     read_file_tool,
+    search_tool,
     write_file_tool,
     reset_file_dedup,
     _is_blocked_device,
@@ -53,6 +54,30 @@ def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
         content=content, total_lines=total_lines, file_size=file_size,
     )
     return fake
+
+
+class _FakeSearchMatch:
+    def __init__(self, path, line, content):
+        self.path = path
+        self.line_number = line
+        self.content = content
+
+
+class _FakeSearchResult:
+    def __init__(self, matches=None, total_count=None, truncated=False):
+        self.matches = matches or []
+        self.total_count = total_count if total_count is not None else len(self.matches)
+        self.truncated = truncated
+
+    def to_dict(self):
+        return {
+            "total_count": self.total_count,
+            "matches": [
+                {"path": m.path, "line": m.line_number, "content": m.content}
+                for m in self.matches
+            ],
+            "truncated": self.truncated,
+        }
 
 
 def _make_safe_tempdir(prefix: str) -> str:
@@ -205,6 +230,202 @@ class TestCharacterCountGuard(unittest.TestCase):
         result = json.loads(read_file_tool("/tmp/justunder.txt", task_id="under"))
         self.assertNotIn("error", result)
         self.assertIn("content", result)
+
+
+class TestResultShaping(unittest.TestCase):
+    """Large file/search outputs get compact previews with explicit escape hatches."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._old_disable_compaction = os.environ.pop(
+            "HERMES_DISABLE_RESULT_COMPACTION",
+            None,
+        )
+
+    def tearDown(self):
+        _read_tracker.clear()
+        if self._old_disable_compaction is None:
+            os.environ.pop("HERMES_DISABLE_RESULT_COMPACTION", None)
+        else:
+            os.environ["HERMES_DISABLE_RESULT_COMPACTION"] = self._old_disable_compaction
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_targeted_read_stays_exact(self, mock_ops):
+        content = "\n".join(f"{i:6d}|line {i}" for i in range(1, 40))
+        mock_ops.return_value = _make_fake_ops(
+            content=content,
+            total_lines=40,
+            file_size=len(content),
+        )
+
+        result = json.loads(read_file_tool(
+            "/tmp/targeted.txt",
+            offset=10,
+            limit=40,
+            task_id="targeted-read",
+        ))
+
+        self.assertNotIn("compacted", result)
+        self.assertEqual(result["content"], content)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_large_read_auto_compacts_with_full_hint(self, mock_ops):
+        content = "\n".join(
+            f"{i:6d}|{('large line %04d ' % i) + ('x' * 180)}"
+            for i in range(1, 260)
+        )
+        mock_ops.return_value = _make_fake_ops(
+            content=content,
+            total_lines=260,
+            file_size=len(content),
+        )
+
+        result = json.loads(read_file_tool(
+            "/tmp/large.txt",
+            limit=500,
+            task_id="large-read",
+        ))
+
+        self.assertTrue(result["compacted"])
+        self.assertLess(len(result["content"]), len(content))
+        self.assertIn("result_mode='full'", result["_hint"])
+        self.assertIn("offset=", result["_hint"])
+        self.assertGreater(result["omitted_lines_from_window"], 0)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_large_read_full_mode_preserves_exact_window(self, mock_ops):
+        content = "\n".join(
+            f"{i:6d}|{('large line %04d ' % i) + ('x' * 180)}"
+            for i in range(1, 260)
+        )
+        mock_ops.return_value = _make_fake_ops(
+            content=content,
+            total_lines=260,
+            file_size=len(content),
+        )
+
+        result = json.loads(read_file_tool(
+            "/tmp/large.txt",
+            limit=500,
+            task_id="large-read-full",
+            result_mode="full",
+        ))
+
+        self.assertNotIn("compacted", result)
+        self.assertEqual(result["content"], content)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_disable_result_compaction_preserves_large_read_preview_mode(self, mock_ops):
+        content = "\n".join(
+            f"{i:6d}|{('large line %04d ' % i) + ('x' * 180)}"
+            for i in range(1, 260)
+        )
+        mock_ops.return_value = _make_fake_ops(
+            content=content,
+            total_lines=260,
+            file_size=len(content),
+        )
+
+        with patch.dict(os.environ, {"HERMES_DISABLE_RESULT_COMPACTION": " YeS "}):
+            result = json.loads(read_file_tool(
+                "/tmp/large.txt",
+                limit=500,
+                task_id="large-read-disabled",
+                result_mode="preview",
+            ))
+
+        self.assertNotIn("compacted", result)
+        self.assertEqual(result["content"], content)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_falsey_disable_result_compaction_preserves_large_read_auto_compaction(self, mock_ops):
+        content = "\n".join(
+            f"{i:6d}|{('large line %04d ' % i) + ('x' * 180)}"
+            for i in range(1, 260)
+        )
+        mock_ops.return_value = _make_fake_ops(
+            content=content,
+            total_lines=260,
+            file_size=len(content),
+        )
+
+        with patch.dict(os.environ, {"HERMES_DISABLE_RESULT_COMPACTION": "off"}):
+            result = json.loads(read_file_tool(
+                "/tmp/large.txt",
+                limit=500,
+                task_id="large-read-falsey",
+            ))
+
+        self.assertTrue(result["compacted"])
+        self.assertLess(len(result["content"]), len(content))
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_small_search_stays_exact(self, mock_ops):
+        matches = [
+            _FakeSearchMatch("/tmp/a.py", 3, "needle = 1"),
+            _FakeSearchMatch("/tmp/b.py", 7, "needle = 2"),
+        ]
+        fake = MagicMock()
+        fake.search.return_value = _FakeSearchResult(matches=matches)
+        mock_ops.return_value = fake
+
+        result = json.loads(search_tool(
+            "needle",
+            path="/tmp",
+            output_mode="content",
+            task_id="small-search",
+        ))
+
+        self.assertNotIn("compacted", result)
+        self.assertEqual(len(result["matches"]), 2)
+        self.assertEqual(result["matches"][0]["content"], "needle = 1")
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_large_search_auto_compacts_with_expansion_hint(self, mock_ops):
+        matches = [
+            _FakeSearchMatch(f"/tmp/file_{i}.py", i, "needle " + ("x" * 700))
+            for i in range(1, 45)
+        ]
+        fake = MagicMock()
+        fake.search.return_value = _FakeSearchResult(matches=matches, total_count=44)
+        mock_ops.return_value = fake
+
+        result = json.loads(search_tool(
+            "needle",
+            path="/tmp",
+            limit=50,
+            output_mode="content",
+            task_id="large-search",
+        ))
+
+        self.assertTrue(result["compacted"])
+        self.assertLess(len(result["matches"]), len(matches))
+        self.assertIn("result_mode='full'", result["_hint"])
+        self.assertIn("output_mode='files_only'", result["_hint"])
+        self.assertGreater(result["omitted_matches"], 0)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_disable_result_compaction_preserves_large_search_auto_result(self, mock_ops):
+        matches = [
+            _FakeSearchMatch(f"/tmp/file_{i}.py", i, "needle " + ("x" * 700))
+            for i in range(1, 45)
+        ]
+        fake = MagicMock()
+        fake.search.return_value = _FakeSearchResult(matches=matches, total_count=44)
+        mock_ops.return_value = fake
+
+        with patch.dict(os.environ, {"HERMES_DISABLE_RESULT_COMPACTION": "on"}):
+            result = json.loads(search_tool(
+                "needle",
+                path="/tmp",
+                limit=50,
+                output_mode="content",
+                task_id="large-search-disabled",
+            ))
+
+        self.assertNotIn("compacted", result)
+        self.assertEqual(len(result["matches"]), len(matches))
+        self.assertEqual(result["matches"][0]["content"], matches[0].content)
 
 
 # ---------------------------------------------------------------------------

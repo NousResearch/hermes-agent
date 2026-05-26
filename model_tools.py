@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.token_optimization_metrics import record_tool_result_metric
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -845,6 +846,19 @@ def handle_function_call(
                 user_task=user_task,
             )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+
+        try:
+            record_tool_result_metric(
+                tool_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                duration_ms=duration_ms,
+            )
+        except Exception as _metrics_err:
+            logger.debug("token optimization metric error: %s", _metrics_err)
 
         try:
             from hermes_cli.plugins import invoke_hook

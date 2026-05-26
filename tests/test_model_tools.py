@@ -112,6 +112,53 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_token_metrics_observe_dispatch_result_before_plugin_hooks(self, monkeypatch):
+        events = []
+
+        def fake_metric(**kwargs):
+            events.append(("metric", kwargs["result"], kwargs["duration_ms"]))
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            events.append((hook_name, kwargs.get("result"), kwargs.get("duration_ms")))
+            if hook_name == "transform_tool_result":
+                return ['{"rewritten":true}']
+            return []
+
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *a, **kw: '{"ok":true}')
+        monkeypatch.setattr("model_tools.record_tool_result_metric", fake_metric)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+
+        result = handle_function_call(
+            "web_search",
+            {"q": "do not store this raw value"},
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+        )
+
+        assert result == '{"rewritten":true}'
+        assert [event[0] for event in events] == [
+            "pre_tool_call",
+            "metric",
+            "post_tool_call",
+            "transform_tool_result",
+        ]
+        assert events[1][1] == '{"ok":true}'
+        assert isinstance(events[1][2], int)
+        assert events[1][2] == events[2][2] == events[3][2]
+
+    def test_token_metrics_failure_does_not_change_tool_result(self, monkeypatch):
+        def broken_metric(**kwargs):
+            raise RuntimeError("metrics sink unavailable")
+
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *a, **kw: '{"ok":true}')
+        monkeypatch.setattr("model_tools.record_tool_result_metric", broken_metric)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *a, **kw: [])
+
+        result = handle_function_call("web_search", {"q": "test"}, task_id="task-1")
+
+        assert result == '{"ok":true}'
+
 
 # =========================================================================
 # Agent loop tools

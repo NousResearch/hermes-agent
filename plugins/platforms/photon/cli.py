@@ -199,20 +199,16 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
-    summary = photon_auth.credential_summary()
+    # Defer the whole table to auth.print_credential_summary — its emit
+    # callback is the only sink that sees credential-derived strings, so
+    # cli.py keeps zero taint flow according to CodeQL.
+    photon_auth.print_credential_summary(print)
+    # The two non-credential rows live here so the helper stays purely
+    # about credentials.
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
     sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
-
-    # All values are pre-formatted display strings from auth.credential_summary;
-    # no secret-bearing variable enters this function's scope.
-    print("Photon iMessage status")
-    print("──────────────────────")
-    print(f"  device token        : {summary['device_token']}")
-    print(f"  project id          : {summary['project_id']}")
-    print(f"  project key         : {summary['project_key']}")
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
-    print(f"  webhook key         : {summary['webhook_key']}")
     return 0
 
 

@@ -348,6 +348,19 @@ class TestExtractMedia:
         assert media == [("/tmp/x.jpg", False)]  # voice flag stays False
         assert "[[as_document]]" not in cleaned
 
+    @pytest.mark.parametrize(
+        "ext",
+        ["md", "json", "yaml", "yml", "toml", "log"],
+    )
+    def test_media_tag_accepts_text_config_extensions(self, ext):
+        """MEDIA: tags must extract text/config artifact paths so callers can
+        deliver them as file attachments instead of leaving the raw tag in
+        the platform message body (see issue #32601, bug 1)."""
+        content = f"MEDIA:/tmp/notes.{ext}"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(f"/tmp/notes.{ext}", False)]
+        assert "MEDIA:" not in cleaned
+
     def test_both_directives_can_coexist(self):
         """A response could (rarely) contain both [[audio_as_voice]] for an
         ogg file AND [[as_document]] for an attached image. The voice flag

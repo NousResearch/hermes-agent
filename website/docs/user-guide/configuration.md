@@ -1621,6 +1621,15 @@ approvals:
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 
+Hermes also has a small deterministic safe-inspection allowlist that applies before manual or smart approval prompts. This is not YOLO mode: hardline blocks and destructive patterns still apply. The current allowlist covers read-only SQLite schema inspection through local `python -c` or simple Python heredoc snippets when all of these are true:
+
+- the SQLite connection URI uses `mode=ro` and/or `immutable=1`, with `uri=True`
+- the script enables `PRAGMA query_only = ON`
+- SQL is limited to schema metadata: `sqlite_master`, `PRAGMA table_info(...)`, or `PRAGMA schema_version`
+- there are no table row reads, writes, migrations, `VACUUM`, `ATTACH`, secrets/env access, network modules, or filesystem mutation calls
+
+Routine read-only commands such as `git status`, `git diff`, `git log`, `git show`, `git branch --show-current`, `py_compile`, targeted tests, full test suites, static grep/search, read-only helper imports, and `/tmp` inspection output are expected to run without human approval unless they include a separately flagged dangerous construct. Authority-level actions still require the user: commits, pushes, merges, deletes/moves, branch deletion, `git clean`, `git reset`, force-push, `.env`/secrets/config/Railway changes, DB writes/schema/storage mutation, raw X export changes, app runtime startup, Telegram/runtime/external-service actions, and ambiguous product decisions.
+
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::

@@ -3040,6 +3040,21 @@ def install_from_quarantine(
         except OSError:
             pass
 
+    # Reject symlinks inside the quarantined skill before moving it.
+    # A malicious skill bundle could include a symlink pointing outside the
+    # skills tree; its target contents would then be copied into skills/ and
+    # leaked to the agent on the next skill_view call.
+    for entry in quarantine_path.rglob("*"):
+        if not _is_path_redirect(entry):
+            continue
+        try:
+            rel = entry.relative_to(quarantine_resolved)
+        except ValueError:
+            rel = entry
+        raise ValueError(
+            f"Installed skill contains symlinks, which is not allowed: {rel}"
+        )
+
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))
 

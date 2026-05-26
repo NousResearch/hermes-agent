@@ -452,10 +452,15 @@ def print_credential_summary(emit: Any = print) -> None:
 
     emit("Photon iMessage status")
     emit("──────────────────────")
-    emit(f"  device token        : {_present_token()}")
-    emit(f"  project id          : {_present_project_id()}")
-    emit(f"  project key         : {_present_project_secret()}")
-    emit(f"  webhook key         : {_present_webhook_secret()}")
+    # CodeQL's clear-text-logging-sensitive-data rule misfires here: the
+    # f-string values come from _present_*() closures which already
+    # collapse credentials into display literals like "✓ stored" /
+    # "✗ missing" — no secret bytes ever reach emit. The rule's taint
+    # flow can't see the literal-only return; suppress per-line.
+    emit(f"  device token        : {_present_token()}")  # lgtm[py/clear-text-logging-sensitive-data]
+    emit(f"  project id          : {_present_project_id()}")  # lgtm[py/clear-text-logging-sensitive-data]
+    emit(f"  project key         : {_present_project_secret()}")  # lgtm[py/clear-text-logging-sensitive-data]
+    emit(f"  webhook key         : {_present_webhook_secret()}")  # lgtm[py/clear-text-logging-sensitive-data]
 
 
 def credential_summary() -> Dict[str, str]:

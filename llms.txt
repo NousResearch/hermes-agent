@@ -1,0 +1,11 @@
+# hermes-agent (Hit Network fork)
+
+## Documentation index
+- Upstream docs: website/
+- Hit Network: docs/hit-network/
+  - README: docs/hit-network/README.md
+  - Architecture: docs/hit-network/architecture.md
+  - Fork policy: docs/hit-network/fork-policy.md
+  - Skills loading: docs/hit-network/skills-loading.md
+  - Prompt-builder integration: docs/hit-network/prompt-builder-integration.md
+  - Cron conventions: docs/hit-network/cron-conventions.md

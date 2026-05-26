@@ -86,6 +86,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -2296,6 +2297,94 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+def _cua_driver_preflight(tool_name: str, args: dict) -> Optional[dict]:
+    """Pre-flight guard for the cua-driver MCP server.
+
+    Returns ``None`` when the call is safe to dispatch, or an error dict
+    (``{"error": "<CODE>", ...}``) when the call would trigger a macOS
+    NSWorkspace failure mode that pops a persistent system dialog
+    (file-not-found, app-not-installed) and blocks the UI until manually
+    dismissed.
+
+    Card kn716mkjxbyzzxgsnf0a7hvexn87dbc4. SOUL.md Rule #2 stays as the
+    discipline patch; this is the structural guard.
+
+    Covers ``launch_app``:
+      - ``urls`` entries that are local paths must exist on disk
+        (``http(s)://`` URLs and any other scheme are passed through).
+      - ``bundle_id`` must resolve via ``mdfind``; ``name`` must resolve
+        against /Applications, /System/Applications, ~/Applications.
+    """
+    if tool_name != "launch_app":
+        return None
+    if not isinstance(args, dict):
+        return None
+
+    urls = args.get("urls")
+    if isinstance(urls, list):
+        for raw in urls:
+            if not isinstance(raw, str) or not raw:
+                continue
+            lower = raw.lower()
+            if lower.startswith(("http://", "https://", "about:")):
+                continue
+            path = raw[len("file://"):] if lower.startswith("file://") else raw
+            path = os.path.expanduser(path)
+            if not os.path.exists(path):
+                return {
+                    "error": "FILE_NOT_FOUND",
+                    "path": raw,
+                    "message": (
+                        f"cua-driver launch_app pre-flight: path {raw!r} does "
+                        "not exist. Skipped to avoid NSWorkspace file-not-found "
+                        "dialog (SOUL.md Rule #2 / card kn716mkjxby)."
+                    ),
+                }
+
+    bundle_id = args.get("bundle_id")
+    if isinstance(bundle_id, str) and bundle_id.strip():
+        try:
+            out = subprocess.run(
+                ["mdfind", f"kMDItemCFBundleIdentifier == '{bundle_id}'"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0 and not out.stdout.strip():
+                return {
+                    "error": "APP_NOT_INSTALLED",
+                    "bundle_id": bundle_id,
+                    "message": (
+                        f"cua-driver launch_app pre-flight: no app with "
+                        f"bundle_id {bundle_id!r} is installed. Skipped to "
+                        "avoid NSWorkspace launch failure."
+                    ),
+                }
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            # mdfind missing or hung: fall through, let cua-driver try.
+            pass
+
+    name = args.get("name")
+    if isinstance(name, str) and name.strip() and not bundle_id:
+        candidates = [
+            f"/Applications/{name}.app",
+            f"/Applications/Utilities/{name}.app",
+            f"/System/Applications/{name}.app",
+            f"/System/Applications/Utilities/{name}.app",
+            os.path.expanduser(f"~/Applications/{name}.app"),
+        ]
+        if not any(os.path.exists(p) for p in candidates):
+            return {
+                "error": "APP_NOT_INSTALLED",
+                "name": name,
+                "message": (
+                    f"cua-driver launch_app pre-flight: no app named "
+                    f"{name!r} found under /Applications, /System/Applications, "
+                    "or ~/Applications. Skipped to avoid NSWorkspace failure."
+                ),
+            }
+
+    return None
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2304,6 +2393,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        # cua-driver pre-flight: short-circuit launch_app/focus_app calls
+        # that would trigger a persistent macOS NSWorkspace dialog.
+        # Card kn716mkjxbyzzxgsnf0a7hvexn87dbc4. The MCP server is never
+        # invoked on a preflight miss — the structured error is enough
+        # for the agent to recover without UI cleanup.
+        if server_name == "cua-driver":
+            preflight = _cua_driver_preflight(tool_name, args or {})
+            if preflight is not None:
+                return json.dumps(preflight, ensure_ascii=False)
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).

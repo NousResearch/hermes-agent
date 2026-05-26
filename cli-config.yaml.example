@@ -528,6 +528,8 @@ group_sessions_per_user: true
 # on first token, then progressively edits it as more tokens arrive.
 # Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
 # For Telegram, partial edits are sent as plain text and only the final edit uses MarkdownV2.
+# Strongly recommended for Feishu/Lark — enables native CardKit streaming cards
+# with typewriter effect instead of progressive message edits.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText

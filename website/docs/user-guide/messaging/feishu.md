@@ -363,6 +363,25 @@ If the Feishu API rejects the post payload (e.g., due to unsupported markdown co
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
+## Streaming Cards (Typewriter Effect)
+
+When streaming is enabled in `config.yaml`, the Feishu adapter uses **CardKit streaming cards** to deliver a native typewriter effect. Instead of repeatedly editing a message, the adapter:
+
+```yaml
+streaming:
+  enabled: true
+```
+
+1. Creates a streaming card via the CardKit API with `streaming_mode: true`
+2. Appends content progressively via the CardKit element content API
+3. Finalizes the card by disabling streaming mode when the response completes
+
+This provides a smooth, real-time typing animation with a native loading indicator — no cursor character (`▉`) is needed. The chat list preview shows `[生成中...]` while the response is being generated.
+
+:::tip
+Streaming is strongly recommended for Feishu. Other platforms (Telegram, Discord, etc.) use progressive message edits with a cursor character, but Feishu's CardKit provides a much smoother native experience.
+:::
+
 ## Processing Status Reactions
 
 While the agent is working, the bot shows a `Typing` reaction on your message. It's cleared when the reply arrives, or replaced with `CrossMark` if processing failed.
@@ -521,6 +540,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | `Webhook rejected: invalid verification token` | Ensure `FEISHU_VERIFICATION_TOKEN` matches the token in your Feishu app's Event Subscriptions config |
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
+| Streaming cards not working | Ensure `streaming.enabled: true` in `config.yaml` and that `lark_oapi` is installed with CardKit support. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
 | Bot identity not auto-detected | Usually a transient network issue reaching Feishu's bot info endpoint. Set `FEISHU_BOT_OPEN_ID` and `FEISHU_BOT_NAME` manually as a workaround. |
 | Peer bot messages still ignored after enabling `FEISHU_ALLOW_BOTS` | Hermes can't identify itself yet — set `FEISHU_BOT_OPEN_ID` (and `FEISHU_BOT_USER_ID` if your app uses `sender_id_type=user_id`). |

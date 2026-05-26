@@ -251,3 +251,73 @@ class TestUsageAccountSection:
         assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
+
+
+class _Bucket:
+    """Minimal RateLimitBucket stand-in (limit + usage_pct)."""
+
+    def __init__(self, limit, remaining):
+        self.limit = limit
+        self.remaining = remaining
+
+    @property
+    def used(self):
+        return max(0, self.limit - self.remaining)
+
+    @property
+    def usage_pct(self):
+        return (self.used / self.limit) * 100.0 if self.limit > 0 else 0.0
+
+
+class _RL:
+    def __init__(self, has_data, rmin, rhour, tmin, thour):
+        self.has_data = has_data
+        self.requests_min = rmin
+        self.requests_hour = rhour
+        self.tokens_min = tmin
+        self.tokens_hour = thour
+
+
+class _Window:
+    def __init__(self, used_percent):
+        self.used_percent = used_percent
+
+
+class _Snapshot:
+    def __init__(self, windows):
+        self.windows = windows
+
+
+class TestPeakQuotaPct:
+    """display.show_quota_pct data source: agent.gateway.run._peak_quota_pct."""
+
+    def test_peak_across_rate_limit_buckets(self):
+        from gateway.run import _peak_quota_pct
+        rl = _RL(
+            True,
+            _Bucket(100, 10),    # 90%
+            _Bucket(1000, 900),  # 10%
+            _Bucket(0, 0),       # no data — skipped
+            _Bucket(50, 49),     # 2%
+        )
+        assert _peak_quota_pct(rl, None) == 90.0
+
+    def test_rate_limit_takes_precedence_over_account(self):
+        from gateway.run import _peak_quota_pct
+        rl = _RL(True, _Bucket(100, 10), _Bucket(0, 0), _Bucket(0, 0), _Bucket(0, 0))
+        snap = _Snapshot([_Window(42.0)])
+        assert _peak_quota_pct(rl, snap) == 90.0
+
+    def test_account_usage_fallback_when_no_rate_limit_headers(self):
+        from gateway.run import _peak_quota_pct
+        rl = _RL(False, _Bucket(0, 0), _Bucket(0, 0), _Bucket(0, 0), _Bucket(0, 0))
+        snap = _Snapshot([_Window(None), _Window(42.0), _Window(17.0)])
+        assert _peak_quota_pct(rl, snap) == 42.0
+
+    def test_none_when_no_signal_at_all(self):
+        """Graceful degrade: no rate-limit headers and no account snapshot."""
+        from gateway.run import _peak_quota_pct
+        rl = _RL(False, _Bucket(0, 0), _Bucket(0, 0), _Bucket(0, 0), _Bucket(0, 0))
+        assert _peak_quota_pct(rl, None) is None
+        assert _peak_quota_pct(None, None) is None
+        assert _peak_quota_pct(rl, _Snapshot([_Window(None)])) is None

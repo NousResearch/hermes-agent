@@ -999,6 +999,14 @@ display:
   #   false: Hide reasoning (default)
   show_reasoning: false
 
+  # Surface a compact quota-usage percentage line in /usage (peak rate-limit
+  # bucket, else account-usage percent). Degrades silently when the provider
+  # emits no rate-limit headers and no account-usage signal is available.
+  # Overridable per-platform via display.platforms.<platform>.show_quota_pct.
+  #   true:  Show "Quota used: N%"
+  #   false: Hide (default)
+  show_quota_pct: false
+
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.

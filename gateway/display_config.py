@@ -33,6 +33,10 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "show_reasoning": False,
+    # When true, surface a compact quota-usage percentage line in the agent
+    # UI (e.g. /usage). Off by default. Degrades silently when the provider
+    # emits no rate-limit headers and no account-usage signal is available.
+    "show_quota_pct": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter controls. These default on for
@@ -224,6 +228,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "show_quota_pct",
     }:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}

@@ -1394,6 +1394,40 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _peak_quota_pct(rl_state, account_snapshot) -> "float | None":
+    """Return the most-constrained quota usage percentage, or None.
+
+    Reads existing precomputed signals only (display-layer feature — no
+    tracking changes):
+      * peak ``RateLimitBucket.usage_pct`` across rate-limit buckets, when the
+        provider emitted rate-limit headers (``rl_state.has_data``);
+      * else the max ``AccountUsageWindow.used_percent`` from the account-usage
+        snapshot, when available.
+
+    Returns None when there is no quota signal at all (e.g. a provider that
+    emits no rate-limit headers and exposes no account usage) so callers can
+    degrade gracefully without rendering a misleading 0%.
+    """
+    pct: float | None = None
+    if rl_state is not None and getattr(rl_state, "has_data", False):
+        for bucket in (
+            getattr(rl_state, "requests_min", None),
+            getattr(rl_state, "requests_hour", None),
+            getattr(rl_state, "tokens_min", None),
+            getattr(rl_state, "tokens_hour", None),
+        ):
+            if bucket is not None and getattr(bucket, "limit", 0) > 0:
+                bp = bucket.usage_pct
+                pct = bp if pct is None else max(pct, bp)
+    if pct is None and account_snapshot is not None:
+        windows = getattr(account_snapshot, "windows", None) or []
+        for window in windows:
+            up = getattr(window, "used_percent", None)
+            if up is not None:
+                pct = float(up) if pct is None else max(pct, float(up))
+    return pct
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -13120,6 +13154,7 @@ class GatewayRunner:
         # Fetch account usage off the event loop so slow provider APIs don't
         # block the gateway. Failures are non-fatal -- account_lines stays [].
         account_lines: list[str] = []
+        account_snapshot = None
         if provider:
             try:
                 account_snapshot = await asyncio.to_thread(
@@ -13142,6 +13177,20 @@ class GatewayRunner:
                 from agent.rate_limit_tracker import format_rate_limit_compact
                 lines.append(t("gateway.usage.rate_limits", state=format_rate_limit_compact(rl_state)))
                 lines.append("")
+
+            # Quota usage percentage (display.show_quota_pct) — opt-in compact
+            # surface of the most-constrained quota. Off by default; silently
+            # omitted when no quota signal exists (graceful degrade). Wrapped so
+            # a display-config quirk can never break the /usage response.
+            try:
+                from gateway.display_config import resolve_display_setting as _rds
+                if _rds(_load_gateway_config(), _platform_config_key(source.platform), "show_quota_pct", False):
+                    _qpct = _peak_quota_pct(rl_state, account_snapshot)
+                    if _qpct is not None:
+                        lines.append(t("gateway.usage.quota_pct", pct=f"{_qpct:.0f}"))
+                        lines.append("")
+            except Exception:
+                pass
 
             # Session token usage — detailed breakdown matching CLI
             input_tokens = getattr(agent, "session_input_tokens", 0) or 0

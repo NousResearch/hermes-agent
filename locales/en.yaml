@@ -316,6 +316,7 @@ gateway:
 
   usage:
     rate_limits:              "⏱️ **Rate Limits:** {state}"
+    quota_pct:                "📈 **Quota used:** {pct}%"
     header_session:           "📊 **Session Token Usage**"
     label_model:              "Model: `{model}`"
     label_input_tokens:       "Input tokens: {count}"

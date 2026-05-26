@@ -72,12 +72,14 @@ class TestContextCommand:
         runner = _make_runner(SK, cached_agent=_make_agent())
         result = await runner._handle_context_command(SimpleNamespace(source="src"))
 
-        assert "Context composition" in result
+        assert "🧠 Context Window" in result
         assert "Model: openai-codex:gpt-5.5" in result
-        assert "Top-level buckets" in result
+        assert "📦 Buckets" in result
         assert "System prompt" in result
         assert "Tools schema" in result
-        assert "Largest tool results in messages" in result
+        assert "📎 Heaviest tool results" in result
+        assert "tok (" in result
+        assert "[#" not in result
         assert "terminal" in result
 
     @pytest.mark.asyncio
@@ -85,6 +87,6 @@ class TestContextCommand:
         runner = _make_runner(SK, history=[{"role": "user", "content": "hello"}])
         result = await runner._handle_context_command(SimpleNamespace(source="src"))
 
-        assert "Context composition" in result
+        assert "🧠 Context Window" in result
         assert "Estimated messages:" in result
         assert "Detailed system/tool breakdown is available after the first agent turn." in result

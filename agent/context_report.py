@@ -40,6 +40,12 @@ def _format_row(label: str, tokens: int, total: int, note: str = "") -> str:
     return f"  {label:<22} {_fmt_tokens(tokens):>10} tok  {_bar(percent)} {percent:5.1f}%{suffix}"
 
 
+def _format_compact_row(label: str, tokens: int, denominator: int, note: str = "") -> str:
+    percent = _pct(tokens, denominator)
+    suffix = f", {note}" if note else ""
+    return f"{label}: {_fmt_tokens(tokens)} tok ({percent:.1f}%{suffix})"
+
+
 def _tool_function_name(tool: Any) -> str:
     if not isinstance(tool, dict):
         return "tool"
@@ -234,7 +240,112 @@ def build_context_report(
     }
 
 
-def format_context_report(report: Dict[str, Any]) -> str:
+def format_context_report_compact(report: Dict[str, Any]) -> str:
+    """Return a Telegram-friendly context report without alignment bars."""
+    total = int(report.get("estimated_total") or 0)
+    context_length = int(report.get("context_length") or 0)
+    denominator = context_length or total
+    window_pct = _pct(total, context_length)
+    lines: list[str] = []
+
+    model = report.get("model") or "unknown"
+    provider = report.get("provider") or ""
+    title_model = f"{provider}:{model}" if provider and provider not in str(model) else str(model)
+
+    lines.append("🧠 Context Window")
+    lines.append(f"Model: {title_model}")
+    if context_length:
+        lines.append(f"Estimate: {_fmt_tokens(total)} / {_fmt_tokens(context_length)} tok ({window_pct:.1f}%)")
+    else:
+        lines.append(f"Estimate: {_fmt_tokens(total)} tok")
+
+    threshold = int(report.get("threshold_tokens") or 0)
+    if threshold:
+        lines.append(f"Compression threshold: {_fmt_tokens(threshold)} tok")
+    last_prompt = int(report.get("last_prompt_tokens") or 0)
+    if last_prompt and abs(last_prompt - total) > max(1024, int(total * 0.05)):
+        lines.append(f"Last provider prompt: {_fmt_tokens(last_prompt)} tok")
+    compressions = int(report.get("compression_count") or 0)
+    if compressions:
+        lines.append(f"Compressions: {compressions}")
+
+    components = report.get("components") or {}
+    lines.append("")
+    lines.append("📦 Buckets")
+    lines.append(_format_compact_row("System prompt", int(components.get("system_prompt") or 0), denominator))
+    lines.append(_format_compact_row(
+        "Tools schema",
+        int(components.get("tools_schema") or 0),
+        denominator,
+        f"{(report.get('tools') or {}).get('count', 0)} tools",
+    ))
+    lines.append(_format_compact_row("Messages", int(components.get("messages") or 0), denominator))
+
+    system_parts = report.get("system_parts") or {}
+    if any(system_parts.values()):
+        lines.append("")
+        lines.append("🧩 System prompt")
+        for label, key in (("Stable", "stable"), ("Context files", "context"), ("Volatile", "volatile")):
+            value = int(system_parts.get(key) or 0)
+            if value:
+                lines.append(_format_compact_row(label, value, denominator))
+
+    message_info = report.get("message_info") or {}
+    role_totals = message_info.get("role_totals") or {}
+    role_counts = message_info.get("role_counts") or {}
+    if role_totals:
+        lines.append("")
+        lines.append("💬 Messages")
+        for role, tokens in sorted(role_totals.items(), key=lambda item: item[1], reverse=True):
+            lines.append(_format_compact_row(f"{role} ({role_counts.get(role, 0)})", int(tokens), denominator))
+
+    tools = report.get("tools") or {}
+    if tools.get("top"):
+        lines.append("")
+        lines.append("🛠 Heaviest tool schemas")
+        for item in tools["top"][:5]:
+            lines.append(_format_compact_row(str(item["name"])[:28], int(item["tokens"]), denominator))
+
+    if message_info.get("top_tool_results"):
+        lines.append("")
+        lines.append("📎 Heaviest tool results")
+        for item in message_info["top_tool_results"][:5]:
+            lines.append(_format_compact_row(
+                str(item["tool"])[:28],
+                int(item["tokens"]),
+                denominator,
+                f"msg #{item['index']}",
+            ))
+
+    skills_index = report.get("skills_index") or {}
+    loaded_skills = message_info.get("loaded_skills") or []
+    if int(skills_index.get("tokens") or 0) or loaded_skills:
+        lines.append("")
+        lines.append("🎯 Skills")
+        if int(skills_index.get("tokens") or 0):
+            lines.append(_format_compact_row("Skills index", int(skills_index["tokens"]), denominator))
+        for item in loaded_skills[:5]:
+            lines.append(_format_compact_row(
+                str(item["name"])[:28],
+                int(item["tokens"]),
+                denominator,
+                f"loaded, msg #{item['index']}",
+            ))
+        if skills_index.get("entries"):
+            names = ", ".join(
+                f"{item['name']} ~{_fmt_tokens(int(item['tokens']))} tok"
+                for item in skills_index["entries"][:3]
+            )
+            if names:
+                lines.append(f"Index entries: {names}")
+
+    return "\n".join(lines)
+
+
+def format_context_report(report: Dict[str, Any], *, compact: bool = False) -> str:
+    if compact:
+        return format_context_report_compact(report)
+
     total = int(report.get("estimated_total") or 0)
     context_length = int(report.get("context_length") or 0)
     window_pct = _pct(total, context_length)

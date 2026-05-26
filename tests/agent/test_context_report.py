@@ -92,3 +92,12 @@ def test_context_report_breaks_down_prompt_tools_messages_and_skills():
     assert "Largest tool results in messages" in rendered
     assert "Skill-related context" in rendered
     assert "hermes-agent" in rendered
+
+    compact = format_context_report(report, compact=True)
+    assert "🧠 Context Window" in compact
+    assert "📦 Buckets" in compact
+    assert "System prompt:" in compact
+    assert "tok (" in compact
+    assert "[#" not in compact
+    assert "🎯 Skills" in compact
+    assert "hermes-agent" in compact

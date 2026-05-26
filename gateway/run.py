@@ -13423,8 +13423,8 @@ class GatewayRunner:
                 msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool", "system"}]
                 approx = estimate_messages_tokens_rough(msgs)
                 return (
-                    "Context composition\n"
-                    f"Estimated messages: {approx:,} tokens\n"
+                    "🧠 Context Window\n"
+                    f"Estimated messages: {approx:,} tok\n"
                     f"Messages: {len(msgs)}\n"
                     "Detailed system/tool breakdown is available after the first agent turn."
                 )
@@ -13434,7 +13434,7 @@ class GatewayRunner:
             from agent.context_report import build_context_report, format_context_report
 
             report = build_context_report(agent, messages)
-            return format_context_report(report)
+            return format_context_report(report, compact=True)
         except Exception as e:
             logger.warning("Context command failed: %s", e)
             return f"Context report failed: {e}"

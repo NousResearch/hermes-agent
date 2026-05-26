@@ -2857,6 +2857,27 @@ class AIAgent:
                         return True
             except Exception as shared_exc:
                 logger.debug("Nous shared credential import also failed: %s", shared_exc)
+            # ── Last resort: request gateway restart ─────────────────
+            # Every credential path has been exhausted.  Write a restart
+            # marker so the GatewayRunner's next message handler can
+            # auto-trigger a gateway restart — the process restart is
+            # the only reliable way to clear stale token caches, expired
+            # refresh tokens, and stuck credential-manager state.
+            try:
+                from hermes_constants import get_hermes_home
+                _marker = get_hermes_home() / ".auth_restart_requested"
+                _marker.write_text(
+                    json.dumps({
+                        "reason": "nous_auth_exhausted",
+                        "timestamp": __import__("time").time(),
+                    })
+                )
+                logger.warning(
+                    "All Nous credential refresh paths exhausted — wrote "
+                    ".auth_restart_requested marker for gateway auto-restart."
+                )
+            except Exception as marker_exc:
+                logger.debug("Failed to write auth restart marker: %s", marker_exc)
             return False
 
         api_key = creds.get("api_key")

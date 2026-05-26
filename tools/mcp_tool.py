@@ -2040,14 +2040,27 @@ def _handle_auth_error_and_retry(
             loop = _mcp_loop
             if loop is not None and loop.is_running():
                 loop.call_soon_threadsafe(srv._reconnect_event.set)
+
                 # Wait briefly for the session to come back ready. Bounded
                 # so that a stuck reconnect falls through to the error
-                # path rather than hanging the caller.
-                deadline = time.monotonic() + 15
-                while time.monotonic() < deadline:
-                    if srv.session is not None and srv._ready.is_set():
-                        break
-                    time.sleep(0.25)
+                # path rather than hanging the caller.  The async helper
+                # runs on the MCP event loop via _run_on_mcp_loop so it
+                # does NOT block the event loop during the poll interval.
+                async def _await_ready() -> bool:
+                    deadline = time.monotonic() + 15
+                    while time.monotonic() < deadline:
+                        if srv.session is not None and srv._ready.is_set():
+                            return True
+                        await asyncio.sleep(0.25)
+                    return False
+
+                try:
+                    _run_on_mcp_loop(_await_ready(), timeout=15)
+                except Exception as exc:
+                    logger.warning(
+                        "MCP OAuth '%s': ready poll failed: %s",
+                        server_name, exc,
+                    )
 
         # A successful OAuth recovery is independent evidence that the
         # server is viable again, so close the circuit breaker here —

@@ -7,6 +7,7 @@ pause/resume/run/remove, status, and tick.
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -132,6 +133,41 @@ def cron_tick():
     tick(verbose=True)
 
 
+def _describe_cron_ticker_health(runtime_status: Optional[dict], *, now: Optional[datetime] = None) -> tuple[str, str]:
+    """Return (state, message) for persisted gateway cron ticker liveness."""
+    ticker = (runtime_status or {}).get("cron_ticker")
+    if not isinstance(ticker, dict):
+        return "unknown", "⚠ Cron ticker health unknown — restart gateway if jobs do not fire"
+
+    state = str(ticker.get("state") or "unknown").lower()
+    if state != "running":
+        return "unhealthy", f"⚠ Cron ticker is {state or 'not running'} — jobs may not fire automatically"
+
+    updated_raw = ticker.get("updated_at")
+    if not updated_raw:
+        return "unknown", "⚠ Cron ticker health unknown — missing heartbeat timestamp"
+
+    try:
+        updated_at = datetime.fromisoformat(str(updated_raw).replace("Z", "+00:00"))
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return "unknown", "⚠ Cron ticker health unknown — invalid heartbeat timestamp"
+
+    now = now or datetime.now(timezone.utc)
+    interval = ticker.get("interval_seconds", 60)
+    try:
+        interval_seconds = float(interval)
+    except (TypeError, ValueError):
+        interval_seconds = 60.0
+    stale_after = max(180.0, interval_seconds * 3.0)
+    age_seconds = (now - updated_at).total_seconds()
+    if age_seconds > stale_after:
+        return "unhealthy", "⚠ Cron ticker heartbeat is stale — jobs may not fire automatically"
+
+    return "healthy", "✓ Cron ticker healthy"
+
+
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
@@ -141,8 +177,15 @@ def cron_status():
 
     pids = find_gateway_pids()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+        print(color("✓ Gateway is running", Colors.GREEN))
         print(f"  PID: {', '.join(map(str, pids))}")
+        try:
+            from gateway.status import read_runtime_status
+            health, message = _describe_cron_ticker_health(read_runtime_status())
+        except Exception:
+            health, message = "unknown", "⚠ Cron ticker health unknown — restart gateway if jobs do not fire"
+        health_color = Colors.GREEN if health == "healthy" else Colors.YELLOW
+        print(color(f"  {message}", health_color))
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()

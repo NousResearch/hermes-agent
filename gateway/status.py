@@ -546,6 +546,37 @@ def write_runtime_status(
     _write_json_file(path, payload)
 
 
+def write_cron_ticker_status(
+    *,
+    state: str,
+    interval_seconds: Any = _UNSET,
+    tick_count: Any = _UNSET,
+    last_error: Any = _UNSET,
+) -> None:
+    """Persist cron ticker heartbeat/liveness information for diagnostics."""
+    path = _get_runtime_status_path()
+    payload = _read_json_file(path) or _build_runtime_status_record()
+    current_record = _build_pid_record()
+    payload["kind"] = current_record["kind"]
+    payload["pid"] = current_record["pid"]
+    payload["argv"] = current_record["argv"]
+    payload["start_time"] = current_record["start_time"]
+    payload["updated_at"] = _utc_now_iso()
+
+    ticker_payload = dict(payload.get("cron_ticker") or {})
+    ticker_payload["state"] = state
+    ticker_payload["updated_at"] = _utc_now_iso()
+    if interval_seconds is not _UNSET:
+        ticker_payload["interval_seconds"] = float(interval_seconds)
+    if tick_count is not _UNSET:
+        ticker_payload["tick_count"] = max(0, int(tick_count))
+    if last_error is not _UNSET:
+        ticker_payload["last_error"] = last_error
+    payload["cron_ticker"] = ticker_payload
+
+    _write_json_file(path, payload)
+
+
 def read_runtime_status() -> Optional[dict[str, Any]]:
     """Read the persisted gateway runtime health/status information."""
     return _read_json_file(_get_runtime_status_path())

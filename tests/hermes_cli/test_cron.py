@@ -1,6 +1,7 @@
 """Tests for hermes_cli.cron command handling."""
 
 from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -111,3 +112,48 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_status_reports_healthy_cron_ticker(self, tmp_cron_dir, monkeypatch, capsys):
+        fresh = datetime.now(timezone.utc)
+
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [123])
+        monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: [])
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {
+                "cron_ticker": {
+                    "state": "running",
+                    "updated_at": fresh.isoformat(),
+                    "interval_seconds": 60,
+                }
+            },
+        )
+
+        cron_command(Namespace(cron_command="status"))
+
+        out = capsys.readouterr().out
+        assert "Gateway is running" in out
+        assert "Cron ticker healthy" in out
+
+    def test_status_warns_when_cron_ticker_heartbeat_is_stale(self, tmp_cron_dir, monkeypatch, capsys):
+        stale = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [123])
+        monkeypatch.setattr("cron.jobs.list_jobs", lambda include_disabled=False: [])
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {
+                "cron_ticker": {
+                    "state": "running",
+                    "updated_at": stale.isoformat(),
+                    "interval_seconds": 60,
+                }
+            },
+        )
+
+        cron_command(Namespace(cron_command="status"))
+
+        out = capsys.readouterr().out
+        assert "Gateway is running" in out
+        assert "Cron ticker heartbeat is stale" in out
+        assert "jobs may not fire automatically" in out

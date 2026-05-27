@@ -3556,9 +3556,12 @@ def run_conversation(
                 # Refund the iteration if the ONLY tool(s) called were
                 # execute_code (programmatic tool calling).  These are
                 # cheap RPC-style calls that shouldn't eat the budget.
-                _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
-                if _tc_names == {"execute_code"}:
-                    agent.iteration_budget.refund()
+                # Guard against None tool_calls (codex transport returns None
+                # when no tool calls are present, not an empty list).
+                if assistant_message.tool_calls:
+                    _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
+                    if _tc_names == {"execute_code"}:
+                        agent.iteration_budget.refund()
                 
                 # Use real token counts from the API response to decide
                 # compression.  prompt_tokens + completion_tokens is the

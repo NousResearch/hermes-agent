@@ -287,6 +287,34 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except TypeError as exc:
+            # The OpenAI SDK's parse_response() does ``for output in
+            # response.output`` — if gpt-5.5 (or another Codex backend)
+            # emits a streaming event where ``output`` is JSON null, the
+            # SDK raises TypeError: 'NoneType' object is not iterable.
+            # This is a transient provider-side quirk, not a Hermes bug.
+            # Retry like other recoverable stream failures; fall back to
+            # the create(stream=True) path when retries are exhausted.
+            err_text = str(exc)
+            if "NoneType" in err_text or "is not iterable" in err_text:
+                if attempt < max_stream_retries:
+                    logger.debug(
+                        "Codex stream: SDK TypeError (null output in stream event) "
+                        "(attempt %s/%s); retrying. %s error=%s",
+                        attempt + 1,
+                        max_stream_retries + 1,
+                        agent._client_log_context(),
+                        exc,
+                    )
+                    continue
+                logger.debug(
+                    "Codex stream: SDK TypeError exhausted retries; "
+                    "falling back to create(stream=True). %s error=%s",
+                    agent._client_log_context(),
+                    exc,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text

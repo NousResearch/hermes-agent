@@ -12,10 +12,13 @@ Architecture:
 
 import sqlite3
 import json
+import logging
 import os
 import time
 from datetime import datetime, timedelta
 from typing import Optional
+
+logger = logging.getLogger("memory_palace")
 
 DB_PATH = os.path.expanduser("~/.hermes/memory-palace/palace.db")
 MAX_DB_SIZE_BYTES = 500 * 1024  # 500 KB hard ceiling
@@ -73,31 +76,52 @@ def get_db() -> sqlite3.Connection:
 
 # ─── EPISODIC MEMORY ────────────────────────────────────────────
 
+def _check_capacity():
+    """Pre-write capacity guard: prune if DB is near the hard limit.
+
+    Called before any write operation to prevent write failures that
+    cascade into error-logging failures (the crash loop we hit).
+    """
+    if not os.path.exists(DB_PATH):
+        return
+    if os.path.getsize(DB_PATH) >= MAX_DB_SIZE_BYTES * 0.9:
+        # Aggressive prune when approaching 90% of cap
+        try:
+            auto_prune()
+        except Exception:
+            pass  # Never let capacity management crash the caller
+
+
 def store_episode(session_id: str, category: str, content: str,
                   context: dict | None = None, importance: int = 0,
                   tags: list | None = None, expires_hours: float | None = None,
                   compact_context: bool = True):
-    """Store an episodic memory entry.
+    """Store an episodic memory entry. No-op if DB is critically full.
 
     If compact_context is True (default), context dicts are truncated
     via compact_snapshot() to prevent DB bloat from large JSON blobs.
     """
-    conn = get_db()
-    expires = None
-    if expires_hours:
-        expires = time.time() + (expires_hours * 3600)
-    snap = None
-    if context:
-        snap = compact_snapshot(context) if compact_context else json.dumps(context)
-    conn.execute(
-        """INSERT INTO episodic_memory (timestamp, session_id, category, content,
-           context_snapshot, importance, tags, expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (time.time(), session_id, category, content[:1000],
-         snap, importance, json.dumps(tags or []), expires)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        _check_capacity()
+        conn = get_db()
+        expires = None
+        if expires_hours:
+            expires = time.time() + (expires_hours * 3600)
+        snap = None
+        if context:
+            snap = compact_snapshot(context) if compact_context else json.dumps(context)
+        conn.execute(
+            """INSERT INTO episodic_memory (timestamp, session_id, category, content,
+               context_snapshot, importance, tags, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (time.time(), session_id, category, content[:1000],
+             snap, importance, json.dumps(tags or []), expires)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        # Silently drop — never let memory writes crash the pipeline
+        logger.warning("store_episode failed (DB full?): %s", e)
 
 
 def recall_episodes(hours: float = 24, category: str = None,
@@ -131,24 +155,27 @@ def recall_episodes(hours: float = 24, category: str = None,
 def store_fact(concept: str, description: str, relationships: dict = None,
                source_ids: list = None, confidence: float = 0.5):
     """Store or update a semantic fact."""
-    conn = get_db()
-    conn.execute(
-        """INSERT INTO semantic_memory (concept, description, relationships,
-           source_episodes, confidence)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(concept) DO UPDATE SET
-           description = excluded.description,
-           relationships = excluded.relationships,
-           source_episodes = excluded.source_episodes,
-           confidence = excluded.confidence,
-           last_updated = julianday('now')""",
-        (concept, description,
-         json.dumps(relationships or {}),
-         json.dumps(source_ids or []),
-         confidence)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO semantic_memory (concept, description, relationships,
+               source_episodes, confidence)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(concept) DO UPDATE SET
+               description = excluded.description,
+               relationships = excluded.relationships,
+               source_episodes = excluded.source_episodes,
+               confidence = excluded.confidence,
+               last_updated = julianday('now')""",
+            (concept, description,
+             json.dumps(relationships or {}),
+             json.dumps(source_ids or []),
+             confidence)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("store_fact failed: %s", e)
 
 
 def recall_facts(query: str, limit: int = 20) -> list:
@@ -169,18 +196,21 @@ def recall_facts(query: str, limit: int = 20) -> list:
 # ─── WORKING MEMORY ─────────────────────────────────────────────
 
 def set_working(key: str, value: dict, expires_hours: float = None):
-    """Set working memory entry."""
-    conn = get_db()
-    expires = None
-    if expires_hours:
-        expires = time.time() + (expires_hours * 3600)
-    conn.execute(
-        """INSERT OR REPLACE INTO working_memory (key, value, expires_at)
-           VALUES (?, ?, ?)""",
-        (key, json.dumps(value), expires)
-    )
-    conn.commit()
-    conn.close()
+    """Set working memory entry. No-op on failure."""
+    try:
+        conn = get_db()
+        expires = None
+        if expires_hours:
+            expires = time.time() + (expires_hours * 3600)
+        conn.execute(
+            """INSERT OR REPLACE INTO working_memory (key, value, expires_at)
+               VALUES (?, ?, ?)""",
+            (key, json.dumps(value), expires)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("set_working failed: %s", e)
 
 
 def get_working(key: str) -> Optional[dict]:

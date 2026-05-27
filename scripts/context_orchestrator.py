@@ -103,6 +103,15 @@ class ContextOrchestrator:
         self._pause_start_time: float | None = None
         self._protected_blocks: set[str] = set()
 
+        # ── Auto-sculpt state ────────────────────────────────────
+        self._turn_count: int = 0
+        self.MAX_TURNS_BEFORE_SCULPT: int = int(
+            os.environ.get("MAX_TURNS_BEFORE_SCULPT", "20")
+        )
+
+        # ── Tuning observation log ───────────────────────────────
+        self._tuning_log: list[dict] = []
+
     # ── Pause / Resume / Protect API ─────────────────────────────
 
     def pause_trimming(self, reason: str = "") -> dict:
@@ -144,6 +153,93 @@ class ContextOrchestrator:
             "reason": self._pause_reason,
             "elapsed_seconds": round(elapsed, 1),
             "auto_resume_in_seconds": max(0, self.MAX_PAUSE_DURATION - elapsed),
+        }
+
+    def log_tuning_observation(self, category: str, detail: str, **kwargs):
+        """Record a tuning observation for later review and parameter adjustment.
+
+        Stores structured observations during the session so we can track:
+        - How often trimming fires and at what token counts
+        - Compression ratios achieved
+        - Turn counts between sculpts
+        - Any anomalies (failed compression, memory pressure, etc.)
+
+        Observations are persisted to the memory palace at session end.
+        """
+        entry = {
+            "timestamp": time.time(),
+            "turn": self._turn_count,
+            "category": category,
+            "detail": detail,
+            "extra": kwargs,
+        }
+        self._tuning_log.append(entry)
+        logger.info("[%s] Tuning [%s] turn=%d: %s %s",
+                    self.session_key, category, self._turn_count, detail,
+                    json.dumps(kwargs) if kwargs else "")
+
+    def _check_sculpt_trigger(self, current_tokens: int) -> dict | None:
+        """Check if we should auto-sculpt based on turn count or token pressure.
+
+        Returns a sculpt result dict if triggered, None otherwise.
+
+        Trigger conditions (any one is enough):
+          1. Turn count >= MAX_TURNS_BEFORE_SCULPT
+          2. Token usage is above 90% of budget and we've had 5+ turns
+        """
+        turned = self._turn_count >= self.MAX_TURNS_BEFORE_SCULPT
+        pressured = (current_tokens > BUDGET_TOKENS * 0.9
+                     and self._turn_count >= 5)
+
+        if not turned and not pressured:
+            return None
+
+        reason = "turn_limit" if turned else "token_pressure"
+        self.log_tuning_observation("sculpt_trigger", reason,
+                                     turns=self._turn_count,
+                                     tokens=current_tokens,
+                                     budget=BUDGET_TOKENS)
+        return self.sculpt_session(reason)
+
+    def sculpt_session(self, reason: str = "manual") -> dict:
+        """Sculpt the session: persist all context to memory palace and reset.
+
+        This is the 'manual reset' — equivalent to ending and restarting
+        but without clearing the turn counter. Keeps the user's conversation
+        continuity while giving the model a clean context slate.
+        """
+        # Persist remaining blocks to memory palace before reset
+        for block in self._active_blocks:
+            if block.get("content") and block["tier"] <= 3:
+                store_episode(
+                    self._session_id, "sculpt_checkpoint",
+                    block["content"][:500],
+                    importance=4 if block["tier"] <= 1 else 2,
+                    tags=[f"tier{block['tier']}", "sculpt", reason]
+                )
+
+        # Log sculpt event
+        store_episode(
+            self._session_id, "sculpt_event",
+            f"Auto-sculpt triggered: {reason} | turns={self._turn_count} | "
+            f"active_blocks={len(self._active_blocks)}",
+            importance=6, tags=["sculpt", "checkpoint", reason]
+        )
+
+        # Clear active blocks and rebuild from fresh start
+        self._active_blocks = []
+        result = self.start_session(
+            task="sculpt_reset",
+            phase="post_sculpt"
+        )
+
+        logger.info("[%s] Session sculpted (reason=%s, saved %d blocks)",
+                    self.session_key, reason, len(self._active_blocks))
+        return {
+            "sculpted": True,
+            "reason": reason,
+            "saved_blocks": len(self._active_blocks),
+            "new_context_tokens": result.get("total_est_tokens", 0),
         }
 
     # ── Token estimation ────────────────────────────────────────
@@ -331,6 +427,11 @@ class ContextOrchestrator:
         if current_usage_tokens < threshold and not force:
             return {"trimmed": 0, "message": f"Within budget ({current_usage_tokens} < {threshold})"}
 
+        # Auto-sculpt check: trigger before heavy trim
+        sculpt_result = self._check_sculpt_trigger(current_usage_tokens)
+        if sculpt_result:
+            return sculpt_result
+
         # Sort: highest tier number = lowest priority = trim first
         self._active_blocks.sort(key=lambda b: b["tier"], reverse=True)
 
@@ -384,6 +485,21 @@ class ContextOrchestrator:
 
         self._active_blocks = new_blocks
         saved = sum(t["tokens"] for t in trimmed)
+
+        # Log trim event for tuning analysis
+        self.log_tuning_observation("trim", f"Trimmed {len(trimmed)} blocks",
+                                     saved_tokens=saved,
+                                     blocks_deleted=len(trimmed),
+                                     current_usage=current_usage_tokens,
+                                     budget=BUDGET_TOKENS,
+                                     target=TARGET_POST_TRIM)
+
+        # Auto-review at 20-turn mark
+        if self._turn_count >= self.MAX_TURNS_BEFORE_SCULPT:
+            review = self.review_performance()
+            logger.info("[%s] === PERFORMANCE REVIEW at turn %d === %s",
+                        self.session_key, self._turn_count,
+                        json.dumps(review.get("recommendations", []), default=str))
 
         # Persist trimmed high-value content to memory palace
         for t in trimmed:
@@ -454,13 +570,93 @@ class ContextOrchestrator:
         })
 
     def register_conversation_turn(self, role: str, content: str):
-        """Register a conversation turn (trimmed last)."""
+        """Register a conversation turn (trimmed last). Increments turn counter."""
         self._active_blocks.append({
             "id": f"msg_{role}_{len(self._active_blocks)}",
             "tier": 6, "persist": False,
             "content": f"[{role}]: {content[-1500:]}",
             "tokens": self._est_tokens(content[-1500:])
         })
+        self._turn_count += 1
+        self.log_tuning_observation("turn", f"Turn {self._turn_count} registered",
+                                     role=role, tokens=self._est_tokens(content[-1500:]))
+
+    def review_performance(self) -> dict:
+        """Review session performance metrics. Called at the 20-turn mark or end.
+
+        Returns a dict with metrics and recommendations for tuning parameters.
+        """
+        total_turns = self._turn_count
+        total_tuning_entries = len(self._tuning_log)
+        trim_events = [e for e in self._tuning_log if e["category"] == "trim"]
+        sculpt_events = [e for e in self._tuning_log if e["category"] == "sculpt_trigger"]
+
+        trim_count = len(trim_events)
+        sculpt_count = len(sculpt_events)
+
+        # Calculate average tokens at trim time
+        trim_tokens = [e["extra"].get("tokens", 0) for e in trim_events if "extra" in e]
+        avg_tokens_at_trim = sum(trim_tokens) / max(len(trim_tokens), 1)
+
+        # Check if we're trimming too aggressively, too early, or too late
+        recommendations = []
+        if trim_count > total_turns * 0.6 and total_turns >= 5:
+            recommendations.append({
+                "issue": "trim_firing_too_often",
+                "detail": f"Trim fired {trim_count}/{total_turns} turns (>{total_turns * 0.6 * 100:.0f}%)",
+                "suggestion": "TRIM_THRESHOLD may be too low or TARGET_POST_TRIM too aggressive"
+            })
+        elif trim_count == 0 and total_turns >= 5:
+            recommendations.append({
+                "issue": "trim_never_fired",
+                "detail": f"No trim events in {total_turns} turns",
+                "suggestion": "Budget may be too generous or context blocks are too small"
+            })
+
+        if sculpt_count > 0:
+            avg_turns_to_sculpt = total_turns / sculpt_count
+            if avg_turns_to_sculpt < 10:
+                recommendations.append({
+                    "issue": "sculpt_too_early",
+                    "detail": f"Auto-sculpt every ~{avg_turns_to_sculpt:.1f} turns",
+                    "suggestion": "Raise MAX_TURNS_BEFORE_SCULPT or increase BUDGET_TOKENS"
+                })
+        elif total_turns >= 20:
+            recommendations.append({
+                "issue": "sculpt_never_triggered",
+                "detail": f"No sculpt in {total_turns} turns despite 20-turn limit",
+                "suggestion": "Check if token_pressure trigger is too conservative (90% threshold)"
+            })
+
+        # Memory palace stats
+        stats = get_stats()
+
+        report = {
+            "session_id": self._session_id,
+            "total_turns": total_turns,
+            "trim_events": trim_count,
+            "sculpt_events": sculpt_count,
+            "avg_tokens_at_trim": round(avg_tokens_at_trim),
+            "memory_stats": stats,
+            "current_budget": BUDGET_TOKENS,
+            "current_target_post_trim": TARGET_POST_TRIM,
+            "current_max_turns_sculpt": self.MAX_TURNS_BEFORE_SCULPT,
+            "recommendations": recommendations,
+        }
+
+        # Persist the review
+        store_episode(
+            self._session_id, "performance_review",
+            json.dumps(report, default=str),
+            importance=8, tags=["review", "performance", "tuning"]
+        )
+
+        # Log key findings
+        for rec in recommendations:
+            logger.warning("[%s] TUNING RECOMMENDATION: %s — %s (suggestion: %s)",
+                          self.session_key, rec["issue"], rec["detail"], rec["suggestion"])
+
+        return report
 
     def end_session(self, summary: str | None = None):
         """
@@ -483,6 +679,11 @@ class ContextOrchestrator:
             store_episode(self._session_id, "session_summary", summary,
                           importance=7, tags=["summary", "session_end"])
 
+        # Always run performance review at session end
+        review = None
+        if self._turn_count > 0:
+            review = self.review_performance()
+
         # Clear working memory
         clear_working()
 
@@ -497,6 +698,8 @@ class ContextOrchestrator:
             "prune_result": prune_result,
             "final_stats": stats,
         }
+        if review:
+            result["performance_review"] = review
 
         self._active_blocks = []
         return result

@@ -15,7 +15,7 @@ import os
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import httpx
@@ -124,6 +124,23 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        # Force-download timeout: how long to wait for /download/force when an
+        # attachment hasn't been pulled from iCloud yet. The BlueBubbles server
+        # polls iCloud for up to 600s internally, but a 10-minute blocking wait
+        # on the inbound message path is a long time to hold the handler — a
+        # busy chat will pile up. Default to 300s (covers the common case);
+        # override per-deployment via extra["force_download_timeout_seconds"]
+        # or BLUEBUBBLES_FORCE_DOWNLOAD_TIMEOUT.
+        _raw_force_timeout = (
+            extra.get("force_download_timeout_seconds")
+            or os.getenv("BLUEBUBBLES_FORCE_DOWNLOAD_TIMEOUT")
+        )
+        try:
+            self.force_download_timeout = (
+                float(_raw_force_timeout) if _raw_force_timeout else 300.0
+            )
+        except (TypeError, ValueError):
+            self.force_download_timeout = 300.0
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -693,25 +710,47 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Inbound attachment downloading (from #4588)
     # ------------------------------------------------------------------
 
-    async def _download_attachment(
-        self, att_guid: str, att_meta: Dict[str, Any]
-    ) -> Optional[str]:
-        """Download an attachment from BlueBubbles and cache it locally.
+    async def _fetch_attachment_bytes(
+        self, att_guid: str, *, force: bool
+    ) -> Optional[bytes]:
+        """Fetch raw attachment bytes from BlueBubbles.
 
-        Returns the local file path on success, None on failure.
+        When ``force=True``, hits the Private-API-only ``/download/force``
+        endpoint, which triggers macOS to pull the file from iCloud before
+        streaming it back. The wait is bounded by
+        ``self.force_download_timeout`` (see ``__init__``); requests still in
+        flight when that elapses are abandoned.
+
+        Returns the bytes on success, None on any HTTP/network failure.
         """
         if not self.client:
             return None
+        encoded = quote(att_guid, safe="")
+        suffix = "/force" if force else ""
+        timeout = self.force_download_timeout if force else 60.0
         try:
-            encoded = quote(att_guid, safe="")
             resp = await self.client.get(
-                self._api_url(f"/api/v1/attachment/{encoded}/download"),
-                timeout=60,
+                self._api_url(f"/api/v1/attachment/{encoded}/download{suffix}"),
+                timeout=timeout,
                 follow_redirects=True,
             )
             resp.raise_for_status()
-            data = resp.content
+            return resp.content
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] %s attempt for %s failed: %s",
+                "force-download" if force else "download",
+                _redact(att_guid),
+                exc,
+            )
+            return None
 
+    def _cache_attachment_bytes(
+        self, data: bytes, att_meta: Dict[str, Any]
+    ) -> Optional[str]:
+        """Persist raw bytes to disk under the right media cache and return
+        the local file path. Returns None if the cache write fails."""
+        try:
             mime = (att_meta.get("mimeType") or "").lower()
             transfer_name = att_meta.get("transferName", "")
 
@@ -741,17 +780,62 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 ext = ext_map.get(mime, ".mp3")
                 return cache_audio_from_bytes(data, ext)
 
-            # Videos, documents, and everything else
             filename = transfer_name or f"file_{uuid.uuid4().hex[:8]}"
             return cache_document_from_bytes(data, filename)
 
         except Exception as exc:
             logger.warning(
-                "[bluebubbles] failed to download attachment %s: %s",
-                _redact(att_guid),
+                "[bluebubbles] failed to cache attachment bytes (%s): %s",
+                (att_meta.get("mimeType") or "?"),
                 exc,
             )
             return None
+
+    async def _download_attachment(
+        self,
+        att_guid: str,
+        att_meta: Dict[str, Any],
+        *,
+        on_slow_path: Optional[Callable[[], Awaitable[None]]] = None,
+    ) -> Optional[str]:
+        """Download an attachment from BlueBubbles and cache it locally.
+
+        Returns the local file path on success, None on failure.
+
+        Tries the normal ``/download`` endpoint first. If that fails (commonly
+        a 500 when the attachment hasn't been pulled from iCloud yet) and the
+        server has the Private API enabled, retries against
+        ``/download/force`` — which triggers the macOS helper to pull from
+        iCloud and then streams the bytes back. The Private-API endpoint
+        returns 500 when the helper isn't reachable, so gating on
+        ``self._private_api_enabled`` avoids a guaranteed second failure.
+
+        ``on_slow_path`` is invoked once, just before the force-download
+        attempt, so the caller can surface a "fetching from iCloud" notice to
+        the user. Exceptions raised by the callback are swallowed.
+        """
+        if not self.client:
+            return None
+
+        data = await self._fetch_attachment_bytes(att_guid, force=False)
+        if data is None and self._private_api_enabled:
+            logger.info(
+                "[bluebubbles] regular download failed for %s, trying force-download",
+                _redact(att_guid),
+            )
+            if on_slow_path is not None:
+                try:
+                    await on_slow_path()
+                except Exception:
+                    logger.debug(
+                        "[bluebubbles] slow-path notification failed",
+                        exc_info=True,
+                    )
+            data = await self._fetch_attachment_bytes(att_guid, force=True)
+        if data is None:
+            return None
+
+        return self._cache_attachment_bytes(data, att_meta)
 
     # ------------------------------------------------------------------
     # Webhook handling
@@ -839,42 +923,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or ""
         )
 
-        # --- Inbound attachment handling ---
-        attachments = record.get("attachments") or []
-        media_urls: List[str] = []
-        media_types: List[str] = []
-        msg_type = MessageType.TEXT
-
-        for att in attachments:
-            att_guid = att.get("guid", "")
-            if not att_guid:
-                continue
-            cached = await self._download_attachment(att_guid, att)
-            if cached:
-                mime = (att.get("mimeType") or "").lower()
-                media_urls.append(cached)
-                media_types.append(mime)
-                if mime.startswith("image/"):
-                    msg_type = MessageType.PHOTO
-                elif mime.startswith("audio/") or (att.get("uti") or "").endswith(
-                    "caf"
-                ):
-                    msg_type = MessageType.VOICE
-                elif mime.startswith("video/"):
-                    msg_type = MessageType.VIDEO
-                else:
-                    msg_type = MessageType.DOCUMENT
-
-        # With multiple attachments, prefer PHOTO if any images present
-        if len(media_urls) > 1:
-            mime_prefixes = {(m or "").split("/")[0] for m in media_types}
-            if "image" in mime_prefixes:
-                msg_type = MessageType.PHOTO
-
-        if not text and media_urls:
-            text = "(attachment)"
-        # --- End attachment handling ---
-
         chat_guid = self._value(
             record.get("chatGuid"),
             payload.get("chatGuid"),
@@ -882,8 +930,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload.get("chat_guid"),
             payload.get("guid"),
         )
-        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
-        # the chat GUID is nested under data.chats[0].guid instead.
+        # BB v1.9+ webhook payloads omit top-level chatGuid; nested under data.chats[0].guid.
         if not chat_guid:
             _chats = record.get("chats") or []
             if _chats and isinstance(_chats[0], dict):
@@ -908,7 +955,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
         if not (chat_guid or chat_identifier) and sender:
             chat_identifier = sender
-        if not sender or not (chat_guid or chat_identifier) or not text:
+
+        attachments = record.get("attachments") or []
+        attachments_to_process = [att for att in attachments if att.get("guid")]
+
+        if (
+            not sender
+            or not (chat_guid or chat_identifier)
+            or not (text or attachments_to_process)
+        ):
             return web.json_response({"error": "missing message fields"}, status=400)
 
         session_chat_id = chat_guid or chat_identifier
@@ -921,9 +976,126 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             user_name=sender,
             chat_id_alt=chat_identifier,
         )
+
+        # Probe every attachment against the cached /download endpoint in
+        # parallel. Anything that comes back empty and has Private API
+        # available is queued for the slow /download/force path and handed
+        # off to a background task — the webhook handler must NOT block on
+        # iCloud pulls (up to self.force_download_timeout per attachment).
+        cached_pairs: List[Tuple[Dict[str, Any], bytes]] = []
+        need_force: List[Dict[str, Any]] = []
+
+        if attachments_to_process:
+            probe_results = await asyncio.gather(
+                *[
+                    self._fetch_attachment_bytes(att["guid"], force=False)
+                    for att in attachments_to_process
+                ],
+                return_exceptions=True,
+            )
+            for att, data in zip(attachments_to_process, probe_results):
+                if isinstance(data, BaseException) or data is None:
+                    if self._private_api_enabled:
+                        need_force.append(att)
+                    else:
+                        logger.warning(
+                            "[bluebubbles] dropping attachment %s: cached "
+                            "download failed and Private API is disabled",
+                            _redact(att.get("guid", "")),
+                        )
+                else:
+                    cached_pairs.append((att, data))
+
+        synced_media: List[Tuple[Dict[str, Any], str, str]] = []
+        for att, data in cached_pairs:
+            path = self._cache_attachment_bytes(data, att)
+            if path:
+                synced_media.append((att, path, (att.get("mimeType") or "").lower()))
+
+        if need_force:
+            if chat_guid:
+                n_force = len(need_force)
+                try:
+                    await self.send(
+                        chat_guid,
+                        f"📎 Fetching {n_force} attachment"
+                        f"{'s' if n_force != 1 else ''} from iCloud, "
+                        f"this may take a minute…",
+                    )
+                except Exception:
+                    logger.debug(
+                        "[bluebubbles] slow-path notification failed",
+                        exc_info=True,
+                    )
+
+            task = asyncio.create_task(
+                self._deferred_deliver_message(
+                    text=text,
+                    cached_media=synced_media,
+                    need_force=need_force,
+                    source=source,
+                    record=record,
+                    payload=payload,
+                    chat_guid=chat_guid or "",
+                )
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        else:
+            self._dispatch_message_event(
+                text=text,
+                synced_media=synced_media,
+                source=source,
+                record=record,
+                payload=payload,
+            )
+
+        # Fire-and-forget read receipt
+        if self.send_read_receipts and session_chat_id:
+            asyncio.create_task(self.mark_read(session_chat_id))
+
+        return web.Response(text="ok")
+
+    def _derive_attachment_msg_type(
+        self, synced_media: List[Tuple[Dict[str, Any], str, str]]
+    ) -> "MessageType":
+        """Pick the MessageType that best describes a set of cached attachments."""
+        if not synced_media:
+            return MessageType.TEXT
+        # Multiple attachments with any image → PHOTO (preserves prior behavior).
+        mimes = [mime for _, _, mime in synced_media]
+        if len(synced_media) > 1:
+            if "image" in {(m or "").split("/")[0] for m in mimes}:
+                return MessageType.PHOTO
+        att, _path, mime = synced_media[-1]
+        if mime.startswith("image/"):
+            return MessageType.PHOTO
+        if mime.startswith("audio/") or (att.get("uti") or "").endswith("caf"):
+            return MessageType.VOICE
+        if mime.startswith("video/"):
+            return MessageType.VIDEO
+        return MessageType.DOCUMENT
+
+    def _dispatch_message_event(
+        self,
+        *,
+        text: str,
+        synced_media: List[Tuple[Dict[str, Any], str, str]],
+        source: Any,
+        record: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> None:
+        """Build a MessageEvent from cached attachments and schedule
+        ``handle_message`` as a tracked background task. No-op when there is
+        nothing to deliver (no text and no media)."""
+        media_urls = [path for _, path, _ in synced_media]
+        media_types = [mime for _, _, mime in synced_media]
+        effective_text = text or ("(attachment)" if media_urls else "")
+        if not effective_text:
+            return
         event = MessageEvent(
-            text=text,
-            message_type=msg_type,
+            text=effective_text,
+            message_type=self._derive_attachment_msg_type(synced_media),
             source=source,
             raw_message=payload,
             message_id=self._value(
@@ -942,8 +1114,103 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-        # Fire-and-forget read receipt
-        if self.send_read_receipts and session_chat_id:
-            asyncio.create_task(self.mark_read(session_chat_id))
+    async def _deferred_deliver_message(
+        self,
+        *,
+        text: str,
+        cached_media: List[Tuple[Dict[str, Any], str, str]],
+        need_force: List[Dict[str, Any]],
+        source: Any,
+        record: Dict[str, Any],
+        payload: Dict[str, Any],
+        chat_guid: str = "",
+    ) -> None:
+        """Force-fetch attachments that missed the cached path, then deliver
+        the full MessageEvent. Runs as a background task so the webhook
+        handler can return immediately and the user-facing
+        "📎 Fetching from iCloud…" notice arrives before the long wait.
 
-        return web.Response(text="ok")
+        After the fetch settles, posts a result notice to the chat (success,
+        partial, or full failure) and — when any attachment failed —
+        augments the agent-facing text with a ``[System: …]`` note so the
+        agent knows the user's message arrived incomplete and can respond
+        accordingly (e.g. ask the user to resend).
+        """
+        force_results = await asyncio.gather(
+            *[
+                self._fetch_attachment_bytes(att["guid"], force=True)
+                for att in need_force
+            ],
+            return_exceptions=True,
+        )
+        synced_media = list(cached_media)
+        failed_count = 0
+        for att, data in zip(need_force, force_results):
+            if isinstance(data, BaseException) or data is None:
+                logger.warning(
+                    "[bluebubbles] force-download failed for %s",
+                    _redact(att.get("guid", "")),
+                )
+                failed_count += 1
+                continue
+            path = self._cache_attachment_bytes(data, att)
+            if path:
+                synced_media.append(
+                    (att, path, (att.get("mimeType") or "").lower())
+                )
+            else:
+                # bytes arrived but caching failed — treat as a failure for
+                # user/agent reporting so neither side is silently lied to.
+                failed_count += 1
+
+        total_slow = len(need_force)
+        ok_slow = total_slow - failed_count
+
+        # User-facing result notice: closes the loop opened by the
+        # "📎 Fetching…" message so the user knows what happened.
+        if chat_guid:
+            if failed_count == 0:
+                notice = "✅ Got it — processing your message…"
+            elif ok_slow == 0:
+                notice = (
+                    f"❌ Couldn't fetch attachment"
+                    f"{'s' if total_slow != 1 else ''} from iCloud — "
+                    f"processing your message text only."
+                )
+            else:
+                notice = (
+                    f"⚠️ Got {ok_slow} of {total_slow} attachments from "
+                    f"iCloud ({failed_count} failed) — processing what "
+                    f"came through."
+                )
+            try:
+                await self.send(chat_guid, notice)
+            except Exception:
+                logger.debug(
+                    "[bluebubbles] result notification failed",
+                    exc_info=True,
+                )
+
+        # Agent-facing context: append a system note so the agent doesn't
+        # silently lose track of dropped attachments. Without this, hermes
+        # would either see fewer media URLs than the user sent (and not
+        # know to apologize / ask for a resend) or — in the attachment-only
+        # all-fail case — receive no message at all because
+        # _dispatch_message_event drops empty events.
+        if failed_count > 0:
+            note = (
+                f"[System: {failed_count} of {total_slow} attachment"
+                f"{'s' if total_slow != 1 else ''} failed to download from "
+                f"iCloud. User may want to resend.]"
+            )
+            text_for_agent = f"{text}\n\n{note}" if text else note
+        else:
+            text_for_agent = text
+
+        self._dispatch_message_event(
+            text=text_for_agent,
+            synced_media=synced_media,
+            source=source,
+            record=record,
+            payload=payload,
+        )

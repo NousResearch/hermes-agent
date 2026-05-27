@@ -131,8 +131,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     # 2. Create (or surface existing) project.
     existing_id, existing_secret = photon_auth.load_project_credentials()
-    has_existing_project = bool(existing_id and existing_secret)
-    if has_existing_project:
+    project_id: str
+    project_secret: str
+    if existing_id and existing_secret:
         project_id, project_secret = existing_id, existing_secret
         # `project_id` is a Photon-assigned UUID, not a secret — but we
         # keep the print terse to avoid CodeQL flow noise.

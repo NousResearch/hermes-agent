@@ -18,11 +18,14 @@ def test_copilot_picker_keeps_curated_copilot_models_when_live_catalog_unavailab
     assert copilot is not None
     assert "gpt-5.4" in copilot["models"]
     assert "claude-sonnet-4.6" in copilot["models"]
-    assert "claude-sonnet-4" in copilot["models"]
     assert "claude-sonnet-4.5" in copilot["models"]
     assert "claude-haiku-4.5" in copilot["models"]
-    assert "gemini-3.1-pro-preview" in copilot["models"]
-    assert "claude-opus-4.6" not in copilot["models"]
+    assert "claude-opus-4.7" in copilot["models"]
+    assert "claude-opus-4.6" in copilot["models"]
+    assert "claude-opus-4.6-fast" in copilot["models"]
+    assert "claude-opus-4.5" in copilot["models"]
+    assert "gpt-5.5" in copilot["models"]
+    assert "gpt-5.2" in copilot["models"]
 
 
 @patch.dict(os.environ, {"GH_TOKEN": "test-key"}, clear=False)

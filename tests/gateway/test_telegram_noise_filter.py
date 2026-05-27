@@ -4,6 +4,7 @@ from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
+    _should_send_still_working_notice,
 )
 
 
@@ -81,3 +82,58 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_telegram_closeout_status_is_rewritten_to_exact_packet():
+    """Completion/status closeouts need the canonical packet before Telegram send."""
+    raw = "Status: fixed\nProof: pytest passed"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "Status / Proof / Changed / Next" in sanitized
+    assert "Status:" in sanitized
+    assert "Proof:" in sanitized
+    assert "Changed:" in sanitized
+    assert "Next:" in sanitized
+
+
+def test_telegram_blocker_is_rewritten_to_exact_blocker_packet():
+    """Blocker-shaped closeouts need the canonical blocker packet before send."""
+    raw = "Blocked: need Anthony to approve the gateway restart."
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "BLOCKER PACKET" in sanitized
+    assert "Blocked on:" in sanitized
+    assert "Needed from Anthony:" in sanitized
+    assert "Risk if skipped:" in sanitized
+    assert "Next safe action:" in sanitized
+
+
+def test_telegram_status_callback_gets_closeout_linter():
+    """Status callbacks are linted too, not only final responses."""
+    raw = "Completion: deployed\nProof: smoke test passed"
+
+    sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "status", raw)
+
+    assert sanitized is not None
+    assert "Status / Proof / Changed / Next" in sanitized
+
+
+
+def test_still_working_notice_suppresses_after_two_repeats():
+    """Repeated still-working notices should go quiet unless detail changes."""
+    state = {}
+
+    assert _should_send_still_working_notice(3, " — iteration 1/90, running: terminal", state)
+    assert _should_send_still_working_notice(6, " — iteration 1/90, running: terminal", state)
+    assert not _should_send_still_working_notice(9, " — iteration 1/90, running: terminal", state)
+    assert _should_send_still_working_notice(12, " — iteration 2/90, running: pytest", state)
+
+
+def test_still_working_notice_suppresses_after_twenty_minutes_without_new_artifact():
+    state = {}
+
+    assert _should_send_still_working_notice(3, " — iteration 1/90, running: terminal", state)
+    assert not _should_send_still_working_notice(21, " — iteration 1/90, running: terminal", state)
+    assert _should_send_still_working_notice(24, " — blocker packet ready; user approval needed", state)

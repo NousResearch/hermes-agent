@@ -261,6 +261,24 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TELEGRAM_STATUS_PACKET_TITLE = "Status / Proof / Changed / Next"
+_TELEGRAM_BLOCKER_PACKET_TITLE = "BLOCKER PACKET"
+
+_TELEGRAM_CLOSEOUT_SHAPE_RE = re.compile(
+    r"^\s*(?:status|completion|complete|completed|done|fixed|shipped)\s*[:\-]",
+    re.IGNORECASE,
+)
+_TELEGRAM_BLOCKER_SHAPE_RE = re.compile(
+    r"^\s*(?:blocked|blocker|blocker\s+packet|halted|stalled)\s*[:\-]",
+    re.IGNORECASE,
+)
+_TELEGRAM_PACKET_FIELD_RE = re.compile(r"^\s*([A-Za-z][A-Za-z /]+?)\s*:\s*(.*)$")
+
+_STILL_WORKING_EXCEPTION_RE = re.compile(
+    r"\b(artifact|proof|blocker|blocked|approval|decision|needed from|user.*needed|requires user)\b",
+    re.IGNORECASE,
+)
+
 
 def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is infrastructure/provider failure, not normal content.
@@ -285,6 +303,100 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+def _extract_packet_fields(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    current_key = ""
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _TELEGRAM_PACKET_FIELD_RE.match(line)
+        if match:
+            key = match.group(1).strip().lower()
+            value = match.group(2).strip()
+            fields[key] = value
+            current_key = key
+        elif current_key:
+            fields[current_key] = (fields.get(current_key, "") + " " + line).strip()
+    return fields
+
+
+def _telegram_closeout_needs_lint(text: str) -> bool:
+    body = str(text or "").strip()
+    if not body:
+        return False
+    if _TELEGRAM_STATUS_PACKET_TITLE in body or _TELEGRAM_BLOCKER_PACKET_TITLE in body:
+        return False
+    return bool(_TELEGRAM_CLOSEOUT_SHAPE_RE.search(body) or _TELEGRAM_BLOCKER_SHAPE_RE.search(body))
+
+
+def _format_telegram_status_packet(text: str) -> str:
+    fields = _extract_packet_fields(text)
+    status = fields.get("status") or fields.get("completion") or fields.get("done") or fields.get("completed") or fields.get("fixed") or "Completed/status update."
+    proof = fields.get("proof") or fields.get("evidence") or "Not provided in original closeout."
+    changed = fields.get("changed") or fields.get("change") or fields.get("changes") or "Not provided in original closeout."
+    next_step = fields.get("next") or fields.get("next safe action") or fields.get("next action") or "Not provided in original closeout."
+    return (
+        f"{_TELEGRAM_STATUS_PACKET_TITLE}\n"
+        f"Status: {status}\n"
+        f"Proof: {proof}\n"
+        f"Changed: {changed}\n"
+        f"Next: {next_step}"
+    )
+
+
+def _format_telegram_blocker_packet(text: str) -> str:
+    fields = _extract_packet_fields(text)
+    blocked_on = fields.get("blocked on") or fields.get("blocked") or fields.get("blocker") or fields.get("status") or str(text or "").strip()
+    needed = fields.get("needed from anthony") or fields.get("needed") or fields.get("ask") or "Explicit user decision/approval."
+    risk = fields.get("risk if skipped") or fields.get("risk") or "Unscoped or unsafe action could proceed without the required decision."
+    next_safe = fields.get("next safe action") or fields.get("next") or "Wait for user response or provide a narrower safe alternative."
+    return (
+        f"{_TELEGRAM_BLOCKER_PACKET_TITLE}\n"
+        f"Blocked on: {blocked_on}\n"
+        f"Needed from Anthony: {needed}\n"
+        f"Risk if skipped: {risk}\n"
+        f"Next safe action: {next_safe}"
+    )
+
+
+def _lint_telegram_closeout_packet(text: str) -> str:
+    body = str(text or "")
+    if not _telegram_closeout_needs_lint(body):
+        return body
+    if _TELEGRAM_BLOCKER_SHAPE_RE.search(body):
+        return _format_telegram_blocker_packet(body)
+    return _format_telegram_status_packet(body)
+
+
+def _should_send_still_working_notice(elapsed_mins: int, status_detail: str, state: dict[str, Any]) -> bool:
+    """Return whether a Telegram still-working notice carries new signal.
+
+    Suppress duplicate status pings after two repeats, and suppress routine
+    pings past 20 minutes unless they include a new artifact/proof/blocker or
+    need a user decision.
+    """
+    detail = str(status_detail or "").strip()
+    signature = re.sub(r"\b\d+\b", "#", detail.lower())
+    has_exception = bool(_STILL_WORKING_EXCEPTION_RE.search(detail))
+    repeat_count = int(state.get("repeat_count", 0))
+    last_signature = state.get("signature")
+
+    if signature != last_signature:
+        repeat_count = 0
+    repeat_count += 1
+
+    state["signature"] = signature
+    state["repeat_count"] = repeat_count
+    state["last_elapsed_mins"] = elapsed_mins
+
+    if has_exception:
+        return True
+    if elapsed_mins >= 20:
+        return False
+    return repeat_count <= 2
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
@@ -300,7 +412,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
-    return redacted
+    return _lint_telegram_closeout_packet(redacted)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
@@ -316,7 +428,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
-    return text
+    return _lint_telegram_closeout_packet(text)
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
@@ -17448,6 +17560,7 @@ class GatewayRunner:
         ):
             _NOTIFY_INTERVAL = None
         _notify_start = time.time()
+        _still_working_notice_state: dict[str, Any] = {}
 
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
@@ -17493,6 +17606,12 @@ class GatewayRunner:
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
+                if not _should_send_still_working_notice(
+                    _elapsed_mins,
+                    _status_detail,
+                    _still_working_notice_state,
+                ):
+                    continue
                 _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 try:
                     _notify_res = None

@@ -12,6 +12,7 @@ import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
     _smart_approve,
+    approve_permanent,
     approve_session,
     detect_dangerous_command,
     is_approved,
@@ -534,19 +535,99 @@ class TestPatternKeyUniqueness:
         )
         _clear_session(session)
 
-    def test_legacy_find_key_still_approves_find_exec(self):
-        """Old allowlist entry 'find' should keep approving the matching command."""
+    def test_legacy_find_key_no_longer_authorizes_without_scope(self):
+        """Old string allowlist entry 'find' is review-only, not durable authority."""
         _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
         with mock_patch.object(approval_module, "_permanent_approved", set()):
-            load_permanent({"find"})
-            assert is_approved("legacy-find", key_exec) is True
+            with mock_patch.object(approval_module, "_scoped_approval_records", {}):
+                load_permanent({"find"})
+                assert is_approved("legacy-find", key_exec) is False
 
-    def test_legacy_find_key_still_approves_find_delete(self):
-        """Old colliding allowlist entry 'find' should remain backwards compatible."""
+    def test_scoped_legacy_find_record_still_approves_find_exec(self):
+        """A scoped record using the old alias still approves matching commands."""
+        _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            with mock_patch.object(approval_module, "_scoped_approval_records", {}):
+                load_permanent([
+                    {
+                        "pattern_key": "find",
+                        "action": "delete matched files",
+                        "system": "local-terminal",
+                        "credential_spend_risk": "filesystem delete risk",
+                        "expiration": "2099-01-01T00:00:00+00:00",
+                        "owner": "Anthony",
+                    }
+                ])
+                assert is_approved("legacy-find", key_exec) is True
+
+    def test_legacy_find_key_no_longer_approves_find_delete(self):
+        """Old colliding allowlist entry 'find' must not remain broad authority."""
         _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
         with mock_patch.object(approval_module, "_permanent_approved", set()):
-            load_permanent({"find"})
-            assert is_approved("legacy-find", key_delete) is True
+            with mock_patch.object(approval_module, "_scoped_approval_records", {}):
+                load_permanent({"find"})
+                assert is_approved("legacy-find", key_delete) is False
+
+    def test_scoped_legacy_find_record_still_approves_find_delete(self):
+        """A scoped legacy alias keeps migration compatibility without string authority."""
+        _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            with mock_patch.object(approval_module, "_scoped_approval_records", {}):
+                load_permanent([
+                    {
+                        "pattern_key": "find",
+                        "action": "delete matched files",
+                        "system": "local-terminal",
+                        "credential_spend_risk": "filesystem delete risk",
+                        "expiration": "2099-01-01T00:00:00+00:00",
+                        "owner": "Anthony",
+                    }
+                ])
+                assert is_approved("legacy-find", key_delete) is True
+
+
+class TestScopedApprovalRecords:
+    def test_permanent_approval_requires_scoped_record_fields(self):
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            record = approve_permanent(
+                "rm:recursive",
+                action="delete temp files",
+                system="local-terminal",
+                credential_spend_risk="none",
+                expiration="2099-01-01T00:00:00+00:00",
+                owner="Anthony",
+            )
+
+            assert record["pattern_key"] == "rm:recursive"
+            assert record["action"] == "delete temp files"
+            assert record["system"] == "local-terminal"
+            assert record["credential_spend_risk"] == "none"
+            assert record["expiration"] == "2099-01-01T00:00:00+00:00"
+            assert record["owner"] == "Anthony"
+            assert is_approved("scoped", "rm:recursive") is True
+
+    def test_scoped_approval_rejects_missing_required_metadata(self):
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            try:
+                approve_permanent("rm:recursive")
+            except ValueError as exc:
+                assert "scoped approval" in str(exc).lower()
+            else:
+                raise AssertionError("approve_permanent accepted an unscoped permanent approval")
+
+    def test_expired_scoped_approval_does_not_authorize(self):
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            with mock_patch.object(approval_module, "_scoped_approval_records", {}):
+                approve_permanent(
+                    "rm:expired",
+                    action="delete temp files",
+                    system="local-terminal",
+                    credential_spend_risk="none",
+                    expiration="2000-01-01T00:00:00+00:00",
+                    owner="Anthony",
+                )
+
+                assert is_approved("scoped", "rm:expired") is False
 
 
 class TestFullCommandAlwaysShown:
@@ -571,12 +652,12 @@ class TestFullCommandAlwaysShown:
             result = prompt_dangerous_approval(long_cmd, "recursive delete")
         assert result == "session"
 
-    def test_always_with_long_command(self):
-        """Pressing 'a' approves always with long commands."""
+    def test_scoped_approval_with_long_command(self):
+        """Pressing 'a' creates the scoped durable approval path with long commands."""
         long_cmd = "rm -rf " + "d" * 200
         with mock_patch("builtins.input", return_value="a"):
             result = prompt_dangerous_approval(long_cmd, "recursive delete")
-        assert result == "always"
+        assert result == "scoped"
 
     def test_deny_with_long_command(self):
         """Pressing 'd' denies with long commands."""

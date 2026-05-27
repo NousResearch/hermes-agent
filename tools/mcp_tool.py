@@ -1354,12 +1354,13 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
-        # Some MCP servers require MCP-Protocol-Version on the initial
-        # initialize request and reject session-less POSTs otherwise.
-        # Seed it as a client-level default, but treat user overrides as
-        # case-insensitive so conventional casing is preserved.
-        if not any(key.lower() == "mcp-protocol-version" for key in headers):
-            headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+        # MCP protocol-version header — the SDK handles this internally
+        # (streamable_http.py:162).  It adds the header only after
+        # initialization, correctly omitting it from the initialize request
+        # per spec.  We used to inject it as an httpx client-level default,
+        # which violated the MCP spec and caused 400 errors with servers
+        # that strictly validate the header on initialize (#27569).
+        # User-specified header overrides are still preserved below.
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
 

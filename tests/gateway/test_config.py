@@ -3,6 +3,8 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from gateway.config import (
     GatewayConfig,
     HomeChannel,
@@ -24,6 +26,56 @@ class TestHomeChannelRoundtrip:
         assert restored.platform == Platform.DISCORD
         assert restored.chat_id == "999"
         assert restored.name == "general"
+
+
+class TestHomeChannelFromString:
+    """`hermes config set platforms.<name>.home_channel <chat_id>` writes a bare
+    string; the loader must accept that shape and wrap it under the surrounding
+    platform.  Without this, the gateway crashes with ``TypeError: string
+    indices must be integers, not 'str'`` (issue #33141)."""
+
+    def test_string_is_wrapped_under_platform_default(self):
+        restored = HomeChannel.from_dict(
+            "oc_b0b897cce6e70190959898f94fe8f9a8",
+            platform_default=Platform.FEISHU,
+        )
+        assert restored.platform == Platform.FEISHU
+        assert restored.chat_id == "oc_b0b897cce6e70190959898f94fe8f9a8"
+        assert restored.name == "Home"
+        assert restored.thread_id is None
+
+    def test_string_without_platform_default_raises(self):
+        with pytest.raises(TypeError, match="platform_default"):
+            HomeChannel.from_dict("oc_123")
+
+    def test_platform_config_threads_platform_through(self):
+        """End-to-end: a config dict produced by `hermes config set
+        platforms.feishu.home_channel <chat_id>` round-trips through
+        ``GatewayConfig.from_dict`` instead of raising."""
+        config = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "feishu": {
+                        "home_channel": "oc_b0b897cce6e70190959898f94fe8f9a8",
+                    },
+                },
+            }
+        )
+        pc = config.platforms[Platform.FEISHU]
+        assert pc.home_channel is not None
+        assert pc.home_channel.platform == Platform.FEISHU
+        assert pc.home_channel.chat_id == "oc_b0b897cce6e70190959898f94fe8f9a8"
+        assert pc.home_channel.name == "Home"
+
+    def test_dict_shape_still_wins_over_platform_default(self):
+        """If the user wrote the structured dict form by hand, the platform key
+        in the dict (not the surrounding platforms.<name>: key) is the source
+        of truth — preserves the prior round-trip behavior."""
+        restored = HomeChannel.from_dict(
+            {"platform": "discord", "chat_id": "555", "name": "general"},
+            platform_default=Platform.TELEGRAM,
+        )
+        assert restored.platform == Platform.DISCORD
 
 
 class TestPlatformConfigRoundtrip:

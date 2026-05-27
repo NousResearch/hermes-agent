@@ -1,102 +1,95 @@
 ---
 name: cloudflare-bypass
-description: Cloudflare bypass aracı — JS challenge'ını çözer, sayfayı temiz markdown olarak döndürür. Sıfır maliyet, sıfır API key.
-version: 1.0.0
+description: Bypass Cloudflare with TLS fingerprint impersonation (curl_cffi). Get clean markdown from protected pages. Zero cost, zero API keys.
+version: 2.0.0
 author: akifcankilic
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [cloudflare, bypass, web-scraping, markdown, scraper]
+    tags: [cloudflare, bypass, web-scraping, markdown, curl_cffi, scraper]
     related_skills: [scrapling, web-extract]
 prerequisites:
   commands: [python3]
-  pip: [cloudscraper, html2text]
+  pip: [curl_cffi, html2text]
 ---
 
 # Cloudflare Bypass
 
-**TL;DR:** `pip install cloudscraper html2text` + `python3 cfget.py <url>` = Cloudflare'ı geç, temiz markdown al. 0₺, 0 API key, 0 Chromium.
+**TL;DR:** `pip install curl_cffi html2text` + `python3 cfget.py <url>` = bypass Cloudflare, get clean markdown. $0, zero API keys, zero browser deps.
 
-## Ne işe yarar?
+## What it does
 
-Cloudflare'in "Just a moment..." / "Checking your browser" koruması olan sitelerden içerik almanı sağlar. curl, wget, hatta headless Chromium'un geçemediği yerden cloudscraper geçer.
+Bypasses Cloudflare's "Just a moment..." / "Checking your browser" protection. Works where curl, wget, and headless Chromium fail. **curl_cffi** impersonates real Chrome at the TLS fingerprint level to get through.
 
-## Nasıl çalışır?
+## How it works
 
-1. **cloudscraper** → Cloudflare JS challenge'ını çözer, sayfayı HTTP'den alır
-2. **html2text** → Ham HTML'i temiz markdown'a çevirir
-3. Çıktı direkt terminale basılır — pipe'la devam edebilirsin
-
-> **Önemli:** cloudscraper JS çalıştırmaz. Sadece Cloudflare challenge'ını çözer, sayfanın server'dan gönderdiği HTML'i alır. Eğer site React/SPA gibi client-side render yapıyorsa (9gag gibi), içerik gelmez.
-
-## Kurulum
-
-```bash
-pip install cloudscraper html2text
+```
+curl_cffi → TLS fingerprint impersonation (Chrome 124) → Cloudflare bypass → HTML
+    ↓
+html2text → markdown conversion → clean output
 ```
 
-Eğer sisteminde PEP 668 koruması varsa (`--break-system-packages` gerekebilir):
+> **Why curl_cffi?** cloudscraper only handles basic CF challenges. curl_cffi impersonates a real browser at the TLS layer — it works on tougher sites (Eksi Sozluk entry pages, 9gag, medium).
+
+## Installation
 
 ```bash
-pip install --break-system-packages cloudscraper html2text
+pip install curl_cffi html2text
 ```
 
-## Kullanım
+If you hit PEP 668:
+```bash
+pip install --break-system-packages curl_cffi html2text
+```
+
+## Usage
 
 ```bash
-# Sayfayı al, markdown gör
-python3 cfget.py https://eksisozluk.com/debe
-
-# İlk 20 satır
-python3 cfget.py https://example.com | head -20
-
-# Dosyaya kaydet
-python3 cfget.py https://example.com > sayfa.md
+python3 cfget.py https://example.com            # one-shot, markdown output
+python3 cfget.py https://example.com | head -20 # pipe
+python3 cfget.py https://example.com > page.md  # save to file
 ```
 
-Script'in nerede durduğu önemli değil — tek dosya, bağımlılığı yok. İstersen `~/cfget.py`'ye koy, istersen `/usr/local/bin/cfget` yap.
+### Auto fallback
 
-## Sınırlamalar
+If `curl_cffi` is not installed, falls back to `cloudscraper`. If `html2text` is missing, strips HTML tags and outputs plain text. Only requires Python 3.
 
-- **Client-side render (SPA) sitelerde çalışmaz** — React, Angular, Vue ile yüklenen sayfalarda boş gelir
-- **Login gereken yerlerde** form tabanlı giriş dener ama OAuth/CAPTCHA/2FA'yı geçemez
-- **Rate limit** yok — peş peşe çok request atarsan IP ban yiyebilirsin, saygılı ol
+## Limitations
 
-## Test Edilen Siteler
+- **Client-side rendered SPAs** won't work (React/Vue/Angular — no JS execution)
+- **Multi-layer protection** (sahibinden.com: Cloudflare + custom bot detection) needs residential proxy
+- **No rate limiting** — be polite or your IP gets banned
 
-| Site | Durum | Not |
-|------|-------|-----|
-| eksisozluk.com | ✅ | Server render, tüm içerik gelir |
-| webtekno.com | ✅ | Teknoloji haberleri |
-| donanimhaber.com | ✅ | Teknoloji haberleri |
-| cnnturk.com | ✅ | Haber sitesi |
-| fanatik.com.tr | ✅ | Spor haberleri |
-| itch.io | ✅ | Oyun marketplace |
-| 9gag.com | ❌ | SPA, JS render |
+## Tested sites
+
+| Site | Status | Notes |
+|------|--------|-------|
+| eksisozluk.com | ✅ | Homepage, debe, entry, topic pages |
+| 9gag.com | ✅ | Homepage and subpages |
+| webtekno.com | ✅ | Tech news |
+| donanimhaber.com | ✅ | Tech news |
+| cnnturk.com | ✅ | News site |
+| fanatik.com.tr | ✅ | Sports news |
+| trendyol.com | ✅ | E-commerce |
+| roblox.com | ✅ | Gaming platform |
+| steampowered.com | ✅ | Game store |
+| medium.com | ✅ | Blog platform |
+| fandom.com | ✅ | Wiki platform |
+| itch.io | ✅ | Game marketplace |
+| sahibinden.com | ❌ | Multi-layer CF + custom detection, proxies needed |
 
 ## cfget.py
 
-Script'in kendisi tek dosya, ~25 satır:
+Single file, ~60 lines, three-tier fallback:
 
 ```python
-import sys, re, cloudscraper, html2text
-
-url = sys.argv[1]
-scraper = cloudscraper.create_scraper()
-r = scraper.get(url, timeout=30)
-r.raise_for_status()
-
-converter = html2text.HTML2Text()
-converter.ignore_images = True
-converter.body_width = 0
-converter.unicode_snob = True
-
-md = converter.handle(r.text)
-md = re.sub(r'\n{3,}', '\n\n', md)
-print(md.strip())
+# 1. curl_cffi (primary) — TLS fingerprint impersonation
+# 2. cloudscraper (fallback) — basic CF challenge solver
+# 3. html2text (primary) — HTML → markdown
+#    regex (fallback) — strip tags, plain text
 ```
 
 ---
 
-*Vibe coding ile yapıldı. Sorun olursa PR aç, bakarız.*
+*Built with vibe coding. Open a PR, file an issue, contribute.*

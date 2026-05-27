@@ -32,7 +32,7 @@ async def test_dispatch_text_dm(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
 
-    adapter.handle_message = fake_handle  # type: ignore[assignment]
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
 
     payload = {
         "event": "messages",
@@ -70,7 +70,7 @@ async def test_dispatch_group_id_detected(monkeypatch: pytest.MonkeyPatch) -> No
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
 
-    adapter.handle_message = fake_handle  # type: ignore[assignment]
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
 
     payload = {
         "event": "messages",
@@ -97,7 +97,7 @@ async def test_dispatch_attachment_surfaces_marker(
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
 
-    adapter.handle_message = fake_handle  # type: ignore[assignment]
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
 
     payload = {
         "event": "messages",

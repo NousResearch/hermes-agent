@@ -22,6 +22,36 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
 
+# ---------- SDK workaround: guard openai SDK parse_response against output=None ----------
+# Codex backend can return responses with output=None (reasoning-only turns,
+# certain failure modes). The OpenAI Python SDK stream parser at
+# openai.lib.streaming.responses._responses.parse_response then crashes with
+# TypeError("NoneType is not iterable") inside its "for output in response.output"
+# loop, before Hermes ever sees the response. This patches the SDK's local
+# binding so the parse succeeds with an empty output list. Tested with
+# openai==2.32.0. Remove once upstream SDK adds the guard.
+def _install_codex_output_none_guard() -> None:
+    try:
+        import openai.lib.streaming.responses._responses as _streaming_mod
+    except Exception:
+        return
+    _original = getattr(_streaming_mod, "parse_response", None)
+    if _original is None or getattr(_original, "__hermes_codex_guard__", False):
+        return
+    def _safe_parse_response(*args, **kwargs):
+        resp = kwargs.get("response")
+        if resp is not None and getattr(resp, "output", None) is None:
+            try:
+                resp.output = []
+            except Exception:
+                pass
+        return _original(*args, **kwargs)
+    _safe_parse_response.__hermes_codex_guard__ = True  # type: ignore[attr-defined]
+    _streaming_mod.parse_response = _safe_parse_response
+
+_install_codex_output_none_guard()
+
+
 
 def _classify_responses_issuer(
     *,

@@ -75,6 +75,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
+    r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
     r"|preflight\s+compression"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
@@ -818,7 +819,6 @@ if _config_path.exists():
                 "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
                 "modal_image": "TERMINAL_MODAL_IMAGE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
@@ -1078,14 +1078,19 @@ def _resolve_runtime_agent_kwargs() -> dict:
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
-    from hermes_cli.auth import AuthError
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
 
     try:
         runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
-        # Primary provider auth failed (expired token, revoked key, etc.).
-        # Try the fallback provider chain before raising.
-        logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
+        # Distinguish a transient rate-limit/quota cap (credentials are fine,
+        # re-auth cannot help) from a genuine auth failure (expired/revoked
+        # token). Both fall through to the fallback chain, but the log message
+        # must not mislabel a quota exhaustion as an auth failure (#32790).
+        if is_rate_limited_auth_error(auth_exc):
+            logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
+        else:
+            logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
             return fb_config
@@ -1131,9 +1136,13 @@ def _try_resolve_fallback_provider() -> dict | None:
                     explicit_base_url=entry.get("base_url"),
                     explicit_api_key=explicit_api_key,
                 )
+                # Log the literal `provider` key from config, not the resolved
+                # runtime category — an Ollama fallback resolves through the
+                # OpenAI-compatible path and would otherwise be logged as
+                # "openrouter", contradicting the operator's config (#32790).
                 logger.info(
                     "Fallback provider resolved: %s model=%s",
-                    runtime.get("provider"),
+                    entry.get("provider") or runtime.get("provider"),
                     entry.get("model"),
                 )
                 return {
@@ -3223,9 +3232,21 @@ class GatewayRunner:
 
         self._busy_ack_ts[session_key] = now
 
-        # Build a status-rich acknowledgment
+        # Build a status-rich acknowledgment. Mobile chat defaults keep this
+        # terse; detailed iteration/tool state is still available in logs and
+        # can be opted in per platform via display.platforms.<platform>.busy_ack_detail.
+        from gateway.display_config import resolve_display_setting
         status_parts = []
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        busy_ack_detail_enabled = bool(
+            resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(event.source.platform),
+                "busy_ack_detail",
+                True,
+            )
+        )
+
+        if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 summary = running_agent.get_activity_summary()
                 iteration = summary.get("api_call_count", 0)
@@ -7030,6 +7051,13 @@ class GatewayRunner:
                 if _denied is not None:
                     return _denied
 
+            # Telegram sends /start for bot launches/deep-links. Treat it as a
+            # platform ping, not a user command: no help dump, no agent
+            # interrupt, no queued text.
+            if _cmd_def_inner and _cmd_def_inner.name == "start":
+                logger.info("Ignoring /start platform ping for active session %s", _quick_key)
+                return ""
+
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
 
@@ -7462,6 +7490,10 @@ class GatewayRunner:
         
         if canonical == "help":
             return await self._handle_help_command(event)
+
+        if canonical == "start":
+            logger.info("Ignoring /start platform ping for session %s", _quick_key)
+            return ""
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
@@ -11741,6 +11773,7 @@ class GatewayRunner:
                     session_id=task_id,
                     platform=platform_key,
                     user_id=source.user_id,
+                    user_id_alt=source.user_id_alt,
                     user_name=source.user_name,
                     chat_id=source.chat_id,
                     chat_name=source.chat_name,
@@ -15043,6 +15076,29 @@ class GatewayRunner:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
+
+        # Honcho identity-mapping keys live in honcho.json, not user_config.
+        # HonchoSessionManager freezes the resolved peer_name / ai_peer /
+        # pin / aliases / prefix at construction; without busting here,
+        # mid-flight honcho.json edits go unread until the next unrelated
+        # cache eviction.
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig
+
+            hcfg = HonchoClientConfig.from_global_config()
+            out["honcho.peer_name"] = hcfg.peer_name
+            out["honcho.ai_peer"] = hcfg.ai_peer
+            out["honcho.pin_peer_name"] = bool(hcfg.pin_peer_name)
+            out["honcho.runtime_peer_prefix"] = hcfg.runtime_peer_prefix or ""
+            aliases = hcfg.user_peer_aliases or {}
+            out["honcho.user_peer_aliases"] = sorted(aliases.items()) if isinstance(aliases, dict) else []
+        except Exception:
+            out["honcho.peer_name"] = None
+            out["honcho.ai_peer"] = None
+            out["honcho.pin_peer_name"] = None
+            out["honcho.runtime_peer_prefix"] = None
+            out["honcho.user_peer_aliases"] = None
+
         return out
 
     @staticmethod
@@ -15052,6 +15108,8 @@ class GatewayRunner:
         enabled_toolsets: list,
         ephemeral_prompt: str,
         cache_keys: dict | None = None,
+        user_id: str | None = None,
+        user_id_alt: str | None = None,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -15065,6 +15123,20 @@ class GatewayRunner:
         the output of ``_extract_cache_busting_config(user_config)`` so
         edits to model.context_length / compression.* in config.yaml are
         picked up on the next gateway message without a manual restart.
+
+        ``user_id`` and ``user_id_alt`` are the runtime user identities
+        carried by the current message's gateway source.  They participate
+        in the cache key because the Honcho memory provider freezes them
+        into ``HonchoSessionManager`` at first-message init (see
+        ``plugins/memory/honcho/__init__.py::_do_session_init``).  Without
+        them in the signature, a shared-thread session_key (one in which
+        ``build_session_key`` intentionally omits the participant ID,
+        e.g. ``thread_sessions_per_user=False``) would reuse the cached
+        AIAgent across distinct users, causing the second user's messages
+        to be attributed to the first user's resolved Honcho peer.  This
+        broke #27371's per-user-peer contract in multi-user gateways.
+        Per-user agent rebuilds in shared threads trade prompt-cache
+        warmth for correct memory attribution.
         """
         import hashlib, json as _j
 
@@ -15089,6 +15161,8 @@ class GatewayRunner:
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
                 _cache_keys_sorted,
+                str(user_id or ""),
+                str(user_id_alt or ""),
             ],
             sort_keys=True,
             default=str,
@@ -15868,9 +15942,13 @@ class GatewayRunner:
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
-            and is_truthy_value(
-                display_config.get("interim_assistant_messages"),
-                default=True,
+            and bool(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "interim_assistant_messages",
+                    True,
+                )
             )
         )
         
@@ -15883,7 +15961,7 @@ class GatewayRunner:
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
         # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
-        # from the tool-progress / "Still working..." / status-callback bubbles
+        # from the tool-progress / "⏳ Working — N min" / status-callback bubbles
         # are collected here and deleted after the final response lands.
         # Failed runs skip cleanup so the bubbles remain as breadcrumbs.
         _cleanup_progress = bool(
@@ -16648,6 +16726,8 @@ class GatewayRunner:
                 enabled_toolsets,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
+                user_id=getattr(source, "user_id", None),
+                user_id_alt=getattr(source, "user_id_alt", None),
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -16691,6 +16771,7 @@ class GatewayRunner:
                     session_id=session_id,
                     platform=platform_key,
                     user_id=source.user_id,
+                    user_id_alt=source.user_id_alt,
                     user_name=source.user_name,
                     chat_id=source.chat_id,
                     chat_name=source.chat_name,
@@ -17433,6 +17514,15 @@ class GatewayRunner:
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
+        if not bool(
+            resolve_display_setting(
+                user_config,
+                platform_key,
+                "long_running_notifications",
+                True,
+            )
+        ):
+            _NOTIFY_INTERVAL = None
         _notify_start = time.time()
 
         async def _notify_long_running():
@@ -17441,35 +17531,69 @@ class GatewayRunner:
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return
+            # Track the heartbeat message id so we can edit-in-place on
+            # platforms that support it (Telegram, Discord, Slack, etc.)
+            # instead of spamming a new "Still working" bubble every
+            # interval. Falls back to send-new when edit fails or isn't
+            # supported by the adapter.
+            _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available.
+                # Include agent activity context if available. Default
+                # heartbeat is terse: elapsed + current tool. Verbose
+                # iteration counter is gated on busy_ack_detail so users
+                # who want it can opt in per platform.
                 _agent_ref = agent_holder[0]
                 _status_detail = ""
+                _want_iteration_detail = bool(
+                    resolve_display_setting(
+                        user_config,
+                        platform_key,
+                        "busy_ack_detail",
+                        True,
+                    )
+                )
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
-                        if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
-                        else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
+                        _parts = []
+                        if _want_iteration_detail:
+                            _parts.append(
+                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
+                            )
+                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
+                        if _action:
+                            _parts.append(str(_action))
+                        if _parts:
+                            _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
+                _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 try:
-                    _notify_res = await _notify_adapter.send(
-                        source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
-                    )
-                    if (
-                        _cleanup_progress
-                        and getattr(_notify_res, "success", False)
-                        and getattr(_notify_res, "message_id", None)
-                    ):
-                        _cleanup_msg_ids.append(str(_notify_res.message_id))
+                    _notify_res = None
+                    if _heartbeat_msg_id:
+                        try:
+                            _notify_res = await _notify_adapter.edit_message(
+                                source.chat_id,
+                                _heartbeat_msg_id,
+                                _heartbeat_text,
+                            )
+                        except Exception as _ee:
+                            logger.debug("Heartbeat edit failed: %s", _ee)
+                            _notify_res = None
+                    if not (_notify_res and getattr(_notify_res, "success", False)):
+                        _notify_res = await _notify_adapter.send(
+                            source.chat_id,
+                            _heartbeat_text,
+                            metadata=_status_thread_metadata,
+                        )
+                        if getattr(_notify_res, "success", False) and getattr(
+                            _notify_res, "message_id", None
+                        ):
+                            _heartbeat_msg_id = str(_notify_res.message_id)
+                            if _cleanup_progress:
+                                _cleanup_msg_ids.append(_heartbeat_msg_id)
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 

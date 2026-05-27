@@ -313,6 +313,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
             and _elapsed > _ttfb_timeout
             and getattr(agent, "_codex_stream_last_event_ts", None) is None
         ):
+            _silent_hint: Optional[str] = None
+            _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
+            if callable(_hint_fn):
+                try:
+                    _silent_hint = _hint_fn(model=api_kwargs.get("model"))
+                except Exception:
+                    _silent_hint = None
             logger.warning(
                 "Codex stream produced no bytes within TTFB cutoff "
                 "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
@@ -320,11 +327,18 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 "loop can reconnect.",
                 _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
             )
-            agent._emit_status(
-                f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
-                f"Reconnecting."
-            )
+            if _silent_hint:
+                agent._emit_status(
+                    f"⚠️ No first byte from provider in {int(_elapsed)}s "
+                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                    f"Reconnecting. {_silent_hint}"
+                )
+            else:
+                agent._emit_status(
+                    f"⚠️ No first byte from provider in {int(_elapsed)}s "
+                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                    f"Reconnecting."
+                )
             try:
                 _close_request_client_once("codex_ttfb_kill")
             except Exception:
@@ -335,10 +349,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # Wait briefly for the worker to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
-                result["error"] = TimeoutError(
-                    f"Codex stream produced no bytes within {int(_elapsed)}s "
-                    f"(TTFB threshold: {int(_ttfb_timeout)}s)"
-                )
+                if _silent_hint:
+                    result["error"] = TimeoutError(
+                        f"Codex stream produced no bytes within {int(_elapsed)}s "
+                        f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}"
+                    )
+                else:
+                    result["error"] = TimeoutError(
+                        f"Codex stream produced no bytes within {int(_elapsed)}s "
+                        f"(TTFB threshold: {int(_ttfb_timeout)}s)"
+                    )
             break
 
         # Stale-call detector: kill the connection if no response
@@ -507,6 +527,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
+            replay_encrypted_reasoning=bool(
+                getattr(agent, "_codex_reasoning_replay_enabled", True)
+            ),
         )
 
     # ── chat_completions (default) ─────────────────────────────────────
@@ -1018,6 +1041,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+
+        # Clear the credential pool when the fallback provider doesn't match
+        # the pool's provider.  The pool was seeded for the primary provider;
+        # leaving it attached means downstream recovery (rate_limit / billing /
+        # auth) calls ``_swap_credential`` with a primary entry which overwrites
+        # the agent's ``base_url`` back to the primary's endpoint — every
+        # fallback request then 404s against the wrong host.  See #33163.
+        # When the fallback shares the pool's provider (e.g. both openrouter
+        # entries with different routing) the pool is preserved.
+        _existing_pool = getattr(agent, "_credential_pool", None)
+        if _existing_pool is not None:
+            _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
+            if _pool_provider and _pool_provider != fb_provider:
+                logger.info(
+                    "Fallback to %s/%s: clearing primary credential pool "
+                    "(pool_provider=%s) to prevent cross-provider contamination",
+                    fb_provider, fb_model, _pool_provider,
+                )
+                agent._credential_pool = None
 
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use

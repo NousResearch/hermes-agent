@@ -677,6 +677,50 @@ class TestLaunchdServiceRecovery:
         assert str(plist_path) in output
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
+        assert "could not find service" in output.lower()
+
+    def test_launchd_status_reports_loaded_service_via_launchctl_print(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "gui/501/ai.hermes.gateway = {\n"
+                    "\tstate = running\n"
+                    "\tpid = 36480\n"
+                    "}\n"
+                ),
+                stderr="",
+            ),
+        )
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert str(plist_path) in output
+        assert "loaded" in output.lower()
+        assert "state: running" in output.lower()
+        assert "pid: 36480" in output.lower()
+
+    def test_probe_launchd_service_running_uses_launchctl_print_status(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("plist\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_launchd_service_status",
+            lambda: {"loaded": True, "state": "running", "pid": 36480, "raw": "", "reason": ""},
+        )
+
+        assert gateway_cli._probe_launchd_service_running() is True
 
 
 class TestGatewayServiceDetection:
@@ -735,6 +779,34 @@ class TestGatewayServiceDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         assert gateway_cli._is_service_running() is False
+
+    def test_is_service_running_uses_launchctl_print_status_on_macos(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("plist\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_launchd_service_status",
+            lambda: {"loaded": True, "state": "running", "pid": 36480, "raw": "", "reason": ""},
+        )
+
+        assert gateway_cli._is_service_running() is True
+
+    def test_find_gateway_pids_includes_launchd_pid_from_service_status(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_scan_gateway_pids", lambda exclude_pids, all_profiles=False: [])
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_launchd_service_status",
+            lambda: {"loaded": True, "state": "running", "pid": 36480, "raw": "", "reason": ""},
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+
+        assert gateway_cli.find_gateway_pids() == [36480]
 
 class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):

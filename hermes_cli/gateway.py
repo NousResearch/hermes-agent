@@ -110,23 +110,11 @@ def _get_service_pids() -> set:
     # --- launchd (macOS) ---
     if is_macos():
         try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+            service_status = _read_launchd_service_status()
+            pid = service_status.get("pid")
+            if isinstance(pid, int) and pid > 0:
+                pids.add(pid)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
 
     return pids
@@ -958,15 +946,9 @@ def _probe_launchd_service_running() -> bool:
     if not get_launchd_plist_path().exists():
         return False
     try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
+        return bool(_read_launchd_service_status().get("loaded"))
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return False
-    return result.returncode == 0
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -2802,6 +2784,64 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+def _read_launchd_service_status() -> dict[str, object]:
+    """Return launchd service status for the current Hermes label.
+
+    ``launchctl list <label>`` is unreliable on modern macOS for agents loaded
+    in a GUI bootstrap namespace: the job can be running while ``list`` still
+    returns "Could not find service". Use ``launchctl print gui/<uid>/<label>``
+    instead, which queries the correct domain explicitly and matches what
+    operators use when debugging live launchd state.
+    """
+    label = get_launchd_label()
+    target = f"{_launchd_domain()}/{label}"
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {
+            "loaded": False,
+            "state": None,
+            "pid": None,
+            "raw": "",
+            "reason": "launchctl unavailable or timed out",
+        }
+
+    raw = (result.stdout or "").strip()
+    combined = "\n".join(part for part in ((result.stdout or "").strip(), (result.stderr or "").strip()) if part)
+    if result.returncode != 0:
+        reason = (combined or f"launchctl exited {result.returncode}").strip()
+        return {
+            "loaded": False,
+            "state": None,
+            "pid": None,
+            "raw": raw,
+            "reason": reason,
+            "returncode": result.returncode,
+        }
+
+    state = None
+    pid = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("state ="):
+            state = stripped.split("=", 1)[1].strip()
+        elif stripped.startswith("pid ="):
+            value = stripped.split("=", 1)[1].strip()
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed and parsed > 0:
+                pid = parsed
+
+    return {"loaded": True, "state": state, "pid": pid, "raw": raw, "reason": ""}
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -3082,19 +3122,8 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        loaded = result.returncode == 0
-        loaded_output = result.stdout
-    except subprocess.TimeoutExpired:
-        loaded = False
-        loaded_output = ""
+    service_status = _read_launchd_service_status()
+    loaded = bool(service_status.get("loaded"))
 
     print(f"Launchd plist: {plist_path}")
     if launchd_plist_is_current():
@@ -3105,13 +3134,26 @@ def launchd_status(deep: bool = False):
 
     if loaded:
         print("✓ Gateway service is loaded")
-        print(loaded_output)
+        state = service_status.get("state")
+        pid = service_status.get("pid")
+        if state:
+            print(f"  State: {state}")
+        if pid:
+            print(f"  PID: {pid}")
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
         print("  Run: hermes gateway start")
+        reason = str(service_status.get("reason") or "").strip()
+        if reason:
+            print(f"  launchctl: {reason}")
     
     if deep:
+        raw = str(service_status.get("raw") or "").strip()
+        if raw:
+            print()
+            print("launchctl details:")
+            print(raw)
         log_file = get_hermes_home() / "logs" / "gateway.log"
         if log_file.exists():
             print()
@@ -4193,12 +4235,8 @@ def _is_service_running() -> bool:
         return False
     elif is_macos() and get_launchd_plist_path().exists():
         try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True, text=True, timeout=10,
-            )
-            return result.returncode == 0
-        except subprocess.TimeoutExpired:
+            return bool(_read_launchd_service_status().get("loaded"))
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return False
     elif is_windows():
         from hermes_cli import gateway_windows

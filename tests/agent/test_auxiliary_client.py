@@ -2515,6 +2515,63 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["timeout"] == 12.5
         assert response.choices[0].message.content == "summary"
 
+    def test_recovers_when_sdk_stream_parser_crashes_on_null_output(self):
+        output_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="recovered auxiliary")],
+        )
+
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=output_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - crash happens during iteration
+                raise AssertionError("unreachable")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert response.choices[0].message.content == "recovered auxiliary"
+
+    def test_does_not_synthesize_text_after_custom_tool_call(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="incidental text")
+                yield SimpleNamespace(type="response.custom_tool_call.delta")
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - crash happens during iteration
+                raise AssertionError("unreachable")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        with pytest.raises(TypeError, match="NoneType"):
+            adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class SlowAliveStream:
             def __enter__(self):

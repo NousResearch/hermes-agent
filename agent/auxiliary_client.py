@@ -784,6 +784,10 @@ class _CodexCompletionsAdapter:
                 # new failure mode for auxiliary calls.
                 pass
 
+        def _is_tool_call_event(event_type: Any) -> bool:
+            text = str(event_type or "")
+            return "function_call" in text or "tool_call" in text
+
         try:
             # Collect output items and text deltas during streaming —
             # the Codex backend can return empty response.output from
@@ -796,22 +800,60 @@ class _CodexCompletionsAdapter:
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+            try:
+                with self._client.responses.stream(**resp_kwargs) as stream:
+                    for _event in stream:
+                        _check_cancelled()
+                        _etype = getattr(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = getattr(_event, "item", None)
+                            if _done is not None:
+                                collected_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = getattr(_event, "delta", "")
+                            if _delta:
+                                collected_text_deltas.append(_delta)
+                        elif _is_tool_call_event(_etype):
+                            has_function_calls = True
                     _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
+                    final = stream.get_final_response()
+            except TypeError as exc:
+                if "'NoneType' object is not iterable" not in str(exc):
+                    raise
+                if collected_output_items:
+                    final = SimpleNamespace(
+                        output=list(collected_output_items),
+                        status="completed",
+                        model=model,
+                        usage=None,
+                    )
+                    logger.warning(
+                        "Codex auxiliary stream parser returned output=null; "
+                        "recovered %d output item(s) from streamed events.",
+                        len(collected_output_items),
+                    )
+                elif collected_text_deltas and not has_function_calls:
+                    assembled = "".join(collected_text_deltas)
+                    final = SimpleNamespace(
+                        output=[
+                            SimpleNamespace(
+                                type="message",
+                                role="assistant",
+                                status="completed",
+                                content=[SimpleNamespace(type="output_text", text=assembled)],
+                            )
+                        ],
+                        status="completed",
+                        model=model,
+                        usage=None,
+                    )
+                    logger.warning(
+                        "Codex auxiliary stream parser returned output=null; "
+                        "synthesized output from %d text delta(s).",
+                        len(collected_text_deltas),
+                    )
+                else:
+                    raise
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)

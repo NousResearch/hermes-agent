@@ -26,6 +26,55 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _is_null_output_parse_error(exc: BaseException) -> bool:
+    """OpenAI SDK parser crash for Codex final events with output=null."""
+    return isinstance(exc, TypeError) and "'NoneType' object is not iterable" in str(exc)
+
+
+def _is_codex_tool_call_event(event_type: Any) -> bool:
+    """Return true for Responses events that represent tool-call activity."""
+    text = str(event_type or "")
+    return "function_call" in text or "tool_call" in text
+
+
+def _synthesize_codex_stream_response(
+    *,
+    api_kwargs: dict,
+    collected_output_items: List[Any],
+    collected_text_deltas: List[str],
+    has_tool_calls: bool,
+    source: str,
+) -> Any:
+    """Recover a Responses object from items already received on the stream."""
+    output_items = list(collected_output_items)
+    if not output_items and collected_text_deltas and not has_tool_calls:
+        assembled = "".join(collected_text_deltas)
+        output_items = [
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )
+        ]
+
+    if not output_items:
+        return None
+
+    logger.warning(
+        "Codex %s stream parser returned output=null; recovered %d output item(s) "
+        "from streamed events.",
+        source,
+        len(output_items),
+    )
+    return SimpleNamespace(
+        output=output_items,
+        status="completed",
+        model=api_kwargs.get("model"),
+        usage=None,
+    )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -219,7 +268,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                         pass
                             agent._fire_stream_delta(delta_text)
                     # Track tool calls to suppress text streaming
-                    elif "function_call" in event_type:
+                    elif _is_codex_tool_call_event(event_type):
                         has_tool_calls = True
                     # Fire reasoning callbacks
                     elif "reasoning" in event_type and "delta" in event_type:
@@ -335,6 +384,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            if _is_null_output_parse_error(exc):
+                recovered = _synthesize_codex_stream_response(
+                    api_kwargs=api_kwargs,
+                    collected_output_items=collected_output_items,
+                    collected_text_deltas=agent._codex_streamed_text_parts,
+                    has_tool_calls=has_tool_calls,
+                    source="Responses",
+                )
+                if recovered is not None:
+                    return recovered
+            raise
 
 
 
@@ -355,6 +416,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     terminal_response = None
     collected_output_items: list = []
     collected_text_deltas: list = []
+    has_tool_calls = False
     try:
         for event in stream_or_response:
             agent._touch_activity("receiving stream response")
@@ -404,6 +466,8 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                     delta = event.get("delta", "")
                 if delta:
                     collected_text_deltas.append(delta)
+            elif event_type and _is_codex_tool_call_event(event_type):
+                has_tool_calls = True
 
             if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                 continue
@@ -421,7 +485,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                             "Codex fallback stream: backfilled %d output items",
                             len(collected_output_items),
                         )
-                    elif collected_text_deltas:
+                    elif collected_text_deltas and not has_tool_calls:
                         assembled = "".join(collected_text_deltas)
                         terminal_response.output = [SimpleNamespace(
                             type="message", role="assistant",
@@ -433,6 +497,18 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                             len(collected_text_deltas), len(assembled),
                         )
                 return terminal_response
+    except TypeError as exc:
+        if _is_null_output_parse_error(exc):
+            recovered = _synthesize_codex_stream_response(
+                api_kwargs=fallback_kwargs,
+                collected_output_items=collected_output_items,
+                collected_text_deltas=collected_text_deltas,
+                has_tool_calls=has_tool_calls,
+                source="fallback Responses",
+            )
+            if recovered is not None:
+                return recovered
+        raise
     finally:
         close_fn = getattr(stream_or_response, "close", None)
         if callable(close_fn):

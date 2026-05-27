@@ -1079,7 +1079,12 @@ def run_conversation(
         _sanitize_messages_surrogates(api_messages)
 
         # Calculate approximate request size for logging
-        total_chars = sum(len(str(msg)) for msg in api_messages)
+        # total_chars is expensive (serializes every msg to str) — only
+        # compute when verbose output is active.
+        total_chars = (
+            sum(len(str(msg)) for msg in api_messages)
+            if not agent.quiet_mode else 0
+        )
         approx_tokens = estimate_messages_tokens_rough(api_messages)
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None

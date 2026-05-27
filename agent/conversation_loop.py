@@ -4207,6 +4207,7 @@ def run_conversation(
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
+        "session_persisted": getattr(agent, "_last_session_persisted", True),
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,

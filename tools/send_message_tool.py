@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import ssl
+import stat
 import tempfile
 import time
 from email.utils import formatdate
@@ -32,7 +33,6 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
-_WHATSAPP_JID_TARGET_RE = re.compile(r"^\s*([0-9A-Za-z._-]+@(?:s\.whatsapp\.net|g\.us|lid))\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -51,6 +51,7 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
 _MATRIX_MEDIA_MAX_BYTES = 50 * 1024 * 1024
+_DISCORD_FORUM_MEDIA_MAX_BYTES = 25 * 1024 * 1024
 _SENSITIVE_MEDIA_DIR_NAMES = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"})
 _SENSITIVE_MEDIA_FILE_NAMES = frozenset({".env", ".netrc", ".pgpass", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"})
 _URL_SECRET_QUERY_RE = re.compile(
@@ -110,7 +111,11 @@ def _matrix_media_allowed_roots() -> list[Path]:
 
 
 def _validate_matrix_media_path(media_path: str) -> tuple[Path | None, str | None]:
-    """Validate a Matrix send_message media path before handing it to the adapter."""
+    """Validate Matrix media paths against allowed roots before adapter upload.
+
+    This containment check is a security boundary that prevents traversal or
+    arbitrary local-file exfiltration through send_message attachments.
+    """
     try:
         resolved = Path(media_path).expanduser().resolve(strict=True)
         stat_result = resolved.stat()
@@ -119,7 +124,7 @@ def _validate_matrix_media_path(media_path: str) -> tuple[Path | None, str | Non
     except OSError:
         return None, "Media file is not accessible"
 
-    if not resolved.is_file():
+    if not stat.S_ISREG(stat_result.st_mode):
         return None, "Media path must be a regular file"
 
     if stat_result.st_size > _MATRIX_MEDIA_MAX_BYTES:
@@ -139,6 +144,67 @@ def _validate_matrix_media_path(media_path: str) -> tuple[Path | None, str | Non
         return None, "Media file is outside allowed send_message media roots"
 
     return resolved, None
+
+
+def _signal_attachment_roots() -> list[Path]:
+    """Return Hermes-managed cache roots that may be sent as Signal attachments."""
+    from hermes_constants import get_hermes_dir, get_hermes_home
+
+    roots = [
+        get_hermes_dir("cache/images", "image_cache"),
+        get_hermes_dir("cache/audio", "audio_cache"),
+        get_hermes_dir("cache/documents", "document_cache"),
+        get_hermes_dir("cache/screenshots", "browser_screenshots"),
+        get_hermes_home() / "browser_screenshots",
+    ]
+    resolved: list[Path] = []
+    for root in roots:
+        try:
+            resolved.append(Path(root).resolve())
+        except OSError:
+            continue
+    return resolved
+
+
+def _validate_signal_attachment_path(media_path: str) -> tuple[str | None, str | None]:
+    """Validate a Signal MEDIA path before handing it to signal-cli.
+
+    Returns:
+        A tuple of ``(resolved_path, skip_reason)``. Exactly one item is set.
+    """
+    from gateway.platforms.signal import SIGNAL_MAX_ATTACHMENT_SIZE
+
+    try:
+        path = Path(media_path).expanduser().resolve(strict=True)
+        if not path.is_file():
+            return None, "not a regular file"
+        if not any(path == root or root in path.parents for root in _signal_attachment_roots()):
+            return None, "outside Hermes media cache"
+        if path.stat().st_size > SIGNAL_MAX_ATTACHMENT_SIZE:
+            return None, "exceeds Signal attachment size limit"
+    except FileNotFoundError:
+        return None, "unavailable"
+    except OSError:
+        return None, "unavailable"
+    return str(path), None
+
+
+def _validate_discord_forum_media_path(media_path: str) -> tuple[str | None, str | None]:
+    """Validate Discord forum media before multipart upload."""
+    try:
+        path = Path(media_path).expanduser().resolve(strict=True)
+        stat_result = path.stat()
+    except FileNotFoundError:
+        return None, "Media file not found"
+    except OSError:
+        return None, "Media file is not accessible"
+
+    if not stat.S_ISREG(stat_result.st_mode):
+        return None, "Media path must be a regular file"
+    if stat_result.st_size > _DISCORD_FORUM_MEDIA_MAX_BYTES:
+        limit_mib = _DISCORD_FORUM_MEDIA_MAX_BYTES // (1024 * 1024)
+        return None, f"Media file exceeds Discord forum upload safety limit ({limit_mib} MiB)"
+    return str(path), None
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -332,6 +398,7 @@ def _handle_send(args):
                 home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
         if home:
             chat_id = home.chat_id
+            thread_id = getattr(home, "thread_id", None)
             used_home_channel = True
         else:
             return json.dumps({
@@ -421,10 +488,6 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
-    if platform_name == "whatsapp":
-        match = _WHATSAPP_JID_TARGET_RE.fullmatch(target_ref)
-        if match:
-            return match.group(1), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
@@ -998,6 +1061,35 @@ def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
     return _DISCORD_CHANNEL_TYPE_PROBE_CACHE.get(str(chat_id))
 
 
+def _discord_allowed_mentions_payload() -> dict:
+    """Return Discord REST ``allowed_mentions`` with safe defaults.
+
+    Mirrors gateway Discord adapter defaults: block @everyone/@here and role
+    pings by default, while allowing user mentions and replied-user pings.
+    """
+
+    def _b(name: str, default: bool) -> bool:
+        raw = os.getenv(name, "").strip().lower()
+        if not raw:
+            return default
+        return raw in ("true", "1", "yes", "on")
+
+    allow_everyone = _b("DISCORD_ALLOW_MENTION_EVERYONE", False)
+    allow_roles = _b("DISCORD_ALLOW_MENTION_ROLES", False)
+    allow_users = _b("DISCORD_ALLOW_MENTION_USERS", True)
+    allow_replied_user = _b("DISCORD_ALLOW_MENTION_REPLIED_USER", True)
+
+    parse = []
+    if allow_everyone:
+        parse.append("everyone")
+    if allow_roles:
+        parse.append("roles")
+    if allow_users:
+        parse.append("users")
+
+    return {"parse": parse, "replied_user": allow_replied_user}
+
+
 async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
     """Send a single message via Discord REST API (no websocket client needed).
 
@@ -1075,12 +1167,13 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                 # right code path (JSON vs multipart) before opening a session.
                 valid_media = []
                 for media_path, _is_voice in media_files:
-                    if not os.path.exists(media_path):
-                        warning = f"Media file not found, skipping: {media_path}"
+                    validated_path, skip_reason = _validate_discord_forum_media_path(media_path)
+                    if skip_reason:
+                        warning = f"Media skipped ({skip_reason}): {media_path}"
                         logger.warning(warning)
                         warnings.append(warning)
                         continue
-                    valid_media.append(media_path)
+                    valid_media.append(validated_path)
 
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
                     if valid_media:
@@ -1091,7 +1184,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             {"id": str(idx), "filename": os.path.basename(path)}
                             for idx, path in enumerate(valid_media)
                         ]
-                        starter_message = {"content": message, "attachments": attachments_meta}
+                        starter_message = {"content": message, "allowed_mentions": _discord_allowed_mentions_payload(), "attachments": attachments_meta}
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
                         form = aiohttp.FormData()
@@ -1123,7 +1216,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             headers=json_headers,
                             json={
                                 "name": thread_name,
-                                "message": {"content": message},
+                                "message": {"content": message, "allowed_mentions": _discord_allowed_mentions_payload()},
                             },
                             **_req_kw,
                         ) as resp:
@@ -1279,11 +1372,14 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
         valid_media = media_files or []
         attachment_paths = []
+        skipped_media_count = 0
         for media_path, _is_voice in valid_media:
-            if os.path.exists(media_path):
-                attachment_paths.append(media_path)
+            attachment_path, skip_reason = _validate_signal_attachment_path(media_path)
+            if attachment_path:
+                attachment_paths.append(attachment_path)
             else:
-                logger.warning("Signal media file not found, skipping: %s", media_path)
+                skipped_media_count += 1
+                logger.warning("Signal media file skipped (%s)", skip_reason or "invalid")
 
         # Chunk attachments. With no attachments we still emit one batch
         # (text only). With attachments, the text rides on batch #0 so the
@@ -1405,8 +1501,8 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                     )
 
         warnings = []
-        if len(attachment_paths) < len(valid_media):
-            warnings.append("Some media files were skipped (not found on disk)")
+        if skipped_media_count:
+            warnings.append("Some Signal media files were skipped because they were invalid or unavailable")
         if failed_batches:
             warnings.append(
                 f"Signal rate-limited {len(failed_batches)} batch(es) "

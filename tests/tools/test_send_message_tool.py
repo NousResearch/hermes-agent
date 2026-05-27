@@ -143,6 +143,75 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_bare_telegram_home_target_preserves_thread_id(self):
+        config, telegram_cfg = _make_config()
+        config.get_home_channel = lambda _platform: SimpleNamespace(
+            chat_id="-1001",
+            thread_id="17585",
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001",
+            "hello",
+            thread_id="17585",
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_bare_discord_home_target_preserves_thread_id(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="tok", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: SimpleNamespace(
+                chat_id="111111111111111111",
+                thread_id="222222222222222222",
+            ),
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            discord_cfg,
+            "111111111111111111",
+            "hello",
+            thread_id="222222222222222222",
+            media_files=[],
+            force_document=False,
+        )
+
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
         config, telegram_cfg = _make_config()
         cache_file = tmp_path / "channel_directory.json"
@@ -1605,6 +1674,8 @@ class TestSendDiscordForumMedia:
         # Multipart form, not JSON
         assert post_calls[0]["kwargs"].get("data") is not None
         assert post_calls[0]["kwargs"].get("json") is None
+        payload = post_calls[0]["kwargs"]["data"]._fields[0][2]
+        assert '"allowed_mentions": {"parse": ["users"], "replied_user": true}' in payload
 
     def test_forum_without_media_still_json_only(self, tmp_path, monkeypatch):
         """Forum + no media → JSON POST (no multipart overhead)."""
@@ -1633,6 +1704,11 @@ class TestSendDiscordForumMedia:
         # JSON path, no multipart
         assert post_calls[0]["kwargs"].get("json") is not None
         assert post_calls[0]["kwargs"].get("data") is None
+        allowed = post_calls[0]["kwargs"]["json"]["message"]["allowed_mentions"]
+        assert allowed["replied_user"] is True
+        assert "users" in allowed["parse"]
+        assert "everyone" not in allowed["parse"]
+        assert "roles" not in allowed["parse"]
 
     def test_forum_missing_media_file_collected_as_warning(self, tmp_path, monkeypatch):
         """Missing media files produce warnings but the thread is still created."""
@@ -1657,6 +1733,53 @@ class TestSendDiscordForumMedia:
         assert result["success"] is True
         assert "warnings" in result
         assert any("not found" in w for w in result["warnings"])
+
+    def test_forum_non_regular_media_file_collected_as_warning(self, tmp_path, monkeypatch):
+        """Non-regular media paths are skipped before upload."""
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+        )
+
+        thread_resp = self._build_thread_resp()
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(return_value=thread_resp)
+
+        media_dir = tmp_path / "not_a_file"
+        media_dir.mkdir()
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(
+                _send_discord("tok", "forum_ch", "hi", media_files=[(str(media_dir), False)])
+            )
+
+        assert result["success"] is True
+        assert any("regular file" in w for w in result.get("warnings", []))
+
+    def test_forum_oversize_media_file_collected_as_warning(self, tmp_path, monkeypatch):
+        """Forum uploads skip files that exceed the safety size limit."""
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+        )
+        monkeypatch.setattr("tools.send_message_tool._DISCORD_FORUM_MEDIA_MAX_BYTES", 4)
+
+        img = tmp_path / "big.png"
+        img.write_bytes(b"012345")
+
+        thread_resp = self._build_thread_resp()
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(return_value=thread_resp)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(
+                _send_discord("tok", "forum_ch", "hi", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        assert any("safety limit" in w for w in result.get("warnings", []))
 
 
 # ---------------------------------------------------------------------------

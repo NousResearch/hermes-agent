@@ -74,6 +74,16 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+_ERROR_PREVIEW_MAX_CHARS = 220
+
+
+def _redacted_error_preview(exc: Exception) -> str:
+    """Return a bounded, redacted exception message safe for user-visible notices."""
+    err_text = str(exc).strip() or exc.__class__.__name__
+    err_text = redact_sensitive_text(err_text)
+    if len(err_text) > _ERROR_PREVIEW_MAX_CHARS:
+        err_text = err_text[: _ERROR_PREVIEW_MAX_CHARS - 3].rstrip() + "..."
+    return err_text
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
@@ -782,10 +792,7 @@ class ContextCompressor(ContextEngine):
             "Falling back to main model '%s' for compression.",
             self.summary_model, reason, e, self.model,
         )
-        _err_text = str(e).strip() or e.__class__.__name__
-        if len(_err_text) > 220:
-            _err_text = _err_text[:217].rstrip() + "..."
-        self._last_aux_model_failure_error = _err_text
+        self._last_aux_model_failure_error = _redacted_error_preview(e)
         self._last_aux_model_failure_model = self.summary_model
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
@@ -1058,10 +1065,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # streaming-closed since those conditions can self-resolve quickly.
             _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
             self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
-            err_text = str(e).strip() or e.__class__.__name__
-            if len(err_text) > 220:
-                err_text = err_text[:217].rstrip() + "..."
-            self._last_summary_error = err_text
+            self._last_summary_error = _redacted_error_preview(e)
             logging.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",

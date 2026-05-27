@@ -1150,11 +1150,16 @@ class GatewayStreamConsumer:
                     ):
                         return True
                     # Edit existing message
+                    edit_kwargs = {
+                        "chat_id": self.chat_id,
+                        "message_id": self._message_id,
+                        "content": text,
+                        "finalize": finalize,
+                    }
+                    if str(getattr(self.adapter, "name", "")).lower() == "telegram":
+                        edit_kwargs["metadata"] = self.metadata
                     result = await self.adapter.edit_message(
-                        chat_id=self.chat_id,
-                        message_id=self._message_id,
-                        content=text,
-                        finalize=finalize,
+                        **edit_kwargs,
                     )
                     if result.success:
                         self._already_sent = True

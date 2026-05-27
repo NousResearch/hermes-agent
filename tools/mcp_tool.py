@@ -91,6 +91,11 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Maximum decoded size for a single MCP ImageContent payload. MCP servers can
+# be remote or compromised, so cap image blocks before caching them locally.
+_MCP_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+_MCP_IMAGE_MAX_BASE64_CHARS = ((_MCP_IMAGE_MAX_BYTES + 2) // 3) * 4
+
 
 # ---------------------------------------------------------------------------
 # Stdio subprocess stderr redirection
@@ -459,9 +464,33 @@ def _cache_mcp_image_block(block) -> str:
         return ""
 
     try:
-        raw_bytes = base64.b64decode(data)
+        encoded_len = len(data)
+    except TypeError as exc:
+        logger.warning("MCP image block decode failed (%s): %s", normalized_mime, exc)
+        return ""
+
+    if encoded_len > _MCP_IMAGE_MAX_BASE64_CHARS:
+        logger.warning(
+            "MCP image block rejected (%s): base64 payload is %d chars; max is %d chars",
+            normalized_mime,
+            encoded_len,
+            _MCP_IMAGE_MAX_BASE64_CHARS,
+        )
+        return ""
+
+    try:
+        raw_bytes = base64.b64decode(data, validate=True)
     except (TypeError, ValueError) as exc:
         logger.warning("MCP image block decode failed (%s): %s", normalized_mime, exc)
+        return ""
+
+    if len(raw_bytes) > _MCP_IMAGE_MAX_BYTES:
+        logger.warning(
+            "MCP image block rejected (%s): decoded payload is %d bytes; max is %d",
+            normalized_mime,
+            len(raw_bytes),
+            _MCP_IMAGE_MAX_BYTES,
+        )
         return ""
 
     try:
@@ -1150,11 +1179,14 @@ class MCPServerTask:
                 # Timeout — no lifecycle event fired.  Send a keepalive
                 # to exercise the connection and detect stale sockets.
                 if self.session:
+                    if self._rpc_lock.locked():
+                        continue
                     try:
-                        await asyncio.wait_for(
-                            self.session.list_tools(),
-                            timeout=30.0,
-                        )
+                        async with self._rpc_lock:
+                            await asyncio.wait_for(
+                                self.session.list_tools(),
+                                timeout=30.0,
+                            )
                     except Exception as exc:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
@@ -2624,13 +2656,21 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         return strip_nullable_unions(node, keep_nullable_hint=True)
 
     def _repair_object_shape(node):
-        """Recursively repair object-shaped nodes: fill type, prune required."""
+        """Recursively repair schema nodes without mutating container maps."""
         if isinstance(node, list):
             return [_repair_object_shape(item) for item in node]
         if not isinstance(node, dict):
             return node
 
-        repaired = {k: _repair_object_shape(v) for k, v in node.items()}
+        repaired = {}
+        for key, value in node.items():
+            if key in {"properties", "$defs"} and isinstance(value, dict):
+                repaired[key] = {
+                    prop_name: _repair_object_shape(prop_schema)
+                    for prop_name, prop_schema in value.items()
+                }
+            else:
+                repaired[key] = _repair_object_shape(value)
 
         # Coerce missing / null type when the shape is clearly an object
         # (has properties or required but no type).

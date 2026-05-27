@@ -749,6 +749,55 @@ class TestSummaryFailureTrackingForGatewayWarning:
             for m in result
         )
 
+    def test_compress_redacts_summary_failure_error(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+        secret_error = (
+            "provider error: Authorization: Bearer sk-testSECRET1234567890 "
+            "endpoint=https://api.example/v1?api_key=sk-querySECRET1234567890"
+        )
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception(secret_error)):
+            c.compress(msgs)
+
+        assert c._last_summary_fallback_used is True
+        assert c._last_summary_error is not None
+        assert "sk-testSECRET" not in c._last_summary_error
+        assert "sk-querySECRET" not in c._last_summary_error
+        assert "***" in c._last_summary_error
+
+    def test_aux_model_failure_error_is_redacted(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                summary_model_override="bad-summary",
+            )
+
+        secret_error = (
+            "404 Authorization: Bearer sk-auxSECRET1234567890 "
+            "url=https://proxy.example?api_key=sk-auxQuerySECRET1234567890"
+        )
+        c._fallback_to_main_for_compression(Exception(secret_error), "failed")
+
+        assert c._last_aux_model_failure_error is not None
+        assert "sk-auxSECRET" not in c._last_aux_model_failure_error
+        assert "sk-auxQuerySECRET" not in c._last_aux_model_failure_error
+        assert "***" in c._last_aux_model_failure_error
+
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

@@ -70,7 +70,30 @@ const resolve = (lang: string): LangSpec | null => LANGS[ALIAS[lang] ?? lang] ??
 
 export const isHighlightable = (lang: string): boolean => resolve(lang) !== null
 
-const TOKEN_RE = /'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`|\b\d+(?:\.\d+)?\b|[A-Za-z_$][\w$]*/g
+const isDigit = (ch: string): boolean => ch >= '0' && ch <= '9'
+const isIdentStart = (ch: string): boolean =>
+  (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch === '_' || ch === '$'
+const isIdentContinue = (ch: string): boolean => isIdentStart(ch) || isDigit(ch)
+
+const scanString = (line: string, start: number, quote: string): number => {
+  let i = start + 1
+
+  while (i < line.length) {
+    const ch = line[i]!
+
+    if (ch === '\\') {
+      i += 2
+      continue
+    }
+
+    i += 1
+    if (ch === quote) {
+      return i
+    }
+  }
+
+  return line.length
+}
 
 export function highlightLine(line: string, lang: string, t: Theme): Token[] {
   const spec = resolve(lang)
@@ -84,33 +107,67 @@ export function highlightLine(line: string, lang: string, t: Theme): Token[] {
   }
 
   const tokens: Token[] = []
-  let last = 0
+  let i = 0
 
-  for (const m of line.matchAll(TOKEN_RE)) {
-    const start = m.index ?? 0
-
-    if (start > last) {
-      tokens.push(['', line.slice(last, start)])
-    }
-
-    const tok = m[0]
-    const ch = tok[0]!
+  while (i < line.length) {
+    const ch = line[i]!
 
     if (ch === '"' || ch === "'" || ch === '`') {
-      tokens.push([t.color.accent, tok])
-    } else if (ch >= '0' && ch <= '9') {
-      tokens.push([t.color.text, tok])
-    } else if (spec.keywords.has(tok)) {
-      tokens.push([t.color.border, tok])
-    } else {
-      tokens.push(['', tok])
+      const end = scanString(line, i, ch)
+      tokens.push([t.color.accent, line.slice(i, end)])
+      i = end
+      continue
     }
 
-    last = start + tok.length
-  }
+    if (isDigit(ch)) {
+      let end = i + 1
 
-  if (last < line.length) {
-    tokens.push(['', line.slice(last)])
+      while (end < line.length && isDigit(line[end]!)) {
+        end += 1
+      }
+
+      if (line[end] === '.') {
+        const fracStart = end + 1
+        let fracEnd = fracStart
+
+        while (fracEnd < line.length && isDigit(line[fracEnd]!)) {
+          fracEnd += 1
+        }
+
+        if (fracEnd > fracStart) {
+          end = fracEnd
+        }
+      }
+
+      tokens.push([t.color.text, line.slice(i, end)])
+      i = end
+      continue
+    }
+
+    if (isIdentStart(ch)) {
+      let end = i + 1
+
+      while (end < line.length && isIdentContinue(line[end]!)) {
+        end += 1
+      }
+
+      const tok = line.slice(i, end)
+      tokens.push(spec.keywords.has(tok) ? [t.color.border, tok] : ['', tok])
+      i = end
+      continue
+    }
+
+    let end = i + 1
+    while (end < line.length) {
+      const next = line[end]!
+      if (next === '"' || next === "'" || next === '`' || isDigit(next) || isIdentStart(next)) {
+        break
+      }
+      end += 1
+    }
+
+    tokens.push(['', line.slice(i, end)])
+    i = end
   }
 
   return tokens

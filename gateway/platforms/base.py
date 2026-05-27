@@ -3306,18 +3306,16 @@ class BasePlatformAdapter(ABC):
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)
+                current_guard = self._active_sessions.get(session_key)
                 if (
-                    existing_task is not None
-                    and existing_task is not current_task
+                    (existing_task is not None and existing_task is not current_task)
+                    or (current_guard is not None and current_guard is not interrupt_event)
                 ):
-                    # The in-band drain (or an earlier late-arrival drain)
-                    # already spawned a follow-up task that owns this
-                    # session.  Re-queue the late-arrival event so that
-                    # task picks it up — avoids spawning two concurrent
-                    # _process_message_background tasks for the same key
-                    # (#17758 follow-up: prevents the create_task path
-                    # from racing with itself across the in-band/finally
-                    # boundary).
+                    # Another owner already controls this session: either a
+                    # follow-up task recorded in _session_tasks, or a
+                    # command-scoped guard installed by /stop, /new, or /reset
+                    # while this task is being cancelled. Re-queue the event
+                    # so that owner performs the single authorized drain.
                     self._pending_messages[session_key] = late_pending
                 else:
                     logger.debug(

@@ -104,6 +104,7 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
 # is still classified fresh.  Override via
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
+_GATEWAY_QUEUE_MAX_DEPTH_DEFAULT = 25
 
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
@@ -2004,13 +2005,29 @@ class GatewayRunner:
     # it up.  Clearing happens on /new and /reset via
     # _handle_reset_command.
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
+    def _gateway_queue_max_depth(self) -> int:
+        """Return the per-session cap for pending gateway /queue turns."""
+        raw_limit = cfg_get(
+            getattr(self, "config", None),
+            "agent",
+            "gateway_queue_max_depth",
+            default=_GATEWAY_QUEUE_MAX_DEPTH_DEFAULT,
+        )
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return _GATEWAY_QUEUE_MAX_DEPTH_DEFAULT
+        return max(1, limit)
+
+    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> bool:
         """Append a /queue event to the FIFO chain for a session."""
         if adapter is None:
-            return
+            return False
         pending_slot = getattr(adapter, "_pending_messages", None)
         if pending_slot is None:
-            return
+            return False
+        if self._queue_depth(session_key, adapter=adapter) >= self._gateway_queue_max_depth():
+            return False
         queued_events = getattr(self, "_queued_events", None)
         if queued_events is None:
             queued_events = {}
@@ -2019,6 +2036,7 @@ class GatewayRunner:
             queued_events.setdefault(session_key, []).append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        return True
 
     def _promote_queued_event(
         self,
@@ -5988,8 +6006,13 @@ class GatewayRunner:
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
                     )
-                    self._enqueue_fifo(_quick_key, queued_event, adapter)
-                depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
+                    accepted = self._enqueue_fifo(_quick_key, queued_event, adapter)
+                    depth = self._queue_depth(_quick_key, adapter=adapter)
+                    if not accepted:
+                        limit = self._gateway_queue_max_depth()
+                        return f"Queue is full ({depth}/{limit} queued). Wait for a queued turn to finish, then try again."
+                else:
+                    depth = 0
                 if depth <= 1:
                     return "Queued for the next turn."
                 return f"Queued for the next turn. ({depth} queued)"
@@ -6818,15 +6841,13 @@ class GatewayRunner:
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 
+        reply_prefix = ""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
+            # Always preserve the reply-to pointer for disambiguation, but keep
+            # the platform-controlled quote inert by adding it only after
+            # current-turn @ context references have been expanded.
             reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            reply_prefix = f'[Replying to: "{reply_snippet}"]\n\n'
 
         if "@" in message_text:
             try:
@@ -6869,6 +6890,9 @@ class GatewayRunner:
                     message_text = _ctx_result.message
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
+
+        if reply_prefix:
+            message_text = f"{reply_prefix}{message_text}"
 
         return message_text
 

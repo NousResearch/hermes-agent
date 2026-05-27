@@ -11,6 +11,8 @@ import pytest
 
 from tools.vision_tools import (
     _detect_video_mime_type,
+    _download_video,
+    _max_video_raw_bytes,
     _video_to_base64_data_url,
     _handle_video_analyze,
     _MAX_VIDEO_BASE64_BYTES,
@@ -101,6 +103,109 @@ class TestVideoToBase64DataUrl:
         result = _video_to_base64_data_url(p)
         # Falls back to video/mp4
         assert result.startswith("data:video/mp4;base64,")
+
+    def test_rejects_oversized_file_before_reading(self, tmp_path):
+        p = tmp_path / "huge.mp4"
+        p.write_bytes(b"small")
+        max_raw = _max_video_raw_bytes("video/mp4")
+
+        with (
+            patch.object(Path, "stat") as mock_stat,
+            patch.object(Path, "read_bytes") as mock_read,
+        ):
+            mock_stat.return_value.st_size = max_raw + 1
+            with pytest.raises(ValueError, match="too large"):
+                _video_to_base64_data_url(p)
+
+        mock_read.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _download_video
+# ---------------------------------------------------------------------------
+
+
+class _FakeStreamResponse:
+    def __init__(self, chunks, headers=None):
+        self._chunks = chunks
+        self.headers = headers or {}
+        self.url = "https://example.com/video.mp4"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_bytes(self, chunk_size=None):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeAsyncClient:
+    def __init__(self, response, **kwargs):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def stream(self, method, url, headers=None):
+        return self._response
+
+
+class TestDownloadVideo:
+    """Remote video download size enforcement."""
+
+    def _run(self, awaitable: Awaitable[str]):
+        return asyncio.run(awaitable)
+
+    def test_rejects_content_length_before_streaming(self, tmp_path):
+        response = _FakeStreamResponse(
+            [b"should not be read"],
+            headers={"content-length": "5"},
+        )
+
+        with patch("tools.vision_tools._max_video_raw_bytes", return_value=4):
+            with patch(
+                "tools.vision_tools.httpx.AsyncClient",
+                lambda **kw: _FakeAsyncClient(response, **kw),
+            ):
+                with pytest.raises(ValueError, match="too large"):
+                    self._run(
+                        _download_video(
+                            "https://example.com/video.mp4",
+                            tmp_path / "out.mp4",
+                            max_retries=1,
+                        )
+                    )
+
+        assert not (tmp_path / "out.mp4").exists()
+
+    def test_rejects_chunked_response_while_streaming(self, tmp_path):
+        response = _FakeStreamResponse([b"abcd", b"e"])
+        destination = tmp_path / "out.mp4"
+
+        with patch("tools.vision_tools._max_video_raw_bytes", return_value=4):
+            with patch(
+                "tools.vision_tools.httpx.AsyncClient",
+                lambda **kw: _FakeAsyncClient(response, **kw),
+            ):
+                with pytest.raises(ValueError, match="too large"):
+                    self._run(
+                        _download_video(
+                            "https://example.com/video.mp4",
+                            destination,
+                            max_retries=1,
+                        )
+                    )
+
+        assert not destination.exists()
 
 
 # ---------------------------------------------------------------------------

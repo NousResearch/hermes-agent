@@ -318,6 +318,103 @@ async def test_send_private_dm_topic_uses_direct_messages_topic_id():
     assert call_log[0]["direct_messages_topic_id"] == 99999
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("metadata", "expected", "absent_keys"),
+    [
+        (
+            {"thread_id": "99999"},
+            {"message_thread_id": 99999, "reply_to_message_id": 456},
+            {"direct_messages_topic_id"},
+        ),
+        (
+            {"thread_id": "99999", "direct_messages_topic_id": "99999"},
+            {
+                "message_thread_id": None,
+                "direct_messages_topic_id": 99999,
+                "reply_to_message_id": 456,
+            },
+            set(),
+        ),
+    ],
+)
+async def test_edit_overflow_split_continuations_preserve_thread_kwargs(
+    metadata,
+    expected,
+    absent_keys,
+):
+    adapter = _make_adapter()
+    edit_calls = []
+    send_calls = []
+
+    async def mock_edit_message_text(**kwargs):
+        edit_calls.append(dict(kwargs))
+
+    async def mock_send_message(**kwargs):
+        send_calls.append(dict(kwargs))
+        return SimpleNamespace(message_id=781)
+
+    adapter._bot = SimpleNamespace(
+        edit_message_text=mock_edit_message_text,
+        send_message=mock_send_message,
+    )
+
+    result = await adapter.edit_message(
+        "123",
+        "456",
+        "x" * 6000,
+        finalize=False,
+        metadata=metadata,
+    )
+
+    assert result.success is True
+    assert edit_calls[0]["message_id"] == 456
+    assert send_calls[0]["chat_id"] == 123
+    for key, value in expected.items():
+        assert send_calls[0].get(key) == value
+    for key in absent_keys:
+        assert key not in send_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_edit_overflow_split_dm_topic_reply_not_found_retry_drops_thread_id():
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_edit_message_text(**kwargs):
+        return None
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message to be replied not found")
+        return SimpleNamespace(message_id=781)
+
+    adapter._bot = SimpleNamespace(
+        edit_message_text=mock_edit_message_text,
+        send_message=mock_send_message,
+    )
+
+    result = await adapter.edit_message(
+        "123",
+        "456",
+        "x" * 6000,
+        finalize=False,
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] == 456
+    assert call_log[0]["message_thread_id"] == 20197
+    assert "reply_to_message_id" not in call_log[1]
+    assert "message_thread_id" not in call_log[1]
+    assert "direct_messages_topic_id" not in call_log[1]
+
+
 def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,

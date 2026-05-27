@@ -3366,6 +3366,10 @@ except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
         pass
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
+# SGR mouse wheel events carry bit 0x40 (64) in the button field.
+# Drop them so the browser scroll wheel scrolls the transcript
+# instead of being forwarded as terminal input.
+_SGR_WHEEL_RE = re.compile(rb"\x1b\[<(\d+);\d+;\d+[Mm]$")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
@@ -3504,13 +3508,14 @@ def _resolve_chat_argv(
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
     env.setdefault("NODE_ENV", "production")
-    # Browser-embedded chat should prefer stable wheel-based scrollback over
-    # native terminal mouse tracking. When mouse tracking is enabled, wheel
-    # events are consumed by the TUI and forwarded as terminal input, which
-    # makes browser-side transcript scrolling feel broken. Keep the terminal
-    # build unchanged for native CLI usage; only disable mouse tracking for
-    # the dashboard PTY path.
-    env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
+    # Browser-embedded chat uses INLINE mode (primary screen buffer) so that
+    # xterm.js scrollback keeps transcript history the browser wheel can scroll.
+    # Mouse tracking uses the 'wheel' preset (DEC 1000 + 1006).
+    # Only wheel events are forwarded to the TUI; click events stay with
+    # xterm.js so native text selection and copy/paste work as expected.
+    # Holding Option forces xterm.js selection even when mouse tracking
+    # is active (macOptionClickForcesSelection: true).
+    env.setdefault("HERMES_TUI_MOUSE_TRACKING", "wheel")
     env.setdefault("HERMES_TUI_INLINE", "1")
 
     if resume:
@@ -3677,6 +3682,16 @@ async def pty_ws(ws: WebSocket) -> None:
                 rows = int(match.group(2))
                 bridge.resize(cols=cols, rows=rows)
                 continue
+
+            # SGR mouse wheel events (bit 0x40 in btn) — drop here so
+            # the browser scroll wheel scrolls the transcript instead
+            # of being swallowed by the terminal.
+            wheel_match = _SGR_WHEEL_RE.match(raw)
+            if wheel_match:
+                btn = int(wheel_match.group(1))
+                if btn & 0x40:
+                    continue
+                # Non-wheel SGR (button click/drag) — forward to PTY.
 
             bridge.write(raw)
     except WebSocketDisconnect:

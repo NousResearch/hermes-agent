@@ -1881,8 +1881,12 @@ def _run_browser_command(
         # Honour either the legacy AGENT_BROWSER_CHROME_FLAGS (never consumed by
         # agent-browser itself, but documented in older notes) or the real
         # AGENT_BROWSER_ARGS — if the user pre-sets either, don't overwrite it.
+        # Chrome-only flags such as --no-sandbox are passed through
+        # agent-browser's AGENT_BROWSER_ARGS. Lightpanda rejects custom Chrome
+        # arguments entirely, so only inject them for Chrome/auto local engines.
         if (
-            "AGENT_BROWSER_ARGS" not in browser_env
+            engine != "lightpanda"
+            and "AGENT_BROWSER_ARGS" not in browser_env
             and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
         ):
             _needs_sandbox_bypass = False

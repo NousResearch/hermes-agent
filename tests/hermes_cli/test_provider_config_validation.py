@@ -5,11 +5,16 @@ accepted as base_url, and unknown keys go unreported.
 """
 
 import logging
+import os
 from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.config import _normalize_custom_provider_entry
+from hermes_cli.config import (
+    _bridge_acp_provider_settings,
+    _normalize_custom_provider_entry,
+    providers_dict_to_custom_providers,
+)
 
 
 class TestNormalizeCustomProviderEntry:
@@ -193,3 +198,36 @@ class TestNormalizeCustomProviderEntry:
         result = _normalize_custom_provider_entry(entry)
         assert result is not None
         assert "models" not in result
+
+
+class TestAcpProviderConfig:
+    """Tests for providers.acp settings-only blocks."""
+
+    def test_acp_entry_skipped_from_custom_providers(self):
+        result = providers_dict_to_custom_providers({
+            "acp": {"copilot_path": "/opt/homebrew/bin/copilot"},
+            "ollama": {"base_url": "http://127.0.0.1:11434/v1"},
+        })
+        names = [entry["name"] for entry in result]
+        assert names == ["ollama"]
+
+    def test_bridge_copilot_path_to_env(self, monkeypatch):
+        monkeypatch.delenv("HERMES_COPILOT_ACP_COMMAND", raising=False)
+        monkeypatch.delenv("COPILOT_CLI_PATH", raising=False)
+        config = {"providers": {"acp": {"copilot_path": "/opt/homebrew/bin/copilot"}}}
+        _bridge_acp_provider_settings(config)
+        assert os.environ["HERMES_COPILOT_ACP_COMMAND"] == "/opt/homebrew/bin/copilot"
+        assert os.environ["COPILOT_CLI_PATH"] == "/opt/homebrew/bin/copilot"
+
+    def test_bridge_does_not_override_existing_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "/existing/copilot")
+        config = {"providers": {"acp": {"copilot_path": "/opt/homebrew/bin/copilot"}}}
+        _bridge_acp_provider_settings(config)
+        assert os.environ["HERMES_COPILOT_ACP_COMMAND"] == "/existing/copilot"
+
+    def test_acp_copilot_path_no_unknown_key_warning(self, caplog):
+        entry = {"copilot_path": "/opt/homebrew/bin/copilot"}
+        with caplog.at_level(logging.WARNING):
+            result = providers_dict_to_custom_providers({"acp": entry})
+        assert result == []
+        assert "unknown config keys ignored" not in caplog.text

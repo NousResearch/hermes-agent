@@ -3297,6 +3297,45 @@ def _normalize_custom_provider_entry(
     return normalized
 
 
+# Settings-only blocks under ``providers`` — not OpenAI-compatible custom providers.
+_ACP_PROVIDER_CONFIG_KEYS = frozenset({"acp", "copilot-acp"})
+
+
+def _bridge_acp_provider_settings(config: Dict[str, Any]) -> None:
+    """Bridge ``providers.acp`` settings into Copilot ACP env vars.
+
+    ``providers.acp`` holds local CLI settings (binary path, args) rather than
+    a ``base_url``/``api_key`` pair.  Without this bridge, ``copilot_path`` was
+    ignored and ``_normalize_custom_provider_entry`` logged unknown-key warnings
+    on every config load.
+    """
+    providers = config.get("providers")
+    if not isinstance(providers, dict):
+        return
+
+    for key in _ACP_PROVIDER_CONFIG_KEYS:
+        entry = providers.get(key)
+        if not isinstance(entry, dict):
+            continue
+
+        command = entry.get("copilot_path") or entry.get("command")
+        if isinstance(command, str) and command.strip():
+            if not os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip():
+                os.environ["HERMES_COPILOT_ACP_COMMAND"] = command.strip()
+            if not os.getenv("COPILOT_CLI_PATH", "").strip():
+                os.environ["COPILOT_CLI_PATH"] = command.strip()
+
+        args = entry.get("args")
+        if isinstance(args, str) and args.strip():
+            if not os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip():
+                os.environ["HERMES_COPILOT_ACP_ARGS"] = args.strip()
+        elif isinstance(args, list):
+            joined = " ".join(str(a).strip() for a in args if str(a).strip())
+            if joined and not os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip():
+                os.environ["HERMES_COPILOT_ACP_ARGS"] = joined
+        break
+
+
 def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
     """Normalize ``providers`` config entries into the legacy custom-provider shape."""
     if not isinstance(providers_dict, dict):
@@ -3304,6 +3343,8 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
 
     custom_providers: List[Dict[str, Any]] = []
     for key, entry in providers_dict.items():
+        if str(key).strip().lower() in _ACP_PROVIDER_CONFIG_KEYS:
+            continue
         normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
         if normalized is not None:
             custom_providers.append(normalized)
@@ -4589,6 +4630,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
+        _bridge_acp_provider_settings(expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_key is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``

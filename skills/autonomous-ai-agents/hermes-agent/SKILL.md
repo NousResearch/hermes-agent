@@ -393,7 +393,7 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 | OpenCode Go | API key | `OPENCODE_GO_API_KEY` |
 | Qwen OAuth | OAuth | `hermes auth add qwen-oauth` |
 | Custom endpoint | Config | `model.base_url` + `model.api_key` in config.yaml |
-| GitHub Copilot ACP | External | `COPILOT_CLI_PATH` or Copilot CLI |
+| GitHub Copilot ACP | External | `providers.acp.copilot_path` in config.yaml, or `COPILOT_CLI_PATH` / `HERMES_COPILOT_ACP_COMMAND` |
 
 Full provider docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 

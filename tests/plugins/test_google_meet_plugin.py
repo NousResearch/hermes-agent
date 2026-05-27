@@ -451,14 +451,16 @@ def test_start_realtime_env_vars_threaded_through():
         pm.start(
             "https://meet.google.com/abc-defg-hij",
             mode="realtime",
-            cartesia_api_key="sk-test-cartesia",
-            cartesia_voice_id="voice-xyz",
-            cartesia_model_id="sonic-2",
+            realtime_model="gpt-realtime",
+            realtime_voice="alloy",
+            realtime_instructions="Be brief.",
+            realtime_api_key="sk-test",
         )
     assert captured_env["HERMES_MEET_MODE"] == "realtime"
-    assert captured_env["CARTESIA_API_KEY"] == "sk-test-cartesia"
-    assert captured_env["CARTESIA_VOICE_ID"] == "voice-xyz"
-    assert captured_env["CARTESIA_MODEL_ID"] == "sonic-2"
+    assert captured_env["HERMES_MEET_REALTIME_MODEL"] == "gpt-realtime"
+    assert captured_env["HERMES_MEET_REALTIME_VOICE"] == "alloy"
+    assert captured_env["HERMES_MEET_REALTIME_INSTRUCTIONS"] == "Be brief."
+    assert captured_env["HERMES_MEET_REALTIME_KEY"] == "sk-test"
 
 
 def test_meet_join_accepts_realtime_mode():

@@ -91,9 +91,10 @@ def start(
     duration: Optional[str] = None,
     session_id: Optional[str] = None,
     mode: str = "transcribe",
-    cartesia_api_key: Optional[str] = None,
-    cartesia_voice_id: Optional[str] = None,
-    cartesia_model_id: Optional[str] = None,
+    realtime_model: Optional[str] = None,
+    realtime_voice: Optional[str] = None,
+    realtime_instructions: Optional[str] = None,
+    realtime_api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn the meet_bot subprocess for *url*.
 
@@ -141,19 +142,18 @@ def start(
         env["HERMES_MEET_AUTH_STATE"] = auth_state
     if duration:
         env["HERMES_MEET_DURATION"] = duration
-    # v2: realtime mode + Cartesia passthroughs. The bot defaults to
-    # transcribe mode if HERMES_MEET_MODE isn't set, matching v1 behavior.
-    # Cartesia creds normally arrive via ~/.hermes/.env (inherited via
-    # os.environ.copy above); the explicit kwargs are for test injection
-    # and CLI overrides.
+    # v2: realtime mode + passthroughs. The bot defaults to transcribe
+    # mode if HERMES_MEET_MODE isn't set, matching v1 behavior.
     if mode:
         env["HERMES_MEET_MODE"] = mode
-    if cartesia_api_key:
-        env["CARTESIA_API_KEY"] = cartesia_api_key
-    if cartesia_voice_id:
-        env["CARTESIA_VOICE_ID"] = cartesia_voice_id
-    if cartesia_model_id:
-        env["CARTESIA_MODEL_ID"] = cartesia_model_id
+    if realtime_model:
+        env["HERMES_MEET_REALTIME_MODEL"] = realtime_model
+    if realtime_voice:
+        env["HERMES_MEET_REALTIME_VOICE"] = realtime_voice
+    if realtime_instructions:
+        env["HERMES_MEET_REALTIME_INSTRUCTIONS"] = realtime_instructions
+    if realtime_api_key:
+        env["HERMES_MEET_REALTIME_KEY"] = realtime_api_key
 
     log_path = out / "bot.log"
     # Detach: stdin=devnull, stdout/stderr → log file, new session so parent

@@ -267,24 +267,27 @@ def _start_realtime_speaker(
     rt: dict,
     out_dir: Path,
     bridge_info: dict,
-    cartesia_api_key: str,
-    cartesia_voice_id: str,
-    cartesia_model_id: str,
+    api_key: str,
+    model: str,
+    voice: str,
+    instructions: str,
     stop_flag: dict,
     state: "_BotState",
 ) -> None:
-    """Wire up the Cartesia synth session + speaker thread + PCM pump.
+    """Wire up the OpenAI Realtime session + speaker thread + PCM pump.
 
-    text -> Cartesia /tts/bytes (PCM16 24kHz mono) -> (a) appended to
-    ``speaker.pcm`` for tail-read pumps AND (b) optional in-process
-    callback. On Linux a ``paplay`` subprocess tails ``speaker.pcm``
-    into the null-sink. On macOS we open a ``sounddevice`` stream
-    against BlackHole 2ch and the Cartesia client writes directly into
-    it (no ffmpeg, no device-index probing).
+    The speaker thread reads text lines from ``say_queue.jsonl``, sends each
+    to OpenAI Realtime, and writes PCM audio into ``speaker.pcm``. A
+    separate *pump* thread forwards that PCM into the OS audio sink so
+    Chrome's fake mic picks it up. On Linux we pipe to ``paplay`` against
+    the null-sink; on macOS the caller is expected to have the BlackHole
+    device selected as default input.
     """
     try:
-        from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
-        from plugins.google_meet.realtime.cartesia_client import CartesiaSession
+        from plugins.google_meet.realtime.openai_client import (
+            RealtimeSession,
+            RealtimeSpeaker,
+        )
     except Exception as e:
         state.set(error=f"realtime import failed: {e}")
         return
@@ -299,16 +302,17 @@ def _start_realtime_speaker(
     queue_path.touch()
 
     try:
-        session = CartesiaSession(
-            api_key=cartesia_api_key,
-            voice_id=cartesia_voice_id,
-            model_id=cartesia_model_id,
+        session = RealtimeSession(
+            api_key=api_key,
+            model=model,
+            voice=voice,
+            instructions=instructions,
             audio_sink_path=pcm_path,
             sample_rate=24000,
         )
         session.connect()
     except Exception as e:
-        state.set(error=f"cartesia connect failed: {e}")
+        state.set(error=f"realtime connect failed: {e}")
         return
 
     rt["session"] = session
@@ -328,14 +332,16 @@ def _start_realtime_speaker(
         try:
             speaker.run_until_stopped(_stop_fn)
         except Exception as e:
-            state.set(error=f"cartesia speaker crashed: {e}")
+            state.set(error=f"realtime speaker crashed: {e}")
 
     t_speaker = threading.Thread(target=_speaker_loop, name="meet-speaker", daemon=True)
     t_speaker.start()
     rt["speaker_thread"] = t_speaker
 
-    # PCM pump: routes 24kHz s16le mono into the OS audio device that
-    # Chrome's fake mic reads from.
+    # PCM pump: feeds speaker.pcm (24kHz s16le mono) into the OS audio
+    # device that Chrome's fake mic reads from. Different tools per
+    # platform, but the contract is the same — block-read the growing
+    # PCM file and stream it to the device in near-real-time.
     platform_tag = (bridge_info or {}).get("platform")
     if platform_tag == "linux":
         import subprocess as _sp
@@ -360,39 +366,82 @@ def _start_realtime_speaker(
         except FileNotFoundError:
             state.set(error="paplay not found — install pulseaudio-utils for realtime on Linux")
     elif platform_tag == "darwin":
-        # macOS: open a sounddevice RawOutputStream against BlackHole 2ch
-        # and have the Cartesia client write chunks directly into it via
-        # the on_audio callback. Avoids the previous ffmpeg + AVFoundation
-        # device-index probe (removed per grant review 2026-05-16
-        # housekeeping). Requires sounddevice (already a hermes-agent dep).
+        # macOS: use ffmpeg to tail-read speaker.pcm and write it to the
+        # BlackHole output device. The user must have BlackHole selected
+        # as the default input in System Settings → Sound for Chrome to
+        # pick it up. We prefer ffmpeg because it's scriptable and can
+        # target AVFoundation devices by name; fall back to afplay-ing
+        # the file in a tight loop if ffmpeg is absent.
+        import shutil as _shutil
+        import subprocess as _sp
+
         device_name = (bridge_info or {}).get("write_target") or "BlackHole 2ch"
-        try:
-            import sounddevice as _sd
-        except ImportError:
-            state.set(error="sounddevice not installed — required for macOS realtime")
-            return
-        try:
-            stream = _sd.RawOutputStream(
-                samplerate=24000,
-                channels=1,
-                dtype="int16",
-                device=device_name,
-                blocksize=0,
-            )
-            stream.start()
-        except Exception as e:
-            state.set(error=f"sounddevice open failed for {device_name!r}: {e}")
-            return
-
-        def _on_audio(chunk: bytes) -> None:
+        if _shutil.which("ffmpeg"):
             try:
-                stream.write(chunk)
-            except Exception:
-                # Don't kill the synth call on a transient pump error.
-                pass
+                # -re: read input at native frame rate.
+                # -f avfoundation -i: speaker path as raw PCM.
+                # -f s16le -ar 24000 -ac 1 -i <pcm>: interpret the file.
+                # -f audiotoolbox -audio_device_index: write to BlackHole.
+                # Simpler: output as raw via coreaudio using "-f audiotoolbox".
+                # ffmpeg's audiotoolbox output picks the current default
+                # output device, which isn't what we want. Instead we use
+                # -f avfoundation with the named device as OUTPUT via
+                # -vn and the device name.
+                proc = _sp.Popen(
+                    [
+                        "ffmpeg",
+                        "-nostdin", "-hide_banner", "-loglevel", "error",
+                        "-re",
+                        "-f", "s16le", "-ar", "24000", "-ac", "1",
+                        "-i", str(pcm_path),
+                        "-f", "audiotoolbox",
+                        "-audio_device_index", _mac_audio_device_index(device_name),
+                        "-",
+                    ],
+                    stdin=_sp.DEVNULL,
+                    stdout=_sp.DEVNULL,
+                    stderr=_sp.DEVNULL,
+                )
+                rt["pcm_pump"] = proc
+            except FileNotFoundError:
+                state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
+            except Exception as e:
+                state.set(error=f"macOS pcm pump failed to start: {e}")
+        else:
+            state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
 
-        session.on_audio = _on_audio
-        rt["pcm_pump"] = stream  # held for teardown
+
+def _mac_audio_device_index(device_name: str) -> str:
+    """Return the ffmpeg ``-audio_device_index`` for *device_name*, as a string.
+
+    Probes ``ffmpeg -f avfoundation -list_devices true -i ''`` (which prints
+    the device table on stderr) and matches *device_name* case-insensitively.
+    Defaults to ``"0"`` if the device can't be found — caller will get a
+    misrouted stream but not a crash, and the error will be obvious.
+    """
+    import subprocess as _sp
+
+    try:
+        out = _sp.run(
+            ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return "0"
+    # ffmpeg prints the table on stderr. Lines look like:
+    #   [AVFoundation indev @ 0x...] [0] BlackHole 2ch
+    import re as _re
+
+    needle = device_name.strip().lower()
+    for line in (out.stderr or "").splitlines():
+        m = _re.search(r"\[(\d+)\]\s+(.+)$", line)
+        if not m:
+            continue
+        if m.group(2).strip().lower() == needle:
+            return m.group(1)
+    return "0"
 
 
 def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
@@ -403,11 +452,11 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     guest_name = os.environ.get("HERMES_MEET_GUEST_NAME", "Hermes Agent")
     duration_s = _parse_duration(os.environ.get("HERMES_MEET_DURATION", ""))
     # v2: optional realtime mode. Enabled when HERMES_MEET_MODE=realtime.
-    # Synth provider: Cartesia (Zara voice) per grant review 2026-05-16.
     mode = os.environ.get("HERMES_MEET_MODE", "transcribe").strip().lower()
-    cartesia_api_key = os.environ.get("CARTESIA_API_KEY", "").strip()
-    cartesia_voice_id = os.environ.get("CARTESIA_VOICE_ID", "").strip()
-    cartesia_model_id = os.environ.get("CARTESIA_MODEL_ID", "sonic-2").strip() or "sonic-2"
+    realtime_model = os.environ.get("HERMES_MEET_REALTIME_MODEL", "gpt-realtime")
+    realtime_voice = os.environ.get("HERMES_MEET_REALTIME_VOICE", "alloy")
+    realtime_instructions = os.environ.get("HERMES_MEET_REALTIME_INSTRUCTIONS", "")
+    realtime_api_key = os.environ.get("HERMES_MEET_REALTIME_KEY") or os.environ.get("OPENAI_API_KEY", "")
 
     if not url or not _is_safe_meet_url(url):
         sys.stderr.write(
@@ -447,8 +496,8 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
         "speaker_stop": None,      # callable | None
     }
     if rt["enabled"]:
-        if not cartesia_api_key or not cartesia_voice_id:
-            state.set(error="realtime mode requested but CARTESIA_API_KEY/CARTESIA_VOICE_ID missing in env — falling back to transcribe")
+        if not realtime_api_key:
+            state.set(error="realtime mode requested but no API key in HERMES_MEET_REALTIME_KEY/OPENAI_API_KEY — falling back to transcribe")
             rt["enabled"] = False
         else:
             try:
@@ -546,9 +595,10 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                     rt=rt,
                     out_dir=out_dir,
                     bridge_info=rt["bridge_info"],
-                    cartesia_api_key=cartesia_api_key,
-                    cartesia_voice_id=cartesia_voice_id,
-                    cartesia_model_id=cartesia_model_id,
+                    api_key=realtime_api_key,
+                    model=realtime_model,
+                    voice=realtime_voice,
+                    instructions=realtime_instructions,
                     stop_flag=stop_flag,
                     state=state,
                 )
@@ -663,17 +713,6 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             if rt["session"]:
                 try:
                     rt["session"].close()
-                except Exception:
-                    pass
-            # Tear down macOS sounddevice stream / Linux paplay subprocess.
-            pump = rt.get("pcm_pump")
-            if pump is not None:
-                try:
-                    if hasattr(pump, "stop") and hasattr(pump, "close"):
-                        pump.stop()
-                        pump.close()
-                    elif hasattr(pump, "terminate"):
-                        pump.terminate()
                 except Exception:
                     pass
             if rt["bridge"]:

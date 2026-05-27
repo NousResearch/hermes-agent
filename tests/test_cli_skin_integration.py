@@ -42,6 +42,13 @@ class TestCliSkinPromptIntegration:
         set_active_skin("ares")
         assert cli._get_tui_prompt_fragments() == [("class:prompt", "⚔ ")]
 
+    def test_profile_name_is_not_prepended_to_prompt_symbol(self):
+        cli = _make_cli_stub()
+
+        set_active_skin("default")
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="turing"):
+            assert cli._get_tui_prompt_fragments() == [("class:prompt", "❯ ")]
+
     def test_secret_prompt_fragments_preserve_secret_state(self):
         cli = _make_cli_stub()
         cli._secret_state = {"response_queue": object()}

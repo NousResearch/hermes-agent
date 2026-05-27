@@ -74,6 +74,7 @@ AUTHOR_MAP = {
     "mgongzai@gmail.com": "vKongv",
     "0x.badfriend@gmail.com": "discodirector",
     "altriatree@gmail.com": "TruaShamu",
+    "lachlan.cahill+hermesgeneral@gmail.com": "lc-hermes-general",
     "contact-me@stark-x.cn": "Stark-X",
     "nat@nthrow.io": "nthrow",
     "m@mobrienv.dev": "mikeyobrien",

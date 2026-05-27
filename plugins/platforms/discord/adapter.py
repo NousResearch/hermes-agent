@@ -620,6 +620,15 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        
+        # Tag aliases: map @username to <@user_id> format
+        self._tag_aliases: Dict[str, str] = {}
+        if self.config.extra and "tag_aliases" in self.config.extra:
+            aliases = self.config.extra["tag_aliases"]
+            if isinstance(aliases, dict):
+                # Normalize to lowercase for case-insensitive matching
+                self._tag_aliases = {k.lower(): str(v) for k, v in aliases.items()}
+                logger.info("[%s] Loaded %d tag aliases for Discord mentions", self.name, len(self._tag_aliases))
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -2909,9 +2918,38 @@ class DiscordAdapter(BasePlatformAdapter):
         Format message for Discord.
 
         Discord uses its own markdown variant.
+        Also applies tag alias correction if configured.
         """
-        # Discord markdown is fairly standard, no special escaping needed
+        # Apply tag alias correction
+        if self._tag_aliases:
+            content = self._apply_tag_aliases(content)
+        
         return content
+
+    def _apply_tag_aliases(self, content: str) -> str:
+        """Replace @alias mentions with <@user_id> format.
+        
+        Matches @username patterns (case-insensitive) and replaces with
+        Discord's native mention format <@user_id>.
+        
+        Requirements:
+        - @ must be at start of string or preceded by non-word character (space, punctuation)
+        - Already-correct <@123> mentions are preserved unchanged
+        """
+        # (?<!\w) ensures @ is not preceded by word character (matches Discord behavior)
+        # \b\w+\b matches word characters with word boundaries
+        # (?![>\d]*>) prevents matching <@id> patterns
+        pattern = r'(?<!\w)@(\b\w+\b)(?![>\d]*>)'
+        
+        def replace_mention(match):
+            username = match.group(1)
+            lowercase_username = username.lower()
+            if lowercase_username in self._tag_aliases:
+                user_id = self._tag_aliases[lowercase_username]
+                return f"<@{user_id}>"
+            return match.group(0)  # Return original if no match
+        
+        return re.sub(pattern, replace_mention, content, flags=re.IGNORECASE)
 
     async def _run_simple_slash(
         self,

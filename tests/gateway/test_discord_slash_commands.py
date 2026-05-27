@@ -452,7 +452,7 @@ async def test_handle_thread_create_slash_reports_failure(adapter):
 
 
 @pytest.mark.asyncio
-async def test_handle_close_thread_slash_writes_closeout_before_archiving(adapter):
+async def test_handle_close_thread_slash_writes_closeout_without_archiving(adapter):
     thread = _FakeThreadChannel(channel_id=555, name="[wtupdate] Planning")
     thread.edit = AsyncMock()
     interaction = SimpleNamespace(
@@ -479,15 +479,12 @@ async def test_handle_close_thread_slash_writes_closeout_before_archiving(adapte
     assert source["thread_id"] == "555"
     assert source["thread_name"] == "[wtupdate] Planning"
     assert [label["id"] for label in source["thread_labels"]] == ["wtupdate"]
-    thread.edit.assert_awaited_once_with(
-        archived=True,
-        locked=True,
-        reason="done",
-    )
+    thread.edit.assert_not_awaited()
     interaction.followup.send.assert_awaited_once()
     args, kwargs = interaction.followup.send.await_args
     assert "CLOSE_THREAD_PACKET" in args[0]
-    assert "Closed thread" in args[0]
+    assert "Closeout packet written" in args[0]
+    assert "Live archive/lock was not attempted" in args[0]
     assert kwargs["ephemeral"] is True
 
 

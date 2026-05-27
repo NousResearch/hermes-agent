@@ -20,7 +20,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -108,17 +108,46 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
-def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+def _get_process_start_time(pid: int) -> Optional[Union[int, str]]:
+    """Return a stable identifier for a process's kernel start time.
+
+    On Linux, reads the integer start-time clock ticks from
+    ``/proc/<pid>/stat`` (field 22).  On macOS (or any system where ``/proc``
+    is absent), falls back to ``ps -p <pid> -o lstart=`` which returns a
+    locale-independent start timestamp string.  The raw string is returned
+    verbatim because the only consumer of the return value is equality
+    comparison; converting to ``hash(lstart)`` would be wrong here because
+    Python's string ``hash()`` is randomized per process via
+    ``PYTHONHASHSEED``, so two gateway processes inspecting the same PID
+    would get different ints for the same start time and the comparison
+    would always be "not equal".  Returning the raw lstart string is
+    deterministic across processes and works as an equality key on both
+    sides of the lock-record comparison.
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        return None
+        pass
+    # macOS / non-Linux fallback: ask ps(1) for the human-readable start time.
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode == 0:
+            lstart = result.stdout.strip()
+            if lstart:
+                return lstart
+    except (OSError, subprocess.TimeoutExpired):  # pragma: no cover
+        pass
+    return None
 
 
-def get_process_start_time(pid: int) -> Optional[int]:
+def get_process_start_time(pid: int) -> Optional[Union[int, str]]:
     """Public wrapper for retrieving a process start time when available."""
     return _get_process_start_time(pid)
 
@@ -627,13 +656,15 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
-                # When start_time comparison is unavailable (macOS / Windows
-                # have no /proc, so both sides are None), fall back to
-                # checking the live process command line.  When cmdline is
-                # also unreadable (Windows has no ps), consult the lock
-                # record's own argv — the gateway writes it at startup and
-                # it's the only identity signal on platforms without ps.
-                # Both oracles must indicate "not a gateway" to mark stale.
+                # When start_time comparison is unavailable (Windows has no
+                # /proc and no ps; legacy lock records written on macOS
+                # before the ps(1) fallback was added can also have
+                # ``start_time: null``), fall back to checking the live
+                # process command line.  When cmdline is also unreadable
+                # (Windows has no ps), consult the lock record's own argv —
+                # the gateway writes it at startup and it's the only
+                # identity signal on platforms without ps.  Both oracles
+                # must indicate "not a gateway" to mark stale.
                 if (
                     not stale
                     and existing.get("start_time") is None
@@ -701,7 +732,7 @@ def release_scoped_lock(scope: str, identity: str) -> None:
 def release_all_scoped_locks(
     *,
     owner_pid: Optional[int] = None,
-    owner_start_time: Optional[int] = None,
+    owner_start_time: Optional[Union[int, str]] = None,
 ) -> int:
     """Remove scoped lock files in the lock directory.
 

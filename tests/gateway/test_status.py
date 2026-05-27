@@ -1061,3 +1061,157 @@ class TestCorruptStatusFiles:
         p = tmp_path / "gateway.pid"
         p.write_text("4242", encoding="utf-8")
         assert status._read_pid_record(p) == {"pid": 4242}
+
+
+class TestGetProcessStartTime:
+    """Tests for :func:`_get_process_start_time`.
+
+    Specifically locks in the cross-process determinism contract that
+    @hclsys flagged on PR #31923: the previous macOS implementation used
+    ``hash(lstart) & 0x7FFF_FFFF_FFFF_FFFF`` which is *not* stable across
+    Python processes (PYTHONHASHSEED is randomized per interpreter), so
+    the scoped-lock start_time comparison would silently always be "not
+    equal" between the lock writer and any later reader.
+    """
+
+    def test_proc_stat_returns_integer_clock_ticks(self, monkeypatch):
+        """Linux path: /proc/<pid>/stat field 22 is parsed as an int."""
+        # Fake a /proc/<pid>/stat with 22+ space-separated fields.
+        fake_stat = " ".join(["x"] * 21) + " 4242 rest of fields"
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, encoding="utf-8": fake_stat,
+        )
+        assert status._get_process_start_time(12345) == 4242
+
+    def test_ps_lstart_fallback_returns_raw_string(self, monkeypatch):
+        """macOS path: when /proc is absent, return the raw ps lstart string.
+
+        The value must be the exact stdout (whitespace-stripped) so that two
+        callers in two different processes see the same value for the same
+        PID and the equality comparison in acquire_scoped_lock works.
+        """
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, encoding="utf-8": (_ for _ in ()).throw(FileNotFoundError),
+        )
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout="Mon May 26 12:34:56 2026\n",
+            ),
+        )
+        result = status._get_process_start_time(12345)
+        assert result == "Mon May 26 12:34:56 2026"
+        assert isinstance(result, str)
+
+    def test_ps_lstart_failure_returns_none(self, monkeypatch):
+        """When both /proc and ps fail, return None (lets caller fall back to cmdline check)."""
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, encoding="utf-8": (_ for _ in ()).throw(FileNotFoundError),
+        )
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
+        )
+        assert status._get_process_start_time(99999) is None
+
+    def test_ps_lstart_empty_stdout_returns_none(self, monkeypatch):
+        """A zero-exit but empty stdout from ps must yield None, not ''."""
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, encoding="utf-8": (_ for _ in ()).throw(FileNotFoundError),
+        )
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="   \n"),
+        )
+        assert status._get_process_start_time(99999) is None
+
+    def test_value_is_deterministic_within_one_process(self, monkeypatch):
+        """Same PID called twice in the same process yields the same value.
+
+        Sanity check — this is the weak version of the cross-process test.
+        """
+        monkeypatch.setattr(
+            status.Path, "read_text",
+            lambda self, encoding="utf-8": (_ for _ in ()).throw(FileNotFoundError),
+        )
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout="Mon May 26 12:34:56 2026\n",
+            ),
+        )
+        first = status._get_process_start_time(12345)
+        second = status._get_process_start_time(12345)
+        assert first == second
+
+    def test_value_is_deterministic_across_processes_on_ps_path(self, tmp_path):
+        """Cross-process determinism contract.
+
+        Spawn a fresh Python subprocess and have it compute the start_time
+        for the *current* (parent) PID via the ps lstart path.  The value
+        the subprocess prints must equal the value the parent computes for
+        the same PID.
+
+        Regression coverage: the prior implementation hashed the lstart
+        string via ``hash(lstart)``, which is randomized per interpreter
+        through PYTHONHASHSEED.  Two processes asking for the same PID's
+        start_time would therefore get different ints, and the scoped-lock
+        comparison ``current_start != existing.get('start_time')`` would
+        always be true — flagging a live gateway as stale on every check.
+        """
+        import subprocess as _sp
+        import sys
+        from pathlib import Path as _Path
+
+        # Locate the repo root so the child can import gateway.status.
+        repo_root = _Path(__file__).resolve().parents[2]
+        gateway_dir = repo_root / "gateway"
+
+        # Resolve current PID via /proc on Linux first; if /proc/self/stat
+        # exists this whole test is exercising the Linux integer path (which
+        # was never broken).  Skip in that case so the test specifically
+        # locks in the ps-fallback contract on platforms that need it.
+        import os as _os
+        if _Path(f"/proc/{_os.getpid()}/stat").exists():
+            import pytest
+            pytest.skip("This test exercises the macOS ps-lstart fallback path; /proc is present so the Linux path would be taken instead.")
+
+        parent_value = status._get_process_start_time(_os.getpid())
+        assert parent_value is not None, "ps -p $PID -o lstart= produced no output; cannot validate cross-process determinism on this platform."
+
+        # Spawn a fresh interpreter — gets a different PYTHONHASHSEED, which
+        # is exactly the scenario that broke the old hash()-based code.
+        child = _sp.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys, os;"
+                    f"sys.path.insert(0, {str(gateway_dir.parent)!r});"
+                    "from gateway import status;"
+                    f"v = status._get_process_start_time({_os.getpid()});"
+                    "sys.stdout.write(str(v))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            # PYTHONHASHSEED unset (or 'random', the default) so each child
+            # gets a fresh randomized seed — the failure mode @hclsys caught.
+            env={**_os.environ, "PYTHONHASHSEED": "random"},
+        )
+        assert child.returncode == 0, f"child subprocess failed: stderr={child.stderr!r}"
+        child_value = child.stdout
+        assert child_value == str(parent_value), (
+            "Cross-process determinism broken: parent saw "
+            f"{parent_value!r} but child subprocess saw {child_value!r} "
+            "for the same PID. This is the @hclsys regression — "
+            "_get_process_start_time must return a value that is stable "
+            "across Python processes."
+        )

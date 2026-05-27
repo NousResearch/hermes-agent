@@ -106,6 +106,33 @@ class TestCmdUpdateBranchFallback:
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_on_fork_checks_upstream_when_origin_up_to_date(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """Regression for issue #26172: forks whose local HEAD already matches
+        origin/main must still consult upstream/main before printing
+        "Already up to date!" — otherwise a fork that's caught up to its own
+        origin but behind NousResearch/hermes-agent silently misses updates.
+        """
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
+            cmd_update(mock_args)
+
+        sync_mock.assert_called_once_with(["git"], PROJECT_ROOT)
+        captured = capsys.readouterr()
+        assert "Already up to date!" in captured.out
+
     @patch("shutil.which")
     @patch("subprocess.run")
     def test_update_refreshes_repo_and_tui_node_dependencies(

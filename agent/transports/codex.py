@@ -27,6 +27,9 @@ class ResponsesApiTransport(ProviderTransport):
         return _chat_messages_to_responses_input(
             messages,
             is_xai_responses=bool(kwargs.get("is_xai_responses")),
+            replay_encrypted_reasoning=bool(
+                kwargs.get("replay_encrypted_reasoning", True)
+            ),
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
@@ -79,6 +82,9 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses", False)
         is_codex_backend = params.get("is_codex_backend", False)
         is_xai_responses = params.get("is_xai_responses", False)
+        replay_encrypted_reasoning = bool(
+            params.get("replay_encrypted_reasoning", True)
+        )
 
         # Resolve reasoning effort
         reasoning_effort = "medium"
@@ -100,6 +106,7 @@ class ResponsesApiTransport(ProviderTransport):
             "input": _chat_messages_to_responses_input(
                 payload_messages,
                 is_xai_responses=is_xai_responses,
+                replay_encrypted_reasoning=replay_encrypted_reasoning,
             ),
             "tools": response_tools,
             "store": False,
@@ -121,7 +128,9 @@ class ResponsesApiTransport(ProviderTransport):
             # replay them on subsequent turns for cross-turn coherence.
             # See agent/codex_responses_adapter._chat_messages_to_responses_input
             # for the May 2026 reversal of the earlier suppression gate.
-            kwargs["include"] = ["reasoning.encrypted_content"]
+            kwargs["include"] = (
+                ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
+            )
             # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
             # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
             # those models reason natively. Only send the effort dial when
@@ -136,7 +145,9 @@ class ResponsesApiTransport(ProviderTransport):
                     kwargs["reasoning"] = github_reasoning
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                kwargs["include"] = ["reasoning.encrypted_content"]
+                kwargs["include"] = (
+                    ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
+                )
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 

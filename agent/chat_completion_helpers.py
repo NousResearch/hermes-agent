@@ -507,6 +507,9 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
+            replay_encrypted_reasoning=bool(
+                getattr(agent, "_codex_reasoning_replay_enabled", True)
+            ),
         )
 
     # ── chat_completions (default) ─────────────────────────────────────

@@ -104,39 +104,7 @@ ORDER BY timestamp DESC
 LIMIT 200
 ```
 
-## Polymarket: inspect whether book/event updates need dedup
 
-If your downstream strategy uses book updates or event-stream reconstruction, explicitly check for duplicate-like rows by stable identifiers and timestamps instead of assuming a clean stream.
-
-Generic pattern:
-
-```sql
-WITH grouped AS (
-  SELECT
-    <event_hash_or_key> AS k,
-    <server_timestamp_column> AS ts,
-    count() AS n
-  FROM <book_or_event_table>
-  GROUP BY 1, 2
-)
-SELECT *
-FROM grouped
-WHERE n > 1
-ORDER BY n DESC
-LIMIT 50
-```
-
-Adapt the placeholder columns / table to the actual schema you discover.
-
-## Polymarket execution research notes
-
-When you evaluate a trading idea, preserve these distinctions in your notebook:
-- theoretical edge from model / probability mismatch,
-- top-of-book visible price,
-- actual reachable fill,
-- and realized blended fill after partial execution.
-
-In practice, the gap between `intended entry` and `actual fill` can be the difference between a seemingly strong edge and a weak one.
 
 ## Hyperliquid: funding or fill research
 

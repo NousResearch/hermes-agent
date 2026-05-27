@@ -376,28 +376,38 @@ class TestStaleToolMediaLeak:
 class TestAttachmentPathExtraction:
     """Regression coverage for native document attachment paths."""
 
-    def test_media_tag_extracts_html_document(self):
-        media, cleaned = BasePlatformAdapter.extract_media(
-            "Done\nMEDIA:/tmp/hermes/report.html"
-        )
+    @pytest.mark.parametrize(
+        ("extension", "path"),
+        [
+            ("html", "/tmp/hermes/report.html"),
+            ("md", "/tmp/hermes/article.md"),
+            ("markdown", "/tmp/hermes/article.markdown"),
+        ],
+    )
+    def test_media_tag_extracts_text_documents(self, extension, path):
+        media, cleaned = BasePlatformAdapter.extract_media(f"Done\nMEDIA:{path}")
 
-        assert media == [("/tmp/hermes/report.html", False)]
+        assert media == [(path, False)]
         assert "MEDIA:" not in cleaned
+        assert extension in path
 
-    def test_bare_local_html_path_is_auto_detected(self, tmp_path):
-        html_path = tmp_path / "preview.html"
-        html_path.write_text("<html><body>ok</body></html>", encoding="utf-8")
+    @pytest.mark.parametrize("filename", ["preview.html", "article.md", "article.markdown"])
+    def test_bare_local_text_document_path_is_auto_detected(self, tmp_path, filename):
+        doc_path = tmp_path / filename
+        doc_path.write_text("ok", encoding="utf-8")
 
         files, cleaned = BasePlatformAdapter.extract_local_files(
-            f"I generated {html_path} for you."
+            f"I generated {doc_path} for you."
         )
 
-        assert files == [str(html_path)]
-        assert str(html_path) not in cleaned
+        assert files == [str(doc_path)]
+        assert str(doc_path) not in cleaned
 
     def test_html_and_common_text_document_mimes_are_known(self):
         assert SUPPORTED_DOCUMENT_TYPES[".html"] == "text/html"
         assert SUPPORTED_DOCUMENT_TYPES[".htm"] == "text/html"
+        assert SUPPORTED_DOCUMENT_TYPES[".md"] == "text/markdown"
+        assert SUPPORTED_DOCUMENT_TYPES[".markdown"] == "text/markdown"
         assert SUPPORTED_DOCUMENT_TYPES[".css"] == "text/css"
         assert SUPPORTED_DOCUMENT_TYPES[".js"] == "text/javascript"
 

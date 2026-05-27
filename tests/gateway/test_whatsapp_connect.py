@@ -150,7 +150,15 @@ class TestCloseBridgeLog:
 # ---------------------------------------------------------------------------
 
 class TestHtmlDocumentAttachments:
-    """Regression tests for HTML document attachment metadata."""
+    """Regression tests for text document attachment metadata."""
+
+    def test_bridge_mime_map_covers_markdown_documents(self):
+        bridge_js = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge" / "bridge.js"
+        source = bridge_js.read_text(encoding="utf-8")
+
+        assert "md: 'text/markdown'" in source
+        assert "markdown: 'text/markdown'" in source
+        assert "'text/markdown': '.md'" in source
 
     @pytest.mark.asyncio
     async def test_bridge_cached_html_document_uses_bridge_mime(self, tmp_path):

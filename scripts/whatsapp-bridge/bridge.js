@@ -572,7 +572,7 @@ const MIME_MAP = {
   wav: 'audio/wav', m4a: 'audio/mp4', flac: 'audio/flac',
   pdf: 'application/pdf',
   html: 'text/html', htm: 'text/html', txt: 'text/plain',
-  md: 'text/markdown', css: 'text/css', js: 'text/javascript',
+  md: 'text/markdown', markdown: 'text/markdown', css: 'text/css', js: 'text/javascript',
   ts: 'text/typescript', py: 'text/x-python', csv: 'text/csv',
   json: 'application/json', xml: 'application/xml',
   yaml: 'application/yaml', yml: 'application/yaml', log: 'text/plain',

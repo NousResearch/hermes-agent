@@ -4085,4 +4085,135 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
         pass
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
-    conn.close()  # explicit close to avoid leaking THIS test
+    conn.close()  # explicit close to avoid leaking THIS test# Notification subscription lifecycle (E2)
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_stale_notify_subs_removes_zombies(kanban_home):
+    """Subs for done/archived tasks with stale completed_at are deleted."""
+    stale_ts = int(time.time()) - 172800  # 48h ago
+    with kb.connect() as conn:
+        # Create a done task completed 48h ago
+        t1 = kb.create_task(conn, title="old done task")
+        conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+            (stale_ts, t1),
+        )
+        kb.add_notify_sub(conn, task_id=t1, platform="cli", chat_id="chat1")
+
+        # Create an archived task (archived 48h ago)
+        t2 = kb.create_task(conn, title="archived no events")
+        conn.execute(
+            "UPDATE tasks SET status = 'archived', completed_at = ? WHERE id = ?",
+            (stale_ts, t2),
+        )
+        kb.add_notify_sub(conn, task_id=t2, platform="cli", chat_id="chat2")
+
+        # Create an active task with a sub (should be preserved)
+        t3 = kb.create_task(conn, title="active task")
+        kb.add_notify_sub(conn, task_id=t3, platform="cli", chat_id="chat3")
+
+        assert conn.execute("SELECT count(*) FROM kanban_notify_subs").fetchone()[0] == 3
+
+    with kb.connect() as conn:
+        cleaned = kb.cleanup_stale_notify_subs(conn)
+        assert cleaned == 2
+
+        # Active task sub preserved
+        remaining = conn.execute("SELECT count(*) FROM kanban_notify_subs").fetchone()[0]
+        assert remaining == 1
+        row = conn.execute("SELECT task_id FROM kanban_notify_subs").fetchone()
+        assert row["task_id"] == t3
+
+
+def test_cleanup_stale_notify_subs_preserves_recent_events(kanban_home):
+    """Subs for recently completed tasks are kept."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="recently done")
+        recent_ts = int(time.time()) - 3600  # 1h ago
+        conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+            (recent_ts, t),
+        )
+        kb.add_notify_sub(conn, task_id=t, platform="cli", chat_id="chat1")
+
+    with kb.connect() as conn:
+        cleaned = kb.cleanup_stale_notify_subs(conn)
+        assert cleaned == 0
+        remaining = conn.execute("SELECT count(*) FROM kanban_notify_subs").fetchone()[0]
+        assert remaining == 1
+
+
+def test_backfill_null_notifier_profiles(kanban_home):
+    """NULL notifier_profile values are set to the default."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task")
+        # Directly insert a sub with NULL notifier_profile
+        conn.execute(
+            "INSERT INTO kanban_notify_subs "
+            "(task_id, platform, chat_id, thread_id, notifier_profile, created_at) "
+            "VALUES (?, 'cli', 'chat1', '', NULL, ?)",
+            (t, int(time.time())),
+        )
+        nulls = conn.execute(
+            "SELECT count(*) FROM kanban_notify_subs WHERE notifier_profile IS NULL"
+        ).fetchone()[0]
+        assert nulls == 1
+
+    with kb.connect() as conn:
+        updated = kb.backfill_null_notifier_profiles(conn)
+        assert updated == 1
+        nulls = conn.execute(
+            "SELECT count(*) FROM kanban_notify_subs WHERE notifier_profile IS NULL"
+        ).fetchone()[0]
+        assert nulls == 0
+        row = conn.execute(
+            "SELECT notifier_profile FROM kanban_notify_subs WHERE task_id = ?", (t,)
+        ).fetchone()
+        assert row["notifier_profile"] == "default"
+
+
+def test_backfill_null_notifier_profiles_custom_default(kanban_home):
+    """A custom default profile name can be passed."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task")
+        conn.execute(
+            "INSERT INTO kanban_notify_subs "
+            "(task_id, platform, chat_id, thread_id, notifier_profile, created_at) "
+            "VALUES (?, 'cli', 'chat1', '', NULL, ?)",
+            (t, int(time.time())),
+        )
+
+    with kb.connect() as conn:
+        updated = kb.backfill_null_notifier_profiles(conn, default_profile="worker")
+        assert updated == 1
+        row = conn.execute(
+            "SELECT notifier_profile FROM kanban_notify_subs WHERE task_id = ?", (t,)
+        ).fetchone()
+        assert row["notifier_profile"] == "worker"
+
+
+def test_complete_task_auto_cleans_stale_subs(kanban_home):
+    """complete_task() prunes zombie subs for other terminal tasks."""
+    stale_ts = int(time.time()) - 172800
+    with kb.connect() as conn:
+        # Set up a stale done task with a zombie sub
+        t_old = kb.create_task(conn, title="old done")
+        conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+            (stale_ts, t_old),
+        )
+        kb.add_notify_sub(conn, task_id=t_old, platform="cli", chat_id="chat_old")
+
+        # Set up the task we'll complete
+        t_new = kb.create_task(conn, title="new task")
+
+        assert conn.execute("SELECT count(*) FROM kanban_notify_subs").fetchone()[0] == 1
+
+    with kb.connect() as conn:
+        result = kb.complete_task(conn, t_new, result="done")
+        assert result is True
+
+        # Stale sub should be auto-cleaned
+        remaining = conn.execute("SELECT count(*) FROM kanban_notify_subs").fetchone()[0]
+        assert remaining == 0

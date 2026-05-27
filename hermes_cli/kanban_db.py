@@ -3713,6 +3713,19 @@ def complete_task(
     recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
+    # Prune notification subscriptions for tasks already in terminal state.
+    # CLI subs are delivered synchronously so old done/archived subs are
+    # pure overhead.  Safe to call on every completion — the query is cheap
+    # and idempotent.
+    try:
+        cleanup_stale_notify_subs(conn)
+    except Exception:
+        pass  # non-fatal housekeeping
+    # Backfill any legacy NULL notifier_profiles while we're here.
+    try:
+        backfill_null_notifier_profiles(conn)
+    except Exception:
+        pass  # non-fatal housekeeping
     return True
 
 
@@ -7190,6 +7203,49 @@ def rewind_notify_cursor(
             ),
         )
     return cur.rowcount > 0
+
+
+def cleanup_stale_notify_subs(conn: sqlite3.Connection) -> int:
+    """Delete notification subscriptions for tasks in terminal state.
+
+    Removes subs whose task is ``done`` or ``archived`` and whose
+    ``completed_at`` (or ``created_at`` if completed_at is NULL) is older
+    than 24 hours.  CLI subs (the only platform right now) are delivered
+    synchronously so this only affects already-delivered or undeliverable
+    subs.
+
+    Returns the number of rows deleted.
+    """
+    cutoff = int(time.time()) - 86400
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            DELETE FROM kanban_notify_subs
+             WHERE task_id IN (
+                SELECT t.id FROM tasks t
+                WHERE t.status IN ('done', 'archived')
+                  AND COALESCE(t.completed_at, t.created_at) < ?
+            )
+            """,
+            (cutoff,),
+        )
+    return int(cur.rowcount or 0)
+
+
+def backfill_null_notifier_profiles(
+    conn: sqlite3.Connection, default_profile: str = "default",
+) -> int:
+    """Set ``notifier_profile`` to *default_profile* for rows where it is NULL.
+
+    Returns the number of rows updated.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_subs SET notifier_profile = ? "
+            "WHERE notifier_profile IS NULL",
+            (default_profile,),
+        )
+    return int(cur.rowcount or 0)
 
 
 # ---------------------------------------------------------------------------

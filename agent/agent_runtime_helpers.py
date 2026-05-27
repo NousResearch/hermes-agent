@@ -560,6 +560,24 @@ def recover_with_credential_pool(
     if pool is None:
         return False, has_retried_429
 
+    # Defensive guard: if a fallback provider is active and its provider name
+    # doesn't match the pool's provider, the pool belongs to the PRIMARY
+    # provider.  Mutating it based on fallback errors would corrupt the
+    # primary's credential state (see #33088) and, via _swap_credential,
+    # overwrite the agent's base_url back to the primary's endpoint — every
+    # subsequent request then goes to the wrong host and 404s (see #33163).
+    # The pool should only act when the agent is still on the same provider
+    # that seeded the pool.
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+    if current_provider and pool_provider and current_provider != pool_provider:
+        _ra().logger.warning(
+            "Credential pool provider mismatch: pool=%s, agent=%s — "
+            "skipping pool mutation to avoid cross-provider contamination",
+            pool_provider, current_provider,
+        )
+        return False, has_retried_429
+
     effective_reason = classified_reason
     if effective_reason is None:
         if status_code == 402:

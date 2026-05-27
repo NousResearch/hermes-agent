@@ -3502,7 +3502,8 @@ def _chromium_search_roots() -> List[str]:
        ``/opt/hermes/.playwright``).
     2. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
     3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
-    4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
+    4. ``~/.agent-browser/browsers`` — agent-browser's Chrome for Testing cache.
+    5. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
        on Windows.
     """
     roots: List[str] = []
@@ -3513,12 +3514,40 @@ def _chromium_search_roots() -> List[str]:
     roots.append(os.path.join(home, ".cache", "ms-playwright"))
     if sys.platform == "darwin":
         roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))
+    roots.append(os.path.join(home, ".agent-browser", "browsers"))
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA") or os.path.join(
             home, "AppData", "Local"
         )
         roots.append(os.path.join(local, "ms-playwright"))
     return roots
+
+
+def _agent_browser_chrome_executable(browser_dir: str) -> Optional[str]:
+    """Return the Chrome for Testing executable inside an agent-browser cache dir.
+
+    ``agent-browser install`` downloads Chrome into ``~/.agent-browser/browsers``
+    with entries named ``chrome-<version>``. The executable layout differs by
+    platform, so probe known Chrome for Testing shapes instead of treating any
+    ``chrome-*`` directory as usable.
+    """
+    candidates = [
+        os.path.join(
+            browser_dir,
+            "Google Chrome for Testing.app",
+            "Contents",
+            "MacOS",
+            "Google Chrome for Testing",
+        ),
+        os.path.join(browser_dir, "chrome-linux64", "chrome"),
+        os.path.join(browser_dir, "chrome-win64", "chrome.exe"),
+        os.path.join(browser_dir, "chrome.exe"),
+        os.path.join(browser_dir, "chrome"),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
 
 
 def _chromium_installed() -> bool:
@@ -3530,8 +3559,9 @@ def _chromium_installed() -> bool:
        agent-browser at a pre-installed Chrome/Chromium.
     2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
        ``chromium-browser``, ``chrome``).
-    3. Playwright's browser cache (current logic) — directories containing
-       ``chromium-*`` or ``chromium_headless_shell-*``.
+    3. Browser caches — Playwright directories containing ``chromium-*`` or
+       ``chromium_headless_shell-*``, plus agent-browser's Chrome for Testing
+       cache under ``~/.agent-browser/browsers/chrome-*``.
 
     agent-browser (0.26+) downloads Playwright's chromium / headless-shell
     builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without at least
@@ -3562,7 +3592,8 @@ def _chromium_installed() -> bool:
         _cached_chromium_installed = True
         return True
 
-    # 3. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
+    # 3. Browser caches. Playwright uses chromium-* / chromium_headless_shell-*.
+    # agent-browser uses chrome-* entries containing a Chrome for Testing binary.
     for root in _chromium_search_roots():
         if not root or not os.path.isdir(root):
             continue
@@ -3575,6 +3606,11 @@ def _chromium_installed() -> bool:
         for entry in entries:
             if entry.startswith("chromium-") or entry.startswith(
                 "chromium_headless_shell-"
+            ):
+                _cached_chromium_installed = True
+                return True
+            if entry.startswith("chrome-") and _agent_browser_chrome_executable(
+                os.path.join(root, entry)
             ):
                 _cached_chromium_installed = True
                 return True

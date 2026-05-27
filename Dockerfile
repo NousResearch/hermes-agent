@@ -201,6 +201,11 @@ ENV S6_KEEP_ENV=1
 # bin globally so `docker exec <container> hermes ...` and any
 # subprocess that doesn't activate the venv first still find hermes.
 ENV PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+# Login shells (bash -l) reset PATH from /etc/profile, dropping the venv.
+# The terminal tool's init_session spawns bash -l to snapshot the env.
+# Without this, python3 resolves to /usr/bin/python3 (no google deps, no pip).
+RUN echo 'export PATH="/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"' \
+      > /etc/profile.d/hermes-venv.sh
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 

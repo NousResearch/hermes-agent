@@ -1942,6 +1942,67 @@ class TestCodexAdapterReasoningTranslation:
         assert captured.get("include") == ["reasoning.encrypted_content"]
 
 
+class TestCodexAdapterStreamRecovery:
+    """Codex auxiliary calls use their own Responses stream adapter."""
+
+    def test_recovers_output_items_when_sdk_iterator_crashes(self):
+        class _SdkCrashStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(
+                    type="response.output_item.done",
+                    item=SimpleNamespace(
+                        type="message",
+                        content=[
+                            SimpleNamespace(
+                                type="output_text",
+                                text="Firecrawl access",
+                            ),
+                        ],
+                    ),
+                )
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):
+                raise AssertionError("iterator failure should recover before final response")
+
+        real_client = MagicMock()
+        real_client.responses.stream.return_value = _SdkCrashStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "title"}])
+
+        assert response.choices[0].message.content == "Firecrawl access"
+
+    def test_recovers_text_deltas_when_final_response_parser_crashes(self):
+        class _SdkCrashStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="Firecrawl")
+                yield SimpleNamespace(type="response.output_text.delta", delta=" access")
+
+            def get_final_response(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        real_client = MagicMock()
+        real_client.responses.stream.return_value = _SdkCrashStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "title"}])
+
+        assert response.choices[0].message.content == "Firecrawl access"
+
+
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on
     their main endpoint (e.g. Kimi Coding Plan /coding) and falls through

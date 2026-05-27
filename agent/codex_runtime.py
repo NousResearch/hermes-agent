@@ -25,6 +25,35 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _synthesize_codex_stream_response(agent, collected_output_items: list, *, has_tool_calls: bool = False):
+    """Build a minimal Responses object from stream events after SDK finalization fails."""
+    output = []
+    if collected_output_items:
+        output = list(collected_output_items)
+    elif getattr(agent, "_codex_streamed_text_parts", None) and not has_tool_calls:
+        assembled = "".join(agent._codex_streamed_text_parts)
+        if assembled:
+            output = [SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )]
+    if not output:
+        return None
+    return SimpleNamespace(
+        id=None,
+        object="response",
+        created_at=None,
+        status="completed",
+        error=None,
+        incomplete_details=None,
+        output=output,
+        output_text="".join(getattr(agent, "_codex_streamed_text_parts", []) or []),
+        usage=None,
+    )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -240,7 +269,26 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
+                try:
+                    final_response = stream.get_final_response()
+                except TypeError as exc:
+                    # The chatgpt.com Codex backend can stream a valid answer,
+                    # then hit an OpenAI SDK final-response parser bug where a
+                    # nullable field is treated as iterable. Preserve the
+                    # already streamed output instead of failing the turn.
+                    if "NoneType" not in str(exc) or "iterable" not in str(exc):
+                        raise
+                    final_response = _synthesize_codex_stream_response(
+                        agent, collected_output_items, has_tool_calls=has_tool_calls
+                    )
+                    if final_response is None:
+                        raise
+                    logger.warning(
+                        "Codex stream finalization failed after valid stream output; "
+                        "synthesized response from collected events. %s error=%s",
+                        agent._client_log_context(),
+                        exc,
+                    )
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
@@ -265,6 +313,21 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            if "NoneType" not in str(exc) or "iterable" not in str(exc):
+                raise
+            synthesized = _synthesize_codex_stream_response(
+                agent, collected_output_items, has_tool_calls=has_tool_calls
+            )
+            if synthesized is None:
+                raise
+            logger.warning(
+                "Codex stream iteration failed after valid stream output; "
+                "synthesized response from collected events. %s error=%s",
+                agent._client_log_context(),
+                exc,
+            )
+            return synthesized
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(

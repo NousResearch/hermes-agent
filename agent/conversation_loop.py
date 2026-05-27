@@ -74,6 +74,109 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+_CODEX_ZERO_EVENT_BREAKERS: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+_CODEX_ZERO_EVENT_WINDOW_SECONDS = 10 * 60.0
+_CODEX_ZERO_EVENT_COOLDOWN_SECONDS = 20 * 60.0
+
+
+def _is_codex_zero_event_failfast_target(agent: Any) -> bool:
+    """Known-bad route: openai-codex gpt-5.5 via Responses API."""
+    provider = (getattr(agent, "provider", "") or "").strip().lower()
+    model = (getattr(agent, "model", "") or "").strip().lower()
+    api_mode = (getattr(agent, "api_mode", "") or "").strip().lower()
+    return (
+        provider == "openai-codex"
+        and api_mode == "codex_responses"
+        and model.startswith("gpt-5.5")
+    )
+
+
+def _codex_zero_event_breaker_key(agent: Any) -> Optional[tuple[str, str, str, str]]:
+    if not _is_codex_zero_event_failfast_target(agent):
+        return None
+    provider = (getattr(agent, "provider", "") or "").strip().lower()
+    base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
+    model = (getattr(agent, "model", "") or "").strip().lower()
+    api_mode = (getattr(agent, "api_mode", "") or "").strip().lower()
+    return (provider, base_url, model, api_mode)
+
+
+def _codex_zero_event_breaker_threshold(agent: Any) -> int:
+    # Child/subagent sessions carry a parent_session_id; keep them stricter.
+    return 1 if getattr(agent, "_parent_session_id", None) else 2
+
+
+def _prune_codex_zero_event_breaker(now: float) -> None:
+    for key, state in list(_CODEX_ZERO_EVENT_BREAKERS.items()):
+        failures = [ts for ts in state.get("failures", []) if now - ts <= _CODEX_ZERO_EVENT_WINDOW_SECONDS]
+        open_until = float(state.get("open_until", 0.0) or 0.0)
+        if failures or open_until > now:
+            state["failures"] = failures
+            _CODEX_ZERO_EVENT_BREAKERS[key] = state
+        else:
+            _CODEX_ZERO_EVENT_BREAKERS.pop(key, None)
+
+
+def _record_codex_zero_event_failure(agent: Any) -> Optional[float]:
+    key = _codex_zero_event_breaker_key(agent)
+    if key is None:
+        return None
+    now = time.monotonic()
+    _prune_codex_zero_event_breaker(now)
+    state = _CODEX_ZERO_EVENT_BREAKERS.setdefault(key, {"failures": [], "open_until": 0.0})
+    failures = [ts for ts in state.get("failures", []) if now - ts <= _CODEX_ZERO_EVENT_WINDOW_SECONDS]
+    failures.append(now)
+    state["failures"] = failures
+    threshold = _codex_zero_event_breaker_threshold(agent)
+    if len(failures) >= threshold:
+        state["open_until"] = max(float(state.get("open_until", 0.0) or 0.0), now + _CODEX_ZERO_EVENT_COOLDOWN_SECONDS)
+    _CODEX_ZERO_EVENT_BREAKERS[key] = state
+    return float(state.get("open_until", 0.0) or 0.0)
+
+
+def _codex_zero_event_breaker_remaining(agent: Any) -> float:
+    key = _codex_zero_event_breaker_key(agent)
+    if key is None:
+        return 0.0
+    now = time.monotonic()
+    _prune_codex_zero_event_breaker(now)
+    state = _CODEX_ZERO_EVENT_BREAKERS.get(key)
+    if not state:
+        return 0.0
+    open_until = float(state.get("open_until", 0.0) or 0.0)
+    if open_until <= now:
+        return 0.0
+    return open_until - now
+
+
+def _clear_codex_zero_event_breaker(agent: Any) -> None:
+    key = _codex_zero_event_breaker_key(agent)
+    if key is None:
+        return
+    _CODEX_ZERO_EVENT_BREAKERS.pop(key, None)
+
+
+def _format_duration_seconds(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 90:
+        return f"{int(round(seconds))}s"
+    minutes = int(round(seconds / 60.0))
+    return f"{minutes}m"
+
+
+def _maybe_failfast_codex_zero_event_breaker(agent: Any) -> bool:
+    remaining = _codex_zero_event_breaker_remaining(agent)
+    if remaining <= 0:
+        return False
+    if agent._fallback_index >= len(agent._fallback_chain):
+        return False
+    agent._emit_status(
+        "⚠️ Codex gpt-5.5 zero-event circuit breaker open — "
+        f"skipping unhealthy route for {_format_duration_seconds(remaining)} and switching to fallback..."
+    )
+    return agent._try_activate_fallback(reason=FailoverReason.codex_zero_event_ttfb)
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -1080,6 +1183,12 @@ def run_conversation(
                 except Exception:
                     pass  # Never let rate guard break the agent loop
 
+            if _maybe_failfast_codex_zero_event_breaker(agent):
+                retry_count = 0
+                compression_attempts = 0
+                primary_recovery_attempted = False
+                continue
+
             try:
                 agent._reset_stream_delivery_tracking()
                 api_kwargs = agent._build_api_kwargs(api_messages)
@@ -1175,7 +1284,10 @@ def run_conversation(
                     )
                 else:
                     response = agent._interruptible_api_call(api_kwargs)
-                
+
+                if _is_codex_zero_event_failfast_target(agent):
+                    _clear_codex_zero_event_breaker(agent)
+
                 api_duration = time.time() - api_start_time
                 
                 # Stop thinking spinner silently -- the response box or tool
@@ -2544,6 +2656,33 @@ def run_conversation(
                             compression_attempts = 0
                             primary_recovery_attempted = False
                             continue
+
+                if classified.reason == FailoverReason.codex_zero_event_ttfb:
+                    _breaker_open_until = _record_codex_zero_event_failure(agent)
+                    if _is_codex_zero_event_failfast_target(agent):
+                        logger.warning(
+                            "Codex zero-event TTFB detected; failing over immediately. %s",
+                            agent._client_log_context(),
+                        )
+                        if agent._fallback_index < len(agent._fallback_chain):
+                            _cooldown_hint = ""
+                            if _breaker_open_until and _breaker_open_until > time.monotonic():
+                                _cooldown_hint = (
+                                    f" Circuit breaker armed for "
+                                    f"{_format_duration_seconds(_breaker_open_until - time.monotonic())}."
+                                )
+                            agent._emit_status(
+                                "⚠️ Codex gpt-5.5 produced no first byte — "
+                                f"upstream zero-event stall detected, switching to fallback.{_cooldown_hint}"
+                            )
+                            if agent._try_activate_fallback(reason=classified.reason):
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                        # No fallback configured: don't burn two more 45s stalls.
+                        retry_count = max_retries
+                        primary_recovery_attempted = True
 
                 # ── Nous Portal: record rate limit & skip retries ─────
                 # When Nous returns a 429 that is a genuine account-

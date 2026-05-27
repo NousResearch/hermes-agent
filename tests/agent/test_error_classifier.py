@@ -3,6 +3,7 @@
 import pytest
 from agent.error_classifier import (
     ClassifiedError,
+    CodexNoFirstByteTimeout,
     FailoverReason,
     classify_api_error,
     _extract_status_code,
@@ -54,6 +55,7 @@ class TestFailoverReason:
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
             "overloaded", "server_error", "timeout",
+            "codex_zero_event_ttfb",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
@@ -214,6 +216,20 @@ class TestClassify402:
 
 class TestClassifyApiError:
     """End-to-end classification tests."""
+
+    def test_codex_no_first_byte_timeout_classified_for_fast_fallback(self):
+        err = CodexNoFirstByteTimeout(
+            "Codex stream produced no bytes within 45s (TTFB threshold: 45s)",
+            provider="openai-codex",
+            model="gpt-5.5",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_mode="codex_responses",
+            elapsed_seconds=45,
+        )
+        result = classify_api_error(err, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.codex_zero_event_ttfb
+        assert result.retryable is False
+        assert result.should_fallback is True
 
     # ── Auth errors ──
 

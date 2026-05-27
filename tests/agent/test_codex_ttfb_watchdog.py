@@ -62,6 +62,7 @@ def test_ttfb_kills_when_no_stream_event(tmp_path, monkeypatch):
     cutoff, well before the 60s wall-clock stale timeout, with a retryable
     TimeoutError and a ``codex_ttfb_kill`` close reason."""
     from agent import chat_completion_helpers as h
+    from agent.error_classifier import CodexNoFirstByteTimeout
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
@@ -94,6 +95,7 @@ def test_ttfb_kills_when_no_stream_event(tmp_path, monkeypatch):
         with pytest.raises(TimeoutError) as excinfo:
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
         elapsed = time.time() - t0
+        assert isinstance(excinfo.value, CodexNoFirstByteTimeout)
         assert "TTFB" in str(excinfo.value)
         assert "codex_ttfb_kill" in closes
         # ~1s cutoff + 2s join grace; must be far under the 60s stale timeout.

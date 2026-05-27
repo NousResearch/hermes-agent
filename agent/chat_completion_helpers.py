@@ -35,7 +35,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.error_classifier import classify_api_error, FailoverReason
+from agent.error_classifier import CodexNoFirstByteTimeout, classify_api_error, FailoverReason
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
@@ -162,7 +162,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
-    result = {"response": None, "error": None}
+    result: Dict[str, Any] = {"response": None, "error": None}
     request_client_holder = {"client": None, "owner_tid": None}
     request_client_lock = threading.Lock()
 
@@ -425,14 +425,24 @@ def interruptible_api_call(agent, api_kwargs: dict):
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
                 if _silent_hint:
-                    result["error"] = TimeoutError(
+                    result["error"] = CodexNoFirstByteTimeout(
                         f"Codex stream produced no bytes within {int(_elapsed)}s "
-                        f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}"
+                        f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}",
+                        provider=getattr(agent, "provider", None),
+                        model=api_kwargs.get("model") or getattr(agent, "model", None),
+                        base_url=str(getattr(agent, "base_url", "") or "") or None,
+                        api_mode=getattr(agent, "api_mode", None),
+                        elapsed_seconds=_elapsed,
                     )
                 else:
-                    result["error"] = TimeoutError(
+                    result["error"] = CodexNoFirstByteTimeout(
                         f"Codex stream produced no bytes within {int(_elapsed)}s "
-                        f"(TTFB threshold: {int(_ttfb_timeout)}s)"
+                        f"(TTFB threshold: {int(_ttfb_timeout)}s)",
+                        provider=getattr(agent, "provider", None),
+                        model=api_kwargs.get("model") or getattr(agent, "model", None),
+                        base_url=str(getattr(agent, "base_url", "") or "") or None,
+                        api_mode=getattr(agent, "api_mode", None),
+                        elapsed_seconds=_elapsed,
                     )
             break
 

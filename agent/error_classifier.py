@@ -19,6 +19,33 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+class CodexNoFirstByteTimeout(TimeoutError):
+    """Codex Responses accepted the connection but produced zero stream events.
+
+    Distinct from a generic transport timeout: the backend reached the stream
+    endpoint, but no SSE event arrived before Hermes' TTFB watchdog cut the
+    request. This known openai-codex/gpt-5.5 failure mode should generally
+    fail over faster than ordinary read/connect timeouts.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_mode: str | None = None,
+        elapsed_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.base_url = base_url
+        self.api_mode = api_mode
+        self.elapsed_seconds = elapsed_seconds
+
+
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
 class FailoverReason(enum.Enum):
@@ -38,6 +65,7 @@ class FailoverReason(enum.Enum):
 
     # Transport
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
+    codex_zero_event_ttfb = "codex_zero_event_ttfb"  # Codex stream accepted the connection but emitted no first byte/event before watchdog cutoff
 
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
@@ -482,6 +510,13 @@ def classify_api_error(
         }
         defaults.update(overrides)
         return ClassifiedError(**defaults)
+
+    if isinstance(error, CodexNoFirstByteTimeout):
+        return _result(
+            FailoverReason.codex_zero_event_ttfb,
+            retryable=False,
+            should_fallback=True,
+        )
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
 

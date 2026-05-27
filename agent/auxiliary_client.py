@@ -760,27 +760,75 @@ class _CodexCompletionsAdapter:
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
+
+            def _recover_stream_parser_failure(exc: TypeError) -> Any:
+                err_text = str(exc)
+                if "NoneType" not in err_text or "not iterable" not in err_text:
+                    raise exc
+                if collected_output_items:
+                    logger.warning(
+                        "Codex auxiliary Responses stream parser failed after output_item.done; "
+                        "recovering %d collected output item(s). error=%s",
+                        len(collected_output_items),
+                        exc,
+                    )
+                    return SimpleNamespace(
+                        model=model,
+                        status="completed",
+                        incomplete_details=None,
+                        output=list(collected_output_items),
+                        usage=None,
+                    )
+                if collected_text_deltas and not has_function_calls:
+                    assembled = "".join(collected_text_deltas)
+                    logger.warning(
+                        "Codex auxiliary Responses stream parser failed after text deltas; "
+                        "recovering %d streamed char(s). error=%s",
+                        len(assembled),
+                        exc,
+                    )
+                    return SimpleNamespace(
+                        model=model,
+                        status="completed",
+                        incomplete_details=None,
+                        output=[SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        usage=None,
+                    )
+                raise exc
+
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+                try:
+                    for _event in stream:
+                        _check_cancelled()
+                        _etype = getattr(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = getattr(_event, "item", None)
+                            if _done is not None:
+                                collected_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = getattr(_event, "delta", "")
+                            if _delta:
+                                collected_text_deltas.append(_delta)
+                        elif "function_call" in _etype:
+                            has_function_calls = True
+                except TypeError as exc:
+                    final = _recover_stream_parser_failure(exc)
+                else:
                     _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
+                    try:
+                        final = stream.get_final_response()
+                    except TypeError as exc:
+                        final = _recover_stream_parser_failure(exc)
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)

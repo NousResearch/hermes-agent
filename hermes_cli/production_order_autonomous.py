@@ -15,6 +15,7 @@ import traceback
 from typing import Any, Callable
 from uuid import uuid4
 
+from hermes_cli.config import load_config
 from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from run_agent import AIAgent
@@ -142,7 +143,7 @@ def hermes_profile_runner(
     captured_stdout = str(agent_result.get("stdout", "") or "")
     if not captured_stdout and final_response is not None:
         captured_stdout = _stringify_result_channel(final_response)
-    return {
+    adapter_result = {
         "stdout": captured_stdout,
         "stderr": str(agent_result.get("stderr", "") or ""),
         "exit_code": int(agent_result.get("exit_code", 0) or 0),
@@ -152,6 +153,15 @@ def hermes_profile_runner(
         "session_id": runtime_session_id,
         "target_profile": envelope.target_profile,
     }
+    for key in (
+        "resolved_hermes_home",
+        "resolved_model_default",
+        "resolved_model_provider",
+        "resolved_model_base_url",
+    ):
+        if key in agent_result:
+            adapter_result[key] = agent_result[key]
+    return adapter_result
 
 
 def invoke_profile_task(
@@ -462,6 +472,12 @@ def run_production_order_autonomously(
                 "stderr_preview": _bounded_preview(getattr(invocation, "stderr", None) if invocation is not None else None),
                 "result_channel_preview": _bounded_preview(rc_preview_src),
             }
+            if invocation is not None:
+                metadata = invocation.runner_metadata or {}
+                diagnostics["resolved_hermes_home"] = metadata.get("resolved_hermes_home")
+                diagnostics["resolved_model_default"] = metadata.get("resolved_model_default")
+                diagnostics["resolved_model_provider"] = metadata.get("resolved_model_provider")
+                diagnostics["resolved_model_base_url"] = metadata.get("resolved_model_base_url")
 
             log_dispatch_event(
                 conn,
@@ -873,6 +889,45 @@ def _coerce_profile_task_envelope(envelope_payload: Any) -> ProfileTaskEnvelope:
     )
 
 
+def _resolved_profile_runtime_config(hermes_home: Any) -> dict[str, str]:
+    """Read the profile-scoped runtime model config before invoking AIAgent."""
+    cfg = load_config()
+    model_cfg = cfg.get("model") or {}
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    model_default = str(
+        model_cfg.get("model")
+        or model_cfg.get("default")
+        or model_cfg.get("name")
+        or model_cfg.get("default_model")
+        or ""
+    ).strip()
+    return {
+        "resolved_hermes_home": str(hermes_home),
+        "resolved_model_default": model_default,
+        "resolved_model_provider": str(model_cfg.get("provider") or "").strip(),
+        "resolved_model_base_url": str(model_cfg.get("base_url") or "").strip(),
+    }
+
+
+def _profile_runtime_config_error(runtime_config: dict[str, str]) -> str | None:
+    missing: list[str] = []
+    if not runtime_config.get("resolved_model_provider"):
+        missing.append("provider")
+    if not runtime_config.get("resolved_model_default"):
+        missing.append("model")
+    if not missing:
+        return None
+    return (
+        "profile runtime config missing "
+        + ", ".join(missing)
+        + f"; resolved_hermes_home={runtime_config.get('resolved_hermes_home')!r} "
+        + f"resolved_model_provider={runtime_config.get('resolved_model_provider')!r} "
+        + f"resolved_model_default={runtime_config.get('resolved_model_default')!r} "
+        + f"resolved_model_base_url={runtime_config.get('resolved_model_base_url')!r}"
+    )
+
+
 def _run_profile_agent_once(
     envelope: ProfileTaskEnvelope,
     *,
@@ -884,30 +939,57 @@ def _run_profile_agent_once(
     def _worker() -> dict[str, Any]:
         target_profile = normalize_profile_name(envelope.target_profile)
         hermes_home = resolve_profile_env(target_profile)
+        previous_hermes_home_env = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(hermes_home)
         token = set_hermes_home_override(hermes_home)
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
+        runtime_config: dict[str, str] = {}
         try:
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                agent = AIAgent(
-                    quiet_mode=True,
-                    skip_context_files=False,
-                    load_soul_identity=True,
-                    skip_memory=True,
-                    platform="production_order_runtime",
-                    session_id=runtime_session_id,
-                )
-                holder["agent"] = agent
-                result = agent.run_conversation(_build_profile_runtime_prompt(envelope))
+            runtime_config = _resolved_profile_runtime_config(hermes_home)
+            config_error = _profile_runtime_config_error(runtime_config)
+            if config_error:
+                return {
+                    "stdout": stdout_buffer.getvalue(),
+                    "stderr": config_error,
+                    "exit_code": 1,
+                    "final_response": None,
+                    **runtime_config,
+                }
+            try:
+                with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                    agent = AIAgent(
+                        quiet_mode=True,
+                        skip_context_files=False,
+                        load_soul_identity=True,
+                        skip_memory=True,
+                        platform="production_order_runtime",
+                        session_id=runtime_session_id,
+                    )
+                    holder["agent"] = agent
+                    result = agent.run_conversation(_build_profile_runtime_prompt(envelope))
+            except Exception:
+                return {
+                    "stdout": stdout_buffer.getvalue(),
+                    "stderr": traceback.format_exc(),
+                    "exit_code": 1,
+                    "final_response": None,
+                    **runtime_config,
+                }
             return {
                 "stdout": stdout_buffer.getvalue(),
                 "stderr": stderr_buffer.getvalue(),
                 "exit_code": 0,
                 "final_response": result.get("final_response"),
+                **runtime_config,
             }
         finally:
             holder.pop("agent", None)
             reset_hermes_home_override(token)
+            if previous_hermes_home_env is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = previous_hermes_home_env
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     future = executor.submit(_worker)

@@ -409,6 +409,10 @@ def test_malformed_profile_output_records_bounded_diagnostics(conn, sample_brief
             "stderr": "the-stderr",
             "exit_code": 0,
             "duration_ms": 3,
+            "resolved_hermes_home": "/tmp/hermes-profile",
+            "resolved_model_default": "gpt-5.4-mini",
+            "resolved_model_provider": "openai-codex",
+            "resolved_model_base_url": "https://chatgpt.com/backend-api/codex",
         },
         max_steps=5,
         max_retries=1,
@@ -438,11 +442,61 @@ def test_malformed_profile_output_records_bounded_diagnostics(conn, sample_brief
     assert "stdout_preview" in diag
     assert "stderr_preview" in diag
     assert "result_channel_preview" in diag
+    assert diag["resolved_hermes_home"] == "/tmp/hermes-profile"
+    assert diag["resolved_model_default"] == "gpt-5.4-mini"
+    assert diag["resolved_model_provider"] == "openai-codex"
+    assert diag["resolved_model_base_url"] == "https://chatgpt.com/backend-api/codex"
 
     # Previews must be capped to 4000 chars
     for key in ("stdout_preview", "stderr_preview", "result_channel_preview"):
         assert isinstance(diag[key], str)
         assert len(diag[key]) <= 4000
+
+
+def test_profile_runtime_fails_fast_when_profile_config_has_blank_provider_or_model(
+    conn,
+    sample_brief,
+    tmp_path,
+    monkeypatch,
+):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    profile_home = tmp_path / "architect_os"
+    profile_home.mkdir()
+    (profile_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: ''\n"
+        "  provider: ''\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n",
+        encoding="utf-8",
+    )
+
+    import hermes_cli.production_order_autonomous as autonomous
+
+    monkeypatch.setattr(autonomous, "resolve_profile_env", lambda target_profile: profile_home)
+
+    agent_called = {"value": False}
+
+    class ExplodingAgent:
+        def __init__(self, *args, **kwargs):
+            agent_called["value"] = True
+            raise AssertionError("AIAgent must not be constructed when runtime config is blank")
+
+    monkeypatch.setattr(autonomous, "AIAgent", ExplodingAgent)
+
+    result = autonomous._run_profile_agent_once(
+        envelope,
+        timeout_seconds=30,
+        runtime_session_id="blank-config-test",
+    )
+
+    assert result["exit_code"] == 1
+    assert "profile runtime config missing" in result["stderr"]
+    assert result["resolved_hermes_home"] == str(profile_home)
+    assert result["resolved_model_default"] == ""
+    assert result["resolved_model_provider"] == ""
+    assert result["resolved_model_base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert agent_called["value"] is False
 
 
 @pytest.mark.parametrize(

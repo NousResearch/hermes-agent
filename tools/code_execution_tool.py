@@ -29,6 +29,7 @@ Remote execution additionally requires Python 3 in the terminal backend.
 """
 
 import base64
+import contextvars
 import functools
 import json
 import logging
@@ -434,6 +435,16 @@ def _call(tool_name, args):
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
+
+
+def _context_thread_target(target, *args):
+    """Return a thread target that preserves the caller's ContextVars."""
+    ctx = contextvars.copy_context()
+
+    def _run():
+        return ctx.run(target, *args)
+
+    return _run
 
 
 def _rpc_server_loop(
@@ -906,8 +917,8 @@ def _execute_remote(
 
         # Start RPC polling thread
         rpc_thread = threading.Thread(
-            target=_rpc_poll_loop,
-            args=(
+            target=_context_thread_target(
+                _rpc_poll_loop,
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
                 sandbox_tools, stop_event,
@@ -1153,8 +1164,8 @@ def execute_code(
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(
-            target=_rpc_server_loop,
-            args=(
+            target=_context_thread_target(
+                _rpc_server_loop,
                 server_sock, task_id, tool_call_log,
                 tool_call_counter, max_tool_calls, sandbox_tools,
             ),

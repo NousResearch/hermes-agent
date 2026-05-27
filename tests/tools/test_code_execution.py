@@ -15,6 +15,7 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
+import contextvars
 import json
 import os
 
@@ -835,6 +836,52 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
             ))
         self.assertEqual(result["status"], "success")
         self.assertIn("fallback ok", result["output"])
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_rpc_thread_preserves_contextvars(self):
+        """Sandbox tool calls should inherit the agent turn context."""
+        from tools.approval import (
+            get_current_session_key,
+            reset_current_session_key,
+            set_current_session_key,
+        )
+
+        marker_var = contextvars.ContextVar("execute_code_rpc_marker", default="missing")
+        marker_token = marker_var.set("marker-value")
+        session_token = set_current_session_key("rpc-context-session")
+        seen = []
+
+        def fake_handle(tool_name, tool_args, task_id=None):
+            seen.append({
+                "marker": marker_var.get(),
+                "session_key": get_current_session_key(default="missing"),
+                "task_id": task_id,
+                "tool": tool_name,
+            })
+            return json.dumps({"ok": True, "path": tool_args.get("path")})
+
+        code = (
+            "from hermes_tools import read_file\n"
+            "print(read_file('/tmp/context-check.txt'))\n"
+        )
+        try:
+            with patch("model_tools.handle_function_call", side_effect=fake_handle):
+                result = json.loads(execute_code(
+                    code,
+                    task_id="test-rpc-context",
+                    enabled_tools=["read_file"],
+                ))
+        finally:
+            reset_current_session_key(session_token)
+            marker_var.reset(marker_token)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(seen, [{
+            "marker": "marker-value",
+            "session_key": "rpc-context-session",
+            "task_id": "test-rpc-context",
+            "tool": "read_file",
+        }])
 
 
 # ---------------------------------------------------------------------------

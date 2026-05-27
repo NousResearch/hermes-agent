@@ -8784,6 +8784,46 @@ class GatewayRunner:
                 channel_prompt=event.channel_prompt,
             )
 
+            # ── Drain pending messages queued by interrupt depth limit ──
+            _drain_adapter = self.adapters.get(source.platform)
+            _drain_count = 0
+            _MAX_PENDING_DRAIN = 10
+            while (
+                _drain_adapter
+                and session_key
+                and _drain_count < _MAX_PENDING_DRAIN
+                and self._is_session_run_current(_quick_key, run_generation)
+                and hasattr(_drain_adapter, 'has_pending_interrupt')
+                and _drain_adapter.has_pending_interrupt(session_key)
+            ):
+                _drain_count += 1
+                _drain_event = _dequeue_pending_event(_drain_adapter, session_key)
+                if not _drain_event:
+                    break
+                _drain_message = await self._prepare_inbound_message_text(
+                    event=_drain_event,
+                    source=source,
+                    history=agent_result.get("messages", history),
+                )
+                if not _drain_message:
+                    continue
+                logger.info(
+                    "Draining queued pending message for session %s (count=%d)",
+                    session_key, _drain_count,
+                )
+                agent_result = await self._run_agent(
+                    message=_drain_message,
+                    context_prompt=context_prompt,
+                    history=agent_result.get("messages", history),
+                    source=getattr(_drain_event, "source", None) or source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    run_generation=run_generation,
+                    _interrupt_depth=0,
+                    event_message_id=self._reply_anchor_for_event(_drain_event),
+                    channel_prompt=getattr(_drain_event, "channel_prompt", None),
+                )
+
             # Stop persistent typing indicator now that the agent is done
             try:
                 _typing_adapter = self.adapters.get(source.platform)
@@ -15057,7 +15097,7 @@ class GatewayRunner:
 
         logger.debug("Process watcher ended: %s", session_id)
 
-    _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
+    _MAX_INTERRUPT_DEPTH = 6  # Cap recursive interrupt handling (#816)
 
     # Config keys whose values MUST invalidate the gateway's cached agent
     # when they change.  The agent bakes these into its compressor / context

@@ -774,6 +774,8 @@ def build_anthropic_bedrock_client(region: str):
     serves them with 1M natively.
 
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
+    When AWS_BEARER_TOKEN_BEDROCK and ANTHROPIC_BEDROCK_BASE_URL are set,
+    uses bearer token auth with a custom base URL instead of SigV4.
     """
     _anthropic_sdk = _get_anthropic_sdk()
     if _anthropic_sdk is None:
@@ -787,6 +789,29 @@ def build_anthropic_bedrock_client(region: str):
             "Upgrade with: pip install 'anthropic>=0.39.0'"
         )
     from httpx import Timeout
+
+    bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+    custom_base_url = os.environ.get("ANTHROPIC_BEDROCK_BASE_URL", "").strip()
+
+    if bearer_token and custom_base_url:
+        class _BearerBedrockClient(_anthropic_sdk.AnthropicBedrock):
+            """AnthropicBedrock subclass that uses Bearer token instead of SigV4."""
+            def __init__(self, _bearer_token, **kwargs):
+                self._bearer_token = _bearer_token
+                super().__init__(**kwargs)
+
+            def _prepare_request(self, request) -> None:
+                request.headers["Authorization"] = f"Bearer {self._bearer_token}"
+
+        return _BearerBedrockClient(
+            bearer_token,
+            aws_region=region,
+            aws_access_key="unused",
+            aws_secret_key="unused",
+            base_url=custom_base_url,
+            timeout=Timeout(timeout=900.0, connect=10.0),
+            default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
+        )
 
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,

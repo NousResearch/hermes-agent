@@ -1685,6 +1685,43 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
 
 
+def normalise_mcp_tool_prefix(name: str) -> str:
+    """Collapse a duplicated / corrupted ``mcp_`` prefix to a single one.
+
+    Qwen3-class tool-callers (e.g. Qwen3-235B via OpenRouter) token-split
+    and emit MCP tool names with an extra leading character or a doubled
+    prefix:
+
+    * ``mmcp_knowledge_kb_get`` — spurious leading ``m`` turns ``mcp_`` into
+      ``mmcp_``.
+    * ``mcp_mcp_knowledge_kb_get`` — the ``mcp_`` prefix is emitted twice.
+    * ``xmcp_...`` / ``abmcp_...`` — up to ~5 chars of leading junk before
+      the real ``mcp_`` prefix.
+
+    Normalising these *before* the fuzzy match in :func:`repair_tool_call`
+    lets them hit the cheap direct-match fast-path instead of falling
+    through to the slow ``difflib`` fuzzy match (which also logs a repair
+    line per occurrence). Returns ``name`` unchanged when no such
+    corruption is detected, so legit names (``mcp_knowledge_kb_get``) and
+    truly-garbled names (random tokens, bare ``kb_search`` with no prefix)
+    are untouched and still fall through to the normal repair path.
+    """
+    if not name:
+        return name
+    lowered = name.lower()
+    # Doubled prefix: strip one leading ``mcp_`` (4 chars).
+    if lowered.startswith("mcp_mcp_"):
+        return name[4:]
+    # Spurious single leading ``m``: ``mmcp_`` -> ``mcp_``.
+    if lowered.startswith("mmcp_"):
+        return name[1:]
+    # Up to 5 chars of leading junk before a real ``mcp_`` prefix.
+    idx = lowered.find("mcp_")
+    if 0 < idx <= 5:
+        return name[idx:]
+    return name
+
+
 def repair_tool_call(agent, tool_name: str) -> str | None:
     """Attempt to repair a mismatched tool name before aborting.
 
@@ -1711,6 +1748,12 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
 
     if not tool_name:
         return None
+
+    # Repair duplicated / corrupted ``mcp_`` prefixes (mmcp_, mcp_mcp_,
+    # leading junk before mcp_) emitted by Qwen3-class tool-callers before
+    # anything else, so corrupted names normalise to the direct-match
+    # fast-path below instead of the slow fuzzy fallback.
+    tool_name = normalise_mcp_tool_prefix(tool_name)
 
     def _norm(s: str) -> str:
         return s.lower().replace("-", "_").replace(" ", "_")
@@ -2306,6 +2349,7 @@ __all__ = [
     "create_openai_client",
     "switch_model",
     "invoke_tool",
+    "normalise_mcp_tool_prefix",
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",

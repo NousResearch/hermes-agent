@@ -115,3 +115,111 @@ class TestEdgeCases:
     def test_very_long_name_does_not_match_by_accident(self, repair):
         # Fuzzy match should not claim a tool for something obviously unrelated.
         assert repair("ThisIsNotRemotelyARealToolName_tool") is None
+
+
+# MCP-prefixed tool names registered under the canonical ``mcp_<server>_<tool>``
+# scheme. Qwen3-class tool-callers token-split and corrupt the ``mcp_`` prefix.
+MCP_VALID = {
+    "mcp_knowledge_kb_get",
+    "mcp_knowledge_kb_search",
+    "mcp_proxmox_get_nodes",
+}
+
+
+@pytest.fixture
+def mcp_repair():
+    """Bind _repair_tool_call to a stub exposing MCP-prefixed tool names."""
+    from run_agent import AIAgent
+
+    stub = SimpleNamespace(valid_tool_names=MCP_VALID)
+    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+
+class TestNormaliseMcpToolPrefix:
+    """Unit coverage for the prefix-normalisation helper in isolation.
+
+    Qwen3-235B token-split emits ``mmcp_knowledge_kb_get`` (extra leading
+    'm') or ``mcp_mcp_knowledge_kb_get`` (doubled prefix). The helper must
+    collapse those to a single ``mcp_`` prefix and leave everything else
+    untouched.
+    """
+
+    def test_strips_spurious_leading_m(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert (
+            normalise_mcp_tool_prefix("mmcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+        )
+
+    def test_collapses_doubled_prefix(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert (
+            normalise_mcp_tool_prefix("mcp_mcp_knowledge_kb_get")
+            == "mcp_knowledge_kb_get"
+        )
+
+    def test_strips_leading_junk_before_mcp(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert (
+            normalise_mcp_tool_prefix("xmcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+        )
+        assert (
+            normalise_mcp_tool_prefix("abmcp_knowledge_kb_get")
+            == "mcp_knowledge_kb_get"
+        )
+
+    def test_legit_name_passes_through_unchanged(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert (
+            normalise_mcp_tool_prefix("mcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+        )
+
+    def test_non_mcp_name_passes_through_unchanged(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        # No ``mcp_`` anywhere near the front — must not be touched.
+        assert normalise_mcp_tool_prefix("kb_search") == "kb_search"
+        assert normalise_mcp_tool_prefix("4pkoPc7Uh") == "4pkoPc7Uh"
+
+    def test_junk_too_far_from_front_not_normalised(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        # ``mcp_`` more than 5 chars in is not treated as a corrupted prefix.
+        assert normalise_mcp_tool_prefix("toolongprefix_mcp_x") == "toolongprefix_mcp_x"
+
+    def test_empty_string_passes_through(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert normalise_mcp_tool_prefix("") == ""
+
+
+class TestMcpPrefixRepairFastPath:
+    """End-to-end: corrupted MCP names repair to the canonical name via the
+    direct-match fast-path; legit and truly-garbled names behave correctly.
+    """
+
+    def test_mmcp_repairs_to_canonical(self, mcp_repair):
+        assert mcp_repair("mmcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+
+    def test_doubled_prefix_repairs_to_canonical(self, mcp_repair):
+        assert mcp_repair("mcp_mcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+
+    def test_leading_junk_repairs_to_canonical(self, mcp_repair):
+        assert mcp_repair("xmcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+
+    def test_legit_mcp_name_unchanged(self, mcp_repair):
+        assert mcp_repair("mcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+
+    def test_bare_name_without_prefix_not_falsely_normalised(self, mcp_repair):
+        # ``kb_search`` has no ``mcp_`` prefix — normalisation is a no-op, and
+        # it must NOT be silently rewritten to mcp_knowledge_kb_search by
+        # the prefix fast-path. (Fuzzy match against an mcp_-prefixed name is
+        # well below the 0.7 cutoff, so this returns None.)
+        assert mcp_repair("kb_search") is None
+
+    def test_truly_garbled_token_returns_none(self, mcp_repair):
+        # Random token from a token-split must still fall through, not match.
+        assert mcp_repair("4pkoPc7Uh") is None

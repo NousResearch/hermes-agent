@@ -252,8 +252,8 @@ class TestCliDrainPath:
 class TestNoDuplicateNotifications:
     """Verify the three dedup mechanisms are intact."""
 
-    def test_poll_does_not_mark_consumed(self):
-        """poll() must be read-only and must NOT add to _completion_consumed."""
+    def test_poll_marks_consumed(self):
+        """poll() on exited session marks completion as consumed."""
         registry = ProcessRegistry()
         s = _make_session(sid="proc_poll_dup", notify_on_complete=True, output="done")
         s.exited = True
@@ -262,7 +262,7 @@ class TestNoDuplicateNotifications:
 
         result = registry.poll("proc_poll_dup")
         assert result["status"] == "exited"
-        assert not registry.is_completion_consumed("proc_poll_dup")
+        assert registry.is_completion_consumed("proc_poll_dup")
 
     def test_wait_marks_consumed(self):
         """wait() must mark completion as consumed."""

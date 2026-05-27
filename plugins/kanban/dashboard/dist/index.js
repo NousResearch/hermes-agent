@@ -3197,6 +3197,7 @@
             onClick: props.onClose,
             className: "hermes-kanban-drawer-close",
             title: tx(t, "close", "Close (Esc)"),
+            "aria-label": tx(t, "close", "Close (Esc)"),
           }, "×"),
         ),
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },

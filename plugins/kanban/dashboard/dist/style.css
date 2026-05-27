@@ -391,9 +391,50 @@
   font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
-  padding: 0 0.25rem;
+  padding: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm, 0.25rem);
 }
-.hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
+.hermes-kanban-drawer-close:hover,
+.hermes-kanban-drawer-close:focus-visible {
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+}
+.hermes-kanban-drawer-close:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .hermes-kanban-drawer-shade {
+    justify-content: stretch;
+  }
+
+  .hermes-kanban-drawer {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    border-left: 0;
+  }
+
+  .hermes-kanban-drawer-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--color-card);
+    padding: calc(3.5rem + env(safe-area-inset-top)) 0.8rem 0.6rem;
+  }
+
+  .hermes-kanban-drawer-close {
+    width: 2.75rem;
+    height: 2.75rem;
+    font-size: 1.45rem;
+  }
+}
 
 /* Attachment download trigger — styled as a link, rendered as a <button>
    so the click handler can fetch with the session token (#35338). */

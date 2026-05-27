@@ -10,6 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import logging
 from typing import Any, Dict, List, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -17,6 +18,19 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+logger = logging.getLogger(__name__)
+
+# Kimi K2 emits tool calls as inline tokens (see
+# environments/tool_call_parsers/kimi_k2_parser.py) and some upstreams,
+# notably OpenRouter when the request exposes a sparse toolset, pass these
+# through as plain assistant content instead of populating the structured
+# ``tool_calls`` field.  We detect the section-begin marker (singular or
+# plural variant) in ``content`` as a fallback trigger.  See #?? for repro.
+_KIMI_K2_TOOL_CALL_MARKERS = (
+    "<|tool_calls_section_begin|>",
+    "<|tool_call_section_begin|>",
+)
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -579,6 +593,43 @@ class ChatCompletionsTransport(ProviderTransport):
                     )
                 )
 
+        # Fallback: parse Kimi K2 inline tool-call tokens out of ``content``
+        # when the structured ``tool_calls`` field is empty.  K2 sometimes
+        # emits its native ``<|tool_calls_section_begin|>...`` format as
+        # plain assistant text — observed with K2.6 via OpenRouter when the
+        # exposed toolset is sparse (1-2 tools).  Without this fallback the
+        # tokens are returned to the agent as final assistant content and
+        # the requested tool call never executes.
+        content = msg.content
+        if (
+            not tool_calls
+            and isinstance(content, str)
+            and any(marker in content for marker in _KIMI_K2_TOOL_CALL_MARKERS)
+        ):
+            try:
+                from environments.tool_call_parsers.kimi_k2_parser import KimiK2ToolCallParser
+                parsed_content, parsed_calls = KimiK2ToolCallParser().parse(content)
+                if parsed_calls:
+                    tool_calls = [
+                        ToolCall(
+                            id=tc.id,
+                            name=tc.function.name,
+                            arguments=tc.function.arguments,
+                        )
+                        for tc in parsed_calls
+                    ]
+                    content = parsed_content  # tokens stripped from content
+                    # The upstream reported finish_reason="stop" because it
+                    # treated the tokens as plain text — correct it so the
+                    # agent loop dispatches tool execution.
+                    if finish_reason == "stop":
+                        finish_reason = "tool_calls"
+            except Exception as exc:
+                logger.warning(
+                    "Failed to parse inline K2 tool-call tokens from content: %s",
+                    exc,
+                )
+
         usage = None
         if hasattr(response, "usage") and response.usage:
             u = response.usage
@@ -607,7 +658,7 @@ class ChatCompletionsTransport(ProviderTransport):
             provider_data["reasoning_details"] = rd
 
         return NormalizedResponse(
-            content=msg.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             reasoning=reasoning,

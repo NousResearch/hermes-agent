@@ -806,6 +806,95 @@ class TestChatCompletionsNormalize:
         assert nr.provider_data == {"reasoning_content": "model-extra scratchpad"}
 
 
+class TestChatCompletionsKimiK2InlineTokens:
+    """Kimi K2 emits tool calls as inline ``<|tool_calls_section_begin|>``
+    tokens.  Some upstreams (notably OpenRouter when only 1-2 tools are
+    exposed) pass these through as assistant text instead of populating
+    ``tool_calls`` — the transport must parse them as a fallback or the
+    requested tool call never runs."""
+
+    _K2_CONTENT = (
+        '<|tool_calls_section_begin|>'
+        '<|tool_call_begin|>functions.web_search:0'
+        '<|tool_call_argument_begin|>{"query": "hello world"}'
+        '<|tool_call_end|>'
+        '<|tool_calls_section_end|>'
+    )
+
+    def test_parses_inline_tokens_when_structured_tool_calls_empty(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=self._K2_CONTENT, tool_calls=None, reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls is not None
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "web_search"
+        assert nr.tool_calls[0].arguments == '{"query": "hello world"}'
+        # finish_reason promoted from "stop" → "tool_calls" so the agent
+        # loop dispatches the parsed call.
+        assert nr.finish_reason == "tool_calls"
+        # Inline tokens are stripped from content.
+        assert "<|tool_call" not in (nr.content or "")
+
+    def test_strips_tokens_but_preserves_leading_prose(self, transport):
+        prose = "I'll search for that now."
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=prose + self._K2_CONTENT,
+                    tool_calls=None, reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls and nr.tool_calls[0].name == "web_search"
+        assert nr.content == prose
+
+    def test_structured_tool_calls_take_precedence(self, transport):
+        # When the upstream did populate tool_calls properly, leave them
+        # alone even if content happens to also contain the markers.
+        tc = SimpleNamespace(
+            id="call_real",
+            function=SimpleNamespace(name="terminal", arguments='{"command": "ls"}'),
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=self._K2_CONTENT, tool_calls=[tc], reasoning_content=None,
+                ),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "terminal"
+        assert nr.tool_calls[0].id == "call_real"
+
+    def test_no_markers_no_change(self, transport):
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="Plain text answer.", tool_calls=None, reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls is None
+        assert nr.content == "Plain text answer."
+        assert nr.finish_reason == "stop"
+
+
 class TestChatCompletionsCacheStats:
 
     def test_no_usage(self, transport):

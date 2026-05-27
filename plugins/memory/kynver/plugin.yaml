@@ -1,0 +1,3 @@
+name: kynver
+version: 0.1.0
+description: "Kynver AgentOS memory provider for additive cross-runtime memory, explicit durable writes, and source-backed recall."

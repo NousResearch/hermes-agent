@@ -276,6 +276,39 @@ get_command_link_display_dir() {
     fi
 }
 
+get_root_home_dir() {
+    local root_home
+    root_home="$(getent passwd 0 2>/dev/null | cut -d: -f6 || true)"
+    if [ -n "$root_home" ]; then
+        printf '%s\n' "$root_home"
+    else
+        printf '%s\n' "/root"
+    fi
+}
+
+is_safe_root_owned_path() {
+    local path="$1"
+    local expected_type="$2"
+    local stat_output owner mode type
+
+    [ -e "$path" ] || return 1
+    [ ! -L "$path" ] || return 1
+    stat_output="$(stat -c '%u %a %F' "$path" 2>/dev/null)" || return 1
+    owner="${stat_output%% *}"
+    stat_output="${stat_output#* }"
+    mode="${stat_output%% *}"
+    type="${stat_output#* }"
+
+    [ "$owner" = "0" ] || return 1
+    case "$expected_type:$type" in
+        dir:directory|file:"regular file") ;;
+        *) return 1 ;;
+    esac
+
+    # Refuse group/world-writable root startup paths.
+    [ $((8#$mode & 022)) -eq 0 ]
+}
+
 get_hermes_command_path() {
     local link_dir
     link_dir="$(get_command_link_dir)"
@@ -1142,25 +1175,22 @@ EOF
     # /etc/profile pathmunge), but on RHEL/CentOS/Rocky/Alma 8+ non-login
     # interactive root shells (su, sudo -s, tmux panes, some web terminals)
     # only source /etc/bashrc, which does NOT add /usr/local/bin — and
-    # /root/.bash_profile doesn't either.  So verify with `command -v` and
-    # fall back to writing a PATH guard into /root/.bashrc when needed.
+    # /root/.bash_profile doesn't either. Add an idempotent guard without
+    # launching an interactive root shell, which would source startup files.
     if [ "$ROOT_FHS_LAYOUT" = true ]; then
         export PATH="$command_link_dir:$PATH"
-        # Probe a fresh non-login interactive bash the way the user will use it.
-        # `bash -i -c` sources ~/.bashrc but NOT ~/.bash_profile or /etc/profile,
-        # which is the exact scenario where RHEL root loses /usr/local/bin.
-        if env -i HOME="$HOME" TERM="${TERM:-dumb}" bash -i -c 'command -v hermes' \
-                >/dev/null 2>&1; then
-            log_info "/usr/local/bin is already on PATH for all shells"
+        local root_home
+        root_home="$(get_root_home_dir)"
+        if ! is_safe_root_owned_path "$root_home" dir; then
+            log_warning "Skipping root PATH guard: unsafe root home $root_home"
             log_success "hermes command ready"
             return 0
         fi
 
-        log_info "hermes not on PATH in non-login shells (common on RHEL-family)"
         PATH_LINE='export PATH="/usr/local/bin:$PATH"'
         PATH_COMMENT='# Hermes Agent — ensure /usr/local/bin is on PATH (RHEL non-login shells)'
-        for SHELL_CONFIG in "$HOME/.bashrc" "$HOME/.bash_profile"; do
-            [ -f "$SHELL_CONFIG" ] || continue
+        for SHELL_CONFIG in "$root_home/.bashrc" "$root_home/.bash_profile"; do
+            is_safe_root_owned_path "$SHELL_CONFIG" file || continue
             if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null \
                     | grep -qE 'PATH=.*(/usr/local/bin|\$command_link_dir)'; then
                 echo "" >> "$SHELL_CONFIG"

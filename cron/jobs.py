@@ -664,6 +664,39 @@ def create_job(
     return job
 
 
+def _origin_access_tuple(
+    origin: Optional[Dict[str, Any]],
+) -> Optional[tuple[str, str, str]]:
+    """Return the routing identity used to authorize cron output chaining."""
+    if not isinstance(origin, dict):
+        return None
+    platform = origin.get("platform")
+    chat_id = origin.get("chat_id")
+    if not platform or chat_id is None:
+        return None
+    return (str(platform), str(chat_id), str(origin.get("thread_id") or ""))
+
+
+def origins_match_for_context(
+    requester: Optional[Dict[str, Any]],
+    source: Optional[Dict[str, Any]],
+) -> bool:
+    """Return True when one cron job may consume another job's saved output."""
+    requester_key = _origin_access_tuple(requester)
+    source_key = _origin_access_tuple(source)
+    if requester_key is None or source_key is None:
+        return requester_key is None and source_key is None
+    return requester_key == source_key
+
+
+def can_reference_context_job(
+    requester_job: Dict[str, Any],
+    source_job: Dict[str, Any],
+) -> bool:
+    """Return True when requester_job may inject source_job's cron output."""
+    return origins_match_for_context(requester_job.get("origin"), source_job.get("origin"))
+
+
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Get a job by ID."""
     jobs = load_jobs()

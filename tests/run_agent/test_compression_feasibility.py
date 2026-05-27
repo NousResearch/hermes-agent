@@ -144,10 +144,17 @@ def test_feasibility_check_passes_live_main_runtime():
     mock_client.api_key = "codex-token"
 
     with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "gpt-5.4")) as mock_get_client, \
-         patch("agent.model_metadata.get_model_context_length", return_value=200_000):
+         patch("agent.model_metadata.get_model_context_length", return_value=200_000) as mock_ctx_len:
         agent._emit_status = lambda msg: None
         agent._check_compression_model_feasibility()
 
+    mock_ctx_len.assert_called_once_with(
+        "gpt-5.4",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        config_context_length=None,
+        provider="openai-codex",
+    )
     mock_get_client.assert_called_once_with(
         "compression",
         main_runtime={
@@ -157,6 +164,40 @@ def test_feasibility_check_passes_live_main_runtime():
             "api_key": "codex-token",
             "api_mode": "codex_responses",
         },
+    )
+
+
+@patch(
+    "agent.auxiliary_client._resolve_task_provider_model",
+    return_value=("auto", None, None, None, None),
+)
+@patch("agent.model_metadata.get_model_context_length", return_value=200_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_check_does_not_pair_aux_key_with_main_provider(
+    mock_get_client, mock_ctx_len, _mock_resolve_provider
+):
+    """Auto fallback aux credentials must not be probed as the main provider."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    agent.model = "gpt-5.4"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_key = "codex-token"
+    agent.api_mode = "codex_responses"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-openrouter-aux"
+    mock_get_client.return_value = (mock_client, "openrouter/auto-fallback-model")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    mock_ctx_len.assert_called_once_with(
+        "openrouter/auto-fallback-model",
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-openrouter-aux",
+        config_context_length=None,
+        provider="",
     )
 
 

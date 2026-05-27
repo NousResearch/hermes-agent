@@ -282,6 +282,19 @@ class TestFormatNoMatchHint:
         assert "Did you mean" in result
         assert "foo" in result or "bar" in result
 
+    def test_redacts_secrets_in_hint(self):
+        """Patch error hints must not expose raw secrets from nearby file lines."""
+        secret = "sk-abcdefghijklmnopqrstuvwxyz12345678901234567890"
+        content = f"# project configuration\nOPENAI_API_KEY={secret}\nSAFE_VALUE=notsecret\n"
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            0, "OPENAI_API_KEY", content,
+        )
+        assert "Did you mean" in result
+        assert secret not in result
+        assert "OPENAI_API_KEY=" in result
+        assert "sk-abc...7890" in result
+
     def test_silent_on_ambiguous_match_error(self):
         """'Found N matches' is not a missing-match failure — no hint."""
         content = "aaa bbb aaa\n"

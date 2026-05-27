@@ -135,14 +135,17 @@ class TestReadTrackerCaps:
 
 
 class TestCompletionConsumedPrune:
-    def test_prune_drops_completion_entry_with_expired_session(self):
-        """When a finished session is pruned, _completion_consumed is
-        cleared for the same session_id."""
+    def test_prune_keeps_consumed_entry_with_expired_session(self):
+        """Pruning finished sessions must not clear consumed markers.
+
+        Completion events are queued independently; removing consumed markers
+        too early can re-inject already-delivered output as synthetic input.
+        """
         from tools.process_registry import ProcessRegistry, FINISHED_TTL_SECONDS
         import time
 
         reg = ProcessRegistry()
-        # Fake a finished session whose started_at is older than the TTL.
+
         class _FakeSess:
             def __init__(self, sid):
                 self.id = sid
@@ -156,48 +159,4 @@ class TestCompletionConsumedPrune:
             reg._prune_if_needed()
 
         assert "stale-1" not in reg._finished
-        assert "stale-1" not in reg._completion_consumed
-
-    def test_prune_drops_completion_entry_for_lru_evicted(self):
-        """Same contract for the LRU path (over MAX_PROCESSES)."""
-        from tools import process_registry as pr
-        import time
-
-        reg = pr.ProcessRegistry()
-
-        class _FakeSess:
-            def __init__(self, sid, started):
-                self.id = sid
-                self.started_at = started
-                self.exited = True
-
-        # Fill above MAX_PROCESSES with recently-finished sessions.
-        now = time.time()
-        for i in range(pr.MAX_PROCESSES + 5):
-            sid = f"sess-{i}"
-            reg._finished[sid] = _FakeSess(sid, now - i)  # sess-0 newest
-            reg._completion_consumed.add(sid)
-
-        with reg._lock:
-            # _prune_if_needed removes one oldest finished per invocation;
-            # call it enough times to trim back down.
-            for _ in range(10):
-                reg._prune_if_needed()
-
-        # The _completion_consumed set should not contain session IDs that
-        # are no longer in _running or _finished.
-        assert (reg._completion_consumed - (reg._running.keys() | reg._finished.keys())) == set()
-
-    def test_prune_clears_dangling_completion_entries(self):
-        """Stale entries in _completion_consumed without a backing session
-        record are cleared out (belt-and-suspenders invariant)."""
-        from tools.process_registry import ProcessRegistry
-
-        reg = ProcessRegistry()
-        # Add a dangling entry that was never in _running or _finished.
-        reg._completion_consumed.add("dangling-never-tracked")
-
-        with reg._lock:
-            reg._prune_if_needed()
-
-        assert "dangling-never-tracked" not in reg._completion_consumed
+        assert "stale-1" in reg._completion_consumed

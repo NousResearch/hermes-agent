@@ -1,6 +1,8 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
 import json
+import os
+import stat
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -399,6 +401,38 @@ class TestWriteClaudeCodeCredentials:
         assert data["claudeAiOauth"]["accessToken"] == "tok"
         assert data["claudeAiOauth"]["refreshToken"] == "ref"
         assert data["claudeAiOauth"]["expiresAt"] == 12345
+
+    def test_writes_file_with_restricted_permissions_under_permissive_umask(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        old_umask = os.umask(0o022)
+        try:
+            _write_claude_code_credentials("tok", "ref", 12345)
+        finally:
+            os.umask(old_umask)
+
+        cred_file = tmp_path / ".claude" / ".credentials.json"
+        mode = stat.S_IMODE(cred_file.stat().st_mode)
+        assert mode == 0o600
+
+    def test_temp_file_is_created_with_restricted_permissions(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        real_os_open = os.open
+        calls = []
+
+        def spying_os_open(path, flags, mode=0o777, *args, **kwargs):
+            if str(path).startswith(str(tmp_path / ".claude")):
+                calls.append((path, flags, mode))
+            return real_os_open(path, flags, mode, *args, **kwargs)
+
+        monkeypatch.setattr("agent.anthropic_adapter.os.open", spying_os_open)
+
+        _write_claude_code_credentials("tok", "ref", 12345)
+
+        temp_creates = [call for call in calls if ".credentials.tmp." in str(call[0])]
+        assert temp_creates
+        assert temp_creates[0][2] == 0o600
 
     def test_preserves_existing_fields(self, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)

@@ -445,19 +445,25 @@ def _get_orchestrator_enabled() -> bool:
 def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     cfg = _load_config()
-    return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
+    return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=False)
+
+
+_SPECIAL_TOOLSET_NAMES = frozenset({"all", "*"})
 
 
 def _is_mcp_toolset_name(name: str) -> bool:
-    """Return True for canonical MCP toolsets and their registered aliases."""
+    """Return True for canonical MCP toolsets and non-colliding MCP aliases."""
     if not name:
         return False
-    if str(name).startswith("mcp-"):
+    toolset_name = str(name)
+    if toolset_name.startswith("mcp-"):
         return True
+    if toolset_name in TOOLSETS or toolset_name in _SPECIAL_TOOLSET_NAMES:
+        return False
     try:
         from tools.registry import registry
 
-        target = registry.get_toolset_alias_target(str(name))
+        target = registry.get_toolset_alias_target(toolset_name)
     except Exception:
         target = None
     return bool(target and str(target).startswith("mcp-"))

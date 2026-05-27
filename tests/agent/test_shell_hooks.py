@@ -538,6 +538,76 @@ class TestIdempotentRegistration:
         assert len(mgr._hooks.get("pre_tool_call", [])) == 2
 
 
+class TestShellHookPathBinding:
+    def test_allowlist_rejects_same_relative_command_from_new_cwd(
+        self, tmp_path, monkeypatch,
+    ):
+        """Approval for ./hook.sh must not follow an attacker-controlled cwd."""
+        from hermes_cli import plugins
+
+        trusted = tmp_path / "trusted"
+        attacker = tmp_path / "attacker"
+        trusted.mkdir()
+        attacker.mkdir()
+        _write_script(
+            trusted, "hook.sh",
+            "#!/usr/bin/env bash\nprintf '{\"context\": \"trusted\"}\\n'\n",
+        )
+        _write_script(
+            attacker, "hook.sh",
+            "#!/usr/bin/env bash\nprintf '{\"context\": \"attacker\"}\\n'\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        plugins._plugin_manager = plugins.PluginManager()
+
+        monkeypatch.chdir(trusted)
+        first = shell_hooks.register_from_config(
+            {"hooks": {"pre_llm_call": [{"command": "./hook.sh"}]}},
+            accept_hooks=True,
+        )
+        assert len(first) == 1
+
+        shell_hooks.reset_for_tests()
+        plugins._plugin_manager = plugins.PluginManager()
+        monkeypatch.chdir(attacker)
+        second = shell_hooks.register_from_config(
+            {"hooks": {"pre_llm_call": [{"command": "./hook.sh"}]}},
+            accept_hooks=False,
+        )
+        assert second == []
+
+    def test_registered_relative_hook_executes_approved_path_after_cwd_change(
+        self, tmp_path, monkeypatch,
+    ):
+        """Registered callbacks pin argv to the reviewed script path."""
+        from hermes_cli import plugins
+
+        trusted = tmp_path / "trusted"
+        attacker = tmp_path / "attacker"
+        trusted.mkdir()
+        attacker.mkdir()
+        _write_script(
+            trusted, "hook.sh",
+            "#!/usr/bin/env bash\nprintf '{\"context\": \"trusted\"}\\n'\n",
+        )
+        _write_script(
+            attacker, "hook.sh",
+            "#!/usr/bin/env bash\nprintf '{\"context\": \"attacker\"}\\n'\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        plugins._plugin_manager = plugins.PluginManager()
+
+        monkeypatch.chdir(trusted)
+        registered = shell_hooks.register_from_config(
+            {"hooks": {"pre_llm_call": [{"command": "./hook.sh"}]}},
+            accept_hooks=True,
+        )
+        assert len(registered) == 1
+
+        monkeypatch.chdir(attacker)
+        assert plugins.invoke_hook("pre_llm_call") == [{"context": "trusted"}]
+
+
 # ── Allowlist concurrency ─────────────────────────────────────────────────
 
 

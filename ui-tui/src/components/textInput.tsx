@@ -680,7 +680,11 @@ export function TextInput({
     const normalized = selRange()
 
     if (isMac && normalized) {
-      void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
+      const text = selectionClipboardText(vRef.current, normalized, mask)
+
+      if (text) {
+        void writeClipboardText(text)
+      }
     }
   }
 
@@ -741,9 +745,11 @@ export function TextInput({
         const range = selRange()
 
         if (range) {
-          const text = vRef.current.slice(range.start, range.end)
+          const text = selectionClipboardText(vRef.current, range, mask)
 
-          void writeClipboardText(text)
+          if (text) {
+            void writeClipboardText(text)
+          }
         }
 
         return
@@ -973,12 +979,14 @@ export function TextInput({
         // Right-click → copy active selection if any, otherwise paste.
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
-          const decision = decideRightClickAction(vRef.current, selRange())
+          const decision = decideRightClickAction(vRef.current, selRange(), mask)
+
           if (decision.action === 'copy') {
             void writeClipboardText(decision.text)
 
             return
           }
+
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -1065,16 +1073,35 @@ export type RightClickDecision =
  * Callers pass the already-normalized range from `selRange()` (start <= end,
  * or null when collapsed), so this helper does not need to re-normalize.
  */
+export function selectionClipboardText(
+  value: string,
+  range: { end: number; start: number } | null,
+  mask?: string
+): string | null {
+  if (!range || range.end <= range.start) {
+    return null
+  }
+
+  const text = value.slice(range.start, range.end)
+
+  if (!text) {
+    return null
+  }
+
+  return mask ? text.replace(/[^\r\n]/g, mask[0] ?? '*') : text
+}
+
 export function decideRightClickAction(
   value: string,
-  range: { end: number; start: number } | null
+  range: { end: number; start: number } | null,
+  mask?: string
 ): RightClickDecision {
-  if (range && range.end > range.start) {
-    const text = value.slice(range.start, range.end)
-    if (text) {
-      return { action: 'copy', text }
-    }
+  const text = selectionClipboardText(value, range, mask)
+
+  if (text) {
+    return { action: 'copy', text }
   }
+
   return { action: 'paste' }
 }
 

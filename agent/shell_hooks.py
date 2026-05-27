@@ -17,7 +17,8 @@ Design notes
   with ``shell=False`` — no shell injection footguns.  Users that need
   pipes/redirection wrap their logic in a script.
 * First-use consent is gated by the allowlist under
-  ``~/.hermes/shell-hooks-allowlist.json``.  Non-TTY callers must pass
+  ``~/.hermes/shell-hooks-allowlist.json`` and bound to the resolved
+  command path(s) seen at approval time.  Non-TTY callers must pass
   ``accept_hooks=True`` (resolved from ``--accept-hooks``,
   ``HERMES_ACCEPT_HOOKS``, or ``hooks_auto_accept: true`` in config)
   for registration to succeed without a prompt.
@@ -59,6 +60,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -111,6 +113,7 @@ class ShellHookSpec:
     matcher: Optional[str] = None
     timeout: int = DEFAULT_TIMEOUT_SECONDS
     compiled_matcher: Optional[re.Pattern] = field(default=None, repr=False)
+    resolved_argv: Optional[List[str]] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         # Strip whitespace introduced by YAML quirks (e.g. multi-line string
@@ -191,11 +194,22 @@ def register_from_config(
         with _registered_lock:
             if key in _registered:
                 continue
-            already_allowlisted = _is_allowlisted(spec.event, spec.command)
+            try:
+                resolved_argv = _resolve_command_argv(spec.command)
+            except (FileNotFoundError, ValueError) as exc:
+                logger.warning(
+                    "shell hook for %s (%s) cannot be resolved: %s",
+                    spec.event, spec.command, exc,
+                )
+                continue
+            already_allowlisted = _is_allowlisted(
+                spec.event, spec.command, resolved_argv,
+            )
 
         if not already_allowlisted:
             if not _prompt_and_record(
-                spec.event, spec.command, accept_hooks=effective_accept,
+                spec.event, spec.command, resolved_argv,
+                accept_hooks=effective_accept,
             ):
                 logger.warning(
                     "shell hook for %s (%s) not allowlisted — skipped. "
@@ -209,6 +223,7 @@ def register_from_config(
         with _registered_lock:
             if key in _registered:
                 continue
+            spec.resolved_argv = list(resolved_argv)
             manager._hooks.setdefault(spec.event, []).append(_make_callback(spec))
             _registered.add(key)
             registered.append(spec)
@@ -379,7 +394,10 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
+        if spec.resolved_argv:
+            argv = list(spec.resolved_argv)
+        else:
+            argv = shlex.split(os.path.expanduser(spec.command))
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
@@ -586,12 +604,16 @@ def save_allowlist(data: Dict[str, Any]) -> None:
         )
 
 
-def _is_allowlisted(event: str, command: str) -> bool:
+def _is_allowlisted(
+    event: str, command: str, resolved_argv: Optional[List[str]] = None,
+) -> bool:
     data = load_allowlist()
+    current_identity = resolved_argv or _resolve_command_argv(command)
     return any(
         isinstance(e, dict)
         and e.get("event") == event
         and e.get("command") == command
+        and e.get("resolved_argv_at_approval") == current_identity
         for e in data.get("approvals", [])
     )
 
@@ -628,13 +650,13 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
 
 
 def _prompt_and_record(
-    event: str, command: str, *, accept_hooks: bool,
+    event: str, command: str, resolved_argv: List[str], *, accept_hooks: bool,
 ) -> bool:
     """Decide whether to approve an unseen ``(event, command)`` pair.
     Returns ``True`` iff the approval was granted and recorded.
     """
     if accept_hooks:
-        _record_approval(event, command)
+        _record_approval(event, command, resolved_argv)
         logger.info(
             "shell hook auto-approved via --accept-hooks / env / config: "
             "%s -> %s", event, command,
@@ -659,18 +681,22 @@ def _prompt_and_record(
         return False
 
     if answer in {"y", "yes"}:
-        _record_approval(event, command)
+        _record_approval(event, command, resolved_argv)
         return True
 
     return False
 
 
-def _record_approval(event: str, command: str) -> None:
+def _record_approval(
+    event: str, command: str, resolved_argv: Optional[List[str]] = None,
+) -> None:
+    command_identity = resolved_argv or _resolve_command_argv(command)
     entry = {
         "event": event,
         "command": command,
         "approved_at": _utc_now_iso(),
         "script_mtime_at_approval": script_mtime_iso(command),
+        "resolved_argv_at_approval": command_identity,
     }
     with _locked_update_approvals() as data:
         data["approvals"] = [
@@ -710,6 +736,48 @@ _SCRIPT_EXTENSIONS: Tuple[str, ...] = (
     ".rb", ".pl", ".lua",
     ".js", ".mjs", ".cjs", ".ts",
 )
+
+
+def _looks_like_hook_path(token: str) -> bool:
+    """Return whether ``token`` should be bound to an approval path."""
+    return (
+        token.startswith("~")
+        or os.sep in token
+        or (os.altsep is not None and os.altsep in token)
+        or token.lower().endswith(_SCRIPT_EXTENSIONS)
+    )
+
+
+def _resolve_path_token(token: str) -> str:
+    """Resolve a hook argv token without requiring the path to exist."""
+    return str(Path(os.path.expanduser(token)).resolve(strict=False))
+
+
+def _resolve_command_argv(command: str) -> List[str]:
+    """Return argv with executable/script path tokens pinned absolutely.
+
+    Approval must be tied to the code the user reviewed, not to raw text that
+    can resolve differently after Hermes is launched from another repository.
+    Bare executables are resolved through the current ``PATH``; interpreter
+    script tokens are resolved against the current working directory.
+    """
+    argv = shlex.split(os.path.expanduser(command))
+    script_token = _command_script_path(command)
+    resolved: List[str] = []
+    for index, token in enumerate(argv):
+        is_executable = index == 0
+        is_script = token == script_token and token != argv[0]
+        if is_executable or is_script:
+            if _looks_like_hook_path(token):
+                resolved.append(_resolve_path_token(token))
+            else:
+                executable = shutil.which(token)
+                if executable is None:
+                    raise FileNotFoundError(token)
+                resolved.append(executable)
+        else:
+            resolved.append(token)
+    return resolved
 
 
 def _command_script_path(command: str) -> str:

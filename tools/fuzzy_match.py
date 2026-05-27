@@ -700,4 +700,8 @@ def format_no_match_hint(error: Optional[str], match_count: int,
     hint = find_closest_lines(old_string, content)
     if not hint:
         return ""
-    return "\n\nDid you mean one of these sections?\n" + hint
+
+    from agent.redact import redact_sensitive_text
+
+    redacted_hint = redact_sensitive_text(hint, code_file=True)
+    return "\n\nDid you mean one of these sections?\n" + redacted_hint

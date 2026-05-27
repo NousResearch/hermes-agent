@@ -16,7 +16,9 @@ import logging
 import os
 import platform
 import re
+import secrets
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -943,11 +945,26 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        _tmp_cred = cred_path.with_suffix(".tmp")
-        _tmp_cred.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-        _tmp_cred.replace(cred_path)
-        # Restrict permissions (credentials file)
-        cred_path.chmod(0o600)
+        _tmp_cred = cred_path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            fd = os.open(
+                str(_tmp_cred),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(existing, indent=2))
+                fh.flush()
+                os.fsync(fh.fileno())
+            _tmp_cred.replace(cred_path)
+            # Restrict permissions (credentials file)
+            cred_path.chmod(0o600)
+        finally:
+            try:
+                if _tmp_cred.exists():
+                    _tmp_cred.unlink()
+            except OSError:
+                pass
     except (OSError, IOError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 

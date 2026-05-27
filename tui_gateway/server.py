@@ -2200,13 +2200,12 @@ def _(rid, params: dict) -> dict:
 
 @method("session.most_recent")
 def _(rid, params: dict) -> dict:
-    """Return the most recent human-facing session id, or ``None``.
+    """Return the most recent local TUI/CLI session id, or ``None``.
 
-    Mirrors ``session.list``'s deny-list behaviour (drops ``tool``
-    sub-agent rows).  Used by TUI auto-resume when
-    ``display.tui_auto_resume_recent`` is on; the field is also handy
-    for any CLI tooling that wants "latest session" without paginating
-    the full list.
+    TUI auto-resume must not cross interface trust boundaries: gateway,
+    webhook, ACP, API, and other remote/client sources can contain prompt
+    content from less-privileged contexts.  Match classic ``hermes --tui -c``
+    behavior by considering TUI sessions first, then CLI sessions.
 
     Contract: a ``{"session_id": null}`` result means "no eligible
     session found right now".  Errors are also folded into that
@@ -2217,16 +2216,14 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
-        deny = frozenset({"tool"})
-        # Over-fetch by a generous bounded amount so heavy sub-agent
-        # users (lots of recent ``tool`` rows) don't get a false
-        # "no eligible session" answer.  ``session.list`` uses a
-        # similar over-fetch strategy.
-        rows = db.list_sessions_rich(source=None, limit=200)
-        for row in rows:
-            src = (row.get("source") or "").strip().lower()
-            if src in deny:
+        # Keep automatic TUI resume scoped to local interactive sessions.
+        # This preserves the classic TUI→CLI fallback while excluding newer
+        # gateway/API/webhook/ACP rows from less-trusted interfaces.
+        for source in ("tui", "cli"):
+            rows = db.list_sessions_rich(source=source, limit=1)
+            if not rows:
                 continue
+            row = rows[0]
             return _ok(
                 rid,
                 {

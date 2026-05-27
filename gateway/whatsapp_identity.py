@@ -67,6 +67,21 @@ def normalize_whatsapp_identifier(value: str) -> str:
     )
 
 
+def _namespace_preserving_whatsapp_identifier(value: str) -> str:
+    """Return a stable fallback identity without erasing JID namespaces."""
+    raw = str(value or "").strip().replace("+", "", 1)
+    if not raw:
+        return ""
+
+    local_with_device, separator, domain = raw.partition("@")
+    local = local_with_device.split(":", 1)[0]
+    if not local:
+        return ""
+    if separator and domain:
+        return f"{local}@{domain.lower()}"
+    return local
+
+
 def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     """Resolve WhatsApp phone/LID aliases via bridge session mapping files.
 
@@ -116,6 +131,22 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
             if mapped and mapped not in resolved:
                 queue.append(mapped)
 
+        for mapping_path in session_dir.glob("lid-mapping-*.json"):
+            mapped_key = (
+                mapping_path.stem.removeprefix("lid-mapping-").removesuffix("_reverse")
+            )
+            if not mapped_key or not _SAFE_IDENTIFIER_RE.match(mapped_key):
+                continue
+            try:
+                mapped_value = normalize_whatsapp_identifier(
+                    json.loads(mapping_path.read_text(encoding="utf-8"))
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.debug("whatsapp_identity: failed to read %s: %s", mapping_path, exc)
+                continue
+            if mapped_value == current and mapped_key not in resolved:
+                queue.append(mapped_key)
+
     return resolved
 
 
@@ -141,15 +172,15 @@ def canonical_whatsapp_identifier(identifier: str) -> str:
     the bridge reshuffles aliases.
 
     Returns an empty string if ``identifier`` normalizes to empty. If no
-    mapping files exist yet (fresh bridge install), returns the
-    normalized input unchanged.
+    mapping files prove a phone-JID/LID relationship, returns a
+    namespace-preserving fallback so distinct WhatsApp namespaces cannot
+    collide in session keys.
     """
     normalized = normalize_whatsapp_identifier(identifier)
     if not normalized:
         return ""
 
-    # expand_whatsapp_aliases always includes `normalized` itself in the
-    # returned set, so the min() below degrades gracefully to `normalized`
-    # when no lid-mapping files are present.
     aliases = expand_whatsapp_aliases(normalized)
+    if len(aliases) <= 1:
+        return _namespace_preserving_whatsapp_identifier(identifier)
     return min(aliases, key=lambda candidate: (len(candidate), candidate))

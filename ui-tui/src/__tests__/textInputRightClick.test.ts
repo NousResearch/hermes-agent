@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { decideRightClickAction } from '../components/textInput.js'
+import { decideRightClickAction, selectionClipboardText } from '../components/textInput.js'
 
 describe('decideRightClickAction', () => {
   it('returns paste when there is no selection', () => {
@@ -44,5 +44,16 @@ describe('decideRightClickAction', () => {
       action: 'copy',
       text: '  spaced  '
     })
+  })
+
+  it('copies masked replacement characters instead of raw selected secrets', () => {
+    expect(decideRightClickAction('sudo-password-123', { end: 17, start: 0 }, '*')).toEqual({
+      action: 'copy',
+      text: '*****************'
+    })
+  })
+
+  it('preserves newlines while masking selected secret text', () => {
+    expect(selectionClipboardText('api\nkey', { end: 7, start: 0 }, '*')).toBe('***\n***')
   })
 })

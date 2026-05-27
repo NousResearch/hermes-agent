@@ -105,6 +105,28 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
     )
 
 
+def test_dockerfile_does_not_prepend_writable_hermes_home_to_path(dockerfile_text):
+    """Runtime volume-controlled wrapper dirs must not shadow system tools.
+
+    /opt/data is the writable HERMES_HOME volume. Keeping its local bin after
+    the base PATH preserves wrappers while preventing entrypoint commands such
+    as id, usermod, chown, gosu, and mkdir from being resolved from the volume.
+    """
+    path_lines = [
+        line.strip()
+        for line in dockerfile_text.splitlines()
+        if line.strip().startswith("ENV PATH=")
+    ]
+
+    assert path_lines, "Dockerfile must define runtime PATH explicitly"
+    final_path = path_lines[-1]
+
+    assert not final_path.startswith('ENV PATH="/opt/data/.local/bin:'), (
+        "Writable HERMES_HOME wrapper directory must not be prepended to PATH; "
+        "otherwise volume-controlled executables can shadow trusted startup tools."
+    )
+    assert final_path == 'ENV PATH="${PATH}:/opt/data/.local/bin"'
+
 def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     # The TUI workspace manifests must be present so ``npm install`` can
     # resolve dependencies. The bundled ``hermes-ink`` workspace package is

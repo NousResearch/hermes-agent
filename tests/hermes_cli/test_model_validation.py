@@ -639,6 +639,20 @@ class TestValidateApiFallback:
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
 
+    def test_custom_endpoint_rejects_unlisted_model_when_listing_reachable(self):
+        result = _validate(
+            "allowed-model-v2",
+            provider="custom",
+            api_models=["allowed-model"],
+        )
+
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert result["recognized"] is False
+        assert "not found" in result["message"].lower()
+        assert "allowed-model" in result["message"]
+
+
     def test_fetch_lmstudio_models_filters_embedding_type(self):
         mock_resp = MagicMock()
         mock_resp.__enter__.return_value = mock_resp

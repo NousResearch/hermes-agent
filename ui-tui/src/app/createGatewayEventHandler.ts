@@ -22,6 +22,10 @@ import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
+const LOCAL_AUTO_RESUME_SOURCES = new Set(['tui', 'cli'])
+
+const isLocalAutoResumeSource = (source?: string | null) =>
+  LOCAL_AUTO_RESUME_SOURCES.has((source ?? '').trim().toLowerCase())
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
@@ -237,7 +241,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
           const target = r?.session_id
 
-          if (target) {
+          if (target && isLocalAutoResumeSource(r?.source)) {
             patchUiState({ status: 'resuming most recent…' })
             resumeById(target)
             scheduleStartupPrompt()

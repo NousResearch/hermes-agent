@@ -4,6 +4,7 @@ import { Box, renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
+import { link as oscLink } from '../../packages/hermes-ink/src/ink/termio/osc.js'
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -42,6 +43,17 @@ const renderPlain = (node: React.ReactNode) => {
     .split('\n')
     .map(line => stripAnsi(line).replace(CSI_RE, '').trimEnd())
 }
+
+describe('OSC hyperlink escaping', () => {
+  it('removes terminal controls from hyperlink URLs before emitting OSC 8', () => {
+    const injected = `${BEL}${ESC}]52;c;U0VDUkVU${BEL}`
+    const rendered = oscLink(`https://safe.example/${injected}`)
+
+    expect(rendered).not.toContain(`${ESC}]52;`)
+    expect(rendered).not.toContain(`https://safe.example/${BEL}`)
+    expect(rendered).toContain('https://safe.example/]52;c;U0VDUkVU')
+  })
+})
 
 describe('INLINE_RE emphasis', () => {
   it('matches word-boundary italic/bold', () => {

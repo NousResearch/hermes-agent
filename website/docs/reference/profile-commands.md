@@ -43,11 +43,11 @@ Lists all profiles with their configured model, gateway status, alias, and distr
 ```bash
 $ hermes profile list
 
- Profile          Nickname     Model                        Gateway      Alias        Distribution
- ───────────────    ───────────    ───────────────────────────    ───────────    ───────────    ────────────────────
-  default         Antigone     gpt-5.4                      running      —            —
-◆ coder           Artemis      gpt-5.4                      running      coder        —
-  work            Athena       anthropic/claude-sonnet-4    stopped      work         —
+ Profile          Nickname         Model                        Gateway      Alias        Distribution
+ ───────────────    ───────────────    ───────────────────────────    ───────────    ───────────    ────────────────────
+  default         Antigone         gpt-5.4                      running      —            —
+◆ coder           Artemis          gpt-5.4                      running      coder        —
+  work            Athena           anthropic/claude-sonnet-4    stopped      work         —
 ```
 
 No options.

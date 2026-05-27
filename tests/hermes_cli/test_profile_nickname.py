@@ -74,6 +74,25 @@ def test_cmd_profile_list_shows_nickname_column_when_any_profile_has_one(monkeyp
     assert "Clovis" in out
 
 
+def test_cmd_profile_list_allows_15_character_nicknames(monkeypatch, capsys):
+    monkeypatch.setattr(
+        profiles_mod,
+        "list_profiles",
+        lambda: [
+            _profile("default", nickname="FifteenCharName", is_default=True),
+            _profile("coder", nickname="SixteenCharsHere"),
+        ],
+    )
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
+
+    cmd_profile(Namespace(profile_action="list"))
+
+    out = capsys.readouterr().out
+    assert "FifteenCharName" in out
+    assert "SixteenCharsHer" in out
+    assert "SixteenCharsHere" not in out
+
+
 def test_cmd_profile_show_includes_nickname_when_present(monkeypatch, tmp_path, capsys):
     profile_dir = tmp_path / "profiles" / "coder"
     profile_dir.mkdir(parents=True)

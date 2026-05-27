@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import contextvars
 import inspect
 import ipaddress
 import logging
@@ -23,6 +24,17 @@ from urllib.parse import urlsplit
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+
+# Task-local marker: True only while delivering a genuine agent reply through
+# ``_send_with_retry`` (the single funnel both the background and synchronous
+# message paths use for the model's text response, including slash-command
+# replies the user explicitly requested).  Adapters can consult this to drop
+# gateway-internal "bubble" sends (status/lifecycle/cron/notice messages that
+# call ``send()`` directly) on platforms where the user disabled them — see
+# WhatsAppAdapter.send().  Task-local so concurrent sessions never cross-talk.
+_delivering_agent_reply: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "hermes_delivering_agent_reply", default=False
+)
 
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
@@ -2773,6 +2785,34 @@ class BasePlatformAdapter(ABC):
         return response, 0
 
     async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> "SendResult":
+        """Deliver a genuine agent reply, marking it for adapters.
+
+        Sets ``_delivering_agent_reply`` for the duration so platform adapters
+        can distinguish the model's actual reply from gateway-internal bubble
+        sends.  The real retry/fallback logic lives in ``_send_with_retry_impl``.
+        """
+        _reply_token = _delivering_agent_reply.set(True)
+        try:
+            return await self._send_with_retry_impl(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                max_retries=max_retries,
+                base_delay=base_delay,
+            )
+        finally:
+            _delivering_agent_reply.reset(_reply_token)
+
+    async def _send_with_retry_impl(
         self,
         chat_id: str,
         content: str,

@@ -1391,7 +1391,7 @@ def run_conversation(
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
                             return {
-                                "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
+                                "final_response": None if agent._suppress_platform_notifications() else f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
@@ -1811,7 +1811,7 @@ def run_conversation(
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 agent._persist_session(messages, conversation_history)
                 interrupted = True
-                final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
+                final_response = "" if agent._suppress_platform_notifications() else f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
                 break
 
             except Exception as api_error:
@@ -2448,7 +2448,7 @@ def run_conversation(
                     agent._persist_session(messages, conversation_history)
                     agent.clear_interrupt()
                     return {
-                        "final_response": f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
+                        "final_response": None if agent._suppress_platform_notifications() else f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
@@ -3116,7 +3116,7 @@ def run_conversation(
                         agent._persist_session(messages, conversation_history)
                         agent.clear_interrupt()
                         return {
-                            "final_response": f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
+                            "final_response": None if agent._suppress_platform_notifications() else f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,

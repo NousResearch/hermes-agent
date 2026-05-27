@@ -886,6 +886,45 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
 
+        # Notification suppression (single outbound chokepoint).  Genuine agent
+        # replies are delivered through base._send_with_retry, which sets
+        # _delivering_agent_reply for the call.  Every gateway-originated notice
+        # (status, lifecycle, cron, STT/home-channel/footer prompts, "still
+        # working", shutdown, session-reset, etc.) calls send() directly WITHOUT
+        # that marker.  When whatsapp.suppress_notifications is true, drop any
+        # send that is not a genuine reply.  This catches new notice types
+        # automatically without per-call-site patching.
+        try:
+            from gateway.platforms.base import _delivering_agent_reply
+            if not _delivering_agent_reply.get():
+                from hermes_cli.config import read_raw_config
+                _raw = read_raw_config()
+                # Dedicated first-class flag: whatsapp.suppress_notifications.
+                # Read from the raw config dict (always reflects config.yaml);
+                # fall back to the typed PlatformConfig field if present.
+                _wa = _raw.get("whatsapp") or {}
+                _suppress = bool(_wa.get(
+                    "suppress_notifications",
+                    getattr(self.config, "suppress_notifications", False),
+                ))
+                if not _suppress:
+                    # Legacy fallback: display.platforms.whatsapp.interim_assistant_messages: false
+                    from gateway.display_config import resolve_display_setting
+                    from gateway.config import is_truthy_value
+                    _interim = resolve_display_setting(
+                        _raw, "whatsapp", "interim_assistant_messages"
+                    )
+                    _suppress = not is_truthy_value(_interim, default=True)
+                if _suppress:
+                    logger.debug(
+                        "[Whatsapp] Suppressed non-reply notice "
+                        "(whatsapp.suppress_notifications): %.80s",
+                        content.replace("\n", " "),
+                    )
+                    return SendResult(success=True, message_id=None)
+        except Exception:
+            pass
+
         try:
             import aiohttp
 

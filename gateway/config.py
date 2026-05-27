@@ -298,6 +298,15 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # When True, the gateway delivers ONLY genuine agent replies on this
+    # platform and drops every gateway-originated "notice" (status, lifecycle,
+    # cron headers, STT/home-channel/footer prompts, "still working", shutdown,
+    # session-reset, etc.).  Intended for platforms shared with human contacts
+    # (e.g. WhatsApp) where internal bubbles are reputationally bad.  Enforced
+    # at the adapter send() chokepoint via the _delivering_agent_reply marker
+    # set by BasePlatformAdapter._send_with_retry.  Default False = unchanged.
+    suppress_notifications: bool = False
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -307,6 +316,7 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "suppress_notifications": self.suppress_notifications,
         }
         if self.token:
             result["token"] = self.token
@@ -337,6 +347,9 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            suppress_notifications=_coerce_bool(
+                data.get("suppress_notifications"), False
+            ),
             extra=data.get("extra", {}),
         )
 

@@ -290,11 +290,18 @@ async def test_notifier_does_not_call_init_db(kanban_home):
 
 
 def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
-    """`_tick_once_for_board` must not invoke `_kb.init_db` (issue #21378).
+    """`_tick_once_for_board` must not invoke `_kb.init_db` on the happy
+    path (issue #21378).
 
     `connect()` already runs the schema + idempotent migration on first open
-    per process. The explicit `init_db()` call was redundant and triggered a
-    second migration on a second connection that raced the first.
+    per process. An unconditional `init_db()` call was redundant and
+    triggered a second migration on a second connection that raced the
+    first.
+
+    A single guarded call inside the schema-drift recovery branch added
+    by the resilience patch is permitted: it runs at most once per slug
+    per gateway lifetime, gated by the `schema_repair_attempted` set, so
+    it cannot reintroduce the per-tick race.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
@@ -314,11 +321,31 @@ def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
     # specific patterns that would reintroduce the bug are absent.
     import inspect
     src = inspect.getsource(GatewayRunner._kanban_dispatcher_watcher)
-    assert "_kb.init_db(board=slug)" not in src, (
-        "_kanban_dispatcher_watcher must not call _kb.init_db(board=slug) — "
-        "see issue #21378. Use connect() alone; it runs migrations on first "
-        "open per process."
-    )
+
+    # Any init_db call in the dispatcher source must be guarded by the
+    # schema-drift recovery branch. The branch is identified by the
+    # ``schema_repair_attempted`` set being populated before the call.
+    init_db_lines = [
+        (i, ln) for i, ln in enumerate(src.splitlines())
+        if "_kb.init_db(board=slug)" in ln
+    ]
+    if init_db_lines:
+        assert "schema_repair_attempted.add(slug)" in src, (
+            "_kanban_dispatcher_watcher calls _kb.init_db(board=slug) but "
+            "the schema-drift recovery marker "
+            "(`schema_repair_attempted.add(slug)`) is missing — that "
+            "marker is the contract that the call is gated to at most "
+            "once per slug per gateway lifetime. Without it the call "
+            "would reintroduce issue #21378."
+        )
+        # And there must be at most one such call site.
+        assert len(init_db_lines) == 1, (
+            f"_kanban_dispatcher_watcher has {len(init_db_lines)} "
+            "_kb.init_db(board=slug) call sites; only one is allowed "
+            "(schema-drift recovery branch). Additional call sites "
+            "would reintroduce issue #21378. Found at lines: "
+            f"{[i for i, _ in init_db_lines]}"
+        )
 
     notifier_src = inspect.getsource(GatewayRunner._kanban_notifier_watcher)
     assert "_kb.init_db(board=slug)" not in notifier_src, (

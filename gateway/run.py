@@ -5425,6 +5425,32 @@ class GatewayRunner:
         bad_ticks = 0
         last_warn_at = 0
         disabled_corrupt_boards: dict[str, tuple[str, int | None, int | None]] = {}
+        # Schema-drift parallel to disabled_corrupt_boards. Populated when a
+        # board reports "no such column" / "no such table" after one
+        # automatic repair attempt has already failed. Fingerprint-keyed so
+        # an mtime change re-enables the board, same as the corrupt path.
+        # Background: issue #28464 (legacy ``session_id`` migration trap,
+        # fixed in #28781) caused the dispatcher to log multi-line
+        # tracebacks per board per tick for hours when an in-place upgrade
+        # outran the gateway's per-process schema cache. The schema fix
+        # closed that specific bug; this branch is the general guard so the
+        # next additive-column bug of the same shape self-heals instead of
+        # bloating journald and the gateway RSS.
+        disabled_schema_boards: dict[str, tuple[str, int | None, int | None]] = {}
+        schema_repair_attempted: set[str] = set()
+
+        # Per-(board, error-class) throttle for ``logger.exception`` on the
+        # tick path. Before this, a board with a persistent SQL error
+        # logged a full traceback every tick — the speedway incident saw
+        # 20+ tracebacks per second per gateway from the dispatcher +
+        # notifier watchers, saturating journald and pushing the gateway
+        # to 3.5 GB RSS over 12h. The throttle keeps at most one traceback
+        # per (slug, exc_class) per ``_TICK_EXC_LOG_WINDOW_SECONDS`` and
+        # surfaces suppressed counts in the next permitted line so
+        # operators still see steady failures.
+        _TICK_EXC_LOG_WINDOW_SECONDS = 60.0
+        _tick_exc_last_at: dict[tuple[str, str], float] = {}
+        _tick_exc_suppressed: dict[tuple[str, str], int] = {}
 
         def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
             path = _kb.kanban_db_path(slug)
@@ -5447,6 +5473,51 @@ class GatewayRunner:
                 or "database disk image is malformed" in msg
             )
 
+        def _is_schema_drift_error(exc: Exception) -> Optional[str]:
+            """If ``exc`` is a SQLite "no such column"/"no such table"
+            error, return the missing identifier; else ``None``.
+
+            Matches the failure mode where a long-running gateway opened a
+            board's DB and cached its initialized-paths entry, and then an
+            in-place upgrade of ``hermes_cli/kanban_db.py`` added a new
+            column or table the running code now references. The cached
+            entry skips the additive migration on subsequent connects, so
+            queries reference a column the DB doesn't have.
+
+            See issue #28464 (specific session_id case, fixed in #28781).
+            """
+            if not isinstance(exc, sqlite3.OperationalError):
+                return None
+            msg = str(exc)
+            m = re.match(r"no such (?:column|table): (\S+)", msg)
+            return m.group(1) if m else None
+
+        def _log_tick_exception(slug: str, exc_class: str) -> None:
+            """Emit ``logger.exception`` for the current tick failure,
+            rate-limited to one line per ``(slug, exc_class)`` per
+            ``_TICK_EXC_LOG_WINDOW_SECONDS``. Suppressed counts are
+            surfaced in the next permitted line so persistent failures
+            stay visible without saturating journald.
+            """
+            now = time.monotonic()
+            key = (slug, exc_class)
+            last_at = _tick_exc_last_at.get(key, 0.0)
+            if now - last_at < _TICK_EXC_LOG_WINDOW_SECONDS:
+                _tick_exc_suppressed[key] = _tick_exc_suppressed.get(key, 0) + 1
+                return
+            suppressed = _tick_exc_suppressed.pop(key, 0)
+            _tick_exc_last_at[key] = now
+            if suppressed:
+                logger.exception(
+                    "kanban dispatcher: tick failed on board %s "
+                    "(%d similar errors suppressed in the last %.0fs)",
+                    slug, suppressed, _TICK_EXC_LOG_WINDOW_SECONDS,
+                )
+            else:
+                logger.exception(
+                    "kanban dispatcher: tick failed on board %s", slug,
+                )
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -5458,7 +5529,10 @@ class GatewayRunner:
             """
             conn = None
             fingerprint = _board_db_fingerprint(slug)
-            disabled_fingerprint = disabled_corrupt_boards.get(slug)
+            disabled_fingerprint = (
+                disabled_corrupt_boards.get(slug)
+                or disabled_schema_boards.get(slug)
+            )
             if disabled_fingerprint == fingerprint:
                 return None
             if disabled_fingerprint is not None:
@@ -5467,6 +5541,8 @@ class GatewayRunner:
                     slug,
                 )
                 disabled_corrupt_boards.pop(slug, None)
+                disabled_schema_boards.pop(slug, None)
+                schema_repair_attempted.discard(slug)
             try:
                 conn = _kb.connect(board=slug)
                 # `connect()` runs the schema + idempotent migration on
@@ -5496,10 +5572,71 @@ class GatewayRunner:
                         fingerprint[0],
                     )
                     return None
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
+                missing = _is_schema_drift_error(exc)
+                if missing is not None and slug not in schema_repair_attempted:
+                    schema_repair_attempted.add(slug)
+                    logger.warning(
+                        "kanban dispatcher: board %s reports missing %s — "
+                        "re-running additive-column migration and retrying "
+                        "once. Usually means the on-disk hermes-agent code "
+                        "was updated under a long-running gateway whose "
+                        "per-process schema cache is now stale.",
+                        slug, missing,
+                    )
+                    # schema-drift recovery: bust the per-process
+                    # ``_INITIALIZED_PATHS`` cache and re-run the additive
+                    # migration. ``init_db()`` is the right primitive — it
+                    # does exactly that. The regression test for issue
+                    # #21378
+                    # (``test_dispatcher_tick_does_not_call_init_db``)
+                    # forbids ``init_db`` from being called on every tick;
+                    # this call is gated behind the schema-drift exception
+                    # branch and the ``schema_repair_attempted`` set, so
+                    # it runs at most once per slug per gateway lifetime.
+                    try:
+                        _kb.init_db(board=slug)
+                    except Exception:
+                        logger.exception(
+                            "kanban dispatcher: schema repair init_db "
+                            "failed on board %s; disabling until file "
+                            "changes or gateway restarts",
+                            slug,
+                        )
+                        disabled_schema_boards[slug] = fingerprint
+                        return None
+                    retry_conn = None
+                    try:
+                        retry_conn = _kb.connect(board=slug)
+                        return _kb.dispatch_once(
+                            retry_conn,
+                            board=slug,
+                            max_spawn=max_spawn,
+                            max_in_progress=max_in_progress,
+                            failure_limit=failure_limit,
+                            stale_timeout_seconds=stale_timeout_seconds,
+                        )
+                    except Exception as retry_exc:
+                        logger.error(
+                            "kanban dispatcher: board %s still failing "
+                            "after schema repair (%s); disabling until "
+                            "file changes or gateway restarts. If `%s` is "
+                            "a new column added by an in-place update, "
+                            "ensure ``_migrate_add_optional_columns`` in "
+                            "``hermes_cli/kanban_db.py`` adds it.",
+                            slug, retry_exc, missing,
+                        )
+                        disabled_schema_boards[slug] = fingerprint
+                        return None
+                    finally:
+                        if retry_conn is not None:
+                            try:
+                                retry_conn.close()
+                            except Exception:
+                                pass
+                _log_tick_exception(slug, type(exc).__name__)
                 return None
-            except Exception:
-                logger.exception("kanban dispatcher: tick failed on board %s", slug)
+            except Exception as exc:
+                _log_tick_exception(slug, type(exc).__name__)
                 return None
             finally:
                 if conn is not None:

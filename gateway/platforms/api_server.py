@@ -15,6 +15,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
+- GET  /api/ws                     — WebSocket endpoint for remote TUI attach (gateway.ready + JSON-RPC dispatch)
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -44,6 +45,17 @@ try:
 except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+
+try:
+    from tui_gateway import server as tui_server
+    from tui_gateway.transport import Transport, bind_transport, reset_transport
+    TUI_GATEWAY_AVAILABLE = True
+except ImportError:
+    tui_server = None
+    Transport = object  # type: ignore[misc]
+    bind_transport = None
+    reset_transport = None
+    TUI_GATEWAY_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -3438,6 +3450,144 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"run_id": run_id, "status": "stopping"})
 
+    async def _handle_tui_ws(self, request: "web.Request") -> "web.WebSocketResponse":
+        """GET /api/ws — WebSocket endpoint for remote TUI attach.
+
+        Bridges aiohttp WebSocket with the tui_gateway JSON-RPC dispatch
+        loop so the TUI frontend (``HERMES_TUI_GATEWAY_URL``) can attach
+        to a running gateway via WebSocket.
+
+        Authentication uses the same ``API_SERVER_KEY`` as REST endpoints,
+        passed via the ``?token=`` query parameter (WebSocket handshake
+        cannot carry Authorization headers in browser contexts).
+        """
+        # --- Auth: query-param token (before WS upgrade) ---
+        if self._api_key:
+            token = request.query.get("token", "")
+            if not token or not hmac.compare_digest(token, self._api_key):
+                logger.warning(
+                    "[api_server] WS auth rejected from %s",
+                    self._request_audit_log_suffix(request),
+                )
+                return web.Response(status=403, text="Invalid API key")
+
+        # --- Defense-in-depth: refuse network-accessible without key ---
+        if not self._api_key and is_network_accessible(self._host):
+            return web.Response(status=403, text="API key required for network access")
+
+        # --- WebSocket setup with resource limits ---
+        ws = web.WebSocketResponse(
+            heartbeat=30.0,
+            autoping=True,
+            max_msg_size=2 * 1024 * 1024,
+        )
+        await ws.prepare(request)
+
+        # --- Transport adapter bridging aiohttp → tui_gateway.Transport ---
+        class _AiohttpWsTransport:
+            """Adapts aiohttp WebSocketResponse to the Transport protocol."""
+
+            def __init__(
+                self,
+                wsr: "web.WebSocketResponse",
+                loop: asyncio.AbstractEventLoop,
+            ) -> None:
+                self._wsr = wsr
+                self._loop = loop
+                self._closed = False
+
+            def write(self, obj: dict) -> bool:
+                if self._closed:
+                    return False
+                try:
+                    from agent.async_utils import safe_schedule_threadsafe
+
+                    fut = safe_schedule_threadsafe(self._do_send(obj), self._loop)
+                    if fut is None:
+                        self._closed = True
+                        return False
+                    fut.result(timeout=10.0)
+                    return not self._closed
+                except Exception:
+                    self._closed = True
+                    return False
+
+            async def _do_send(self, obj: dict) -> None:
+                try:
+                    await self._wsr.send_str(json.dumps(obj, ensure_ascii=False))
+                except Exception:
+                    self._closed = True
+
+            async def write_async(self, obj: dict) -> bool:
+                """Public async send — safe from the event loop thread."""
+                if self._closed:
+                    return False
+                await self._do_send(obj)
+                return not self._closed
+
+            def close(self) -> None:
+                self._closed = True
+
+        transport = _AiohttpWsTransport(ws, asyncio.get_running_loop())
+        bind_token = bind_transport(transport) if bind_transport is not None else None
+
+        try:
+            # gateway.ready handshake — TUI expects this before any RPC
+            skin = tui_server.resolve_skin() if tui_server else None
+            await transport.write_async(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "event",
+                    "params": {
+                        "type": "gateway.ready",
+                        "payload": {"skin": skin},
+                    },
+                }
+            )
+
+            # JSON-RPC dispatch loop (mirrors tui_gateway.ws.handle_ws logic)
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    line = msg.data.strip()
+                    if not line:
+                        continue
+                    try:
+                        req = json.loads(line)
+                    except json.JSONDecodeError:
+                        await transport.write_async(
+                            {
+                                "jsonrpc": "2.0",
+                                "error": {"code": -32700, "message": "parse error"},
+                                "id": None,
+                            }
+                        )
+                        continue
+
+                    resp = await asyncio.to_thread(
+                        tui_server.dispatch,
+                        req,
+                        transport,
+                    )
+                    if resp is not None:
+                        await transport.write_async(resp)
+
+                elif msg.type == web.WSMsgType.ERROR:
+                    logger.warning("[api_server] WS error: %s", ws.exception())
+                    break
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            transport.close()
+            if reset_transport is not None and bind_token is not None:
+                reset_transport(bind_token)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+        return ws
+
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically clean up run streams that were never consumed."""
         while True:
@@ -3511,6 +3661,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # TUI gateway WebSocket — remote TUI attach
+            if TUI_GATEWAY_AVAILABLE:
+                self._app.router.add_get("/api/ws", self._handle_tui_ws)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

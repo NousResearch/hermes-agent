@@ -50,6 +50,7 @@ AUTHOR_MAP = {
     "276689385+carltonawong@users.noreply.github.com": "carltonawong",
     "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",
     "270604154+superearn-fisher@users.noreply.github.com": "superearn-fisher",
+    "3540493+kpadilha@users.noreply.github.com": "kpadilha",
     "wangpuv@hotmail.com": "wangpuv",
     "202622897+ticketclosed-wontfix@users.noreply.github.com": "ticketclosed-wontfix",
     "wuxuebin1993@gmail.com": "victorGPT",

@@ -1076,7 +1076,12 @@ def run_conversation(
         # Models served via Ollama (Kimi K2.5, GLM-5, Qwen) can return
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
-        _sanitize_messages_surrogates(api_messages)
+        # Only needed for Ollama-served models — cloud APIs don't produce
+        # surrogates, so skip the O(n*m) scan for non-Ollama providers.
+        _p = (getattr(agent, "provider", None) or "").lower()
+        _bu = (getattr(agent, "base_url", None) or "").lower()
+        if "ollama" in _p or "ollama" in _bu or ":11434" in _bu:
+            _sanitize_messages_surrogates(api_messages)
 
         # Calculate approximate request size for logging
         # total_chars is expensive (serializes every msg to str) — only

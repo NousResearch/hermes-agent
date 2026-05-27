@@ -2476,6 +2476,34 @@ class TestVisionAutoSkipsKimiCoding:
 
 
 class TestCodexAuxiliaryAdapterTimeout:
+    def test_recovers_when_sdk_parser_crashes_after_text_delta(self):
+        class ParserCrashStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="summary")
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - iterator raises first
+                raise AssertionError("get_final_response should not be reached")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return ParserCrashStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+        )
+
+        assert response.choices[0].message.content == "summary"
+
     def test_forwards_timeout_to_responses_stream(self):
         class FakeStream:
             def __enter__(self):

@@ -869,6 +869,41 @@ class _CodexCompletionsAdapter:
                     completion_tokens=getattr(resp_usage, "output_tokens", 0),
                     total_tokens=getattr(resp_usage, "total_tokens", 0),
                 )
+        except TypeError as exc:
+            err_text = str(exc)
+            if "NoneType" not in err_text or "iterable" not in err_text:
+                raise
+            if collected_text_deltas and not has_function_calls:
+                text_parts.append("".join(collected_text_deltas))
+                logger.debug(
+                    "Codex auxiliary stream parser failed after text deltas; "
+                    "synthesized %d chars",
+                    sum(len(part) for part in collected_text_deltas),
+                )
+            elif collected_output_items:
+                for item in collected_output_items:
+                    item_type = getattr(item, "type", None)
+                    if item_type == "message":
+                        for part in (getattr(item, "content", None) or []):
+                            ptype = getattr(part, "type", None)
+                            if ptype in {"output_text", "text"}:
+                                text_parts.append(getattr(part, "text", "") or "")
+                    elif item_type == "function_call":
+                        tool_calls_raw.append(SimpleNamespace(
+                            id=getattr(item, "call_id", "") or "",
+                            type="function",
+                            function=SimpleNamespace(
+                                name=getattr(item, "name", "") or "",
+                                arguments=getattr(item, "arguments", "{}") or "{}",
+                            ),
+                        ))
+                logger.debug(
+                    "Codex auxiliary stream parser failed after output items; "
+                    "synthesized from %d items",
+                    len(collected_output_items),
+                )
+            else:
+                raise
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc

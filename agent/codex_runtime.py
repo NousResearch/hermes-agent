@@ -246,7 +246,45 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
+                try:
+                    final_response = stream.get_final_response()
+                except TypeError as exc:
+                    err_text = str(exc)
+                    if "NoneType" not in err_text or "iterable" not in err_text:
+                        raise
+                    if collected_output_items:
+                        logger.debug(
+                            "Codex stream finalizer failed after output items; "
+                            "synthesizing final response from %d collected items",
+                            len(collected_output_items),
+                        )
+                        final_response = SimpleNamespace(
+                            output=list(collected_output_items),
+                            status="completed",
+                            model=api_kwargs.get("model"),
+                            usage=None,
+                        )
+                    elif agent._codex_streamed_text_parts and not has_tool_calls:
+                        assembled = "".join(agent._codex_streamed_text_parts)
+                        logger.debug(
+                            "Codex stream finalizer failed after text deltas; "
+                            "synthesizing final response from %d chars",
+                            len(assembled),
+                        )
+                        final_response = SimpleNamespace(
+                            output=[SimpleNamespace(
+                                type="message",
+                                role="assistant",
+                                status="completed",
+                                content=[SimpleNamespace(type="output_text", text=assembled)],
+                            )],
+                            output_text=assembled,
+                            status="completed",
+                            model=api_kwargs.get("model"),
+                            usage=None,
+                        )
+                    else:
+                        raise
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
@@ -271,6 +309,42 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            err_text = str(exc)
+            if "NoneType" not in err_text or "iterable" not in err_text:
+                raise
+            if collected_output_items:
+                logger.debug(
+                    "Codex stream parser failed after output items; "
+                    "synthesizing final response from %d collected items",
+                    len(collected_output_items),
+                )
+                return SimpleNamespace(
+                    output=list(collected_output_items),
+                    status="completed",
+                    model=api_kwargs.get("model"),
+                    usage=None,
+                )
+            if agent._codex_streamed_text_parts and not has_tool_calls:
+                assembled = "".join(agent._codex_streamed_text_parts)
+                logger.debug(
+                    "Codex stream parser failed after text deltas; "
+                    "synthesizing final response from %d chars",
+                    len(assembled),
+                )
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )],
+                    output_text=assembled,
+                    status="completed",
+                    model=api_kwargs.get("model"),
+                    usage=None,
+                )
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(

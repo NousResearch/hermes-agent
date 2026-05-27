@@ -15,6 +15,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
+- GET  /api/ws                     — WebSocket endpoint for remote TUI attach (gateway.ready + JSON-RPC dispatch)
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -43,6 +44,17 @@ try:
 except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+
+try:
+    from tui_gateway import server as tui_server
+    from tui_gateway.transport import Transport, bind_transport, reset_transport
+    TUI_GATEWAY_AVAILABLE = True
+except ImportError:
+    tui_server = None
+    Transport = object
+    bind_transport = None
+    reset_transport = None
+    TUI_GATEWAY_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -3383,6 +3395,101 @@ class APIServerAdapter(BasePlatformAdapter):
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
 
+    async def _handle_tui_ws(self, request: "web.Request") -> "web.WebSocketResponse":
+        """WebSocket endpoint for remote TUI attach (GET /api/ws).
+
+        Bridges aiohttp WebSocket with the tui_gateway JSON-RPC dispatch
+        loop so the TUI frontend (``HERMES_TUI_GATEWAY_URL``) can attach
+        to a running gateway via WebSocket.
+        """
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
+        log = logging.getLogger(__name__)
+
+        class _AiohttpWsTransport:
+            """Adapts aiohttp WebSocketResponse to the Transport protocol
+            used by ``tui_gateway.server.dispatch``."""
+
+            def __init__(self, wsr: "web.WebSocketResponse", loop: asyncio.AbstractEventLoop):
+                self._wsr = wsr
+                self._loop = loop
+                self._closed = False
+
+            def write(self, obj: dict) -> bool:
+                if self._closed:
+                    return False
+                try:
+                    from agent.async_utils import safe_schedule_threadsafe
+                    fut = safe_schedule_threadsafe(self._do_send(obj), self._loop)
+                    if fut is None:
+                        self._closed = True
+                        return False
+                    fut.result(timeout=10.0)
+                    return not self._closed
+                except Exception:
+                    self._closed = True
+                    return False
+
+            async def _do_send(self, obj: dict) -> None:
+                try:
+                    await self._wsr.send_str(json.dumps(obj, ensure_ascii=False))
+                except Exception:
+                    self._closed = True
+
+            def close(self) -> None:
+                self._closed = True
+
+        transport = _AiohttpWsTransport(ws, asyncio.get_running_loop())
+        bind_token = bind_transport(transport) if bind_transport is not None else None
+
+        try:
+            # Send gateway.ready — TUI expects this before any RPC
+            skin = tui_server.resolve_skin() if tui_server else None
+            await transport._do_send(
+                {"jsonrpc": "2.0", "method": "event",
+                 "params": {"type": "gateway.ready",
+                            "payload": {"skin": skin}}}
+            )
+
+            # JSON-RPC dispatch loop
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    line = msg.data.strip()
+                    if not line:
+                        continue
+                    try:
+                        req = json.loads(line)
+                    except json.JSONDecodeError:
+                        await ws.send_str(json.dumps(
+                            {"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}, "id": None},
+                            ensure_ascii=False,
+                        ))
+                        continue
+
+                    resp = await asyncio.to_thread(
+                        tui_server.dispatch, req, transport,
+                    )
+                    if resp is not None:
+                        await ws.send_str(json.dumps(resp, ensure_ascii=False))
+
+                elif msg.type == web.WSMsgType.ERROR:
+                    log.warning("ws error: %s", ws.exception())
+                    break
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            transport.close()
+            if reset_transport is not None and bind_token is not None:
+                reset_transport(bind_token)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+        return ws
+
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
@@ -3406,6 +3513,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # TUI gateway WebSocket — remote TUI attach
+            self._app.router.add_get("/api/ws", self._handle_tui_ws)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

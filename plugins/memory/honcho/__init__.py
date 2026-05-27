@@ -321,10 +321,8 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho cost-awareness config parse error: %s", e)
 
-            # ----- Port #1969: aiPeer sync from SOUL.md — REMOVED -----
-            # SOUL.md is persona content, not identity config. aiPeer should
-            # only come from honcho.json (host block or root) or the default.
-            # See scratch/memory-plugin-ux-specs.md #10 for rationale.
+            # aiPeer comes from honcho.json (host block or root) only.
+            # SOUL.md is persona content, not identity config.
 
             # ----- Port #1957: lazy session init for tools-only mode -----
             if self._recall_mode == "tools":
@@ -360,6 +358,7 @@ class HonchoMemoryProvider(MemoryProvider):
             config=cfg,
             context_tokens=cfg.context_tokens,
             runtime_user_peer_name=kwargs.get("user_id") or None,
+            runtime_user_peer_name_alt=kwargs.get("user_id_alt") or None,
         )
 
         # ----- B3: resolve_session_name -----

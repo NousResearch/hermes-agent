@@ -93,15 +93,15 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'browse and resume previous sessions',
+    aliases: ['switch'],
+    help: 'switch between live TUI sessions',
     name: 'sessions',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
-        return
+      if (arg.trim().toLowerCase() === 'new') {
+        return ctx.session.newLiveSession()
       }
-      if (!arg.trim()) {
-        return patchOverlayState({ picker: true })
-      }
+
+      patchOverlayState({ sessions: true })
     }
   },
 

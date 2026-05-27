@@ -385,7 +385,7 @@ def to_agent_visible_cache_path(
     translation (only Docker for now).
     """
     # Only Docker backend requires translation at this time.  Other backends
-    # (Modal, Daytona, Vercel) use different mount semantics and will be
+    # (Modal, Daytona) use different mount semantics and will be
     # addressed separately if needed.  Backend is identified by TERMINAL_ENV
     # (same env var tools/terminal_tool.py reads in _get_environment_config).
     if os.environ.get("TERMINAL_ENV", "local") != "docker":

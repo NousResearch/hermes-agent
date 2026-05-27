@@ -36,7 +36,7 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import Any
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
@@ -96,6 +96,39 @@ def set_current_session_id(session_id: str) -> None:
 
     os.environ["HERMES_SESSION_ID"] = session_id
     _SESSION_ID.set(session_id)
+
+
+def set_current_turn_session_key(session_key: str) -> Token:
+    """Bind the per-turn session-identity ContextVar to ``session_key``.
+
+    Returns the :class:`contextvars.Token`; callers MUST pass it to
+    :func:`reset_current_turn_session_key` in a ``finally`` clause.
+
+    Public wrapper for the per-turn session-identity binding used by
+    server-initiated agent turns (e.g. completion-time wakeups) so
+    callers do not need to import ``_SESSION_KEY`` directly.
+
+    Mirror of the pattern at ``tools/approval.py`` for the
+    approval-session ContextVar; intentionally NAMED DISTINCTLY
+    (``turn_session`` vs ``session``) because the two ContextVars
+    carry different concerns:
+
+    * approval-session: identifies the human/policy session that
+      approves tool calls (``tools/approval.py:_approval_session_key``).
+    * per-turn session: identifies the agent turn / chat session for
+      downstream model-resolve, stream routing, and persistence
+      (this module's ``_SESSION_KEY``).
+    """
+    return _SESSION_KEY.set(session_key or "")
+
+
+def reset_current_turn_session_key(token: Token) -> None:
+    """Reset the per-turn session-identity ContextVar.
+
+    Pair with :func:`set_current_turn_session_key` in a ``finally``
+    clause.
+    """
+    _SESSION_KEY.reset(token)
 
 
 def set_session_vars(

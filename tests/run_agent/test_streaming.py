@@ -4,6 +4,7 @@ Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
 import json
+import os
 import threading
 import uuid
 from types import SimpleNamespace
@@ -53,6 +54,27 @@ def _make_tool_call_delta(index=0, tc_id=None, name=None, arguments=None, extra_
 def _make_empty_chunk(model=None, usage=None):
     """Build a chunk with no choices (usage-only final chunk)."""
     return SimpleNamespace(choices=[], model=model, usage=usage)
+
+
+class _BlockingStream:
+    """Streaming iterator that blocks until interrupted or explicitly released."""
+
+    def __init__(self, agent, release_event=None, release_exc_factory=None):
+        self._agent = agent
+        self._release_event = release_event or threading.Event()
+        self._release_exc_factory = release_exc_factory or (
+            lambda: InterruptedError("stream released")
+        )
+        self.response = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        while not self._release_event.wait(0.01):
+            if self._agent._interrupt_requested:
+                raise InterruptedError("stream interrupted")
+        raise self._release_exc_factory()
 
 
 # ── Test: Streaming Accumulator ──────────────────────────────────────────
@@ -669,6 +691,131 @@ class TestStreamingFallback:
 
 
 # ── Test: Reasoning Streaming ────────────────────────────────────────────
+
+
+class TestStreamingMonotonicClocks:
+    """Verify stale-stream logic uses monotonic elapsed time."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stale_stream_detection_uses_monotonic_when_wall_clock_moves_backward(
+        self, mock_close, mock_create
+    ):
+        """Backward wall-clock jumps must not suppress stale-stream recovery."""
+        from run_agent import AIAgent
+        import httpx
+        import agent.chat_completion_helpers as helpers
+
+        monotonic_values = iter([0.0, 0.2])
+        monotonic_counter = {"value": 0.2}
+        wall_clock_counter = {"value": 1000.0}
+
+        def _fake_monotonic():
+            try:
+                return next(monotonic_values)
+            except StopIteration:
+                monotonic_counter["value"] += 0.2
+                return monotonic_counter["value"]
+
+        def _fake_time():
+            wall_clock_counter["value"] -= 100.0
+            return wall_clock_counter["value"]
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        release_event = threading.Event()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _BlockingStream(
+            agent,
+            release_event=release_event,
+            release_exc_factory=lambda: httpx.ConnectError("released after stale close"),
+        )
+        mock_create.return_value = mock_client
+
+        def _close_side_effect(_client, reason=None):
+            if reason == "stale_stream_kill":
+                release_event.set()
+
+        mock_close.side_effect = _close_side_effect
+
+        with (
+            patch.dict(
+                os.environ,
+                {"HERMES_STREAM_STALE_TIMEOUT": "0.35", "HERMES_STREAM_RETRIES": "0"},
+                clear=False,
+            ),
+            patch.object(helpers.time, "monotonic", side_effect=_fake_monotonic),
+            patch.object(helpers.time, "time", side_effect=_fake_time),
+        ):
+            with pytest.raises(httpx.ConnectError, match="released after stale close"):
+                agent._interruptible_streaming_api_call({})
+
+        close_reasons = [call.kwargs.get("reason") for call in mock_close.call_args_list]
+        assert "stale_stream_kill" in close_reasons
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stale_stream_detection_ignores_forward_wall_clock_jumps(
+        self, mock_close, mock_create
+    ):
+        """Forward wall-clock jumps must not trigger false stale-stream reconnects."""
+        from run_agent import AIAgent
+        import agent.chat_completion_helpers as helpers
+
+        monotonic_counter = {"value": 0.0}
+        wall_clock_counter = {"value": 1000.0}
+
+        def _fake_monotonic():
+            monotonic_counter["value"] += 0.05
+            return monotonic_counter["value"]
+
+        def _fake_time():
+            wall_clock_counter["value"] += 1000.0
+            return wall_clock_counter["value"]
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _BlockingStream(agent)
+        mock_create.return_value = mock_client
+
+        interrupter = threading.Timer(0.35, lambda: setattr(agent, "_interrupt_requested", True))
+        interrupter.start()
+        try:
+            with (
+                patch.dict(
+                    os.environ,
+                    {"HERMES_STREAM_STALE_TIMEOUT": "0.35", "HERMES_STREAM_RETRIES": "0"},
+                    clear=False,
+                ),
+                patch.object(helpers.time, "monotonic", side_effect=_fake_monotonic),
+                patch.object(helpers.time, "time", side_effect=_fake_time),
+            ):
+                with pytest.raises(InterruptedError):
+                    agent._interruptible_streaming_api_call({})
+        finally:
+            interrupter.cancel()
+
+        close_reasons = [call.kwargs.get("reason") for call in mock_close.call_args_list]
+        assert "stale_stream_kill" not in close_reasons
 
 
 class TestReasoningStreaming:

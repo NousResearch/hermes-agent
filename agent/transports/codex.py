@@ -17,19 +17,39 @@ class ResponsesApiTransport(ProviderTransport):
     Wraps the functions extracted into codex_responses_adapter.py (PR 1).
     """
 
+    # Issuer kind of the most recent build_kwargs / convert_messages call.
+    # Used as a fallback when normalize_response is invoked without an
+    # explicit ``issuer_kind`` kwarg, so reasoning items captured from a
+    # response are stamped with the endpoint that minted them. Plain class
+    # attribute default; mutated on the instance, not the class.
+    _last_issuer_kind: Optional[str] = None
+
     @property
     def api_mode(self) -> str:
         return "codex_responses"
 
+    def _resolve_issuer_kind(self, params: Dict[str, Any]) -> str:
+        """Classify the current Responses endpoint from transport params."""
+        from agent.codex_responses_adapter import _classify_responses_issuer
+        return _classify_responses_issuer(
+            is_xai_responses=bool(params.get("is_xai_responses")),
+            is_github_responses=bool(params.get("is_github_responses")),
+            is_codex_backend=bool(params.get("is_codex_backend")),
+            base_url=params.get("base_url"),
+        )
+
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> Any:
         """Convert OpenAI chat messages to Responses API input items."""
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        issuer = self._resolve_issuer_kind(kwargs)
+        self._last_issuer_kind = issuer
         return _chat_messages_to_responses_input(
             messages,
             is_xai_responses=bool(kwargs.get("is_xai_responses")),
             replay_encrypted_reasoning=bool(
                 kwargs.get("replay_encrypted_reasoning", True)
             ),
+            current_issuer_kind=issuer,
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
@@ -86,6 +106,14 @@ class ResponsesApiTransport(ProviderTransport):
             params.get("replay_encrypted_reasoning", True)
         )
 
+        # Resolve the issuing endpoint for this call. Stashed on the
+        # transport so normalize_response can stamp it onto reasoning
+        # items captured from the response, and passed to the input
+        # converter so foreign-issuer reasoning blocks in history are
+        # dropped before the API rejects them.
+        issuer_kind = self._resolve_issuer_kind(params)
+        self._last_issuer_kind = issuer_kind
+
         # Resolve reasoning effort
         reasoning_effort = "medium"
         reasoning_enabled = True
@@ -107,6 +135,7 @@ class ResponsesApiTransport(ProviderTransport):
                 payload_messages,
                 is_xai_responses=is_xai_responses,
                 replay_encrypted_reasoning=replay_encrypted_reasoning,
+                current_issuer_kind=issuer_kind,
             ),
             "tools": response_tools,
             "store": False,
@@ -224,8 +253,13 @@ class ResponsesApiTransport(ProviderTransport):
             _normalize_codex_response,
         )
 
+        # Issuer for this response = explicit kwarg if the caller knows it,
+        # otherwise the stash from the matching build_kwargs/convert_messages
+        # call. Either way it gets stamped onto reasoning items so future
+        # turns can detect a model swap and drop foreign-issuer blobs.
+        issuer_kind = kwargs.get("issuer_kind") or self._last_issuer_kind
         # _normalize_codex_response returns (SimpleNamespace, finish_reason_str)
-        msg, finish_reason = _normalize_codex_response(response)
+        msg, finish_reason = _normalize_codex_response(response, issuer_kind=issuer_kind)
 
         tool_calls = None
         if msg and msg.tool_calls:

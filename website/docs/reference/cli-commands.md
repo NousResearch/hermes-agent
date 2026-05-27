@@ -79,7 +79,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
 | `hermes version` | Show version information. |
-| `hermes update` | Pull latest code and reinstall dependencies (git installs), or check PyPI and `pip install --upgrade` (pip installs). `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
+| `hermes update` | Pull latest code and reinstall dependencies (git installs), or check PyPI and `pip install --upgrade` (pip installs). `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` backup. Auto-update commands live under `hermes update auto`. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
 ## `hermes chat`
@@ -1251,7 +1251,11 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--check] [--backup] [--restart-gateway]
+hermes update [--check] [--backup] [--yes]
+hermes update auto status
+hermes update auto run-now
+hermes update auto enable --time "03:00"
+hermes update auto disable
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install.
@@ -1261,8 +1265,71 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, t
 | Option | Description |
 |--------|-------------|
 | `--check` | Print the current commit and the latest `origin/main` commit side by side, and exit 0 if in sync or 1 if behind. Does not pull, install, or restart anything. |
-| `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `update.backup: true` in `config.yaml`. |
-| `--restart-gateway` | After a successful update, restart the running gateway service. Implies `--all` semantics if multiple profiles are installed. |
+| `--backup` | Create a full pre-update backup of `HERMES_HOME` before pulling. Default is **off** because large homes can take minutes to archive. Flip it on permanently via `updates.pre_update_backup: true` in `config.yaml`. |
+| `--yes`, `-y` | Assume yes for interactive prompts where possible. API-key entry is skipped; run `hermes config migrate` separately for those. |
+
+### `hermes update auto`
+
+Automatic updates are a thin scheduler around `hermes update auto run-now`.
+They do not run inside a Hermes daemon and do not call an LLM or spend model
+tokens. Phase 2 adds user-level scheduling only; it does not add WebUI
+integration, notifications, or rollback automation.
+
+| Command | Description |
+|---------|-------------|
+| `hermes update auto status` | Show whether scheduled auto-update is enabled, the configured schedule, scheduler type/path, last run result, version fields, backup path, last error, and log path. |
+| `hermes update auto run-now` | Run one non-agentic manual update pass now. It checks for an available update, requires a pre-update backup, reuses the existing `hermes update` flow in non-interactive mode, performs a lightweight local gateway-runtime health check, and records status in `HERMES_HOME/state/update-status.json` plus a human-readable log in `HERMES_HOME/logs/update.log`. |
+| `hermes update auto enable --time "03:00"` | Enable a user-level schedule that runs `hermes update auto run-now` daily at the local 24-hour `HH:MM` time. Re-running the command safely updates the existing Hermes schedule. |
+| `hermes update auto disable` | Disable and remove only the Hermes auto-update schedule. It is safe to run when already disabled. |
+
+Scheduler behavior:
+
+- **macOS:** writes `~/Library/LaunchAgents/com.hermes.agent.auto-update.plist`
+  and loads it with `launchctl bootstrap` for the current GUI user session.
+- **Linux:** writes user-level systemd service/timer files under
+  `~/.config/systemd/user/` and enables the timer with `systemctl --user`
+  when user systemd is available.
+- **No root:** scheduling is user-level and does not require `sudo`.
+- **No cron fallback:** Phase 2 does not add or edit crontabs.
+
+Status and logs:
+
+```json
+{
+  "mode": "manual",
+  "enabled": false,
+  "schedule": null,
+  "schedulerType": null,
+  "schedulerPath": null,
+  "lastRunAt": null,
+  "status": "not_configured",
+  "previousVersion": null,
+  "latestVersion": null,
+  "currentVersion": null,
+  "backupPath": null,
+  "error": null,
+  "logPath": null
+}
+```
+
+`HERMES_HOME/state/update-status.json` stores this status. Detailed run logs
+are appended to `HERMES_HOME/logs/update.log`; scheduled stdout/stderr go to
+`HERMES_HOME/logs/update-auto.out.log` and
+`HERMES_HOME/logs/update-auto.err.log`.
+
+`status` is one of `not_configured`, `running`, `success`, `up_to_date`,
+`check_failed`, `backup_failed`, `update_failed`, or `health_failed`.
+Unavailable values are written as `null`, not empty strings.
+
+Troubleshooting:
+
+- Run `hermes update auto status` to see the scheduler path and last result.
+- Run `hermes update auto run-now` manually to test the update path without
+  waiting for the next scheduled time.
+- To manually disable on macOS, run `hermes update auto disable` or remove the
+  LaunchAgent plist named above and boot it out with `launchctl`.
+- To manually disable on Linux systemd, run `hermes update auto disable` or
+  `systemctl --user disable --now hermes-auto-update.timer`.
 
 Additional behavior:
 

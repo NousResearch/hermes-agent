@@ -8369,6 +8369,136 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
+def _get_update_check_result(
+    branch: str = "main",
+    *,
+    branch_explicit: bool = False,
+    announce: bool = False,
+) -> dict:
+    """Return structured data for the existing ``hermes update --check`` path.
+
+    Kept next to ``_cmd_update_check`` so the CLI preview and Phase 1
+    auto-update runner share the same fetch/compare behavior.
+    """
+    from hermes_cli.config import detect_install_method
+
+    method = detect_install_method(PROJECT_ROOT)
+    if method == "pip":
+        from hermes_cli import __version__
+        from hermes_cli.banner import check_via_pypi
+
+        result = check_via_pypi()
+        if result is None:
+            raise RuntimeError("Could not reach PyPI to check for updates.")
+        return {
+            "install_method": "pip",
+            "branch": branch,
+            "branch_explicit": branch_explicit,
+            "branch_ignored": bool(branch_explicit and branch != "main"),
+            "current_version": __version__,
+            "latest_version": "",
+            "compare_ref": "pypi",
+            "behind": int(result),
+            "update_available": bool(result),
+        }
+
+    git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        raise RuntimeError("Not a git repository — cannot check for updates.")
+
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    if branch == "main":
+        if announce:
+            print("→ Fetching from upstream...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "upstream"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            if announce:
+                print("→ Fetching from origin...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            compare_branch = f"origin/{branch}"
+        else:
+            compare_branch = f"upstream/{branch}"
+    else:
+        if announce:
+            print("→ Fetching from origin...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "origin"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        compare_branch = f"origin/{branch}"
+
+    if fetch_result.returncode != 0:
+        stderr = fetch_result.stderr.strip()
+        if "Could not resolve host" in stderr or "unable to access" in stderr:
+            raise RuntimeError("Network error — cannot reach the remote repository.")
+        if "Authentication failed" in stderr or "could not read Username" in stderr:
+            raise RuntimeError("Authentication failed — check your git credentials or SSH key.")
+        first = stderr.splitlines()[0] if stderr else "unknown error"
+        raise RuntimeError(f"Failed to fetch: {first}")
+
+    verify_result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if verify_result.returncode != 0:
+        raise RuntimeError(
+            f"Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}."
+        )
+
+    rev_result = subprocess.run(
+        git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    behind = int(rev_result.stdout.strip())
+
+    current_result = subprocess.run(
+        git_cmd + ["rev-parse", "--short", "HEAD"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    latest_result = subprocess.run(
+        git_cmd + ["rev-parse", "--short", compare_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    return {
+        "install_method": "git",
+        "branch": branch,
+        "branch_explicit": branch_explicit,
+        "branch_ignored": False,
+        "current_version": current_result.stdout.strip(),
+        "latest_version": latest_result.stdout.strip(),
+        "compare_ref": compare_branch,
+        "behind": behind,
+        "update_available": behind > 0,
+    }
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -8381,106 +8511,46 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     on a PyPI install we surface a one-line notice instead of silently
     dropping the flag.
     """
-    from hermes_cli.config import detect_install_method
-    method = detect_install_method(PROJECT_ROOT)
-    if method == "pip":
-        from hermes_cli.config import recommended_update_command
-        from hermes_cli.banner import check_via_pypi
-        if branch_explicit and branch != "main":
-            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
-        result = check_via_pypi()
-        if result is None:
+    try:
+        result = _get_update_check_result(
+            branch=branch,
+            branch_explicit=branch_explicit,
+            announce=True,
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if msg.startswith("Could not reach PyPI"):
             print("✗ Could not reach PyPI to check for updates.")
-            sys.exit(1)
-        elif result == 0:
+        elif msg.startswith("Not a git repository"):
+            print("✗ Not a git repository — cannot check for updates.")
+        elif msg.startswith("Network error"):
+            print("✗ Network error — cannot reach the remote repository.")
+        elif msg.startswith("Authentication failed"):
+            print(f"✗ {msg}")
+        elif msg.startswith("Branch "):
+            print(f"✗ {msg}")
+        elif msg.startswith("Failed to fetch:"):
+            print("✗ Failed to fetch.")
+            detail = msg.partition(":")[2].strip()
+            if detail:
+                print(f"  {detail}")
+        else:
+            print(f"✗ {msg}")
+        sys.exit(1)
+
+    if result["install_method"] == "pip":
+        from hermes_cli.config import recommended_update_command
+        if result.get("branch_ignored"):
+            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
+        if result["behind"] == 0:
             print("✓ Already up to date.")
         else:
             print("⚕ Update available on PyPI.")
             print(f"  Run '{recommended_update_command()}' to install.")
         return
 
-    git_dir = PROJECT_ROOT / ".git"
-    if not git_dir.exists():
-        print("✗ Not a git repository — cannot check for updates.")
-        sys.exit(1)
-
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-
-    # Fetch both origin and upstream; prefer upstream as the canonical reference.
-    # Note: upstream/<branch> may not exist for non-main branches (a fork's
-    # bb/gui has no upstream counterpart), so when the caller picks a
-    # non-default branch we skip the upstream probe and use origin directly.
-    if branch == "main":
-        print("→ Fetching from upstream...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "upstream"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        if fetch_result.returncode != 0:
-            # Fallback to origin if upstream doesn't exist
-            print("→ Fetching from origin...")
-            fetch_result = subprocess.run(
-                git_cmd + ["fetch", "origin"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            upstream_exists = False
-            compare_branch = f"origin/{branch}"
-        else:
-            upstream_exists = True
-            compare_branch = f"upstream/{branch}"
-    else:
-        # Non-default branch: compare against origin/<branch> directly.
-        print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        upstream_exists = False
-        compare_branch = f"origin/{branch}"
-
-    if fetch_result.returncode != 0:
-        stderr = fetch_result.stderr.strip()
-        if "Could not resolve host" in stderr or "unable to access" in stderr:
-            print("✗ Network error — cannot reach the remote repository.")
-        elif "Authentication failed" in stderr or "could not read Username" in stderr:
-            print("✗ Authentication failed — check your git credentials or SSH key.")
-        else:
-            print("✗ Failed to fetch.")
-            if stderr:
-                print(f"  {stderr.splitlines()[0]}")
-        sys.exit(1)
-
-    # Verify the compare ref actually exists before asking rev-list about it.
-    # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
-    # (with check=True) raises CalledProcessError, surfacing a Python
-    # traceback. Friendlier to detect-and-report.
-    verify_result = subprocess.run(
-        git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if verify_result.returncode != 0:
-        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
-        sys.exit(1)
-
-    rev_result = subprocess.run(
-        git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    behind = int(rev_result.stdout.strip())
-
+    compare_branch = result["compare_ref"]
+    behind = int(result["behind"])
     if behind == 0:
         print("✓ Already up to date.")
     else:
@@ -13563,6 +13633,97 @@ Examples:
         action="store_true",
         default=False,
         help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
+    )
+    update_subparsers = update_parser.add_subparsers(dest="update_subcommand")
+    update_auto_parser = update_subparsers.add_parser(
+        "auto",
+        help="Auto-update run-now and scheduler commands",
+        description=(
+            "Auto-update commands. `run-now` reuses the existing update flow. "
+            "`enable` installs a user-level schedule (launchd on macOS, "
+            "systemd user timer on Linux when available). These commands do not "
+            "install WebUI hooks, notifications, rollback, or a Hermes daemon."
+        ),
+    )
+    update_auto_subparsers = update_auto_parser.add_subparsers(
+        dest="auto_subcommand",
+        required=True,
+    )
+    update_auto_enable = update_auto_subparsers.add_parser(
+        "enable",
+        help="Enable scheduled auto-update",
+        description=(
+            "Enable a user-level schedule that runs `hermes update auto run-now` "
+            "at the requested local time. macOS uses a user LaunchAgent; Linux "
+            "uses a user systemd timer when available."
+        ),
+    )
+    update_auto_enable.add_argument(
+        "--time",
+        required=True,
+        metavar="HH:MM",
+        help="Local 24-hour time to run the scheduled update, for example 03:00.",
+    )
+    update_auto_enable.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_enable"],
+        ).cmd_auto_enable(args)
+    )
+    update_auto_disable = update_auto_subparsers.add_parser(
+        "disable",
+        help="Disable scheduled auto-update",
+        description=(
+            "Disable and remove only the Hermes auto-update user-level schedule. "
+            "This does not remove unrelated launchd, systemd, or cron jobs."
+        ),
+    )
+    update_auto_disable.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_disable"],
+        ).cmd_auto_disable(args)
+    )
+    update_auto_status = update_auto_subparsers.add_parser(
+        "status",
+        help="Show auto-update scheduler and last-run status",
+        description=(
+            "Show the manual auto-update status file, including the last run, "
+            "version fields, backup path, error, scheduler type/path, and log path."
+        ),
+    )
+    update_auto_status.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_status"],
+        ).cmd_auto_status(args)
+    )
+    update_auto_run_now = update_auto_subparsers.add_parser(
+        "run-now",
+        help="Run one manual non-agentic auto-update pass now",
+        description=(
+            "Run one manual non-agentic update pass now. This reuses the existing "
+            "`hermes update` flow, requires a pre-update backup before applying "
+            "changes, uses no LLM/model calls, and writes status/log files."
+        ),
+    )
+    update_auto_run_now.add_argument(
+        "--branch",
+        default=None,
+        metavar="NAME",
+        help="Update against this branch instead of the default (main).",
+    )
+    update_auto_run_now.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Pass through the existing Windows concurrent-process override.",
+    )
+    update_auto_run_now.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_run_now"],
+        ).cmd_auto_run_now(args)
     )
     update_parser.set_defaults(func=cmd_update)
 

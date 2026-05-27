@@ -511,6 +511,10 @@ class TestCmdUpdateCheckBranchFlag:
 
         cmd_update(args)
 
+        out = capsys.readouterr().out
+        assert "Fetching from origin" in out
+        assert "Update available: 2 commits behind origin/bb/gui" in out
+
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         # Non-main branch skips upstream probe entirely.
         assert not any("fetch" in c and "upstream" in c for c in commands), commands
@@ -564,6 +568,10 @@ class TestCmdUpdateCheckBranchFlag:
         args = SimpleNamespace(check=True, branch=None)
 
         cmd_update(args)
+
+        out = capsys.readouterr().out
+        assert "Fetching from upstream" in out
+        assert "Already up to date" in out
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         # Should have tried upstream first.

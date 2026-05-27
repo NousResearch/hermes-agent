@@ -632,6 +632,120 @@ class TestWaitForReconnection:
 
 
 # ---------------------------------------------------------------------------
+# Reconnect stall regression (code=4009 + _get_gateway_url failure)
+# ---------------------------------------------------------------------------
+
+class TestReconnectStallRegression:
+    """Regression tests for the bug where a failed reconnect leaves a stale
+    closed websocket, _read_events() returns silently, and _listen_loop()
+    spins forever with backoff reset to zero.
+    """
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    @pytest.mark.asyncio
+    async def test_read_events_raises_when_ws_present_but_closed(self):
+        """If self._ws is set but already closed, _read_events must raise."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = mock.AsyncMock()
+        adapter._ws.closed = True
+
+        with pytest.raises(RuntimeError, match="WebSocket closed"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_read_events_raises_when_ws_is_none(self):
+        """If self._ws is None, _read_events must raise immediately."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._ws = None
+
+        with pytest.raises(RuntimeError, match="WebSocket not connected"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_clears_stale_closed_ws_on_failure(self):
+        """When _reconnect fails, a present-but-closed _ws must be cleared."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = mock.AsyncMock()
+        adapter._ws.closed = True
+        adapter._http_client = mock.AsyncMock()
+
+        # Force _get_gateway_url to fail.
+        adapter._get_gateway_url = mock.AsyncMock(
+            side_effect=RuntimeError("network down")
+        )
+        adapter._ensure_token = mock.AsyncMock()
+
+        # Speed up the test by zeroing the backoff sleep.
+        import gateway.platforms.qqbot.adapter as qqmod
+        orig_backoff = qqmod.RECONNECT_BACKOFF
+        qqmod.RECONNECT_BACKOFF = [0]
+        try:
+            result = await adapter._reconnect(backoff_idx=0)
+        finally:
+            qqmod.RECONNECT_BACKOFF = orig_backoff
+
+        assert result is False
+        assert adapter._ws is None
+
+    @pytest.mark.asyncio
+    async def test_listen_loop_does_not_stall_after_failed_reconnect(self):
+        """After a 4009 close and a failed reconnect, the loop must continue
+        to back off rather than silently resetting backoff to zero.
+        """
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = mock.AsyncMock()
+        adapter._ws.closed = True
+        adapter._http_client = mock.AsyncMock()
+
+        # Track how many times _reconnect is invoked and with what backoff_idx.
+        reconnect_calls = []
+
+        async def fake_reconnect(backoff_idx):
+            reconnect_calls.append(backoff_idx)
+            return False
+
+        adapter._reconnect = fake_reconnect
+
+        # Short-circuit the loop after a few iterations so the test finishes.
+        max_iterations = 4
+        iteration = 0
+
+        # Save the real _read_events before we override it.
+        real_read_events = adapter._read_events
+
+        async def wrapped_read_events():
+            nonlocal iteration
+            iteration += 1
+            if iteration >= max_iterations:
+                adapter._running = False
+                # Return normally so the while loop exits cleanly.
+                return
+            # First call simulates the 4009 close path.
+            if iteration == 1:
+                from gateway.platforms.qqbot import QQCloseError
+                raise QQCloseError(4009, "session timed out")
+            # Subsequent calls: the real _read_events should raise because
+            # _ws is stale/closed.
+            return await real_read_events()
+
+        adapter._read_events = wrapped_read_events
+
+        await adapter._listen_loop()
+
+        # _reconnect should have been called at least twice with increasing
+        # backoff indices (0, then 1), NOT reset to 0 every iteration.
+        assert reconnect_calls == [0, 1, 2], (
+            f"Expected backoff progression [0, 1, 2], got {reconnect_calls}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # ChunkedUploader
 # ---------------------------------------------------------------------------
 

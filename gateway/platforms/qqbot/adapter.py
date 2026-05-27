@@ -649,6 +649,10 @@ class QQAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            # Clear stale closed websocket so _read_events() doesn't get stuck
+            # on a present-but-closed reference on the next loop iteration.
+            if self._ws and self._ws.closed:
+                self._ws = None
             return False
 
     async def _read_events(self) -> None:
@@ -669,6 +673,12 @@ class QQAdapter(BasePlatformAdapter):
                 raise QQCloseError(msg.data, msg.extra)
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
+
+        # If the loop exited because the websocket is present but already
+        # closed, raise so the caller (_listen_loop) triggers backoff/reconnect
+        # instead of silently spinning with a stale reference.
+        if self._ws and self._ws.closed:
+            raise RuntimeError("WebSocket closed")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).

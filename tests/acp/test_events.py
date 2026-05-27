@@ -420,3 +420,56 @@ class TestSendUpdate:
             and "_session_update" in str(w.message)
         ]
         assert runtime_warnings == []
+
+class TestSendUpdateRetry(unittest.TestCase):
+    """Test _send_update retry and recovery mechanism."""
+
+    def test_send_update_returns_bool(self):
+        """Verify _send_update returns True on success, False on failure."""
+        import acp
+        from unittest.mock import MagicMock, patch
+        import asyncio
+
+        conn = MagicMock(spec=acp.Client)
+        conn.session_update = MagicMock(return_value=asyncio.sleep(0))
+        session_id = "test-session"
+        loop = asyncio.new_event_loop()
+
+        # Test successful send
+        from acp_adapter.events import _send_update
+        update = {"type": "test"}
+        result = _send_update(conn, session_id, loop, update)
+        self.assertTrue(result)
+
+        loop.close()
+
+    def test_failed_send_update_logs_warning(self):
+        """Verify failed _send_update logs at WARNING level."""
+        import acp
+        from unittest.mock import MagicMock, patch
+        import asyncio
+
+        conn = MagicMock(spec=acp.Client)
+        # Simulate timeout
+        async def slow_update():
+            await asyncio.sleep(10)
+        conn.session_update = MagicMock(return_value=slow_update())
+        session_id = "test-session"
+        loop = asyncio.new_event_loop()
+
+        from acp_adapter.events import _send_update
+        update = {"type": "test"}
+
+        with patch("acp_adapter.events.logger") as mock_logger:
+            result = _send_update(conn, session_id, loop, update)
+            self.assertFalse(result)
+            # Verify warning was logged
+            mock_logger.warning.assert_called_once()
+            call_args = mock_logger.warning.call_args[0]
+            self.assertIn("Failed to send ACP update", call_args[0])
+
+        loop.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -89,8 +89,11 @@ def _send_update(
     session_id: str,
     loop: asyncio.AbstractEventLoop,
     update: Any,
-) -> None:
-    """Fire-and-forget an ACP session update from a worker thread."""
+) -> bool:
+    """Send an ACP session update from a worker thread with recovery support.
+
+    Returns True on success, False on failure.
+    """
     from agent.async_utils import safe_schedule_threadsafe
 
     future = safe_schedule_threadsafe(
@@ -100,11 +103,18 @@ def _send_update(
         log_message="Failed to send ACP update",
     )
     if future is None:
-        return
+        return False
     try:
         future.result(timeout=5)
+        return True
     except Exception:
-        logger.debug("Failed to send ACP update", exc_info=True)
+        logger.warning(
+            "Failed to send ACP update for session %s: %s",
+            session_id,
+            type(update).__name__,
+            exc_info=True
+        )
+        return False
 
 
 # ------------------------------------------------------------------
@@ -248,8 +258,18 @@ def make_step_cb(
                         function_args=function_args or meta.get("args"),
                         snapshot=meta.get("snapshot"),
                     )
-                    _send_update(conn, session_id, loop, update)
-                    if tool_name == "todo":
+                    sent = _send_update(conn, session_id, loop, update)
+                    if not sent:
+                        # Re-queue for retry on next step callback
+                        queue.appendleft(tc_id)
+                        tool_call_meta[tc_id] = meta
+                        logger.warning(
+                            "Re-queued tool completion %s for retry (session %s, tool %s)",
+                            tc_id,
+                            session_id,
+                            tool_name
+                        )
+                    elif tool_name == "todo":
                         plan_update = _build_plan_update_from_todo_result(result)
                         if plan_update is not None:
                             _send_update(conn, session_id, loop, plan_update)

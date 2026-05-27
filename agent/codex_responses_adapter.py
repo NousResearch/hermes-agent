@@ -23,6 +23,25 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+def _safe_response_output_text(response: Any) -> str:
+    """Read ``response.output_text`` without trusting SDK convenience accessors.
+
+    Some Responses SDK objects build ``output_text`` by iterating
+    ``response.output``. When a provider returns ``output=None``, that property
+    can raise ``TypeError("'NoneType' object is not iterable")`` before Hermes'
+    normal empty-output recovery can run.
+    """
+    try:
+        out_text = getattr(response, "output_text", None)
+    except TypeError as exc:
+        err_text = str(exc)
+        if "NoneType" in err_text and "not iterable" in err_text:
+            logger.debug("Responses output_text unavailable because output is null")
+            return ""
+        raise
+    return out_text.strip() if isinstance(out_text, str) else ""
+
+
 def _classify_responses_issuer(
     *,
     is_xai_responses: bool = False,
@@ -1001,15 +1020,15 @@ def _normalize_codex_response(
         # The Codex backend can return empty output when the answer was
         # delivered entirely via stream events. Check output_text as a
         # last-resort fallback before raising.
-        out_text = getattr(response, "output_text", None)
-        if isinstance(out_text, str) and out_text.strip():
+        out_text = _safe_response_output_text(response)
+        if out_text:
             logger.debug(
                 "Codex response has empty output but output_text is present (%d chars); "
-                "synthesizing output item.", len(out_text.strip()),
+                "synthesizing output item.", len(out_text),
             )
             output = [SimpleNamespace(
                 type="message", role="assistant", status="completed",
-                content=[SimpleNamespace(type="output_text", text=out_text.strip())],
+                content=[SimpleNamespace(type="output_text", text=out_text)],
             )]
             response.output = output
         else:
@@ -1156,10 +1175,8 @@ def _normalize_codex_response(
             ))
 
     final_text = "\n".join([p for p in content_parts if p]).strip()
-    if not final_text and hasattr(response, "output_text"):
-        out_text = getattr(response, "output_text", "")
-        if isinstance(out_text, str):
-            final_text = out_text.strip()
+    if not final_text:
+        final_text = _safe_response_output_text(response)
 
     # ── Tool-call leak recovery ──────────────────────────────────
     # gpt-5.x on the Codex Responses API sometimes degenerates and emits

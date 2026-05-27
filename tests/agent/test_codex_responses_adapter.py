@@ -61,3 +61,20 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.content == ""
     assert assistant_message.reasoning == "still thinking"
     assert assistant_message.codex_reasoning_items is None
+
+
+def test_normalize_codex_response_ignores_output_text_property_when_output_is_null():
+    class ResponseWithNullOutput:
+        status = "completed"
+        output = None
+
+        @property
+        def output_text(self):
+            raise TypeError("'NoneType' object is not iterable")
+
+    try:
+        _normalize_codex_response(ResponseWithNullOutput())
+    except RuntimeError as exc:
+        assert str(exc) == "Responses API returned no output items"
+    else:
+        raise AssertionError("expected empty null-output response to be rejected")

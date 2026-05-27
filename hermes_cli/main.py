@@ -1621,9 +1621,9 @@ def _pin_kanban_board_env() -> None:
     if os.environ.get("HERMES_KANBAN_BOARD"):
         return
     try:
-        from hermes_cli.kanban_db import get_current_board
+        from hermes_cli.kanban_store_factory import get_default_kanban_store
 
-        os.environ["HERMES_KANBAN_BOARD"] = get_current_board()
+        os.environ["HERMES_KANBAN_BOARD"] = get_default_kanban_store().get_current_board()
     except Exception:
         pass
 

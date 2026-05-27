@@ -1,0 +1,4 @@
+name: atlas
+version: 1.0.0
+description: "Atlas — RDF-grounded, ontology-aware long-term memory. Cross-session recall over Blake's unified knowledge substrate (Gmail, Calendar, Pipedrive, GitHub, Claude Code transcripts) via the Atlas /v1/memory/hermes API. Augments built-in memory; never replaces it."
+pip_dependencies: []

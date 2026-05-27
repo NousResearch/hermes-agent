@@ -88,4 +88,14 @@ security:
 # Neon per Plan 007-C).
 sessions:
   auto_prune: false
+
+# Memory — Atlas RDF-grounded long-term memory (army-of-one Plan 011-C.2).
+# The 'atlas' provider augments (does not replace) the built-in memory. It
+# reaches cloud Atlas via Cloud Map (ATLAS_BASE_URL) + bearer auth
+# (ATLAS_BEARER_TOKEN) — both injected by the Fargate task def. Atlas-side
+# failures degrade gracefully (circuit breaker); they never block the agent.
+# Activates on the next Hermes image rebuild + redeploy (the plugin ships in
+# the image at plugins/memory/atlas/).
+memory:
+  provider: atlas
   retention_days: 90

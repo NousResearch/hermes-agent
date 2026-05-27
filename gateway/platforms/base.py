@@ -2412,8 +2412,18 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
+        #
+        # The extension whitelist below MUST stay aligned with the union of:
+        #   - SUPPORTED_IMAGE_TYPES, SUPPORTED_VIDEO_TYPES, SUPPORTED_AUDIO_TYPES
+        #   - SUPPORTED_DOCUMENT_TYPES (the document-attachment whitelist)
+        # If a file extension is delivery-eligible per those tables but missing
+        # here, MEDIA:<path> for that extension is silently stripped from the
+        # response with no WARNING — the gateway just doesn't see a directive.
+        # That bug surfaced in 2026-05 for ``.md`` reports: agents emitted
+        # ``MEDIA:/path/to/report.md`` and users saw the path vanish from the
+        # rendered text without an attachment.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa|md|log|json|xml|ya?ml|toml|ini|cfg|ts|py|sh)(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()

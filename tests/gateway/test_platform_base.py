@@ -361,6 +361,46 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    # ---- Document-extension regression tests ------------------------------
+    # The MEDIA: regex extension whitelist must stay aligned with
+    # SUPPORTED_DOCUMENT_TYPES. Prior to this fix, ``.md`` (and several
+    # other document types listed as deliverable) were silently dropped
+    # from response text because the regex didn't list them.
+
+    @pytest.mark.parametrize(
+        "ext",
+        ["md", "log", "json", "xml", "yaml", "yml", "toml", "ini", "cfg",
+         "ts", "py", "sh"],
+    )
+    def test_media_tag_recognizes_document_extensions(self, ext):
+        """Each extension in SUPPORTED_DOCUMENT_TYPES must be matched by
+        the MEDIA: regex; otherwise the directive is silently stripped
+        instead of dispatched to the document-attachment codepath."""
+        content = f"Here is your file:\nMEDIA:/tmp/report.{ext}"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(f"/tmp/report.{ext}", False)], (
+            f".{ext} should be a recognized MEDIA: extension. "
+            f"If this fails, the MEDIA: regex in extract_media() drifted out "
+            f"of sync with SUPPORTED_DOCUMENT_TYPES."
+        )
+        assert "MEDIA:" not in cleaned
+        assert "Here is your file" in cleaned
+
+    def test_media_tag_recognizes_markdown_with_quoted_path(self):
+        """The original bug report: ``.md`` with a real-world path layout."""
+        content = (
+            "主报告：\nMEDIA:/Users/echo/.hermes/cache/documents/"
+            "mastercard-agentpay-vs-tempo-mpp-20260526.md\n"
+        )
+        media, _ = BasePlatformAdapter.extract_media(content)
+        assert media == [
+            (
+                "/Users/echo/.hermes/cache/documents/"
+                "mastercard-agentpay-vs-tempo-mpp-20260526.md",
+                False,
+            )
+        ]
+
 
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):

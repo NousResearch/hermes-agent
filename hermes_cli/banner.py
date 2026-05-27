@@ -193,15 +193,35 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
-    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
-    if _is_official_ssh_remote(origin_url):
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        return _check_via_rev(head_rev) if head_rev else None
+    """Count commits behind the Nous upstream main in a local checkout.
 
+    Private installs often keep ``origin`` pointed at a personal/private
+    mirror and add NousResearch as ``upstream``. Prefer ``upstream/main``
+    when that remote exists so ``hermes --version`` and update nags compare
+    against the real upstream instead of an unrelated private branch.
+
+    Official SSH checkouts can also avoid auth/fetch quirks by comparing the
+    current revision to upstream main via ``git ls-remote``.
+    """
+    compare_ref = "origin/main"
     try:
+        remote_result = subprocess.run(
+            ["git", "remote"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        remotes = set(remote_result.stdout.split()) if remote_result.returncode == 0 else set()
+        if "upstream" in remotes:
+            compare_ref = "upstream/main"
+        else:
+            origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+            if _is_official_ssh_remote(origin_url):
+                head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+                return _check_via_rev(head_rev) if head_rev else None
+
+        fetch_remote = compare_ref.split("/", 1)[0]
         subprocess.run(
-            ["git", "fetch", "origin", "--quiet"],
+            ["git", "fetch", fetch_remote, "--quiet"],
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
@@ -210,7 +230,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
 
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{compare_ref}"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -219,7 +239,6 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         pass
     return None
-
 
 def _version_tuple(v: str) -> tuple[int, ...]:
     """Parse '0.13.0' into (0, 13, 0) for comparison. Non-numeric segments become 0."""

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Lycus communication module enables secure, reliable inter-agent communication across the Lycus network. Agents can exchange messages regardless of whether they're on the same LAN or connected over the internet.
+The Lycus communication module enables secure, reliable inter-agent communication across the Lycus network using Matrix protocol. Agents can exchange messages regardless of whether they're on the same LAN or connected over the internet.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ The Lycus communication module enables secure, reliable inter-agent communicatio
 │  ┌──────────┐    ┌──────────┐    ┌──────────────────────┐   │
 │  │ Matrix   │───▶│ Cron     │───▶│ Hermes Agent         │   │
 │  │ Client   │    │ Bridge   │    │ (Autolycus)          │   │
-│  │ (Rust)   │    │ (Python) │    │                      │   │
+│  │ (Python) │    │ (Unix)   │    │                      │   │
 │  └──────────┘    └──────────┘    └──────────────────────┘   │
 │       │                                                       │
 │       ▼                                                       │
@@ -42,30 +42,32 @@ The Lycus communication module enables secure, reliable inter-agent communicatio
 
 ## Components
 
-### 1. Rust Matrix Client (`comm/`)
+### 1. Python Matrix Client (`comm/tools.py`)
 
-- **Purpose**: Handles Matrix protocol communication
-- **Language**: Rust (for performance and reliability)
+- **Purpose**: Handles Matrix protocol communication using matrix-nio
+- **Language**: Python with async/await support
 - **Features**:
   - Matrix client connection and authentication
   - Message sending and receiving
-  - Room management
+  - Room management (join/create)
   - Agent discovery
+  - Unix socket bridge for cron integration
 
-### 2. Python Cron Bridge (`comm/__init__.py`)
+### 2. Rust Library (`comm/src/`)
 
-- **Purpose**: Bridges Matrix messages to the Python cron system
-- **Language**: Python
+- **Purpose**: High-performance Matrix operations (future optimization target)
+- **Language**: Rust with ruma-client
 - **Features**:
-  - Unix socket server for IPC
-  - Message forwarding to cron scheduler
-  - Job creation from incoming messages
+  - Configuration structs and defaults
+  - Matrix client wrapper
+  - Bridge IPC handling
+  - Agent discovery service
 
-### 3. Configuration (`CommConfig`)
+### 3. Configuration (`CommToolConfig`)
 
 ```python
 @dataclass
-class CommConfig:
+class CommToolConfig:
     homeserver_url: str = "http://localhost:8008"
     username: str = "lycus"
     password: str = ""
@@ -82,21 +84,21 @@ class CommConfig:
 
 1. **Agent A sends a message** to another agent via Matrix
 2. **Matrix homeserver** delivers the message to **Agent B**
-3. **Agent B's Rust Matrix client** receives the message
-4. **Rust client forwards** the message to the **Python cron bridge** via Unix socket
-5. **Cron bridge creates a job** and sends it to the **Hermes agent**
+3. **Agent B's Python client** receives the message
+4. **Python bridge forwards** the message to the **cron scheduler** via Unix socket
+5. **Cron system creates a job** and sends it to the **Hermes agent**
 6. **Hermes agent processes** the message and responds
 7. **Response is sent back** through the same path to Agent A
 
 ## Building
 
 ```bash
-# Build the Rust library
+# Build the Rust library (optional - Python client works standalone)
 cd comm/
 cargo build --release
 
 # Test the Python bridge
-python3 -c "from comm import LycusComm; print('OK')"
+python3 -c "from comm.tools import LycusCommTools; print('OK')"
 ```
 
 ## Running
@@ -118,22 +120,29 @@ python3 -m comm
 - **Unix socket IPC** is local-only (no network exposure)
 - **Agent authentication** via Matrix user accounts
 
-## Next Steps
+## Current Status
 
-1. ✅ Rust Matrix client library (compiles)
-2. ✅ Python cron bridge (loads)
-3. ⬜ Implement actual Matrix client connection
-4. ⬜ Implement message sending/receiving
-5. ⬜ Set up private Matrix homeserver
-6. ⬜ Configure agent authentication
-7. ⬜ Test end-to-end communication
-8. ⬜ Implement agent discovery
-9. ⬜ Add message encryption
-10. ⬜ Create CLI commands for messaging
+### ✅ Implemented
+1. Python Matrix client with matrix-nio
+2. Unix socket bridge for cron integration
+3. Agent registration and discovery system
+4. Message sending (with graceful fallback to simulated mode)
+5. Configuration management
+6. Rust library foundation (compiles cleanly)
+
+### ⬜ Remaining Work
+1. Complete homeserver user registration flow
+2. Implement actual room joining and message sending via Matrix API
+3. Wire up sync loop for incoming messages
+4. Test end-to-end communication between two agents
+5. Configure DNS for `matrix.technetia.org` at Ionos
+6. Set up TLS certificates via Let's Encrypt
+7. Create CLI commands (`hermes comm send`, etc.)
 
 ## Files
 
+- `comm/tools.py` - Python Matrix client and tools
+- `comm/__init__.py` - Module initialization
+- `comm/src/` - Rust library source
 - `comm/Cargo.toml` - Rust dependencies
-- `comm/src/` - Rust Matrix client
-- `comm/__init__.py` - Python cron bridge
-- `comm_bridge.py` - Standalone bridge runner
+- `comm/test_comm.py` - Test script

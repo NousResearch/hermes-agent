@@ -263,9 +263,10 @@ def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
 
 
 class _StubHTTPResponse:
-    def __init__(self, status_code: int, payload):
+    def __init__(self, status_code: int, payload, headers=None):
         self.status_code = status_code
         self._payload = payload
+        self.headers = headers or {}
         self.text = json.dumps(payload) if isinstance(payload, (dict, list)) else str(payload)
 
     def json(self):
@@ -380,6 +381,74 @@ def test_refresh_falls_back_to_generic_message_on_unparseable_body(monkeypatch):
     # invalid/expired — force relogin even without a parseable error body.
     assert err.relogin_required is True
     assert "status 401" in str(err)
+
+
+def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
+    """429 from the token endpoint is a usage-quota cap, not an auth failure.
+
+    Regression test for #32790: must NOT force relogin and must carry the
+    dedicated rate-limit code so callers surface a "retry later" notice rather
+    than a misleading "run hermes auth".
+    """
+    from hermes_cli.auth import (
+        CODEX_RATE_LIMITED_CODE,
+        format_auth_error,
+        is_rate_limited_auth_error,
+    )
+
+    response = _StubHTTPResponse(
+        429,
+        {"error": {"message": "You hit your usage limit.", "code": "usage_limit_reached"}},
+        headers={"retry-after": "120"},
+    )
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    err = exc_info.value
+    assert err.code == CODEX_RATE_LIMITED_CODE
+    assert err.relogin_required is False
+    assert is_rate_limited_auth_error(err) is True
+    assert "retry after 120s" in str(err)
+    # User-facing copy must not tell the operator to re-authenticate.
+    rendered = format_auth_error(err)
+    assert "re-authenticate" not in rendered
+    assert "hermes auth" not in rendered
+
+
+def test_refresh_429_without_retry_after_header(monkeypatch):
+    """429 without a Retry-After header still classifies as quota, no relogin."""
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE
+
+    response = _StubHTTPResponse(429, {"error": "rate_limited"})
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    err = exc_info.value
+    assert err.code == CODEX_RATE_LIMITED_CODE
+    assert err.relogin_required is False
+    assert "quota exhausted" in str(err).lower()
+
+
+def test_is_rate_limited_auth_error_distinguishes_credential_errors():
+    """Missing/expired credentials must NOT be treated as rate-limit errors."""
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, is_rate_limited_auth_error
+
+    rate_limited = AuthError(
+        "quota", provider="openai-codex", code=CODEX_RATE_LIMITED_CODE, relogin_required=False
+    )
+    missing_creds = AuthError(
+        "No Codex credentials stored.",
+        provider="openai-codex",
+        code="codex_auth_missing",
+        relogin_required=True,
+    )
+    assert is_rate_limited_auth_error(rate_limited) is True
+    assert is_rate_limited_auth_error(missing_creds) is False
+    assert is_rate_limited_auth_error(ValueError("nope")) is False
 
 
 def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypatch):

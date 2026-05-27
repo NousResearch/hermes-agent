@@ -465,12 +465,14 @@ jobs:
             for (const botLogin of botsWithActivity) {
               if (botsRequestingChanges.has(botLogin)) continue;
               const stats = botThreadStats[botLogin];
-              if (!stats || stats.unresolved === 0) {
+              if (stats && stats.unresolved === 0) {
                 impliedBotApprovals.push(botLogin);
-              } else {
+              } else if (stats) {
                 botsWithUnresolved.push(
                   `${botLogin} (${stats.unresolved}/${stats.total} unresolved)`
                 );
+              } else {
+                botsWithUnresolved.push(`${botLogin} (thread status unavailable)`);
               }
             }
             const hasImpliedBotApproval = impliedBotApprovals.length > 0;

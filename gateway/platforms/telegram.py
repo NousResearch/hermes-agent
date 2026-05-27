@@ -73,6 +73,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    MAX_VIDEO_BYTES,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -1635,6 +1636,7 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Telegram message.
 
@@ -1653,7 +1655,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # without round-tripping a doomed edit.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
             return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize,
+                chat_id, message_id, content, finalize=finalize, metadata=metadata,
             )
 
         try:
@@ -1698,7 +1700,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
                 return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize,
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
                 )
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
@@ -1742,6 +1744,7 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Split an oversized edit across the existing message + continuations.
 
@@ -1813,25 +1816,54 @@ class TelegramAdapter(BasePlatformAdapter):
         # fallback, mirroring send().
         continuation_ids: list[str] = []
         prev_id = message_id
+        thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
             sent_msg = None
             for use_markdown in (True, False) if finalize else (False,):
                 try:
                     text = self.format_message(chunk) if use_markdown else chunk
+                    reply_to_id = int(prev_id) if prev_id else None
+                    thread_kwargs = self._thread_kwargs_for_send(
+                        chat_id,
+                        thread_id,
+                        metadata,
+                        reply_to_message_id=reply_to_id,
+                    )
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
                         parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
-                        reply_to_message_id=int(prev_id) if prev_id else None,
+                        reply_to_message_id=reply_to_id,
+                        **thread_kwargs,
                     )
                     break
                 except Exception as send_err:
-                    if "reply message not found" in str(send_err).lower():
+                    err_lower = str(send_err).lower()
+                    retry_without_dm_topic_anchor = self._should_retry_without_dm_topic_reply_anchor(
+                        send_err,
+                        metadata,
+                        reply_to_id,
+                    )
+                    if (
+                        "reply message not found" in err_lower
+                        or "message to be replied not found" in err_lower
+                    ):
                         # Drop the reply anchor and try again.
                         try:
+                            no_reply_kwargs = (
+                                {}
+                                if retry_without_dm_topic_anchor
+                                else self._thread_kwargs_for_send(
+                                    chat_id,
+                                    thread_id,
+                                    metadata,
+                                    reply_to_message_id=None,
+                                )
+                            )
                             sent_msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
                                 text=chunk,
+                                **no_reply_kwargs,
                             )
                             break
                         except Exception as _retry_err:
@@ -3629,6 +3661,31 @@ class TelegramAdapter(BasePlatformAdapter):
             yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
             yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
 
+        def _entity_text(source_text: str, entity) -> str:
+            parse_entity = getattr(message, "parse_entity", None)
+            if callable(parse_entity):
+                try:
+                    return parse_entity(entity) or ""
+                except Exception:
+                    logger.debug("[%s] Failed to parse Telegram entity", self.name, exc_info=True)
+
+            offset = int(getattr(entity, "offset", -1))
+            length = int(getattr(entity, "length", 0))
+            if offset < 0 or length <= 0:
+                return ""
+
+            # Telegram entity offsets/lengths are UTF-16 code units, not
+            # Python code points. Decode the corresponding UTF-16 byte span so
+            # non-BMP characters before an entity cannot shift extraction onto
+            # unrelated text.
+            encoded = source_text.encode("utf-16-le")
+            start = offset * 2
+            end = start + length * 2
+            try:
+                return encoded[start:end].decode("utf-16-le")
+            except UnicodeDecodeError:
+                return ""
+
         # Telegram parses mentions server-side and emits MessageEntity objects
         # (type=mention for @username, type=text_mention for @FirstName targeting
         # a user without a public username). Only those entities are authoritative —
@@ -3639,11 +3696,7 @@ class TelegramAdapter(BasePlatformAdapter):
             for entity in entities:
                 entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
                 if entity_type == "mention" and expected:
-                    offset = int(getattr(entity, "offset", -1))
-                    length = int(getattr(entity, "length", 0))
-                    if offset < 0 or length <= 0:
-                        continue
-                    if source_text[offset:offset + length].strip().lower() == expected:
+                    if _entity_text(source_text, entity).strip().lower() == expected:
                         return True
                 elif entity_type == "text_mention":
                     user = getattr(entity, "user", None)
@@ -3659,11 +3712,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     # autocomplete produces in groups, so dropping it at the
                     # mention gate would break /new, /reset, /help, ... for
                     # every group that has ``require_mention`` enabled (#15415).
-                    offset = int(getattr(entity, "offset", -1))
-                    length = int(getattr(entity, "length", 0))
-                    if offset < 0 or length <= 0:
+                    command_text = _entity_text(source_text, entity)
+                    if not command_text:
                         continue
-                    command_text = source_text[offset:offset + length]
                     at_index = command_text.find("@")
                     if at_index < 0:
                         continue
@@ -4054,6 +4105,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif msg.video:
             try:
+                video_size = getattr(msg.video, "file_size", None)
+                if not video_size or video_size > MAX_VIDEO_BYTES:
+                    event.text = (
+                        "The video is too large or its size could not be verified. "
+                        "Maximum: 20 MB."
+                    )
+                    logger.info("[Telegram] Video too large: %s bytes", video_size)
+                    await self.handle_message(event)
+                    return
+
                 file_obj = await msg.video.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
                 ext = ".mp4"

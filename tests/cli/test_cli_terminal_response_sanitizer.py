@@ -5,7 +5,7 @@ leak into the input buffer after terminal resize storms or multiplexer
 tab switches — see issue #14692.
 """
 
-from cli import _strip_leaked_terminal_responses
+from cli import _TERMINAL_INPUT_MODE_RESET_SEQ, _strip_leaked_terminal_responses
 
 
 class TestStripLeakedTerminalResponses:
@@ -79,3 +79,9 @@ class TestStripLeakedTerminalResponses:
     def test_does_not_strip_regular_angle_bracket_text(self):
         text = "render <div class='hero'> literal"
         assert _strip_leaked_terminal_responses(text) == text
+
+
+class TestTerminalInputModeRecoverySequence:
+    def test_preserves_bracketed_paste_safety(self):
+        assert "\x1b[?2004l" not in _TERMINAL_INPUT_MODE_RESET_SEQ
+        assert "\x1b[?2004h" in _TERMINAL_INPUT_MODE_RESET_SEQ

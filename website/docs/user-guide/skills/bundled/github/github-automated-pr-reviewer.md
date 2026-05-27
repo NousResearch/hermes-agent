@@ -17,10 +17,10 @@ Automated PR reviewer: scans for '@jules code review' comments and triggers code
 | Source | Bundled (installed by default) |
 | Path | `skills/github/automated-pr-reviewer` |
 | Version | `1.0.0` |
-| Author | Hermes Agent |
+| Author | badMade |
 | License | MIT |
 | Platforms | linux, macos, windows |
-| Tags | `GitHub`, `Code-Review`, `Automation`, `Pull-Requests`, `Cron`, `review` |
+| Tags | `GitHub`, `Code-Review`, `Automation`, `Pull-Requests`, `Cron` |
 | Related skills | [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review), `cronjob` |
 
 ## Reference: full SKILL.md

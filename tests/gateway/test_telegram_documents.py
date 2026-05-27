@@ -119,8 +119,9 @@ def _make_update(msg):
     return update
 
 
-def _make_video(file_obj=None):
+def _make_video(file_obj=None, file_size=1024):
     video = MagicMock()
+    video.file_size = file_size
     video.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"video-bytes"))
     return video
 
@@ -413,6 +414,34 @@ class TestVideoDownloadBlock:
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
 
     @pytest.mark.asyncio
+    async def test_oversized_native_video_rejected_before_download(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4")
+        msg = _make_message()
+        msg.video = _make_video(file_obj, file_size=25 * 1024 * 1024)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        msg.video.get_file.assert_not_awaited()
+        event = adapter.handle_message.call_args[0][0]
+        assert "too large" in event.text
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_native_video_size_rejected_before_download(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4")
+        msg = _make_message()
+        msg.video = _make_video(file_obj, file_size=None)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        msg.video.get_file.assert_not_awaited()
+        event = adapter.handle_message.call_args[0][0]
+        assert "could not be verified" in event.text
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
     async def test_mp4_document_is_treated_as_video(self, adapter):
         file_obj = _make_file_obj(b"fake-mp4-doc")
         doc = _make_document(file_name="good.mp4", mime_type="video/mp4", file_size=1024, file_obj=file_obj)
@@ -425,6 +454,25 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_oversized_mp4_document_rejected_before_download(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4-doc")
+        doc = _make_document(
+            file_name="huge.mp4",
+            mime_type="video/mp4",
+            file_size=25 * 1024 * 1024,
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+
+        doc.get_file.assert_not_awaited()
+        event = adapter.handle_message.call_args[0][0]
+        assert "too large" in event.text
+        assert event.media_urls == []
 
 
 # ---------------------------------------------------------------------------

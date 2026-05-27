@@ -185,6 +185,27 @@ def test_tool_add_resource_sends_remote_url_as_path():
 
 
 @pytest.mark.parametrize("url", [
+    "HTTPS://example.com/doc.md",
+    "HTTP://example.com/page",
+    "Https://example.com/doc.md",
+])
+def test_tool_add_resource_accepts_case_insensitive_remote_schemes(url):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.return_value = {
+        "status": "ok",
+        "result": {"root_uri": "viking://resources/remote"},
+    }
+
+    provider._tool_add_resource({"url": url})
+
+    provider._client.upload_temp_file.assert_not_called()
+    provider._client.post.assert_called_once_with("/api/v1/resources", {
+        "path": url,
+    })
+
+
+@pytest.mark.parametrize("url", [
     "git@github.com:org/repo.git",
     "git@ssh.dev.azure.com:v3/org/project/repo",
     "ssh://git@github.com/org/repo.git",

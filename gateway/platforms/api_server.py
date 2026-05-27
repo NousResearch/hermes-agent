@@ -538,9 +538,15 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
+    if extra:
+        subset["__extra__"] = extra
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -1259,7 +1265,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream"],
+                extra={"x_hermes_session_id": session_id},
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cron.jobs import (
+    _job_output_dir_for_cleanup,
     parse_duration,
     parse_schedule,
     compute_next_run,
@@ -229,11 +230,71 @@ class TestJobCRUD:
 
     def test_remove_job(self, tmp_cron_dir):
         job = create_job(prompt="Temp job", schedule="30m")
+        output_dir = tmp_cron_dir / "cron" / "output" / job["id"]
+        output_dir.mkdir(parents=True)
+        (output_dir / "run.md").write_text("ok")
+
         assert remove_job(job["id"]) is True
+
         assert get_job(job["id"]) is None
+        assert not output_dir.exists()
+
+    def test_remove_job_skips_traversal_output_cleanup(self, tmp_cron_dir):
+        cron_dir = tmp_cron_dir / "cron"
+        sentinel = cron_dir / "KEEP_ME.txt"
+        save_jobs([{"id": "..", "prompt": "bad", "schedule": {"kind": "once"}, "enabled": True}])
+        (cron_dir / "output").mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("must stay")
+
+        assert remove_job("..") is True
+
+        assert sentinel.read_text() == "must stay"
+        assert (cron_dir / "jobs.json").exists()
+
+    def test_remove_job_skips_absolute_output_cleanup(self, tmp_cron_dir):
+        victim = tmp_cron_dir / "victim"
+        victim.mkdir()
+        (victim / "KEEP_ME.txt").write_text("must stay")
+        save_jobs([{"id": str(victim), "prompt": "bad", "schedule": {"kind": "once"}, "enabled": True}])
+
+        assert remove_job(str(victim)) is True
+
+        assert (victim / "KEEP_ME.txt").read_text() == "must stay"
 
     def test_remove_nonexistent_returns_false(self, tmp_cron_dir):
         assert remove_job("nonexistent") is False
+
+    def test_cleanup_helper_returns_resolved_candidate(self, tmp_cron_dir):
+        candidate = _job_output_dir_for_cleanup("abc123")
+
+        assert candidate == (tmp_cron_dir / "cron" / "output" / "abc123").resolve(strict=False)
+
+    def test_remove_job_invalid_id_path_error_skips_cleanup(self, tmp_cron_dir):
+        cron_dir = tmp_cron_dir / "cron"
+        sentinel = cron_dir / "KEEP_ME.txt"
+        # Direct write simulates legacy/crafted storage that bypassed create/update validation.
+        save_jobs([{"id": "bad\0id", "prompt": "bad", "schedule": {"kind": "once"}, "enabled": True}])
+        (cron_dir / "output").mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("must stay")
+
+        assert _job_output_dir_for_cleanup("bad\0id") is None
+        assert remove_job("bad\0id") is True
+        assert sentinel.read_text() == "must stay"
+
+    def test_remove_job_cleanup_error_is_best_effort(self, tmp_cron_dir, monkeypatch):
+        job = create_job(prompt="Temp job", schedule="30m")
+        output_dir = tmp_cron_dir / "cron" / "output" / job["id"]
+        output_dir.mkdir(parents=True)
+        (output_dir / "run.md").write_text("ok")
+
+        def _raise(_path):
+            raise OSError("boom")
+
+        monkeypatch.setattr("cron.jobs.shutil.rmtree", _raise)
+
+        assert remove_job(job["id"]) is True
+        assert get_job(job["id"]) is None
+        assert output_dir.exists()
 
     def test_auto_repeat_for_once(self, tmp_cron_dir):
         job = create_job(prompt="One-shot", schedule="1h")
@@ -270,6 +331,17 @@ class TestUpdateJob:
         # Verify persisted to disk
         fetched = get_job(job["id"])
         assert fetched["name"] == "New Name"
+
+    def test_update_ignores_id_mutation(self, tmp_cron_dir):
+        job = create_job(prompt="Keep id", schedule="every 1h", name="Old Name")
+
+        updated = update_job(job["id"], {"id": "..", "name": "New Name"})
+
+        assert updated is not None
+        assert updated["id"] == job["id"]
+        assert updated["name"] == "New Name"
+        assert get_job(job["id"])["id"] == job["id"]
+        assert get_job("..") is None
 
     def test_update_schedule(self, tmp_cron_dir):
         job = create_job(prompt="Daily report", schedule="every 1h")

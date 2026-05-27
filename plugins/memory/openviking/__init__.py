@@ -290,7 +290,7 @@ ADD_RESOURCE_SCHEMA = {
     "name": "viking_add_resource",
     "description": (
         "Add a remote URL to the OpenViking knowledge base. "
-        "Remote resources must be public http(s), git, or ssh URLs. "
+        "Resources must be public http(s), git, or ssh URLs reachable by OpenViking. "
         "Local filesystem paths and file:// URIs are not allowed. "
         "The system automatically parses, indexes, and generates summaries."
     ),
@@ -328,6 +328,10 @@ ADD_RESOURCE_SCHEMA = {
 }
 
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> origin/main
 def _is_windows_absolute_path(value: str) -> bool:
     return (
         len(value) >= 3
@@ -338,7 +342,7 @@ def _is_windows_absolute_path(value: str) -> bool:
 
 
 def _is_remote_resource_source(value: str) -> bool:
-    return value.startswith(_REMOTE_RESOURCE_PREFIXES)
+    return value.lower().startswith(_REMOTE_RESOURCE_PREFIXES)
 
 
 def _is_local_path_reference(value: str) -> bool:
@@ -874,6 +878,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         parsed_url = urlparse(url)
         if parsed_url.scheme == "file":
             return tool_error(local_path_error)
+<<<<<<< HEAD
         if _is_local_path_reference(url):
             return tool_error(local_path_error)
 
@@ -886,6 +891,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "Unsupported resource source. Provide a remote URL reachable by OpenViking."
             )
 
+=======
+        if parsed_url.scheme and not _is_windows_absolute_path(url) and not _is_remote_resource_source(url):
+            return tool_error(f"Unsupported resource URL scheme: {parsed_url.scheme}")
+        if _is_local_path_reference(url):
+            return tool_error(local_path_error)
+        payload["path"] = url
+>>>>>>> origin/main
         resp = self._client.post("/api/v1/resources", payload)
         result = resp.get("result", {})
 

@@ -58,10 +58,6 @@ def _reject_unsafe_output_fragment(path: Path, *, label: str) -> None:
         raise ValueError(f"Unsafe Drive download {label}: absolute paths and '..' are not allowed")
 
 
-def _has_trailing_path_separator(value: str) -> bool:
-    return value.endswith((os.sep, os.altsep)) if os.altsep else value.endswith(os.sep)
-
-
 def _validate_drive_download_filename(name: str, *, label: str) -> None:
     if name in {"", ".", ".."}:
         raise ValueError(f"Unsafe Drive download {label}: path must end with a filename")
@@ -72,19 +68,12 @@ def _safe_drive_download_path(output: str, remote_name: str, default_ext: str = 
     if output:
         relative_path = Path(output).expanduser()
         _reject_unsafe_output_fragment(relative_path, label="output path")
-        if (
-            not relative_path.name
-            or relative_path.name in {".", ".."}
-            or _has_trailing_path_separator(output)
-        ):
-            raise ValueError(
-                "Unsafe Drive download output: path must end with a filename, not a directory separator"
-            )
+        _validate_drive_download_filename(relative_path.name, label="output path")
     else:
-        remote_basename = Path(remote_name).name if remote_name else "download"
-        if not remote_basename or remote_basename in {".", ".."}:
-            raise ValueError("Unsafe Drive download remote filename is empty or reserved")
-        relative_path = Path(remote_basename)
+        safe_name = Path(remote_name or "download").name
+        if safe_name in {"", ".", ".."}:
+            safe_name = "download"
+        relative_path = Path(safe_name)
 
     if default_ext and not relative_path.suffix:
         relative_path = relative_path.with_suffix(default_ext)

@@ -250,6 +250,51 @@ class TestSchemaConversion:
 
         assert schema["properties"]["filter"]["required"] == ["field"]
 
+    def test_keyword_named_properties_do_not_poison_container_map(self):
+        """Argument names matching schema keywords must remain ordinary properties."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "required": {"type": "string", "description": "ordinary argument"},
+                "properties": {"type": "string", "description": "ordinary argument"},
+            },
+            "required": ["required", "properties"],
+        })
+
+        assert schema == {
+            "type": "object",
+            "properties": {
+                "required": {"type": "string", "description": "ordinary argument"},
+                "properties": {"type": "string", "description": "ordinary argument"},
+            },
+            "required": ["required", "properties"],
+        }
+
+    def test_keyword_named_nested_properties_do_not_poison_container_map(self):
+        """Nested property containers are not treated as schemas themselves."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "properties": {
+                        "required": {"type": "string"},
+                    },
+                    "required": ["required", "missing"],
+                },
+            },
+        })
+
+        assert schema["properties"]["payload"] == {
+            "type": "object",
+            "properties": {"required": {"type": "string"}},
+            "required": ["required"],
+        }
+
     def test_object_in_array_items_gets_properties_filled(self):
         """Array-item object schemas without properties get an empty dict."""
         from tools.mcp_tool import _normalize_mcp_input_schema

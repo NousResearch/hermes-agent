@@ -1,5 +1,7 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import json
+
 import pytest
 
 from acp_adapter.tools import (
@@ -431,6 +433,30 @@ class TestBuildToolComplete:
         assert "Web extract failed" in text
         assert "https://example.com" in text
         assert "timeout" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_web_extract_error_truncates_metadata(self):
+        long_title = "t" * 120000
+        long_url = "https://example.com/" + ("u" * 120000)
+        result = build_tool_complete(
+            "tc-web-extract-long-error",
+            "web_extract",
+            json.dumps({"results": [{"url": long_url, "title": long_title, "error": "timeout"}]}),
+        )
+        text = result.content[0].content.text
+        assert len(text) < 7000
+        assert "truncated" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_web_extract_top_level_error_truncates(self):
+        result = build_tool_complete(
+            "tc-web-extract-top-error",
+            "web_extract",
+            json.dumps({"success": False, "error": "e" * 120000}),
+        )
+        text = result.content[0].content.text
+        assert len(text) < 7000
+        assert "truncated" in text
         assert result.raw_output is None
 
     def test_build_tool_complete_truncates_large_output(self):

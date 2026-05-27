@@ -447,6 +447,13 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+def _clear_auxiliary_endpoint_override(slot_cfg: Dict[str, Any]) -> None:
+    """Clear direct-endpoint fields when dashboard assigns provider/model slots."""
+    for key in ("base_url", "api_key", "api_mode"):
+        if key in slot_cfg:
+            slot_cfg[key] = ""
+
+
 class ModelAssignment(BaseModel):
     """Payload for POST /api/model/set — assign a provider/model to a slot.
 
@@ -1107,13 +1114,13 @@ async def set_model_assignment(body: ModelAssignment):
             aux = {}
 
         if task == "__reset__":
-            # Reset every slot to provider="auto", model="" — keeps other fields intact.
             for slot in _AUX_TASK_SLOTS:
                 slot_cfg = aux.get(slot)
                 if not isinstance(slot_cfg, dict):
                     slot_cfg = {}
                 slot_cfg["provider"] = "auto"
                 slot_cfg["model"] = ""
+                _clear_auxiliary_endpoint_override(slot_cfg)
                 aux[slot] = slot_cfg
             cfg["auxiliary"] = aux
             save_config(cfg)
@@ -1131,6 +1138,7 @@ async def set_model_assignment(body: ModelAssignment):
                 slot_cfg = {}
             slot_cfg["provider"] = provider
             slot_cfg["model"] = model
+            _clear_auxiliary_endpoint_override(slot_cfg)
             aux[slot] = slot_cfg
 
         cfg["auxiliary"] = aux

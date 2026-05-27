@@ -3024,7 +3024,6 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None

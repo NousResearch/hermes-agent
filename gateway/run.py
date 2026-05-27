@@ -12202,6 +12202,8 @@ class GatewayRunner:
             anchor = reply_to_message_id or getattr(source, "message_id", None)
             if anchor is not None:
                 metadata["telegram_reply_to_message_id"] = str(anchor)
+        if getattr(source, "platform", None) == Platform.FEISHU and reply_to_message_id is not None:
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
         return metadata
 
     @staticmethod

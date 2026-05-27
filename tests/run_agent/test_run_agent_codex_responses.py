@@ -539,6 +539,74 @@ def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(mo
     assert response.status == "completed"
 
 
+def test_run_codex_stream_recovers_when_final_response_parse_sees_null_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream item survived")],
+    )
+
+    class FinalResponseTypeErrorStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter([
+                SimpleNamespace(type="response.output_item.done", item=output_item),
+            ])
+
+        def get_final_response(self):
+            raise TypeError("'NoneType' object is not iterable")
+
+    def _unexpected_create(**kwargs):  # pragma: no cover - recovery should avoid fallback call
+        raise AssertionError("create fallback should not be needed when output items were collected")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: FinalResponseTypeErrorStream(),
+            create=_unexpected_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output == [output_item]
+    assert response.status == "completed"
+
+
+def test_codex_create_stream_fallback_backfills_none_terminal_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="fallback item survived")],
+    )
+    terminal = SimpleNamespace(
+        output=None,
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        status="completed",
+        model="gpt-5-codex",
+    )
+    create_stream = _FakeCreateStream([
+        SimpleNamespace(type="response.output_item.done", item=output_item),
+        SimpleNamespace(type="response.completed", response=terminal),
+    ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream)
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+
+    assert create_stream.closed is True
+    assert response is terminal
+    assert response.output == [output_item]
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

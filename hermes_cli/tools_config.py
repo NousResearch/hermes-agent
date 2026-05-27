@@ -389,7 +389,6 @@ TOOL_CATEGORIES = {
         #     underlying backend but has a distinct setup UX.
         #   - "Local Browser" — non-cloud option, no CloudBrowserProvider.
         #   - "Camofox" — anti-detection local Firefox; short-circuits the
-        #     cloud-provider dispatch path via _is_camofox_mode().
         "providers": [
             {
                 "name": "Nous Subscription (Browser Use cloud)",
@@ -411,15 +410,6 @@ TOOL_CATEGORIES = {
                 "post_setup": "agent_browser",
             },
             {
-                "name": "Camofox",
-                "badge": "free · local",
-                "tag": "Anti-detection browser (Firefox/Camoufox)",
-                "env_vars": [
-                    {"key": "CAMOFOX_URL", "prompt": "Camofox server URL", "default": "http://localhost:9377",
-                     "url": "https://github.com/jo-inc/camofox-browser"},
-                ],
-                "browser_provider": "camofox",
-                "post_setup": "camofox",
             },
         ],
     },
@@ -851,21 +841,16 @@ def _run_post_setup(post_setup_key: str):
             _print_warning(f"    Chromium install failed: {exc}")
             _print_info("    Run manually: npx agent-browser install --with-deps")
 
-    elif post_setup_key == "camofox":
-        camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
-        if not camofox_dir.exists() and _npm_bin:
             _print_info("    Installing Camofox browser package...")
             _print_info("    First run downloads the Camoufox engine (~300MB) — this can take several minutes.")
             import subprocess
-            # Install @askjo/camofox-browser on-demand. It is NOT in
             # package.json so that `hermes update` does not silently pull
             # the ~300MB Camoufox Firefox-fork binary for every user.
             # Stream output (no capture, no --silent) so the long-running
             # postinstall download is visible instead of looking frozen.
             try:
                 result = subprocess.run(
-                    [_npm_bin, "install", "@askjo/camofox-browser@^1.5.2",
                      "--no-fund", "--no-audit", "--progress=false"],
                     cwd=str(PROJECT_ROOT),
                 )
@@ -874,20 +859,14 @@ def _run_post_setup(post_setup_key: str):
                 else:
                     _print_warning(
                         "    npm install failed — run manually: "
-                        "npm install @askjo/camofox-browser"
                     )
             except Exception as exc:
                 _print_warning(f"    Camofox install failed: {exc}")
                 _print_info(
-                    "    Run manually: npm install @askjo/camofox-browser"
                 )
-        if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
-            _print_info("      npx @askjo/camofox-browser")
-            _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
-            _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
     elif post_setup_key == "cua_driver":
         install_cua_driver(upgrade=False)

@@ -1150,6 +1150,15 @@ class TestToolUseEnforcementGuidance:
     def test_enforcement_models_includes_deepseek(self):
         assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
 
+    def test_enforcement_models_includes_claude(self):
+        assert "claude" in TOOL_USE_ENFORCEMENT_MODELS
+        assert "anthropic" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_kimi_and_minimax(self):
+        assert "kimi" in TOOL_USE_ENFORCEMENT_MODELS
+        assert "moonshot" in TOOL_USE_ENFORCEMENT_MODELS
+        assert "minimax" in TOOL_USE_ENFORCEMENT_MODELS
+
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
 
@@ -1192,6 +1201,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

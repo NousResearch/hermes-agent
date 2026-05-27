@@ -155,6 +155,15 @@ class SSHEnvironment(BaseEnvironment):
         if result.returncode != 0:
             raise RuntimeError(f"scp failed: {result.stderr.strip()}")
 
+    def push_file(self, local_path: str, remote_path: str) -> None:
+        """Transfer a host-local file to the remote machine.
+
+        Creates the parent directory on the remote side if needed.
+        Reuses the existing ControlMaster socket so no extra handshake is
+        required.  Raises RuntimeError if the transfer fails.
+        """
+        self._scp_upload(local_path, remote_path)
+
     def _ssh_bulk_upload(self, files: list[tuple[str, str]]) -> None:
         """Upload many files in a single tar-over-SSH stream.
 

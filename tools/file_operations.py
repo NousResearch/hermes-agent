@@ -762,7 +762,32 @@ class ShellFileOperations(FileOperations):
     # =========================================================================
     # READ Implementation
     # =========================================================================
-    
+
+    def _push_local_file_if_needed(self, path: str) -> bool:
+        """Push a host-local file to the active backend when it is missing there.
+
+        Called after a remote stat for *path* fails.  If the path resolves to
+        an existing file on the local host (e.g. a WebUI attachment uploaded to
+        the host while the backend is a remote SSH session) and the active
+        environment exposes a ``push_file`` method, the file is transferred so
+        a subsequent stat/read attempt can succeed.
+
+        Returns True when a push was attempted without raising an exception,
+        False in all other cases (file absent locally, environment does not
+        support push, or transfer error).
+        """
+        local = Path(path)
+        if not local.is_file():
+            return False
+        push_fn = getattr(self.env, "push_file", None)
+        if push_fn is None:
+            return False
+        try:
+            push_fn(str(local), path)
+            return True
+        except Exception:
+            return False
+
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
@@ -785,15 +810,21 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
-            return self._suggest_similar_files(path)
-        
+            # Before giving up, check whether the file exists on the local
+            # host but has not yet been transferred to the remote backend
+            # (common when a WebUI file upload targets an SSH-profile session).
+            if self._push_local_file_if_needed(path):
+                stat_result = self._exec(stat_cmd)
+            if stat_result.exit_code != 0:
+                # File not found - try to suggest similar files
+                return self._suggest_similar_files(path)
+
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
             file_size = int(stat_output.strip())
         except ValueError:
             file_size = 0
-        
+
         # Check if file is too large
         if file_size > MAX_FILE_SIZE:
             # Still try to read, but warn
@@ -917,7 +948,10 @@ class ShellFileOperations(FileOperations):
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:
-            return self._suggest_similar_files(path)
+            if self._push_local_file_if_needed(path):
+                stat_result = self._exec(stat_cmd)
+            if stat_result.exit_code != 0:
+                return self._suggest_similar_files(path)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
             file_size = int(stat_output.strip())

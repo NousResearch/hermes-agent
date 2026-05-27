@@ -1121,6 +1121,61 @@ class TestPgrepKillExpansion:
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 
+    def test_kill_dollar_pidof_detected(self):
+        """`kill $(pidof hermes)` is the BSD/Linux equivalent of the
+        pgrep expansion and bypasses the pkill/killall name pattern
+        in the same way. See issue #33071."""
+        cmd = "kill -TERM $(pidof hermes_cli.main)"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "pidof" in desc.lower() or "pgrep" in desc.lower()
+
+    def test_kill_backtick_pidof_detected(self):
+        cmd = "kill -9 `pidof hermes`"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+
+class TestLaunchctlGatewayLifecycle:
+    """launchctl stop/kickstart/bootout/unload against the Hermes service
+    label achieves the same effect as `hermes gateway stop|restart` and
+    must require the same approval. See issue #33071.
+    """
+
+    def test_launchctl_stop_hermes_detected(self):
+        cmd = "launchctl stop ai.hermes.gateway"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "launchd" in desc.lower() or "hermes" in desc.lower()
+
+    def test_launchctl_kickstart_hermes_detected(self):
+        cmd = "launchctl kickstart -k system/ai.hermes.gateway"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_bootout_hermes_detected(self):
+        cmd = "launchctl bootout system/ai.hermes.gateway"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_unload_hermes_detected(self):
+        cmd = "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_print_unrelated_not_flagged(self):
+        """Read-only inspection of an unrelated launchd label must stay safe."""
+        cmd = "launchctl print system/com.apple.WindowServer"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_launchctl_stop_unrelated_not_flagged(self):
+        """`launchctl stop` on a non-Hermes label is out of scope for the
+        gateway-lifecycle guard."""
+        cmd = "launchctl stop com.example.unrelated"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
 
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy

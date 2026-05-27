@@ -415,6 +415,23 @@ def run_production_order_autonomously(
             retry_counts[envelope.idempotency_key] = retry_counts.get(envelope.idempotency_key, 0) + 1
             error = f"profile invocation failed with exit_code={invocation.exit_code}"
             errors.append(error)
+            metadata = invocation.runner_metadata or {}
+            failure_diagnostics = {
+                "result": "profile_invocation_failed",
+                "error": error,
+                "invocation_log_ref": invocation.log_ref,
+                "stdout_preview": _bounded_preview(invocation.stdout),
+                "stderr_preview": _bounded_preview(invocation.stderr),
+                "result_channel_preview": _bounded_preview(
+                    json.dumps(invocation.result_channel, ensure_ascii=False)
+                    if invocation.result_channel is not None
+                    else ""
+                ),
+                "resolved_hermes_home": metadata.get("resolved_hermes_home"),
+                "resolved_model_default": metadata.get("resolved_model_default"),
+                "resolved_model_provider": metadata.get("resolved_model_provider"),
+                "resolved_model_base_url": metadata.get("resolved_model_base_url"),
+            }
             log_dispatch_event(
                 conn,
                 production_order_id=production_order_id,
@@ -425,7 +442,7 @@ def run_production_order_autonomously(
                 target_profile=envelope.target_profile,
                 kanban_card_id=envelope.child_kanban_card_id,
                 packet_id=None,
-                result="profile_invocation_failed",
+                result=json.dumps(failure_diagnostics, ensure_ascii=False),
                 error=error,
                 next_action="manual_review_failed_invocation",
             )

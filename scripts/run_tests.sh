@@ -49,6 +49,16 @@ fi
 PYTHON="$VENV/bin/python"
 
 
+# ── Optional local test env (ignored by git) ────────────────────────────────
+TEST_ENV_FILE="$REPO_ROOT/.env.test.local"
+if [[ -f "$TEST_ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$TEST_ENV_FILE"
+  set +a
+fi
+
+
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────
 EXTRA_PYTHONPATH=""
 EXTRA_PYTEST_PLUGINS=""
@@ -73,6 +83,7 @@ exec env -i \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
+  ${HERMES_TEST_GUARDIAN_API_KEY:+HERMES_TEST_GUARDIAN_API_KEY="$HERMES_TEST_GUARDIAN_API_KEY"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

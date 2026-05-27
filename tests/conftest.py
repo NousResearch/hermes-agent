@@ -330,6 +330,8 @@ def _hermetic_environment(tmp_path, monkeypatch):
     reads ``~/.hermes/*`` can't touch the real one, and pins TZ/LANG so
     datetime/locale-sensitive tests are deterministic.
     """
+    guardian_test_api_key = os.environ.get("HERMES_TEST_GUARDIAN_API_KEY", "")
+
     # 1. Blank every credential-shaped env var that's currently set.
     for name in list(os.environ.keys()):
         if _looks_like_credential(name):
@@ -363,6 +365,8 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("LANG", "C.UTF-8")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
+    if guardian_test_api_key:
+        monkeypatch.setenv("HERMES_TEST_GUARDIAN_API_KEY", guardian_test_api_key)
 
     # 4b. Disable AWS IMDS lookups. Without this, any test that ends up
     #     calling has_aws_credentials() / resolve_aws_auth_env_var()

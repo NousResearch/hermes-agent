@@ -196,6 +196,12 @@ uv pip install -e ".[all,dev]"
 scripts/run_tests.sh
 ```
 
+If you run Hermes tests against an auth-protected local Guardian endpoint, put a
+dedicated local-only key in `.env.test.local` as
+`HERMES_TEST_GUARDIAN_API_KEY=...`. `scripts/run_tests.sh` will load that ignored
+file before entering its hermetic `env -i` environment, so loopback metadata probes
+do not hit Guardian with placeholder test tokens.
+
 ---
 
 ## Community

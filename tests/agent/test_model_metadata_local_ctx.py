@@ -563,7 +563,6 @@ class TestGetModelContextLengthLocalFallback:
     def test_non_local_endpoint_does_not_query_local_server(self):
         """For non-local endpoints, _query_local_context_length is not called."""
         from agent.model_metadata import get_model_context_length, CONTEXT_PROBE_TIERS
-
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
@@ -597,3 +596,60 @@ class TestGetModelContextLengthLocalFallback:
             result = get_model_context_length("unknown-xyz-model", "")
 
         mock_query.assert_not_called()
+
+
+def test_detect_local_server_type_rewrites_placeholder_guardian_key_under_pytest():
+    """Loopback metadata probes should use the dedicated test Guardian key, not test-key."""
+    from agent.model_metadata import detect_local_server_type
+
+    response = MagicMock()
+    response.status_code = 404
+    response.json.return_value = {}
+
+    client_mock = MagicMock()
+    client_mock.__enter__ = lambda s: client_mock
+    client_mock.__exit__ = MagicMock(return_value=False)
+    client_mock.get.return_value = response
+
+    with patch.dict(
+        os.environ,
+        {
+            "PYTEST_CURRENT_TEST": "tests/agent/test_model_metadata_local_ctx.py::test_detect_local_server_type_rewrites_placeholder_guardian_key_under_pytest",
+            "HERMES_TEST_GUARDIAN_API_KEY": "guard-live-test-key",
+        },
+        clear=False,
+    ), patch("httpx.Client", return_value=client_mock) as mock_client:
+        detect_local_server_type("http://localhost:11434/v1", api_key="test-key")
+
+    assert mock_client.call_args.kwargs["headers"] == {
+        "Authorization": "Bearer guard-live-test-key"
+    }
+
+
+def test_fetch_endpoint_model_metadata_rewrites_placeholder_guardian_key_under_pytest():
+    """Local /models probes should use the dedicated test Guardian key, not test-key."""
+    from agent.model_metadata import fetch_endpoint_model_metadata
+
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {"data": []}
+
+    with patch.dict(
+        os.environ,
+        {
+            "PYTEST_CURRENT_TEST": "tests/agent/test_model_metadata_local_ctx.py::test_fetch_endpoint_model_metadata_rewrites_placeholder_guardian_key_under_pytest",
+            "HERMES_TEST_GUARDIAN_API_KEY": "guard-live-test-key",
+        },
+        clear=False,
+    ), patch("agent.model_metadata.detect_local_server_type", return_value=None), patch(
+        "agent.model_metadata.requests.get", return_value=response
+    ) as mock_get:
+        fetch_endpoint_model_metadata(
+            "http://localhost:11434/v1",
+            api_key="test-key",
+            force_refresh=True,
+        )
+
+    assert mock_get.call_args.kwargs["headers"] == {
+        "Authorization": "Bearer guard-live-test-key"
+    }

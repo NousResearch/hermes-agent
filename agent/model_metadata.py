@@ -463,6 +463,34 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+def _looks_like_pytest_placeholder_api_key(api_key: str) -> bool:
+    """Return True for the placeholder tokens commonly used in tests."""
+    token = str(api_key or "").strip().lower()
+    if not token:
+        return False
+    return (
+        token == "test-key"
+        or token.startswith("test-key-")
+        or token.startswith("sk-test-key")
+        or token == "sk-dummy"
+    )
+
+
+def _effective_probe_api_key(base_url: str, api_key: str = "") -> str:
+    """Swap placeholder pytest keys for a dedicated local Guardian key when available."""
+    token = str(api_key or "").strip()
+    if not token:
+        return token
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return token
+    if not is_local_endpoint(base_url):
+        return token
+    replacement = str(os.environ.get("HERMES_TEST_GUARDIAN_API_KEY", "")).strip()
+    if replacement and _looks_like_pytest_placeholder_api_key(token):
+        return replacement
+    return token
+
+
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 
@@ -475,7 +503,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
-    headers = _auth_headers(api_key)
+    probe_api_key = _effective_probe_api_key(base_url, api_key)
+    headers = _auth_headers(probe_api_key)
 
     try:
         with httpx.Client(timeout=2.0, headers=headers) as client:
@@ -672,12 +701,13 @@ def fetch_endpoint_model_metadata(
     if alternate and alternate not in candidates:
         candidates.append(alternate)
 
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    probe_api_key = _effective_probe_api_key(normalized, api_key)
+    headers = {"Authorization": f"Bearer {probe_api_key}"} if probe_api_key else {}
     last_error: Optional[Exception] = None
 
     if is_local_endpoint(normalized):
         try:
-            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
+            if detect_local_server_type(normalized, api_key=probe_api_key) == "lm-studio":
                 server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",
@@ -1114,10 +1144,11 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
-    headers = _auth_headers(api_key)
+    probe_api_key = _effective_probe_api_key(base_url, api_key)
+    headers = _auth_headers(probe_api_key)
 
     try:
-        server_type = detect_local_server_type(base_url, api_key=api_key)
+        server_type = detect_local_server_type(base_url, api_key=probe_api_key)
     except Exception:
         server_type = None
 

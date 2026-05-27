@@ -330,6 +330,14 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_json_and_md_documents(self):
+        # Regression: .json and .md were missing from the extension whitelist,
+        # so these tags were never extracted and got delivered as raw text.
+        for path in ("/tmp/data.json", "/tmp/notes.md"):
+            media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{path}")
+            assert media == [(path, False)]
+            assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

@@ -174,6 +174,26 @@ class _FakeResponsesStream:
         return self._final_response
 
 
+class _FakeResponsesStreamRaisesDuringIteration:
+    def __init__(self, events, exc):
+        self._events = list(events)
+        self._exc = exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events:
+            yield event
+        raise self._exc
+
+    def get_final_response(self):
+        raise AssertionError("get_final_response should not be reached")
+
+
 class _FakeCreateStream:
     def __init__(self, events):
         self._events = list(events)
@@ -482,6 +502,42 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_when_sdk_finalization_sees_none_output(monkeypatch):
+    """ChatGPT Codex can stream usable output then send response.output=None.
+
+    The OpenAI SDK raises ``TypeError("'NoneType' object is not iterable")``
+    while parsing that terminal response. Hermes should keep the streamed
+    message instead of surfacing a non-retryable local TypeError.
+    """
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="recovered ok")],
+    )
+    stream = _FakeResponsesStreamRaisesDuringIteration(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.added", item=output_item),
+            SimpleNamespace(type="response.output_text.delta", delta="recovered "),
+            SimpleNamespace(type="response.output_text.delta", delta="ok"),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+        ],
+        TypeError("'NoneType' object is not iterable"),
+    )
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: stream,
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.status == "completed"
+    assert response.output[0].content[0].text == "recovered ok"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

@@ -26,6 +26,41 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _recover_codex_stream_response_from_parts(
+    agent,
+    collected_output_items: list,
+    has_tool_calls: bool,
+):
+    """Build a final response when the SDK fails after streaming usable events."""
+    if collected_output_items:
+        logger.debug(
+            "Codex stream: recovered %d output items after SDK finalization error",
+            len(collected_output_items),
+        )
+        return SimpleNamespace(output=list(collected_output_items), status="completed")
+    if agent._codex_streamed_text_parts and not has_tool_calls:
+        assembled = "".join(agent._codex_streamed_text_parts)
+        logger.debug(
+            "Codex stream: recovered %d text deltas (%d chars) after SDK finalization error",
+            len(agent._codex_streamed_text_parts),
+            len(assembled),
+        )
+        return SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[
+                        SimpleNamespace(type="output_text", text=assembled),
+                    ],
+                )
+            ],
+            status="completed",
+        )
+    return None
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -271,6 +306,22 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            if "'NoneType' object is not iterable" in str(exc):
+                recovered = _recover_codex_stream_response_from_parts(
+                    agent,
+                    collected_output_items,
+                    has_tool_calls,
+                )
+                if recovered is not None:
+                    logger.warning(
+                        "Codex Responses stream finalization failed after usable events; "
+                        "recovering from streamed content. %s error=%s",
+                        agent._client_log_context(),
+                        exc,
+                    )
+                    return recovered
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(

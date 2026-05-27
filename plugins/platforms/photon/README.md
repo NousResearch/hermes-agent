@@ -43,6 +43,16 @@ When Photon ships an HTTP send endpoint, `_sidecar_send` is the one
 function that swaps and the sidecar disappears. The rest of the
 plugin stays the same.
 
+One implementation detail matters for shared iMessage lines: webhook
+events identify a conversation with a canonical Spectrum space id
+like `any;-;+15551234567`, while the current `spectrum-ts`
+`imessage(app).space(...)` helper resolves direct-message spaces by
+recipient address (`+15551234567`). The sidecar therefore caches
+send-capable `Space` objects from the inbound stream and, for uncached
+shared-line DMs, strips the `any;-;` prefix before sending. This
+bridges Photon's webhook shape to the SDK's outbound lookup shape
+without changing the Python gateway contract.
+
 ## First-time setup
 
 ```bash
@@ -114,6 +124,10 @@ All env vars are documented in `plugin.yaml`. The most important are:
 - **Outbound attachments are not supported yet.** Adding them is
   straightforward once the sidecar wires up `attachment(...)` /
   `space.send(attachment(...))` from `spectrum-ts`.
+- **Threaded reply metadata is not sent yet.** Hermes may pass a
+  `replyTo` id to the sidecar, but the sidecar currently sends plain
+  text with `space.send(text(...))`; true Spectrum replies need the
+  SDK `reply(...)` content builder and the original message object.
 - **Reactions, message effects, polls** — not exposed yet; the
   `spectrum-ts` SDK supports them, and the sidecar is the natural
   place to add them when the agent has reason to use them.

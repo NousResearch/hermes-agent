@@ -48,9 +48,9 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage;
+let Spectrum, imessage, spectrumText;
 try {
-  ({ Spectrum } = await import("spectrum-ts"));
+  ({ Spectrum, text: spectrumText } = await import("spectrum-ts"));
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
@@ -67,13 +67,31 @@ const app = await Spectrum({
   providers: [imessage.config()],
 });
 
+const cachedSpaces = new Map();
+
+function cacheSpace(space) {
+  if (space && typeof space.id === "string" && typeof space.send === "function") {
+    cachedSpaces.set(space.id, space);
+  }
+}
+
+function dmAddressFromSpaceId(spaceId) {
+  if (typeof spaceId !== "string") return null;
+  // Webhooks carry canonical space ids such as `any;-;+15551234567`.
+  // The iMessage helper resolves uncached DMs by recipient address.
+  if (spaceId.startsWith("any;-;")) return spaceId.slice("any;-;".length);
+  if (spaceId.startsWith("+")) return spaceId;
+  return null;
+}
+
 // Drain the inbound stream — Photon's webhook is the canonical inbound
 // path, but we still consume `app.messages` so spectrum-ts' internal
 // reconnect/heartbeat logic keeps running.  Each event is logged at
 // debug level; everything else is a no-op here.
 (async () => {
   try {
-    for await (const [, message] of app.messages) {
+    for await (const [space, message] of app.messages) {
+      cacheSpace(space);
       console.error(
         `photon-sidecar: drained inbound from ${message.platform} ` +
           `space=${message.space?.id}`
@@ -127,26 +145,19 @@ function ok(res, data) {
 }
 
 async function resolveSpace(spaceId) {
-  // spectrum-ts exposes the same Space methods via `app.space(spaceId)` /
-  // narrowed helpers; we fall back through a few accessor shapes to
-  // tolerate small SDK API drift.
-  if (typeof app.space === "function") {
-    return await app.space(spaceId);
-  }
-  if (app.spaces && typeof app.spaces.get === "function") {
-    return await app.spaces.get(spaceId);
-  }
-  // Last resort — the platform-narrowed helper.
-  if (imessage) {
-    const im = imessage(app);
-    if (typeof im.space === "function") {
-      try {
-        return await im.space({ id: spaceId });
-      } catch {
-        /* fall through */
-      }
+  const cached = cachedSpaces.get(spaceId);
+  if (cached) return cached;
+
+  const im = imessage(app);
+  if (typeof im.space === "function") {
+    const dmAddress = dmAddressFromSpaceId(spaceId);
+    if (dmAddress) {
+      const space = await im.space(dmAddress);
+      cacheSpace(space);
+      return space;
     }
   }
+
   throw new Error(`unable to resolve space id ${spaceId}`);
 }
 
@@ -169,14 +180,17 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text, replyTo } = body || {};
-      if (!spaceId || typeof text !== "string") {
+      const { spaceId, text: messageText, replyTo } = body || {};
+      if (!spaceId || typeof messageText !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
       const space = await resolveSpace(spaceId);
-      const result = replyTo
-        ? await space.send(text, { replyTo })
-        : await space.send(text);
+      if (replyTo) {
+        console.error(
+          "photon-sidecar: replyTo ignored for outbound text; sending plain message"
+        );
+      }
+      const result = await space.send(spectrumText(messageText));
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/typing") {

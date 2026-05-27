@@ -1581,7 +1581,13 @@ _LONG_LIVED_FOREGROUND_PATTERNS = (
 )
 
 _LONG_RUNNING_CODING_AGENT_PATTERNS = (
-    re.compile(r"(?:^|[;&|]\s*)(?:\S*/)?codex(?:-yuna)?\s+exec\b", re.IGNORECASE),
+    re.compile(
+        r"(?:^|[;&|]\s*)"
+        r"(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?"
+        r"(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*"
+        r"(?:\S*/)?codex(?:-yuna)?\s+exec\b",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -1602,12 +1608,12 @@ def _foreground_background_guidance(command: str) -> str | None:
     Prevents workflows that start a server/watch process and then stall before
     follow-up checks or test commands run.
     """
-    if _looks_like_help_or_version_command(command):
-        return None
-
     # Strip quoted content so keywords inside strings/arguments don't trigger
     # false positives (e.g., git commit -m "... setsid ...", python3 -c "os.setsid").
     unquoted = _strip_quotes(command)
+
+    if _looks_like_help_or_version_command(unquoted):
+        return None
 
     if _SHELL_LEVEL_BACKGROUND_RE.search(unquoted):
         return (

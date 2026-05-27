@@ -76,15 +76,15 @@ class TestForegroundTimeoutCap:
         assert "long-lived" in result["error"].lower()
         assert "background=true" in result["error"]
 
-    def test_foreground_rejects_codex_exec_agent_command(self):
-        """Foreground Codex exec should be redirected to tracked background mode."""
+    def _assert_codex_exec_rejected(self, command):
+        """Assert a foreground Codex exec command is redirected to background mode."""
         from tools.terminal_tool import terminal_tool
 
         with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
              patch("tools.terminal_tool._start_cleanup_thread"):
 
             result = json.loads(terminal_tool(
-                command="export PATH=\"$HOME/.local/bin:$PATH\"; codex-yuna exec --full-auto 'edit files'",
+                command=command,
                 pty=True,
                 timeout=600,
             ))
@@ -93,6 +93,36 @@ class TestForegroundTimeoutCap:
         assert "Codex CLI" in result["error"]
         assert "background=true" in result["error"]
         assert "notify_on_complete=true" in result["error"]
+
+    def test_foreground_rejects_codex_exec_agent_command(self):
+        """Foreground Codex exec should be redirected to tracked background mode."""
+        self._assert_codex_exec_rejected(
+            "export PATH=\"$HOME/.local/bin:$PATH\"; codex-yuna exec --full-auto 'edit files'"
+        )
+
+    def test_foreground_rejects_codex_exec_prompt_containing_help_flag(self):
+        """Prompt text mentioning --help must not make Codex exec look informational."""
+        self._assert_codex_exec_rejected(
+            "codex-yuna exec --full-auto 'implement --help flag'"
+        )
+
+    def test_foreground_rejects_codex_exec_prompt_containing_version_flag(self):
+        """Prompt text mentioning --version must not make Codex exec look informational."""
+        self._assert_codex_exec_rejected(
+            "codex-yuna exec --full-auto 'debug --version output'"
+        )
+
+    def test_foreground_rejects_codex_exec_after_env_assignment(self):
+        """Inline env assignments before Codex exec should still be blocked."""
+        self._assert_codex_exec_rejected(
+            "FOO=bar codex-yuna exec --full-auto 'edit files'"
+        )
+
+    def test_foreground_rejects_codex_exec_after_env_command(self):
+        """env VAR=value prefixes before Codex exec should still be blocked."""
+        self._assert_codex_exec_rejected(
+            "env FOO=bar codex-yuna exec --full-auto 'edit files'"
+        )
 
     def test_foreground_allows_codex_version_command(self):
         """Informational Codex commands should not be blocked."""

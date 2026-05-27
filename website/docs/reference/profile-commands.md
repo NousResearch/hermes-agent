@@ -36,16 +36,24 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 hermes profile list
 ```
 
-Lists all profiles. The currently active profile is marked with `*`.
+Lists all profiles with their configured model, gateway status, alias, and distribution metadata. The currently active profile is marked with `*` / `◆`.
+
+If you want to add a human-friendly nickname, set it in the profile's `profile.yaml`:
+
+```yaml
+nickname: Artemis
+```
 
 **Example:**
 
 ```bash
 $ hermes profile list
-  default
-* work
-  dev
-  personal
+
+ Profile          Nickname     Model                        Gateway      Alias        Distribution
+ ───────────────    ───────────    ───────────────────────────    ───────────    ───────────    ────────────────────
+  default         Antigone     gpt-5.4                      running      —            —
+◆ coder           Artemis      gpt-5.4                      running      coder        —
+  work            Athena       anthropic/claude-sonnet-4    stopped      work         —
 ```
 
 No options.
@@ -172,7 +180,13 @@ This permanently deletes the profile's entire directory including all config, me
 hermes profile show <name>
 ```
 
-Displays details about a profile including its home directory, configured model, gateway status, skills count, and configuration file status.
+Displays details about a profile including its nickname, home directory, configured model, gateway status, skills count, and configuration file status.
+
+Nicknames are stored in the profile's `profile.yaml`. For example:
+
+```yaml
+nickname: Artemis
+```
 
 This shows the profile's Hermes home directory, not the terminal working directory. Terminal commands start from `terminal.cwd` (or the launch directory on the local backend when `cwd: "."`).
 
@@ -183,15 +197,16 @@ This shows the profile's Hermes home directory, not the terminal working directo
 **Example:**
 
 ```bash
-$ hermes profile show work
-Profile: work
-Path:    ~/.hermes/profiles/work
-Model:   anthropic/claude-sonnet-4 (anthropic)
-Gateway: stopped
-Skills:  12
-.env:    exists
-SOUL.md: exists
-Alias:   ~/.local/bin/work
+$ hermes profile show coder
+Profile:    coder
+Nickname:   Artemis
+Path:       ~/.hermes/profiles/coder
+Model:      gpt-5.4 (openai-codex)
+Gateway:    running
+Skills:     95
+.env:       exists
+SOUL.md:    exists
+Alias:      ~/.local/bin/coder
 ```
 
 ## `hermes profile alias`

@@ -11148,19 +11148,19 @@ def cmd_profile(args):
         meta = read_profile_meta(profile_dir)
         alias_name = find_alias_for_profile(name)
 
-        print(f"\nProfile: {name}")
+        print(f"\nProfile:    {name}")
         if meta.get("nickname"):
-            print(f"Nickname: {meta['nickname']}")
-        print(f"Path:    {profile_dir}")
+            print(f"Nickname:   {meta['nickname']}")
+        print(f"Path:       {profile_dir}")
         if model:
-            print(f"Model:   {model}" + (f" ({provider})" if provider else ""))
-        print(f"Gateway: {'running' if gw else 'stopped'}")
-        print(f"Skills:  {skills}")
+            print(f"Model:      {model}" + (f" ({provider})" if provider else ""))
+        print(f"Gateway:    {'running' if gw else 'stopped'}")
+        print(f"Skills:     {skills}")
         print(
-            f".env:    {'exists' if (profile_dir / '.env').exists() else 'not configured'}"
+            f".env:       {'exists' if (profile_dir / '.env').exists() else 'not configured'}"
         )
         print(
-            f"SOUL.md: {'exists' if (profile_dir / 'SOUL.md').exists() else 'not configured'}"
+            f"SOUL.md:    {'exists' if (profile_dir / 'SOUL.md').exists() else 'not configured'}"
         )
         if dist_name:
             print(f"Distribution: {dist_name}@{dist_version or '?'}")
@@ -11170,7 +11170,8 @@ def cmd_profile(args):
         if alias_name:
             is_windows = sys.platform == "win32"
             wrapper = _get_wrapper_dir() / (f"{alias_name}.bat" if is_windows else alias_name)
-            print(f"Alias:   {alias_name} → hermes -p {name}  ({wrapper})")
+            if wrapper.exists():
+                print(f"Alias:      {alias_name} → hermes -p {name}  ({wrapper})")
         print()
 
     elif action == "alias":

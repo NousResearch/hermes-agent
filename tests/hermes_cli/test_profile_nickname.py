@@ -94,8 +94,8 @@ def test_cmd_profile_show_includes_nickname_when_present(monkeypatch, tmp_path, 
     cmd_profile(Namespace(profile_action="show", profile_name="coder"))
 
     out = capsys.readouterr().out
-    assert "Profile: coder" in out
-    assert "Nickname: Clovis" in out
+    assert "Profile:    coder" in out
+    assert "Nickname:   Clovis" in out
 
 
 def test_cmd_profile_show_omits_nickname_when_empty(monkeypatch, tmp_path, capsys):
@@ -118,5 +118,5 @@ def test_cmd_profile_show_omits_nickname_when_empty(monkeypatch, tmp_path, capsy
     cmd_profile(Namespace(profile_action="show", profile_name="coder"))
 
     out = capsys.readouterr().out
-    assert "Profile: coder" in out
+    assert "Profile:    coder" in out
     assert "Nickname:" not in out

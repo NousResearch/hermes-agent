@@ -1673,7 +1673,7 @@ def _read_main_model() -> str:
     that gate on "the active main model" (e.g. ``vision_analyze``'s native
     fast path) see the live runtime, not the persisted config default.
     """
-    override = _RUNTIME_MAIN_MODEL
+    override = getattr(_RUNTIME_MAIN, "model", "")
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
@@ -1700,7 +1700,7 @@ def _read_main_provider() -> str:
     Runtime override: see ``_read_main_model`` — same mechanism for the
     provider half of the runtime tuple.
     """
-    override = _RUNTIME_MAIN_PROVIDER
+    override = getattr(_RUNTIME_MAIN, "provider", "")
     if isinstance(override, str) and override.strip():
         return override.strip().lower()
     try:
@@ -1716,10 +1716,10 @@ def _read_main_provider() -> str:
     return ""
 
 
-# Process-local override set by AIAgent at session/turn start. Single-threaded
-# per turn — no lock needed. Cleared by ``clear_runtime_main()``.
-_RUNTIME_MAIN_PROVIDER: str = ""
-_RUNTIME_MAIN_MODEL: str = ""
+# Thread-local override set by AIAgent at session/turn start.
+# gateway runs each session in a thread-pool thread via run_in_executor;
+# module-level globals would let concurrent sessions overwrite each other.
+_RUNTIME_MAIN: threading.local = threading.local()
 
 
 def set_runtime_main(provider: str, model: str) -> None:
@@ -1730,16 +1730,14 @@ def set_runtime_main(provider: str, model: str) -> None:
     ``_read_main_provider`` / ``_read_main_model`` reflect CLI/gateway
     overrides instead of the stale config.yaml default.
     """
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
-    _RUNTIME_MAIN_MODEL = (model or "").strip()
+    _RUNTIME_MAIN.provider = (provider or "").strip().lower()
+    _RUNTIME_MAIN.model = (model or "").strip()
 
 
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
-    _RUNTIME_MAIN_PROVIDER = ""
-    _RUNTIME_MAIN_MODEL = ""
+    _RUNTIME_MAIN.provider = ""
+    _RUNTIME_MAIN.model = ""
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:

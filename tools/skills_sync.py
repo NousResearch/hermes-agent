@@ -390,7 +390,29 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
 
     if changed:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        # Atomic write so a crash mid-write can't silently wipe all provenance
+        # via the JSONDecodeError fallback above (which resets `installed` to
+        # an empty dict).
+        import tempfile
+
+        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(lock_path.parent),
+            prefix=".lock_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, lock_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     return backfilled
 
 

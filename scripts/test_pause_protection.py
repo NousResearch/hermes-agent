@@ -19,19 +19,29 @@ from unittest.mock import patch, MagicMock
 # ── Locate source trees ────────────────────────────────────────────────────────
 # Primary: pipeline root on Linux production  |  Fallback: Mac staging
 PIPELINE_ROOT = str(Path("/home/gerald/ai-team-shared/hermes-pipeline").resolve())
-MAC_SCRIPTS    = str(Path(os.path.expanduser("~/.hermes/scripts")).resolve())
+MAC_SCRIPTS    = str(Path(os.path.expanduser("~/.hermes/hermes-agent/scripts")).resolve())
+MAC_HERMES     = str(Path(os.path.expanduser("~/.hermes")).resolve())
 LINUX_SCRIPTS  = PIPELINE_ROOT
 
 sys.path.insert(0, PIPELINE_ROOT)
 sys.path.insert(0, MAC_SCRIPTS)
+sys.path.insert(0, str(Path(os.path.expanduser("~/.hermes/scripts")).resolve()))
 
-# Resolve AUTO_TRIM_LOC cross-platform: prefer Linux pipeline, fall back to Mac scripts
-_linux_autotrim = Path(PIPELINE_ROOT) / "auto_trim.py"
-_mac_autotrim   = Path(MAC_SCRIPTS) / "auto_trim.py"
+# Resolve AUTO_TRIM_LOC cross-platform: prefer Linux pipeline, then Linux
+# prod mirrors under ~/.hermes/, fall back to Mac git-repo scripts.
+_linux_autotrim   = Path(PIPELINE_ROOT) / "auto_trim.py"
+_mac_autotrim     = Path(MAC_SCRIPTS) / "auto_trim.py"
+_linux_prod_auto  = Path(MAC_HERMES) / "linux_prod" / "auto_trim.py"
+_linux_prod_auto2 = Path(MAC_HERMES) / "linux_production" / "auto_trim.py"
+
 if os.environ.get("AUTO_TRIM_PATH"):
     AUTO_TRIM_LOC = os.environ["AUTO_TRIM_PATH"]
 elif _linux_autotrim.exists():
     AUTO_TRIM_LOC = str(_linux_autotrim)
+elif _linux_prod_auto.exists():
+    AUTO_TRIM_LOC = str(_linux_prod_auto)
+elif _linux_prod_auto2.exists():
+    AUTO_TRIM_LOC = str(_linux_prod_auto2)
 else:
     AUTO_TRIM_LOC = str(_mac_autotrim)
 AUTO_TRIM_DIR = str(Path(AUTO_TRIM_LOC).parent.parent)

@@ -3293,6 +3293,27 @@ class TestSessionIdHeader:
             assert call_kwargs["user_message"] == "new question"
 
     @pytest.mark.asyncio
+    async def test_session_continuation_403_message_points_at_config(self, adapter):
+        """Session continuation without API_SERVER_KEY returns 403 with an
+        error message that names *both* the env var and the
+        ``platforms.api_server.key`` config path, so a user who configured
+        the auth key in one place isn't sent hunting for the other
+        (#33207).
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                headers={"X-Hermes-Session-Id": "anything"},
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert resp.status == 403
+            payload = await resp.json()
+            msg = payload.get("error", {}).get("message", "")
+            assert "API_SERVER_KEY" in msg
+            assert "platforms.api_server.key" in msg
+
+    @pytest.mark.asyncio
     async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):
         """If SessionDB raises, history falls back to empty and request still succeeds."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
@@ -3406,6 +3427,13 @@ class TestSessionKeyHeader:
                 json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
             )
             assert resp.status == 403
+            # Error message must point users at both the env var AND the
+            # config path so users who configured only one don't get stuck
+            # hunting for the other (#33207).
+            payload = await resp.json()
+            msg = payload.get("error", {}).get("message", "")
+            assert "API_SERVER_KEY" in msg
+            assert "platforms.api_server.key" in msg
 
     @pytest.mark.asyncio
     async def test_session_key_rejects_control_chars(self, auth_adapter):

@@ -905,12 +905,15 @@ class APIServerAdapter(BasePlatformAdapter):
         if not self._api_key:
             logger.warning(
                 "X-Hermes-Session-Key rejected: no API key configured. "
-                "Set API_SERVER_KEY to enable long-term memory scoping."
+                "Set API_SERVER_KEY (env) or platforms.api_server.key "
+                "(config.yaml) to enable long-term memory scoping."
             )
             return None, web.json_response(
                 _openai_error(
                     "X-Hermes-Session-Key requires API key authentication. "
-                    "Configure API_SERVER_KEY to enable this feature."
+                    "Configure API_SERVER_KEY (env) or "
+                    "platforms.api_server.key (config.yaml) to enable this "
+                    "feature."
                 ),
                 status=403,
             )
@@ -1745,13 +1748,16 @@ class APIServerAdapter(BasePlatformAdapter):
             if not self._api_key:
                 logger.warning(
                     "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
+                    "no API key configured.  Set API_SERVER_KEY (env) or "
+                    "platforms.api_server.key (config.yaml) to enable "
                     "session continuity."
                 )
                 return web.json_response(
                     _openai_error(
                         "Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature."
+                        "Configure API_SERVER_KEY (env) or "
+                        "platforms.api_server.key (config.yaml) to enable this "
+                        "feature."
                     ),
                     status=403,
                 )

@@ -953,7 +953,15 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
+_WRITE_LOCKS_LOCK = threading.RLock()
+_WRITE_LOCKS: dict[str, threading.RLock] = {}
 _SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+class KanbanConnection(sqlite3.Connection):
+    """SQLite connection annotated with its resolved Kanban DB path."""
+
+    hermes_kanban_db_path: str | None = None
 
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
@@ -1168,9 +1176,16 @@ def connect(
     # via _INITIALIZED_PATHS so it only runs once per process per path.
     _guard_existing_db_is_healthy(path)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        timeout=30,
+        factory=KanbanConnection,
+    )
     try:
+        conn.hermes_kanban_db_path = resolved
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
         with _INIT_LOCK:
             # WAL activation can take an exclusive lock while SQLite creates the
             # sidecar files for a fresh database. Keep it in the same process-local
@@ -1473,15 +1488,34 @@ def write_txn(conn: sqlite3.Connection):
     Use for any multi-statement write (creating a task + link, claiming a
     task + recording an event, etc.).  A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
+
+    Same-process writers for the same board DB also serialize through a
+    per-database Python ``RLock`` before asking SQLite for its writer lock.
+    SQLite still remains the cross-process authority, but this avoids local
+    gateway/notifier/CLI threads stampeding the same connection family.
     """
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield conn
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    else:
-        conn.execute("COMMIT")
+    lock = _write_lock_for_connection(conn)
+    with lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
+
+
+def _write_lock_for_connection(conn: sqlite3.Connection) -> threading.RLock:
+    db_path = getattr(conn, "hermes_kanban_db_path", None)
+    if not db_path:
+        return threading.RLock()
+    with _WRITE_LOCKS_LOCK:
+        lock = _WRITE_LOCKS.get(db_path)
+        if lock is None:
+            lock = threading.RLock()
+            _WRITE_LOCKS[db_path] = lock
+        return lock
 
 
 # ---------------------------------------------------------------------------

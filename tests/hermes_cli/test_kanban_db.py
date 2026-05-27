@@ -2120,8 +2120,14 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
+        factory = kwargs.pop("factory", _WalBlockingConnection)
+        class _WalBlockingKanbanConnection(factory):  # type: ignore[misc, valid-type]
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                    raise _sqlite3.OperationalError("locking protocol")
+                return super().execute(sql, *args, **kwargs)
         return real_connect(
-            *args, factory=_WalBlockingConnection, **kwargs
+            *args, factory=_WalBlockingKanbanConnection, **kwargs
         )
 
     with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
@@ -3233,6 +3239,31 @@ def test_init_db_allows_missing_then_healthy(tmp_path):
     with kb.connect(db_path=db_path) as conn:
         tasks = kb.list_tasks(conn)
     assert [t.title for t in tasks] == ["keeps"]
+
+
+def test_connect_sets_explicit_busy_timeout(tmp_path):
+    """Kanban connections should set SQLite's busy handler explicitly.
+
+    Passing timeout=... to sqlite3.connect is easy to miss during future
+    refactors. Keep an explicit PRAGMA so every connection advertises the same
+    cross-process writer wait budget.
+    """
+    import inspect
+
+    src = inspect.getsource(kb.connect)
+    assert "PRAGMA busy_timeout" in src
+
+    with kb.connect(db_path=tmp_path / "kanban.db") as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 30_000
+
+
+def test_write_txn_uses_per_database_python_lock():
+    """Same-process writers should serialize before hitting SQLite locks."""
+    import inspect
+
+    src = inspect.getsource(kb.write_txn)
+    assert "_write_lock_for_connection" in src
+    assert src.index("with lock") < src.index('conn.execute("BEGIN IMMEDIATE")')
 
 
 # ---------------------------------------------------------------------------

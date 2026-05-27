@@ -19,8 +19,11 @@ Improvements over v2:
 import hashlib
 import json
 import logging
+import os
 import re
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error
@@ -480,6 +483,9 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._chunk_index = 0
+        self._last_discarded_messages = []
+        self._last_discarded_topics = ""
 
     def update_model(
         self,
@@ -604,6 +610,14 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+
+        # Chunk archiving — save discarded conversation turns to markdown files
+        # so the AI can recall old chunks via file_reader.
+        self._chunk_archiving_enabled: bool = True
+        self._max_chunks: int = 20
+        self._chunk_index: int = 0
+        self._last_discarded_messages: List[Dict[str, Any]] = []
+        self._last_discarded_topics: str = ""
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1489,6 +1503,162 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return compress_start < compress_end
 
     # ------------------------------------------------------------------
+    # Chunk archiving — save discarded conversation turns to markdown files
+    # ------------------------------------------------------------------
+
+    def _save_chunk(
+        self,
+        messages: List[Dict[str, Any]],
+        session_id: Optional[str],
+        chunk_index: int,
+    ) -> Optional[str]:
+        """Write compressed messages to a chunk markdown file.
+
+        Returns the path to the saved file, or None if session_id is missing
+        or chunk archiving is disabled.
+        """
+        if not session_id or not self._chunk_archiving_enabled:
+            return None
+
+        if chunk_index > self._max_chunks:
+            logger.debug(
+                "Chunk archiving: reached max_chunks=%d for session %s — skipping",
+                self._max_chunks, session_id,
+            )
+            return None
+
+        sessions_dir = self._get_sessions_dir()
+        chunk_path = sessions_dir / f"session_{session_id}-chunk-{chunk_index}.md"
+
+        try:
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning("Failed to create sessions directory for chunk: %s", e)
+            return None
+
+        archived_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        topics = self._extract_topics_from_summary()
+
+        # Build front matter
+        front_matter = (
+            f"---\n"
+            f"session_id: {session_id}\n"
+            f"chunk: {chunk_index}\n"
+            f"compression_level: {self.compression_count}\n"
+            f"archived_at: {archived_at}\n"
+            f"topics: {topics}\n"
+            f"---\n"
+        )
+
+        # Build markdown body
+        lines = [
+            front_matter,
+            f"\n# Session Chunk {chunk_index}",
+            "\n> This file contains the original conversation archived during compression.",
+            "> Use `file_reader` to recall specific details from this conversation.\n",
+        ]
+        for msg in messages:
+            role = msg.get("role", "unknown").capitalize()
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Multimodal content — extract text parts only
+                text_parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        text_parts.append(part)
+                    elif isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                content = "\n".join(text_parts)
+            lines.append(f"## {role}\n\n{content}\n")
+
+        body = "\n".join(lines)
+
+        try:
+            chunk_path.write_text(body, encoding="utf-8")
+            logger.info(
+                "Saved chunk %d for session %s: %s (%d messages)",
+                chunk_index, session_id, chunk_path, len(messages),
+            )
+            return str(chunk_path)
+        except OSError as e:
+            logger.warning("Failed to write chunk file %s: %s", chunk_path, e)
+            return None
+
+    def _build_chunk_reference(
+        self, chunk_path: str, chunk_index: int, topics: str = ""
+    ) -> str:
+        """Build a markdown reference block to inject into the summary.
+
+        This block tells the AI that older conversation turns were archived
+        to a chunk file and can be recalled via file_reader.
+        """
+        topics_line = f"\n- **Topics**: {topics}" if topics else ""
+        return (
+            f"\n\n## Archived Context\n"
+            f"- **Chunk {chunk_index}** saved to `{chunk_path}`{topics_line}\n"
+            f"- Use `file_reader` to recall details if needed.\n"
+        )
+
+    def _extract_topics_from_summary(self) -> str:
+        """Extract a short topic string from the last summary.
+
+        Scans the summary text for the '## Goal' section and extracts a
+        concise topic description. Falls back to an empty string if no
+        summary exists or no topics can be extracted.
+        """
+        summary = getattr(self, "_previous_summary", None) or ""
+        return self._extract_topics_from_text(summary) if summary else ""
+
+    @staticmethod
+    def _extract_topics_from_text(text: str) -> str:
+        """Extract a short topic string from a summary text block.
+
+        Scans for the '## Goal' or '## Active Task' sections.
+        """
+        if not text:
+            return ""
+
+        # Try to extract from "## Goal" section
+        goal_match = re.search(
+            r"## Goal\s*\n\s*\[?([^\]]+)\]?", text
+        )
+        if goal_match:
+            topic = goal_match.group(1).strip()
+            if len(topic) > 120:
+                topic = topic[:117] + "..."
+            return topic
+
+        # Fallback: use first meaningful line from Active Task
+        task_match = re.search(
+            r"## Active Task\s*\n\s*\[?([^\]]+)\]?", text
+        )
+        if task_match:
+            topic = task_match.group(1).strip()
+            if len(topic) > 120:
+                topic = topic[:117] + "..."
+            return topic
+
+        return ""
+
+    @staticmethod
+    def _get_sessions_dir() -> Path:
+        """Return the path to the sessions directory for chunk files.
+
+        Uses HERMES_HOME if set, otherwise defaults to ~/.hermes/sessions.
+        """
+        hermes_home = os.environ.get("HERMES_HOME", "")
+        if hermes_home:
+            return Path(hermes_home) / "sessions"
+        return Path.home() / ".hermes" / "sessions"
+
+    def configure_chunk_archiving(
+        self, enabled: bool = True, max_chunks: int = 20
+    ) -> None:
+        """Configure chunk archiving from config.yaml settings."""
+        self._chunk_archiving_enabled = enabled
+        self._max_chunks = max_chunks
+
+    # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
 
@@ -1578,6 +1748,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 self._previous_summary = summary_body
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
 
+        # Store the actual discarded range (all messages between head and tail)
+        # for chunk archiving by compress_context().
+        self._last_discarded_messages = messages[compress_start:compress_end]
+        # Reset extracted topics — will be populated from summary after generation
+        self._last_discarded_topics = ""
+
         if not self.quiet_mode:
             logger.info(
                 "Context compression triggered (%d tokens >= %d threshold)",
@@ -1602,6 +1778,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
+        # Extract topics from the generated summary for chunk archiving
+        if summary:
+            self._last_discarded_topics = self._extract_topics_from_text(summary)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

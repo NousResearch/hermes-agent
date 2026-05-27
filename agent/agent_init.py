@@ -1237,6 +1237,13 @@ def init_agent(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
 
+    # Chunk archiving cfg
+    _chunk_cfg = _compression_cfg.get("chunk_archiving", {})
+    if not isinstance(_chunk_cfg, dict):
+        _chunk_cfg = {}
+    chunk_archiving_enabled = str(_chunk_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+    chunk_max_per_session = int(_chunk_cfg.get("max_chunks_per_session", 20))
+
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
     # /models, so the startup feasibility check needs the config hint.
@@ -1455,6 +1462,10 @@ def init_agent(
             abort_on_summary_failure=compression_abort_on_summary_failure,
         )
     agent.compression_enabled = compression_enabled
+    agent.context_compressor.configure_chunk_archiving(
+        enabled=chunk_archiving_enabled,
+        max_chunks=chunk_max_per_session,
+    )
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

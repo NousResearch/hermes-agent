@@ -338,6 +338,41 @@ def compress_context(
             _existing_sp = agent._build_system_prompt(system_message)
         return messages, _existing_sp
 
+    # ── Chunk archiving: save discarded messages to a markdown file ──
+    _chunk_enabled = getattr(agent.context_compressor, "_chunk_archiving_enabled", False)
+    _session_id = getattr(agent, "session_id", None)
+    if _chunk_enabled and _session_id:
+        _cc = agent.context_compressor
+        _discarded = getattr(_cc, "_last_discarded_messages", [])
+        if _discarded:
+            _cc._chunk_index += 1
+            _chunk_path = _cc._save_chunk(
+                _discarded, _session_id, _cc._chunk_index
+            )
+            if _chunk_path:
+                _topics = getattr(_cc, "_last_discarded_topics", "")
+                _chunk_ref = _cc._build_chunk_reference(
+                    _chunk_path, _cc._chunk_index, _topics
+                )
+                # Inject the chunk reference into the first summary-bearing
+                # message in the compressed list (search for SUMMARY_PREFIX).
+                _injected = False
+                from agent.context_compressor import SUMMARY_PREFIX, _append_text_to_content, _content_text_for_contains
+                for _i, _msg in enumerate(compressed):
+                    _content = _msg.get("content", "")
+                    if isinstance(_content, str) and SUMMARY_PREFIX in _content:
+                        if _chunk_ref not in _content_text_for_contains(_content):
+                            _msg["content"] = _append_text_to_content(
+                                _content, _chunk_ref
+                            )
+                        _injected = True
+                        break
+                if not _injected:
+                    logger.debug(
+                        "Chunk reference could not be injected — no SUMMARY_PREFIX message found"
+                    )
+    # ── End chunk archiving ──
+
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
     if summary_error:
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:

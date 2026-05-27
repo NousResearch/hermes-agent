@@ -892,12 +892,38 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
+
+        # Idle auto-compression — triggers after user inactivity.
+        # When enabled, a background timer fires compression if the user is
+        # idle longer than delay_seconds. The delay is kept under the prompt
+        # cache TTL (5 min) so the compression API call hits the cached prefix.
+        # Sessions below min_tokens are skipped — compressing a tiny session
+        # wastes API credits for negligible benefit.
+        "idle": {
+            "enabled": True,
+            "delay_seconds": 300,  # 5 min, under cache TTL
+            "min_tokens": 20000,   # skip small sessions
+        },
+
+        # Progressive chunked summarization - saves discarded conversation
+        # turns to chunk-N.md files so the AI can recall old context via
+        # file_reader instead of losing it forever.
+        "chunk_archiving": {
+            "enabled": True,
+            "max_chunks_per_session": 20,
+        },
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
+    # strategy: "system_and_3" (default) or "system_and_3_double_tail".
+    #   system_and_3: 4 breakpoints — system prompt + last 3 non-system messages.
+    #   system_and_3_double_tail: Same as above, but the LAST non-system message
+    #     gets two cache markers (content-block + top-level) so that if conversation
+    #     growth pushes one marker out of the cache window, the second still hits.
     "prompt_caching": {
         "cache_ttl": "5m",
+        "strategy": "system_and_3",  # or system_and_3_double_tail
     },
 
     # OpenRouter-specific settings.

@@ -3122,7 +3122,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         transcribe_group = discord.app_commands.Group(
             name="transcribe",
-            description="Inbound voice/audio transcription controls",
+            description="Voice transcript text display controls",
         )
 
         async def slash_transcribe_on(interaction: discord.Interaction):
@@ -3135,9 +3135,9 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, "/transcribe status")
 
         for _name, _description, _callback in (
-            ("on", "Enable inbound voice/audio transcription", slash_transcribe_on),
-            ("off", "Disable inbound voice/audio transcription", slash_transcribe_off),
-            ("status", "Show whether transcription is enabled", slash_transcribe_status),
+            ("on", "Show voice transcripts in the linked text channel", slash_transcribe_on),
+            ("off", "Hide voice transcripts while Jarvis keeps listening", slash_transcribe_off),
+            ("status", "Show whether voice transcript text is enabled", slash_transcribe_status),
         ):
             transcribe_group.add_command(discord.app_commands.Command(
                 name=_name,

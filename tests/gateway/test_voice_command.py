@@ -77,6 +77,7 @@ def _make_runner(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._voice_transcript_text_enabled = False
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db = None
     runner.session_store = MagicMock()
@@ -274,25 +275,51 @@ class TestHandleTranscribeCommand:
 
     @pytest.mark.asyncio
     async def test_transcribe_on(self, runner):
-        runner.config.stt_enabled = False
+        runner.config.stt_enabled = True
+        runner._voice_transcript_text_enabled = False
         result = await runner._handle_transcribe_command(_make_event("/transcribe on"))
         assert "enabled" in result.lower()
+        assert runner._voice_transcript_text_enabled is True
         assert runner.config.stt_enabled is True
         runner._persist_transcribe_enabled.assert_called_once_with(True)
 
     @pytest.mark.asyncio
     async def test_transcribe_off(self, runner):
+        runner.config.stt_enabled = True
+        runner._voice_transcript_text_enabled = True
         result = await runner._handle_transcribe_command(_make_event("/transcribe off"))
         assert "disabled" in result.lower()
-        assert runner.config.stt_enabled is False
+        assert runner._voice_transcript_text_enabled is False
+        assert runner.config.stt_enabled is True
         runner._persist_transcribe_enabled.assert_called_once_with(False)
 
     @pytest.mark.asyncio
     async def test_transcribe_status(self, runner):
         runner.config.stt_enabled = True
+        runner._voice_transcript_text_enabled = True
         result = await runner._handle_transcribe_command(_make_event("/transcribe status"))
         assert "on" in result.lower()
+        assert "stt" in result.lower()
         runner._persist_transcribe_enabled.assert_not_called()
+
+    def test_persist_transcribe_does_not_disable_stt(self, runner, tmp_path, monkeypatch):
+        import yaml
+        import gateway.run as run_mod
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "stt:\n  enabled: true\n  provider: local\ndiscord:\n  require_mention: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(run_mod, "_hermes_home", hermes_home)
+
+        run_mod.GatewayRunner._persist_transcribe_enabled(runner, False)
+
+        cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert cfg["stt"]["enabled"] is True
+        assert cfg["discord"]["voice_transcript_text_enabled"] is False
 
 
 # =====================================================================

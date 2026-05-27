@@ -1862,6 +1862,10 @@ class GatewayRunner:
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        # Whether Discord VC transcripts should also be echoed into the linked
+        # text channel. This is display-only: the voice receiver still runs STT
+        # so Jarvis can hear/respond even when transcript text is hidden.
+        self._voice_transcript_text_enabled = self._load_voice_transcript_text_enabled()
         # Recent voice transcripts per (guild,user) for duplicate suppression.
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
@@ -11198,8 +11202,25 @@ class GatewayRunner:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return t("gateway.voice.disabled_short")
 
+    def _load_voice_transcript_text_enabled(self) -> bool:
+        """Return whether Discord VC transcripts are echoed to text channels."""
+        try:
+            from hermes_cli.config import load_config as _load_full_config
+            cfg = _load_full_config()
+        except Exception:
+            cfg = {}
+        discord_cfg = cfg.get("discord") if isinstance(cfg, dict) else None
+        if not isinstance(discord_cfg, dict):
+            return False
+        return bool(discord_cfg.get("voice_transcript_text_enabled", False))
+
     def _persist_transcribe_enabled(self, enabled: bool) -> None:
-        """Persist /transcribe on|off to config.yaml's stt.enabled field."""
+        """Persist /transcribe on|off as Discord transcript text display only.
+
+        Do not write ``stt.enabled`` here. The Discord voice receiver needs STT
+        to stay enabled so Jarvis can hear/respond even when the user only wants
+        the visible ``[Voice]`` transcript lines hidden from the text channel.
+        """
         try:
             import yaml
             config_path = _hermes_home / "config.yaml"
@@ -11210,11 +11231,11 @@ class GatewayRunner:
                 cfg = {}
             if not isinstance(cfg, dict):
                 cfg = {}
-            stt_cfg = cfg.get("stt")
-            if not isinstance(stt_cfg, dict):
-                stt_cfg = {}
-            stt_cfg["enabled"] = bool(enabled)
-            cfg["stt"] = stt_cfg
+            discord_cfg = cfg.get("discord")
+            if not isinstance(discord_cfg, dict):
+                discord_cfg = {}
+            discord_cfg["voice_transcript_text_enabled"] = bool(enabled)
+            cfg["discord"] = discord_cfg
             config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
@@ -11222,19 +11243,24 @@ class GatewayRunner:
             logger.warning("Failed to persist transcribe setting: %s", exc)
 
     async def _handle_transcribe_command(self, event: MessageEvent) -> str:
-        """Handle /transcribe [on|off|status] for inbound voice/audio STT."""
+        """Handle /transcribe [on|off|status] for visible Discord VC transcripts.
+
+        This command controls whether Jarvis echoes ``[Voice]`` transcript text
+        into the linked text channel. It deliberately does not control the STT
+        receiver itself, because Jarvis still needs STT to hear voice commands.
+        """
         args = event.get_command_args().strip().lower()
         if args in {"on", "enable", "enabled", "true"}:
-            self.config.stt_enabled = True
+            self._voice_transcript_text_enabled = True
             self._persist_transcribe_enabled(True)
-            return "Transcription enabled. Inbound voice/audio messages will be transcribed."
+            return "Voice transcript text enabled. I'll echo voice transcripts into this text channel, while STT remains available for Jarvis."
         if args in {"off", "disable", "disabled", "false"}:
-            self.config.stt_enabled = False
+            self._voice_transcript_text_enabled = False
             self._persist_transcribe_enabled(False)
-            return "Transcription disabled. Inbound voice/audio messages will not be transcribed."
+            return "Voice transcript text disabled. I'll still listen/respond in voice; I just won't echo transcripts into this text channel."
         if args in {"", "status"}:
-            status = "on" if getattr(self.config, "stt_enabled", True) else "off"
-            return f"Transcription is {status}."
+            status = "on" if getattr(self, "_voice_transcript_text_enabled", False) else "off"
+            return f"Voice transcript text is {status}. STT listening for Jarvis is separate."
         return "Usage: /transcribe on, /transcribe off, or /transcribe status"
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
@@ -11634,8 +11660,12 @@ class GatewayRunner:
         # channel. Keep text-channel transcript echo opt-in to avoid noisy
         # "everything I say" logs during normal voice use.
         show_transcripts = bool(
-            self._discord_voice_extra(adapter).get("voice_show_transcripts", False)
+            getattr(self, "_voice_transcript_text_enabled", False)
+            or self._discord_voice_extra(adapter).get("voice_show_transcripts", False)
         )
+        # Optionally show transcript in text channel (after auth, with mention
+        # sanitization). This is display-only and must not gate dispatch to the
+        # agent; /transcribe off should hide text, not deafen Jarvis.
         if show_transcripts:
             try:
                 channel = adapter._client.get_channel(text_ch_id)

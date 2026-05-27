@@ -355,7 +355,7 @@ def _add_rotating_handler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
         encoding="utf-8",
     )
-    _ensure_log_file_permissions(path)
+    _ensure_log_file_permissions(path, managed=_is_managed_mode())
     handler.setLevel(level)
     handler.setFormatter(formatter)
     if log_filter is not None:

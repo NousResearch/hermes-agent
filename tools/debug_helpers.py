@@ -29,6 +29,7 @@ import uuid
 from typing import Any, Dict
 
 from hermes_constants import get_hermes_home
+from hermes_logging import _ensure_private_dir
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +50,7 @@ class DebugSession:
         self._start_time = datetime.datetime.now().isoformat() if self.enabled else ""
 
         if self.enabled:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(self.log_dir, 0o700)
-            except OSError:
-                pass
+            _ensure_private_dir(self.log_dir)
             logger.debug("%s debug mode enabled - Session ID: %s",
                          tool_name, self.session_id)
 

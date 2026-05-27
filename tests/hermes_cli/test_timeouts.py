@@ -268,6 +268,88 @@ def test_resolved_api_call_stale_timeout_priority(monkeypatch, tmp_path):
     assert agent2._resolved_api_call_stale_timeout_base() == (90.0, True)
 
 
+from hermes_cli.timeouts import get_provider_header_timeout, build_provider_timeout
+
+
+def test_provider_header_timeout(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          ollama-local:
+            header_timeout_seconds: 600
+    """)
+    assert get_provider_header_timeout("ollama-local") == 600.0
+
+
+def test_model_header_timeout_override_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          openrouter:
+            header_timeout_seconds: 30
+            models:
+              openai/gpt-4o-mini:
+                header_timeout_seconds: 10
+    """)
+    assert get_provider_header_timeout("openrouter", "openai/gpt-4o-mini") == 10.0
+
+
+def test_header_timeout_missing_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          openai:
+            request_timeout_seconds: 300
+    """)
+    assert get_provider_header_timeout("openai", "gpt-4o") is None
+    assert get_provider_header_timeout("missing-provider") is None
+
+
+def test_invalid_header_timeout_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          ollama:
+            header_timeout_seconds: "slow"
+    """)
+    assert get_provider_header_timeout("ollama") is None
+
+
+def test_build_provider_timeout_with_header(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          ollama:
+            request_timeout_seconds: 1800
+            header_timeout_seconds: 600
+    """)
+    result = build_provider_timeout("ollama")
+    import httpx
+    assert isinstance(result, httpx.Timeout)
+    assert result.read == 600.0
+    assert result.connect == 10.0
+
+
+def test_build_provider_timeout_without_header(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          openai:
+            request_timeout_seconds: 300
+    """)
+    result = build_provider_timeout("openai")
+    assert result == 300.0
+
+
+def test_build_provider_timeout_returns_none_when_unset(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(tmp_path, """\
+        providers:
+          openai: {}
+    """)
+    assert build_provider_timeout("openai") is None
+
+
 def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")

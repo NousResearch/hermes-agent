@@ -159,6 +159,24 @@ class TestNormaliseMcpToolPrefix:
             == "mcp_knowledge_kb_get"
         )
 
+    def test_collapses_triple_nested_prefix(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        # Three layers must collapse all the way to a single ``mcp_``.
+        assert (
+            normalise_mcp_tool_prefix("mcp_mcp_mcp_knowledge_kb_get")
+            == "mcp_knowledge_kb_get"
+        )
+
+    def test_collapses_quadruple_nested_prefix(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        # Arbitrary depth normalises to a single ``mcp_`` prefix.
+        assert (
+            normalise_mcp_tool_prefix("mcp_mcp_mcp_mcp_knowledge_kb_get")
+            == "mcp_knowledge_kb_get"
+        )
+
     def test_strips_leading_junk_before_mcp(self):
         from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
 

@@ -1698,6 +1698,13 @@ def normalise_mcp_tool_prefix(name: str) -> str:
     * ``xmcp_...`` / ``abmcp_...`` — up to ~5 chars of leading junk before
       the real ``mcp_`` prefix.
 
+    Corruption can also *stack* — ``mcp_mcp_mcp_knowledge_kb_get`` nests the
+    ``mcp_`` prefix three deep — so the collapse runs as a bounded fixpoint
+    loop: each pass strips at most one layer and the loop terminates once a
+    pass leaves ``name`` unchanged. Every pass either strictly shortens
+    ``name`` or makes no change, so the loop cannot spin forever regardless
+    of input.
+
     Normalising these *before* the fuzzy match in :func:`repair_tool_call`
     lets them hit the cheap direct-match fast-path instead of falling
     through to the slow ``difflib`` fuzzy match (which also logs a repair
@@ -1708,17 +1715,28 @@ def normalise_mcp_tool_prefix(name: str) -> str:
     """
     if not name:
         return name
-    lowered = name.lower()
-    # Doubled prefix: strip one leading ``mcp_`` (4 chars).
-    if lowered.startswith("mcp_mcp_"):
-        return name[4:]
-    # Spurious single leading ``m``: ``mmcp_`` -> ``mcp_``.
-    if lowered.startswith("mmcp_"):
-        return name[1:]
-    # Up to 5 chars of leading junk before a real ``mcp_`` prefix.
-    idx = lowered.find("mcp_")
-    if 0 < idx <= 5:
-        return name[idx:]
+    # Bounded fixpoint: collapse stacked corruption to a single ``mcp_``.
+    # Each pass strips at most one layer; the loop stops when a pass is a
+    # no-op, which always happens because every change shortens ``name``.
+    prev = None
+    while prev != name:
+        prev = name
+        lowered = name.lower()
+        # Doubled prefix: strip one leading ``mcp_`` (4 chars). Looping over
+        # this collapses arbitrary nesting (``mcp_mcp_mcp_tool`` -> ... ->
+        # ``mcp_tool``) one layer per pass.
+        if lowered.startswith("mcp_mcp_"):
+            name = name[4:]
+            continue
+        # Spurious single leading ``m``: ``mmcp_`` -> ``mcp_``.
+        if lowered.startswith("mmcp_"):
+            name = name[1:]
+            continue
+        # Up to 5 chars of leading junk before a real ``mcp_`` prefix.
+        idx = lowered.find("mcp_")
+        if 0 < idx <= 5:
+            name = name[idx:]
+            continue
     return name
 
 

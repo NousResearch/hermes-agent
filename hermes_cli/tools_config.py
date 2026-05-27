@@ -1111,6 +1111,45 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
+def _get_tool_profile_names(config: dict, platform: str) -> Optional[List[str]]:
+    """Return configured toolset names for ``platform``'s named tool profile.
+
+    Config shape::
+
+        tool_profiles:
+          fast-chat: [memory, session_search, clarify]
+          coding: [terminal, file, code_execution, web]
+        platform_tool_profiles:
+          cli: coding
+          telegram: fast-chat
+
+    ``platform_toolsets`` remains the lower-level, explicit override. Profiles
+    are only consulted when no direct per-platform toolset list is configured.
+    """
+    platform_profiles = config.get("platform_tool_profiles") or {}
+    if not isinstance(platform_profiles, dict):
+        return None
+
+    profile_name = platform_profiles.get(platform)
+    if not isinstance(profile_name, str) or not profile_name.strip():
+        return None
+
+    profiles = config.get("tool_profiles") or {}
+    if not isinstance(profiles, dict):
+        return None
+
+    profile_toolsets = profiles.get(profile_name.strip())
+    if not isinstance(profile_toolsets, list):
+        logger.warning(
+            "Tool profile %r assigned to platform %r is missing or not a list; "
+            "falling back to platform defaults",
+            profile_name,
+            platform,
+        )
+        return None
+    return profile_toolsets
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1121,16 +1160,20 @@ def _get_platform_tools(
     from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
-    toolset_names = platform_toolsets.get(platform)
+    toolset_names = platform_toolsets.get(platform) if isinstance(platform_toolsets, dict) else None
 
     if toolset_names is None or not isinstance(toolset_names, list):
-        plat_info = PLATFORMS.get(platform)
-        if plat_info:
-            default_ts = plat_info["default_toolset"]
+        profile_toolsets = _get_tool_profile_names(config, platform)
+        if profile_toolsets is not None:
+            toolset_names = profile_toolsets
         else:
-            # Plugin platform — derive toolset name from platform key
-            default_ts = f"hermes-{platform}"
-        toolset_names = [default_ts]
+            plat_info = PLATFORMS.get(platform)
+            if plat_info:
+                default_ts = plat_info["default_toolset"]
+            else:
+                # Plugin platform — derive toolset name from platform key
+                default_ts = f"hermes-{platform}"
+            toolset_names = [default_ts]
 
     # YAML may parse bare numeric names (e.g. ``12306:``) as int.
     # Normalise to str so downstream sorted() never mixes types.

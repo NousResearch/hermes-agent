@@ -76,6 +76,49 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
 
 
+def test_get_platform_tools_uses_assigned_tool_profile():
+    config = {
+        "tool_profiles": {
+            "fast-chat": ["memory", "session_search", "clarify"],
+        },
+        "platform_tool_profiles": {"telegram": "fast-chat"},
+    }
+
+    enabled = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+
+    assert {"memory", "session_search", "clarify"}.issubset(enabled)
+    assert "terminal" not in enabled
+    assert "file" not in enabled
+    assert "web" not in enabled
+
+
+def test_get_platform_tools_platform_toolsets_override_profile():
+    config = {
+        "tool_profiles": {"fast-chat": ["memory", "session_search", "clarify"]},
+        "platform_tool_profiles": {"cli": "fast-chat"},
+        "platform_toolsets": {"cli": ["terminal", "file"]},
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" in enabled
+    assert "file" in enabled
+    assert "memory" not in enabled
+    assert "session_search" not in enabled
+
+
+def test_get_platform_tools_missing_profile_falls_back_to_default():
+    config = {
+        "tool_profiles": {},
+        "platform_tool_profiles": {"cli": "missing-profile"},
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+
+    assert enabled == default
+
+
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 

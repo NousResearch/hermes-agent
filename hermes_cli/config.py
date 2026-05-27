@@ -584,6 +584,11 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # Optional named groups of toolsets. Assign with platform_tool_profiles,
+    # e.g. platform_tool_profiles: {telegram: fast-chat}. Direct
+    # platform_toolsets entries remain the lower-level override.
+    "tool_profiles": {},
+    "platform_tool_profiles": {},
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -3494,7 +3499,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "tool_profiles", "platform_tool_profiles",
 }
 
 # Valid fields inside a custom_providers list entry

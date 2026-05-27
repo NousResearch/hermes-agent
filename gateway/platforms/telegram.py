@@ -748,6 +748,119 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    # ── Media caption MarkdownV2 fallback (#32839) ────────────────────────
+    #
+    # ``send_message`` runs the agent's text through :meth:`format_message` and
+    # sends it with ``parse_mode=MARKDOWN_V2`` so headers, bold, lists, etc.
+    # render on every Telegram client.  Historically the media send_* helpers
+    # forwarded ``caption`` raw with no ``parse_mode``, so markdown attached
+    # to a photo/document/video (e.g. an analysis report rendered alongside
+    # a screenshot) appeared as literal ``### Heading`` / ``**bold**`` on
+    # mobile.  The helpers below give every media path the same
+    # markdown-then-plain-text fallback the text path enjoys.
+
+    @staticmethod
+    def _is_markdown_parse_error(exc: BaseException) -> bool:
+        """Return True when *exc* is a Telegram BadRequest about parse_mode.
+
+        Telegram raises ``BadRequest: Can't parse entities: ...`` (and a few
+        ``Can't find end of the entity``-style variants) when MarkdownV2
+        input is invalid.  Match on the error text so we don't have to import
+        the SDK exception class here.
+        """
+        text = str(exc).lower()
+        return (
+            "can't parse" in text
+            or "cant parse" in text
+            or "can't find end of" in text
+            or "unsupported start tag" in text
+            or "byte offset" in text
+            or "entity" in text and "parse" in text
+        )
+
+    def _caption_send_kwargs(self, caption: Optional[str]) -> Dict[str, Any]:
+        """Build ``caption`` + ``parse_mode`` kwargs for a media send call.
+
+        Mirrors :meth:`send`'s markdown handling so callers can render
+        headers/bold/inline-code in captions instead of leaking raw markdown
+        to clients.  Returns ``{"caption": None}`` for empty input so the
+        result can be ``**``-unpacked unconditionally.
+
+        Telegram caps captions at 1024 UTF-16 code units.  MarkdownV2 escape
+        backslashes can inflate the formatted text past that ceiling for
+        special-char-heavy inputs; we fall back to the raw (truncated) text
+        in that case rather than emitting an over-length caption that
+        Telegram would reject outright.
+        """
+        if not caption:
+            return {"caption": None}
+        raw = caption[:1024]
+        formatted = self.format_message(raw)
+        if utf16_len(formatted) > 1024:
+            return {"caption": raw, "parse_mode": None}
+        return {"caption": formatted, "parse_mode": ParseMode.MARKDOWN_V2}
+
+    async def _send_media_with_caption_fallback(
+        self,
+        send_fn: Any,
+        base_kwargs: Dict[str, Any],
+        *,
+        caption: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        reply_to_message_id: Optional[int],
+        media_label: str,
+        reset_media: Optional[Any] = None,
+    ) -> Any:
+        """Send a media call with MarkdownV2 caption + plain-text fallback.
+
+        Wraps :meth:`_send_with_dm_topic_reply_anchor_retry` so the existing
+        anchor-retry semantics still apply, then catches MarkdownV2 parse
+        errors and retries once with the formatting stripped.  Without this,
+        a caption whose markdown survives :meth:`format_message` but trips
+        the Bot API parser (rare, but observed when long analysis reports
+        mix tables, headers, and code) would either fail the whole send or
+        leave the user staring at raw ``### Heading`` / ``**bold**``.
+        """
+        caption_kwargs = self._caption_send_kwargs(caption)
+        send_kwargs = {**base_kwargs, **caption_kwargs}
+        try:
+            return await self._send_with_dm_topic_reply_anchor_retry(
+                send_fn,
+                send_kwargs,
+                metadata,
+                reply_to_message_id,
+                media_label,
+                reset_media=reset_media,
+            )
+        except Exception as md_error:
+            if (
+                not caption
+                or caption_kwargs.get("parse_mode") is None
+                or not self._is_markdown_parse_error(md_error)
+            ):
+                raise
+            logger.warning(
+                "[%s] MarkdownV2 caption parse failed for %s, "
+                "falling back to plain text: %s",
+                self.name,
+                media_label,
+                md_error,
+            )
+            plain_caption = _strip_mdv2(caption_kwargs["caption"])
+            plain_kwargs = {
+                **base_kwargs,
+                "caption": plain_caption,
+                "parse_mode": None,
+            }
+            return await self._send_with_dm_topic_reply_anchor_retry(
+                send_fn,
+                plain_kwargs,
+                metadata,
+                reply_to_message_id,
+                media_label,
+                reset_media=reset_media,
+            )
+
     async def _send_with_dm_topic_reply_anchor_retry(
         self,
         send_fn: Any,

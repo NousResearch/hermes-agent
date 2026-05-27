@@ -1152,6 +1152,52 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+
+class TestSessionMetadata:
+    """SessionEntry metadata should persist arbitrary lightweight state."""
+
+    def test_session_entry_metadata_roundtrip(self):
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            metadata={"slack_thread_watermark:C123:123.000": "123.456"},
+        )
+
+        restored = SessionEntry.from_dict(entry.to_dict())
+        assert restored.metadata == {"slack_thread_watermark:C123:123.000": "123.456"}
+
+    def test_store_session_metadata_persists_to_sessions_json(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            user_id="U123",
+            thread_id="123.000",
+        )
+
+        entry = store.get_or_create_session(source)
+        assert store.set_session_metadata(
+            entry.session_key,
+            "slack_thread_watermark:C123:123.000",
+            "123.456",
+        )
+
+        reloaded = SessionStore(sessions_dir=tmp_path, config=config)
+        assert (
+            reloaded.get_session_metadata(
+                entry.session_key,
+                "slack_thread_watermark:C123:123.000",
+            )
+            == "123.456"
+        )
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 

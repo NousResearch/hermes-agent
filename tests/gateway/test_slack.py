@@ -11,6 +11,7 @@ We mock the slack modules at import time to avoid collection errors.
 import asyncio
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
@@ -1988,6 +1989,25 @@ class TestThreadReplyHandling:
         store._ensure_loaded = MagicMock()
         store.config = MagicMock()
         store.config.group_sessions_per_user = True
+        store.config.thread_sessions_per_user = True
+
+        def _get_session_metadata(session_key, key, default=None):
+            entry = store._entries.get(session_key)
+            if entry is None:
+                return default
+            return getattr(entry, "metadata", {}).get(key, default)
+
+        def _set_session_metadata(session_key, key, value):
+            entry = store._entries.get(session_key)
+            if entry is None:
+                return False
+            metadata = dict(getattr(entry, "metadata", {}))
+            metadata[key] = value
+            entry.metadata = metadata
+            return True
+
+        store.get_session_metadata = MagicMock(side_effect=_get_session_metadata)
+        store.set_session_metadata = MagicMock(side_effect=_set_session_metadata)
         return store
 
     @pytest.fixture()
@@ -2072,6 +2092,195 @@ class TestThreadReplyHandling:
         msg_event = adapter_with_session_store.handle_message.call_args[0][0]
         assert "<@U_BOT>" not in msg_event.text
         assert msg_event.text == "thanks for the help"
+
+    @pytest.mark.asyncio
+    async def test_active_thread_explicit_mention_refreshes_context_delta(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Explicit @mentions on active threads should bypass the stale-session shortcut."""
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {
+            session_key: SimpleNamespace(metadata={
+                "slack_thread_watermark:C123:123.000": "123.100",
+            })
+        }
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "123.000", "user": "U_PARENT", "text": "Original question"},
+                {"ts": "123.100", "user": "U_USER", "text": "Old context"},
+                {"ts": "123.200", "user": "U_OTHER", "text": "Fresh update"},
+                {"ts": "123.456", "user": "U_USER", "text": "<@U_BOT> what changed?"},
+            ]
+        })
+
+        with patch.object(
+            adapter_with_session_store,
+            "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda user_id, chat_id=None: user_id),
+        ):
+            await adapter_with_session_store._handle_slack_message({
+                "text": "<@U_BOT> what changed?",
+                "user": "U_USER",
+                "channel": "C123",
+                "ts": "123.456",
+                "thread_ts": "123.000",
+                "channel_type": "channel",
+                "team": "T_TEAM",
+            })
+
+        adapter_with_session_store._app.client.conversations_replies.assert_awaited_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert "Fresh update" in msg_event.text
+        assert "Old context" not in msg_event.text
+        assert msg_event.text.endswith("what changed?")
+        assert (
+            mock_session_store._entries[session_key].metadata["slack_thread_watermark:C123:123.000"]
+            == "123.456"
+        )
+
+    @pytest.mark.asyncio
+    async def test_active_thread_unmentioned_reply_keeps_existing_behavior(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Unmentioned replies in active threads should still avoid thread re-fetch."""
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {
+            session_key: SimpleNamespace(metadata={
+                "slack_thread_watermark:C123:123.000": "123.100",
+            })
+        }
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock()
+        adapter_with_session_store._fetch_thread_parent_text = AsyncMock(return_value="")
+
+        await adapter_with_session_store._handle_slack_message({
+            "text": "Follow-up without mention",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        })
+
+        adapter_with_session_store.handle_message.assert_called_once()
+        adapter_with_session_store._app.client.conversations_replies.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_explicit_mention_bypasses_stale_thread_cache(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Explicit refresh should ignore cached thread content and replace it with fresh replies."""
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {
+            session_key: SimpleNamespace(metadata={
+                "slack_thread_watermark:C123:123.000": "123.100",
+            })
+        }
+        cache_key = "C123:123.000:T_TEAM"
+        adapter_with_session_store._thread_context_cache[cache_key] = _slack_mod._ThreadContextCache(
+            messages=[
+                {"ts": "123.000", "user": "U_PARENT", "text": "Original question"},
+                {"ts": "123.200", "user": "U_OTHER", "text": "Stale cached update"},
+                {"ts": "123.456", "user": "U_USER", "text": "<@U_BOT> refresh"},
+            ],
+            content="stale",
+        )
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "123.000", "user": "U_PARENT", "text": "Original question"},
+                {"ts": "123.300", "user": "U_OTHER", "text": "Fresh API update"},
+                {"ts": "123.456", "user": "U_USER", "text": "<@U_BOT> refresh"},
+            ]
+        })
+
+        with patch.object(
+            adapter_with_session_store,
+            "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda user_id, chat_id=None: user_id),
+        ):
+            await adapter_with_session_store._handle_slack_message({
+                "text": "<@U_BOT> refresh",
+                "user": "U_USER",
+                "channel": "C123",
+                "ts": "123.456",
+                "thread_ts": "123.000",
+                "channel_type": "channel",
+                "team": "T_TEAM",
+            })
+
+        adapter_with_session_store._app.client.conversations_replies.assert_awaited_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert "Fresh API update" in msg_event.text
+        assert "Stale cached update" not in msg_event.text
+        assert adapter_with_session_store._thread_context_cache[cache_key].messages[1]["text"] == "Fresh API update"
+
+    @pytest.mark.asyncio
+    async def test_explicit_mention_refresh_advances_watermark_across_turns(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Two explicit refreshes should only inject messages newer than the prior watermark."""
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {
+            session_key: SimpleNamespace(metadata={
+                "slack_thread_watermark:C123:123.000": "123.100",
+            })
+        }
+        adapter_with_session_store._app.client.conversations_replies = AsyncMock(side_effect=[
+            {
+                "messages": [
+                    {"ts": "123.000", "user": "U_PARENT", "text": "Original question"},
+                    {"ts": "123.100", "user": "U_USER", "text": "Old context"},
+                    {"ts": "123.200", "user": "U_OTHER", "text": "First delta"},
+                    {"ts": "123.300", "user": "U_USER", "text": "<@U_BOT> first refresh"},
+                ]
+            },
+            {
+                "messages": [
+                    {"ts": "123.000", "user": "U_PARENT", "text": "Original question"},
+                    {"ts": "123.100", "user": "U_USER", "text": "Old context"},
+                    {"ts": "123.200", "user": "U_OTHER", "text": "First delta"},
+                    {"ts": "123.300", "user": "U_USER", "text": "<@U_BOT> first refresh"},
+                    {"ts": "123.400", "user": "U_OTHER", "text": "Second delta"},
+                    {"ts": "123.500", "user": "U_USER", "text": "<@U_BOT> second refresh"},
+                ]
+            },
+        ])
+        captured_events = []
+        adapter_with_session_store.handle_message = AsyncMock(side_effect=lambda e: captured_events.append(e))
+
+        with patch.object(
+            adapter_with_session_store,
+            "_resolve_user_name",
+            new=AsyncMock(side_effect=lambda user_id, chat_id=None: user_id),
+        ):
+            await adapter_with_session_store._handle_slack_message({
+                "text": "<@U_BOT> first refresh",
+                "user": "U_USER",
+                "channel": "C123",
+                "ts": "123.300",
+                "thread_ts": "123.000",
+                "channel_type": "channel",
+                "team": "T_TEAM",
+            })
+            await adapter_with_session_store._handle_slack_message({
+                "text": "<@U_BOT> second refresh",
+                "user": "U_USER",
+                "channel": "C123",
+                "ts": "123.500",
+                "thread_ts": "123.000",
+                "channel_type": "channel",
+                "team": "T_TEAM",
+            })
+
+        assert len(captured_events) == 2
+        assert "First delta" in captured_events[0].text
+        assert "Second delta" not in captured_events[0].text
+        assert "Second delta" in captured_events[1].text
+        assert "First delta" not in captured_events[1].text
+        assert (
+            mock_session_store._entries[session_key].metadata["slack_thread_watermark:C123:123.000"]
+            == "123.500"
+        )
 
     @pytest.mark.asyncio
     async def test_top_level_message_requires_mention_even_with_session(

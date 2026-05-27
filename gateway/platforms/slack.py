@@ -66,7 +66,8 @@ _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 @dataclass
 class _ThreadContextCache:
     """Cache entry for fetched thread context."""
-    content: str
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    content: str = ""
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
@@ -1961,6 +1962,14 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        has_session = (
+            is_thread_reply
+            and self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            )
+        )
 
         if not is_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
@@ -1983,14 +1992,6 @@ class SlackAdapter(BasePlatformAdapter):
                     event_thread_ts is not None
                     and event_thread_ts in self._mentioned_threads
                 )
-                has_session = (
-                    is_thread_reply
-                    and self._has_active_session_for_thread(
-                        channel_id=channel_id,
-                        thread_ts=event_thread_ts,
-                        user_id=user_id,
-                    )
-                )
                 if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
                     return
 
@@ -2008,14 +2009,12 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
-        # When entering a thread for the first time (no existing session),
-        # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
-            channel_id=channel_id,
-            thread_ts=event_thread_ts,
-            user_id=user_id,
-        ):
-            thread_context = await self._fetch_thread_context(
+        # Thread context rules:
+        # - First message in a thread session: hydrate full context.
+        # - Active thread + explicit @mention: refresh with only the delta
+        #   since the last hydrate/refresh, bypassing the TTL cache.
+        if is_thread_reply and not has_session:
+            thread_context, last_seen_ts = await self._fetch_thread_context(
                 channel_id=channel_id,
                 thread_ts=event_thread_ts,
                 current_ts=ts,
@@ -2023,6 +2022,34 @@ class SlackAdapter(BasePlatformAdapter):
             )
             if thread_context:
                 text = thread_context + text
+            self._set_thread_watermark(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+                watermark_ts=last_seen_ts,
+            )
+        elif is_thread_reply and has_session and is_mentioned:
+            watermark_ts = self._get_thread_watermark(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            )
+            thread_context, last_seen_ts = await self._fetch_thread_context(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                current_ts=ts,
+                team_id=team_id,
+                after_ts=watermark_ts,
+                bypass_cache=True,
+            )
+            if thread_context:
+                text = thread_context + text
+            self._set_thread_watermark(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+                watermark_ts=last_seen_ts,
+            )
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -2576,30 +2603,111 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Thread context fetching -----
 
+    def _build_thread_session_key(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        user_id: str,
+    ) -> Optional[str]:
+        """Build the backing session key for a Slack thread."""
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return None
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            source = SessionSource(
+                platform=Platform.SLACK,
+                chat_id=channel_id,
+                chat_type="group",
+                user_id=user_id,
+                thread_id=thread_ts,
+            )
+            store_cfg = getattr(session_store, "config", None)
+            gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
+            tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
+            return build_session_key(
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+            )
+        except Exception:
+            return None
+
+    def _thread_watermark_key(self, channel_id: str, thread_ts: str) -> str:
+        return f"slack_thread_watermark:{channel_id}:{thread_ts}"
+
+    def _get_thread_watermark(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        user_id: str,
+    ) -> str:
+        """Return the last hydrated Slack thread timestamp for this session."""
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return ""
+        session_key = self._build_thread_session_key(channel_id, thread_ts, user_id)
+        if not session_key or not hasattr(session_store, "get_session_metadata"):
+            return ""
+        try:
+            value = session_store.get_session_metadata(
+                session_key,
+                self._thread_watermark_key(channel_id, thread_ts),
+                "",
+            )
+            return str(value or "")
+        except Exception:
+            return ""
+
+    def _set_thread_watermark(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        user_id: str,
+        watermark_ts: str,
+    ) -> None:
+        """Persist the latest Slack thread timestamp seen by this session."""
+        session_store = getattr(self, "_session_store", None)
+        if not session_store or not watermark_ts:
+            return
+        session_key = self._build_thread_session_key(channel_id, thread_ts, user_id)
+        if not session_key or not hasattr(session_store, "set_session_metadata"):
+            return
+        try:
+            session_store.set_session_metadata(
+                session_key,
+                self._thread_watermark_key(channel_id, thread_ts),
+                watermark_ts,
+            )
+        except Exception:
+            logger.debug("[Slack] Failed to persist thread watermark", exc_info=True)
+
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str,
         team_id: str = "", limit: int = 30,
-    ) -> str:
+        after_ts: str = "", bypass_cache: bool = False,
+    ) -> Tuple[str, str]:
         """Fetch recent thread messages to provide context when the bot is
-        mentioned mid-thread for the first time.
-
-        This method is only called when there is NO active session for the
-        thread (guarded at the call site by _has_active_session_for_thread).
-        That guard ensures thread messages are prepended only on the very
-        first turn — after that the session history already holds them, so
-        there is no duplication across subsequent turns.
+        mentioned mid-thread or explicitly refreshed on an active session.
 
         Results are cached for _THREAD_CACHE_TTL seconds per thread to avoid
         hammering conversations.replies (Tier 3, ~50 req/min).
 
-        Returns a formatted string with prior thread history, or empty string
-        on failure or if the thread has no prior messages.
+        Returns a formatted string plus the latest thread timestamp observed.
         """
         cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()
-        cached = self._thread_context_cache.get(cache_key)
+        cached = None if bypass_cache else self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
-            return cached.content
+            return await self._format_thread_context(
+                messages=cached.messages,
+                thread_ts=thread_ts,
+                current_ts=current_ts,
+                team_id=team_id,
+                channel_id=channel_id,
+                after_ts=after_ts,
+            )
 
         try:
             client = self._get_client(channel_id)
@@ -2634,84 +2742,105 @@ class SlackAdapter(BasePlatformAdapter):
                     raise
 
             if result is None:
-                return ""
+                return "", ""
 
             messages = result.get("messages", [])
             if not messages:
-                return ""
+                return "", ""
 
-            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            context_parts = []
             parent_text = ""
             for msg in messages:
-                msg_ts = msg.get("ts", "")
-                # Exclude the current triggering message — it will be delivered
-                # as the user message itself, so including it here would duplicate it.
-                if msg_ts == current_ts:
-                    continue
+                if msg.get("ts", "") == thread_ts:
+                    parent_text = (msg.get("text") or "").strip()
+                    break
 
-                is_parent = msg_ts == thread_ts
-                is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
-                msg_user = msg.get("user", "")
-
-                # Identify "our own" bot for this workspace (multi-workspace safe).
-                msg_team = msg.get("team") or team_id
-                self_bot_uid = (
-                    self._team_bot_user_ids.get(msg_team)
-                    if msg_team
-                    else None
-                ) or self._bot_user_id
-
-                # Exclude only our own prior bot replies (circular context).
-                # Keep:
-                #   - the thread parent even if it was posted by a bot
-                #     (e.g. a cron job summary we are now replying to);
-                #   - other bots' child messages (useful third-party context).
-                if (
-                    is_bot
-                    and not is_parent
-                    and self_bot_uid
-                    and msg_user == self_bot_uid
-                ):
-                    continue
-
-                msg_text = msg.get("text", "").strip()
-                if not msg_text:
-                    continue
-
-                # Strip bot mentions from context messages
-                if bot_uid:
-                    msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
-
-                prefix = "[thread parent] " if is_parent else ""
-                display_user = msg_user or "unknown"
-                # Prefer the bot's own name when the message is a bot post.
-                if is_bot and not display_user:
-                    display_user = msg.get("username") or "bot"
-                name = await self._resolve_user_name(display_user, chat_id=channel_id)
-                context_parts.append(f"{prefix}{name}: {msg_text}")
-                if is_parent:
-                    parent_text = msg_text
-
-            content = ""
-            if context_parts:
-                content = (
-                    "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
-                    + "\n".join(context_parts)
-                    + "\n[End of thread context]\n\n"
-                )
-
+            content, last_seen_ts = await self._format_thread_context(
+                messages=messages,
+                thread_ts=thread_ts,
+                current_ts=current_ts,
+                team_id=team_id,
+                channel_id=channel_id,
+                after_ts=after_ts,
+            )
             self._thread_context_cache[cache_key] = _ThreadContextCache(
+                messages=list(messages),
                 content=content,
                 fetched_at=now,
-                message_count=len(context_parts),
+                message_count=len(messages),
                 parent_text=parent_text,
             )
-            return content
+            return content, last_seen_ts
 
         except Exception as e:
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
-            return ""
+            return "", ""
+
+    async def _format_thread_context(
+        self,
+        messages: List[Dict[str, Any]],
+        thread_ts: str,
+        current_ts: str,
+        team_id: str,
+        channel_id: str,
+        after_ts: str = "",
+    ) -> Tuple[str, str]:
+        """Format cached/fetched Slack replies into injected thread context."""
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        context_parts = []
+        last_seen_ts = ""
+        for msg in messages:
+            msg_ts = msg.get("ts", "")
+            if msg_ts and msg_ts > last_seen_ts:
+                last_seen_ts = msg_ts
+            # Exclude the current triggering message — it will be delivered
+            # as the user message itself, so including it here would duplicate it.
+            if msg_ts == current_ts:
+                continue
+            if after_ts and msg_ts and msg_ts <= after_ts:
+                continue
+
+            is_parent = msg_ts == thread_ts
+            is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+            msg_user = msg.get("user", "")
+
+            # Identify "our own" bot for this workspace (multi-workspace safe).
+            msg_team = msg.get("team") or team_id
+            self_bot_uid = (
+                self._team_bot_user_ids.get(msg_team)
+                if msg_team
+                else None
+            ) or self._bot_user_id
+
+            if (
+                is_bot
+                and not is_parent
+                and self_bot_uid
+                and msg_user == self_bot_uid
+            ):
+                continue
+
+            msg_text = msg.get("text", "").strip()
+            if not msg_text:
+                continue
+
+            if bot_uid:
+                msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+
+            prefix = "[thread parent] " if is_parent else ""
+            display_user = msg_user or "unknown"
+            if is_bot and not msg_user:
+                display_user = msg.get("username") or "bot"
+            name = await self._resolve_user_name(display_user, chat_id=channel_id)
+            context_parts.append(f"{prefix}{name}: {msg_text}")
+
+        content = ""
+        if context_parts:
+            content = (
+                "[Thread context — prior messages in this thread (not yet in conversation history):]\n"
+                + "\n".join(context_parts)
+                + "\n[End of thread context]\n\n"
+            )
+        return content, last_seen_ts
 
     async def _fetch_thread_parent_text(
         self, channel_id: str, thread_ts: str, team_id: str = "",
@@ -2861,27 +2990,9 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
         try:
-            from gateway.session import SessionSource, build_session_key
-
-            source = SessionSource(
-                platform=Platform.SLACK,
-                chat_id=channel_id,
-                chat_type="group",
-                user_id=user_id,
-                thread_id=thread_ts,
-            )
-
-            # Read session isolation settings from the store's config
-            store_cfg = getattr(session_store, "config", None)
-            gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
-            tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
-
-            session_key = build_session_key(
-                source,
-                group_sessions_per_user=gspu,
-                thread_sessions_per_user=tspu,
-            )
-
+            session_key = self._build_thread_session_key(channel_id, thread_ts, user_id)
+            if not session_key:
+                return False
             session_store._ensure_loaded()
             return session_key in session_store._entries
         except Exception:

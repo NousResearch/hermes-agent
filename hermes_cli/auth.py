@@ -6826,6 +6826,12 @@ def _xai_oauth_loopback_login(
     remote VM).  The same PKCE verifier, ``state``, and ``nonce`` are
     used for both paths so the upstream-side OAuth flow is identical.
     """
+    def _stdin_supports_manual_paste() -> bool:
+        try:
+            return bool(getattr(sys.stdin, "isatty", lambda: False)())
+        except Exception:
+            return False
+
     discovery = _xai_oauth_discovery(timeout_seconds)
     authorization_endpoint = discovery["authorization_endpoint"]
     token_endpoint = discovery["token_endpoint"]
@@ -6889,12 +6895,28 @@ def _xai_oauth_loopback_login(
                 else:
                     print("Could not open the browser automatically; use the URL above.")
 
-            callback = _xai_wait_for_callback(
-                server,
-                thread,
-                callback_result,
-                timeout_seconds=max(30.0, timeout_seconds * 9),
-            )
+            try:
+                callback = _xai_wait_for_callback(
+                    server,
+                    thread,
+                    callback_result,
+                    timeout_seconds=max(30.0, timeout_seconds * 9),
+                )
+            except AuthError as exc:
+                if (
+                    getattr(exc, "code", "") != "xai_callback_timeout"
+                    or not _stdin_supports_manual_paste()
+                ):
+                    raise
+                print()
+                print("xAI loopback callback timed out.")
+                print("If your browser reached a failed 127.0.0.1 callback page,")
+                print("paste that FULL callback URL below to continue this login.")
+                print("You can also re-run with `--manual-paste` to skip the")
+                print("loopback listener from the start.")
+                callback = _prompt_manual_callback_paste(redirect_uri)
+                if callback.get("code") is None and callback.get("error") is None:
+                    raise exc
         except Exception:
             try:
                 server.shutdown()

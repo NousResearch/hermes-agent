@@ -484,6 +484,74 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_wraps_none_iterable_typeerror_after_fallback(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(final_error=TypeError("'NoneType' object is not iterable"))
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        raise TypeError("'NoneType' object is not iterable")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create)
+    )
+
+    with pytest.raises(TypeError) as exc_info:
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    message = str(exc_info.value)
+    assert "Codex Responses parser failed" in message
+    assert "HTTP request was accepted" in message
+    assert "responses.create(stream=True)" in message
+    assert "HTTP None" not in message
+    assert calls == {"stream": 2, "create": 1}
+
+
+
+def test_run_codex_stream_rejects_terminal_response_with_none_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(final_response=SimpleNamespace(output=None, status="completed"))
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return SimpleNamespace(output=None, status="completed")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create)
+    )
+
+    with pytest.raises(TypeError) as exc_info:
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    message = str(exc_info.value)
+    assert "Codex Responses parser failed" in message
+    assert "response.output was NoneType" in message
+    assert "responses.stream final_response" in message
+    assert calls == {"stream": 1, "create": 0}
+
+def test_summarize_api_error_uses_structured_codex_parser_message():
+    from agent.codex_runtime import CodexMalformedResponseError
+
+    error = CodexMalformedResponseError(
+        "'NoneType' object is not iterable",
+        phase="responses.stream",
+        context="provider=openai-codex model=gpt-5.5",
+    )
+
+    summary = run_agent.AIAgent._summarize_api_error(error)
+
+    assert summary.startswith("Codex Responses parser failed")
+    assert "provider=openai-codex" in summary
+    assert "HTTP None" not in summary
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

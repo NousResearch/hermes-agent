@@ -2870,7 +2870,8 @@ def run_conversation(
                 if is_client_error:
                     # Try fallback before aborting — a different provider
                     # may not have the same issue (rate limit, auth, etc.)
-                    agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                    _status_label = f"HTTP {status_code}" if status_code is not None else "no HTTP status"
+                    agent._emit_status(f"⚠️ Non-retryable error ({_status_label}) — trying fallback...")
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -2881,10 +2882,10 @@ def run_conversation(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
                     agent._emit_status(
-                        f"❌ Non-retryable error (HTTP {status_code}): "
+                        f"❌ Non-retryable error ({_status_label}): "
                         f"{agent._summarize_api_error(api_error)}"
                     )
-                    agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
+                    agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error ({_status_label}). Aborting.", force=True)
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors
@@ -2917,7 +2918,10 @@ def run_conversation(
                                 agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
                     else:
                         agent._vprint(f"{agent.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
-                    logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
+                    if is_local_validation_error:
+                        logger.exception("%sNon-retryable local/API response parsing error", agent.log_prefix)
+                    else:
+                        logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
                     # Skip session persistence when the error is likely
                     # context-overflow related (status 400 + large session).
                     # Persisting the failed user message would make the

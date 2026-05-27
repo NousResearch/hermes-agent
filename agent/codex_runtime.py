@@ -26,6 +26,98 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+class CodexMalformedResponseError(TypeError):
+    """OpenAI SDK/Codex Responses parser failed after a non-HTTP response.
+
+    The chatgpt.com Codex backend can occasionally return a stream shape that
+    the OpenAI SDK collapses into a local ``TypeError`` such as
+    ``'NoneType' object is not iterable``.  Surface that as a provider/SDK
+    diagnostic instead of a bare Python error with ``HTTP None``.
+    """
+
+    def __init__(self, message: str, *, phase: str, context: str = "") -> None:
+        detail = (
+            "Codex Responses parser failed after the HTTP request was accepted: "
+            f"{message}. Phase: {phase}."
+        )
+        if context:
+            detail += f" {context}"
+        detail += (
+            " This usually means the Codex backend returned a streaming event "
+            "shape that this Hermes/OpenAI SDK build cannot parse; switching "
+            "provider/model or updating Hermes/OpenAI SDK is the practical "
+            "mitigation."
+        )
+        super().__init__(detail)
+        self.phase = phase
+        self.status_code = None
+        self.body = {"error": {"message": detail, "type": "codex_malformed_response"}}
+
+
+def _is_none_iterable_type_error(exc: BaseException) -> bool:
+    return isinstance(exc, TypeError) and "NoneType" in str(exc) and "iterable" in str(exc)
+
+
+def _ensure_response_output_or_raise(
+    response: Any,
+    *,
+    phase: str,
+    agent: Any,
+    collected_output_items: list | None = None,
+    collected_text_deltas: list | None = None,
+    suppress_text_synthesis: bool = False,
+) -> Any:
+    """Validate/backfill Codex Responses output before callers touch .output_text.
+
+    openai-python's ``Response.output_text`` property assumes ``output`` is
+    iterable.  The chatgpt.com Codex backend sometimes yields a terminal
+    response with ``output=None``; if we let that object escape, callers get the
+    opaque ``'NoneType' object is not iterable`` again.
+    """
+    output = getattr(response, "output", None)
+    if isinstance(output, list) and output:
+        return response
+
+    collected_output_items = collected_output_items or []
+    collected_text_deltas = collected_text_deltas or []
+    if collected_output_items:
+        response.output = list(collected_output_items)
+        logger.debug(
+            "Codex %s: backfilled %d output items",
+            phase,
+            len(collected_output_items),
+        )
+        return response
+
+    if collected_text_deltas and not suppress_text_synthesis:
+        assembled = "".join(collected_text_deltas)
+        response.output = [SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text=assembled)],
+        )]
+        logger.debug(
+            "Codex %s: synthesized output from %d text deltas (%d chars)",
+            phase,
+            len(collected_text_deltas),
+            len(assembled),
+        )
+        return response
+
+    if isinstance(output, list):
+        raise CodexMalformedResponseError(
+            "response.output was empty",
+            phase=phase,
+            context=agent._client_log_context(),
+        )
+    raise CodexMalformedResponseError(
+        f"response.output was {type(output).__name__}",
+        phase=phase,
+        context=agent._client_log_context(),
+    )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -248,29 +340,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                         )
                 final_response = stream.get_final_response()
                 # PATCH: ChatGPT Codex backend streams valid output items
-                # but get_final_response() can return an empty output list.
-                # Backfill from collected items or synthesize from deltas.
-                _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
-                    if collected_output_items:
-                        final_response.output = list(collected_output_items)
-                        logger.debug(
-                            "Codex stream: backfilled %d output items from stream events",
-                            len(collected_output_items),
-                        )
-                    elif agent._codex_streamed_text_parts and not has_tool_calls:
-                        assembled = "".join(agent._codex_streamed_text_parts)
-                        final_response.output = [SimpleNamespace(
-                            type="message",
-                            role="assistant",
-                            status="completed",
-                            content=[SimpleNamespace(type="output_text", text=assembled)],
-                        )]
-                        logger.debug(
-                            "Codex stream: synthesized output from %d text deltas (%d chars)",
-                            len(agent._codex_streamed_text_parts), len(assembled),
-                        )
-                return final_response
+                # but get_final_response() can return empty/None output.
+                return _ensure_response_output_or_raise(
+                    final_response,
+                    phase="responses.stream final_response",
+                    agent=agent,
+                    collected_output_items=collected_output_items,
+                    collected_text_deltas=agent._codex_streamed_text_parts,
+                    suppress_text_synthesis=has_tool_calls,
+                )
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
@@ -287,6 +365,29 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except TypeError as exc:
+            if not _is_none_iterable_type_error(exc):
+                raise
+            logger.exception(
+                "Codex Responses stream parser raised a local TypeError. %s",
+                agent._client_log_context(),
+            )
+            if attempt < max_stream_retries:
+                continue
+            try:
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            except TypeError as fallback_exc:
+                if _is_none_iterable_type_error(fallback_exc):
+                    logger.exception(
+                        "Codex create(stream=True) fallback parser raised the same local TypeError. %s",
+                        agent._client_log_context(),
+                    )
+                    raise CodexMalformedResponseError(
+                        str(fallback_exc),
+                        phase="responses.create(stream=True) fallback",
+                        context=agent._client_log_context(),
+                    ) from fallback_exc
+                raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text
@@ -344,11 +445,28 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     fallback_kwargs = dict(api_kwargs)
     fallback_kwargs["stream"] = True
     fallback_kwargs = agent._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
-    stream_or_response = active_client.responses.create(**fallback_kwargs)
+    try:
+        stream_or_response = active_client.responses.create(**fallback_kwargs)
+    except TypeError as exc:
+        if _is_none_iterable_type_error(exc):
+            logger.exception(
+                "Codex create(stream=True) fallback failed before yielding events. %s",
+                agent._client_log_context(),
+            )
+            raise CodexMalformedResponseError(
+                str(exc),
+                phase="responses.create(stream=True)",
+                context=agent._client_log_context(),
+            ) from exc
+        raise
 
     # Compatibility shim for mocks or providers that still return a concrete response.
     if hasattr(stream_or_response, "output"):
-        return stream_or_response
+        return _ensure_response_output_or_raise(
+            stream_or_response,
+            phase="responses.create(stream=True) concrete_response",
+            agent=agent,
+        )
     if not hasattr(stream_or_response, "__iter__"):
         return stream_or_response
 
@@ -412,27 +530,13 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is None and isinstance(event, dict):
                 terminal_response = event.get("response")
             if terminal_response is not None:
-                # Backfill empty output from collected stream events
-                _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
-                    if collected_output_items:
-                        terminal_response.output = list(collected_output_items)
-                        logger.debug(
-                            "Codex fallback stream: backfilled %d output items",
-                            len(collected_output_items),
-                        )
-                    elif collected_text_deltas:
-                        assembled = "".join(collected_text_deltas)
-                        terminal_response.output = [SimpleNamespace(
-                            type="message", role="assistant",
-                            status="completed",
-                            content=[SimpleNamespace(type="output_text", text=assembled)],
-                        )]
-                        logger.debug(
-                            "Codex fallback stream: synthesized from %d deltas (%d chars)",
-                            len(collected_text_deltas), len(assembled),
-                        )
-                return terminal_response
+                return _ensure_response_output_or_raise(
+                    terminal_response,
+                    phase="responses.create(stream=True) terminal_response",
+                    agent=agent,
+                    collected_output_items=collected_output_items,
+                    collected_text_deltas=collected_text_deltas,
+                )
     finally:
         close_fn = getattr(stream_or_response, "close", None)
         if callable(close_fn):
@@ -442,7 +546,13 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                 pass
 
     if terminal_response is not None:
-        return terminal_response
+        return _ensure_response_output_or_raise(
+            terminal_response,
+            phase="responses.create(stream=True) terminal_response",
+            agent=agent,
+            collected_output_items=collected_output_items,
+            collected_text_deltas=collected_text_deltas,
+        )
     raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
 
 

@@ -634,6 +634,12 @@ class _CodexCompletionsAdapter:
         self._client = real_client
         self._model = model
 
+    def _client_log_context(self, model: Optional[str] = None) -> str:
+        return (
+            f"provider=openai-codex base_url={getattr(self._client, 'base_url', 'unknown')} "
+            f"model={model or self._model}"
+        )
+
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
@@ -791,6 +797,10 @@ class _CodexCompletionsAdapter:
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
+            from agent.codex_runtime import (
+                CodexMalformedResponseError,
+                _is_none_iterable_type_error,
+            )
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
@@ -813,28 +823,39 @@ class _CodexCompletionsAdapter:
                 _check_cancelled()
                 final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
+            # Backfill/validate output before any caller or SDK helper touches
+            # .output_text.  chatgpt.com/backend-api/codex can return
+            # response.output=None, which openai-python otherwise exposes as
+            # the opaque: 'NoneType' object is not iterable.
             _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
-                if collected_output_items:
-                    final.output = list(collected_output_items)
-                    logger.debug(
-                        "Codex auxiliary: backfilled %d output items from stream events",
-                        len(collected_output_items),
-                    )
-                elif collected_text_deltas and not has_function_calls:
-                    # Only synthesize text when no tool calls were streamed —
-                    # a function_call response with incidental text should not
-                    # be collapsed into a plain-text message.
-                    assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
-                        type="message", role="assistant", status="completed",
-                        content=[SimpleNamespace(type="output_text", text=assembled)],
-                    )]
-                    logger.debug(
-                        "Codex auxiliary: synthesized from %d deltas (%d chars)",
-                        len(collected_text_deltas), len(assembled),
-                    )
+            if isinstance(_output, list) and _output:
+                pass
+            elif collected_output_items:
+                final.output = list(collected_output_items)
+                logger.debug(
+                    "Codex auxiliary: backfilled %d output items from stream events",
+                    len(collected_output_items),
+                )
+            elif collected_text_deltas and not has_function_calls:
+                # Only synthesize text when no tool calls were streamed —
+                # a function_call response with incidental text should not
+                # be collapsed into a plain-text message.
+                assembled = "".join(collected_text_deltas)
+                final.output = [SimpleNamespace(
+                    type="message", role="assistant", status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )]
+                logger.debug(
+                    "Codex auxiliary: synthesized from %d deltas (%d chars)",
+                    len(collected_text_deltas), len(assembled),
+                )
+            else:
+                output_desc = "empty" if isinstance(_output, list) else type(_output).__name__
+                raise CodexMalformedResponseError(
+                    f"auxiliary response.output was {output_desc}",
+                    phase="auxiliary responses.stream final_response",
+                    context=self._client_log_context(model),
+                )
 
             # Extract text and tool calls from the Responses output.
             # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
@@ -869,6 +890,21 @@ class _CodexCompletionsAdapter:
                     completion_tokens=getattr(resp_usage, "output_tokens", 0),
                     total_tokens=getattr(resp_usage, "total_tokens", 0),
                 )
+        except TypeError as exc:
+            if timed_out.is_set():
+                raise TimeoutError(_timeout_message()) from exc
+            if _is_none_iterable_type_error(exc):
+                logger.exception(
+                    "Codex auxiliary Responses parser raised a local TypeError. %s",
+                    self._client_log_context(model),
+                )
+                raise CodexMalformedResponseError(
+                    str(exc),
+                    phase="auxiliary responses.stream",
+                    context=self._client_log_context(model),
+                ) from exc
+            logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+            raise
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc

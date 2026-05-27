@@ -2515,6 +2515,68 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["timeout"] == 12.5
         assert response.choices[0].message.content == "summary"
 
+    def test_rejects_none_output_with_diagnostic(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(output=None, status="completed", usage=None)
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(
+            responses=FakeResponses(),
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        with pytest.raises(TypeError) as exc_info:
+            adapter.create(messages=[{"role": "user", "content": "title"}])
+
+        message = str(exc_info.value)
+        assert "Codex Responses parser failed" in message
+        assert "auxiliary response.output was NoneType" in message
+        assert "auxiliary responses.stream final_response" in message
+        assert "provider=openai-codex" in message
+
+    def test_wraps_stream_parser_none_iterable_typeerror(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(
+            responses=FakeResponses(),
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        with pytest.raises(TypeError) as exc_info:
+            adapter.create(messages=[{"role": "user", "content": "title"}])
+
+        message = str(exc_info.value)
+        assert "Codex Responses parser failed" in message
+        assert "auxiliary responses.stream" in message
+        assert "'NoneType' object is not iterable" in message
+
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class SlowAliveStream:
             def __enter__(self):

@@ -4096,6 +4096,14 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    readiness_blocked: list[tuple[str, str]] = field(default_factory=list)
+    """Tasks blocked by pre-spawn worker readiness checks.
+
+    Each pair is ``(task_id, reason_code)``. These are deterministic
+    capability failures discovered before launching the worker subprocess
+    (for example provider auth missing for the assigned profile), so the
+    dispatcher can stop a crash-loop before ``Popen``.
+    """
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4754,6 +4762,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    force_failure_limit: bool = False,
 ) -> bool:
     """Record a non-success outcome (spawn_failed / crashed / timed_out)
     and maybe trip the circuit breaker.
@@ -4784,10 +4793,12 @@ def _record_task_failure(
     context (e.g. pid on crash, elapsed on timeout).
 
     Resolution order for the effective threshold:
-      1. per-task ``max_retries`` if set (nothing else overrides)
-      2. caller-supplied ``failure_limit`` (gateway passes the config
+      1. caller-supplied ``failure_limit`` when ``force_failure_limit`` is true
+         (used for deterministic pre-spawn readiness failures)
+      2. per-task ``max_retries`` if set (normal failure paths)
+      3. caller-supplied ``failure_limit`` (gateway passes the config
          value from ``kanban.failure_limit``; tests pass fixed values)
-      3. ``DEFAULT_FAILURE_LIMIT``
+      4. ``DEFAULT_FAILURE_LIMIT``
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -4803,11 +4814,16 @@ def _record_task_failure(
         cur_status = row["status"]
 
         # Per-task override wins over both caller-supplied and default
-        # thresholds. None (the common case) falls through.
+        # thresholds for normal failures. Deterministic readiness failures can
+        # force the caller-supplied limit so they block in one tick instead of
+        # honoring retry counts that cannot repair missing provider capability.
         task_override = (
             row["max_retries"] if "max_retries" in row.keys() else None
         )
-        if task_override is not None:
+        if force_failure_limit:
+            effective_limit = int(failure_limit)
+            limit_source = "forced"
+        elif task_override is not None:
             effective_limit = int(task_override)
             limit_source = "task"
         else:
@@ -4906,6 +4922,7 @@ def _record_spawn_failure(
     error: str,
     *,
     failure_limit: int = None,
+    force_failure_limit: bool = False,
 ) -> bool:
     return _record_task_failure(
         conn, task_id, error,
@@ -4913,7 +4930,175 @@ def _record_spawn_failure(
         failure_limit=failure_limit,
         release_claim=True,
         end_run=True,
+        force_failure_limit=force_failure_limit,
     )
+
+
+def _worker_readiness_reason_code(message: str) -> str:
+    """Return a stable low-cardinality reason code for readiness telemetry."""
+    text = (message or "").lower()
+    if "openai-codex" in text and "auth" in text:
+        return "openai-codex_auth_unavailable"
+    if "profile" in text and "unavailable" in text:
+        return "profile_unavailable"
+    return "worker_readiness_failed"
+
+
+def _worker_fallback_chain_can_resolve(cfg: dict) -> Optional[bool]:
+    """Return whether a configured fallback provider can resolve for runtime.
+
+    ``None`` means the fallback probe itself hit an unexpected error; callers
+    should fail open because the worker runtime owns the full fallback path.
+    """
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from utils import base_url_host_matches
+    except Exception:
+        return None
+
+    chain = get_fallback_chain(cfg if isinstance(cfg, dict) else {})
+    if not chain:
+        return False
+
+    saw_fallback = False
+    for entry in chain:
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if not provider or not model:
+            continue
+        saw_fallback = True
+        base_url = str(entry.get("base_url") or "").strip() or None
+        try:
+            runtime = resolve_runtime_provider(
+                requested=provider,
+                explicit_base_url=base_url,
+                target_model=model,
+            )
+        except Exception:
+            continue
+        runtime_base_url = runtime.get("base_url")
+        runtime_api_key = runtime.get("api_key")
+        if runtime_api_key:
+            return True
+        if (
+            isinstance(runtime_base_url, str)
+            and runtime_base_url
+            and not base_url_host_matches(runtime_base_url, "openrouter.ai")
+        ):
+            # Mirrors CLI runtime startup: local/custom endpoints can run with
+            # the placeholder "no-key-required" key.
+            return True
+    return False if saw_fallback else False
+
+
+def _record_worker_readiness_failure(
+    conn: sqlite3.Connection,
+    result: DispatchResult,
+    task_id: str,
+    message: str,
+) -> None:
+    """Block a deterministic pre-spawn capability failure immediately.
+
+    Readiness failures happen before ``Popen`` and are known-fatal for the
+    assigned profile (for example provider auth is unavailable). Retrying the
+    same task on every dispatcher tick would only create a crash loop, so this
+    path trips the existing failure circuit breaker in one step while preserving
+    the normal run/event audit trail.
+    """
+    code = _worker_readiness_reason_code(message)
+    result.readiness_blocked.append((task_id, code))
+    auto = _record_spawn_failure(
+        conn,
+        task_id,
+        message,
+        failure_limit=1,
+        force_failure_limit=True,
+    )
+    if auto:
+        result.auto_blocked.append(task_id)
+
+
+def _worker_readiness_failure(profile_name: str) -> Optional[str]:
+    """Return a redacted fatal readiness error for ``profile_name``, if any.
+
+    The dispatcher uses this as a fast preflight immediately before default
+    worker spawn. It is deliberately narrow and fail-open: only deterministic
+    provider capability failures should block a task. Unexpected probe bugs are
+    logged and the worker is allowed to spawn so this guard cannot become a new
+    single point of failure.
+    """
+    profile = (profile_name or "").strip()
+    if not profile:
+        return "Worker readiness failed: assigned profile is unavailable"
+
+    try:
+        from hermes_cli.profiles import resolve_profile_env
+
+        profile_home = resolve_profile_env(profile)
+    except Exception as exc:
+        return f"Worker readiness failed: profile {profile!r} unavailable: {exc}"
+
+    token = None
+    reset_home_override = None
+    try:
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_cli.auth import AuthError, format_auth_error, resolve_provider
+        from hermes_cli.config import load_config
+
+        reset_home_override = reset_hermes_home_override
+        token = set_hermes_home_override(profile_home)
+        cfg = load_config()
+        model_cfg = cfg.get("model")
+        requested_provider = ""
+        if isinstance(model_cfg, dict):
+            requested_provider = str(model_cfg.get("provider") or "").strip()
+        elif isinstance(model_cfg, str):
+            # Root-level model strings carry model ids, not provider ids, so do
+            # not infer a provider from them here.
+            requested_provider = ""
+
+        if not requested_provider:
+            return None
+
+        try:
+            provider = resolve_provider(requested_provider)
+        except AuthError as exc:
+            return f"Worker readiness failed: provider {requested_provider!r} invalid for profile {profile}: {format_auth_error(exc)}"
+
+        if provider == "openai-codex":
+            try:
+                from hermes_cli.auth import resolve_codex_runtime_credentials
+
+                resolve_codex_runtime_credentials(refresh_if_expiring=False)
+            except AuthError as exc:
+                fallback_ready = _worker_fallback_chain_can_resolve(cfg)
+                if fallback_ready is True:
+                    _log.debug(
+                        "kanban worker readiness: allowing %s to spawn because a fallback provider resolved",
+                        profile,
+                    )
+                    return None
+                if fallback_ready is None:
+                    _log.debug(
+                        "kanban worker readiness: skipping %s because fallback probe was inconclusive",
+                        profile,
+                    )
+                    return None
+                return (
+                    "Worker readiness failed: openai-codex auth unavailable "
+                    f"for profile {profile}: {format_auth_error(exc)}"
+                )
+        return None
+    except Exception as exc:
+        _log.debug("kanban worker readiness probe skipped for %s: %s", profile, exc, exc_info=True)
+        return None
+    finally:
+        if token is not None and reset_home_override is not None:
+            try:
+                reset_home_override(token)
+            except Exception:
+                pass
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
@@ -5266,6 +5451,13 @@ def dispatch_once(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        if spawn_fn is None:
+            readiness_error = _worker_readiness_failure(claimed.assignee or "")
+            if readiness_error:
+                _record_worker_readiness_failure(
+                    conn, result, claimed.id, readiness_error,
+                )
+                continue
         try:
             workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
@@ -5345,6 +5537,13 @@ def dispatch_once(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        if spawn_fn is None:
+            readiness_error = _worker_readiness_failure(claimed.assignee or "")
+            if readiness_error:
+                _record_worker_readiness_failure(
+                    conn, result, claimed.id, readiness_error,
+                )
+                continue
         try:
             workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
@@ -5622,6 +5821,25 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     return False
 
 
+def _canonical_home_from_profile_hermes_home(hermes_home: Optional[str]) -> Optional[str]:
+    """Return the real Unix home for profile-local HERMES_HOME layouts."""
+    if not hermes_home:
+        return None
+    try:
+        path = os.path.abspath(os.path.expanduser(str(hermes_home)))
+    except Exception:
+        return None
+    marker = f"{os.sep}.hermes{os.sep}profiles{os.sep}"
+    if marker in path:
+        prefix = path.split(marker, 1)[0]
+        if prefix and os.path.isabs(prefix):
+            return prefix
+    parts = path.rstrip(os.sep).split(os.sep)
+    if len(parts) >= 3 and parts[-2] == "profiles" and os.path.isabs(path):
+        return os.sep.join(parts[:-2]) or os.sep
+    return None
+
+
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
@@ -5699,6 +5917,23 @@ def _default_spawn(
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+    canonical_home = _canonical_home_from_profile_hermes_home(env.get("HERMES_HOME"))
+    acpx_guard_keys = (
+        "ACPX_GUARD_REAL_HOME",
+        "ACPX_GUARD_HOME",
+        "ACPX_GUARD_LOG_DIR",
+        "ACPX_GUARD_USAGE_HOME",
+        "ACPX_GUARD_AGENT_HOME",
+    )
+    if canonical_home:
+        env["ACPX_GUARD_REAL_HOME"] = canonical_home
+        env["ACPX_GUARD_HOME"] = os.path.join(canonical_home, ".hermes", "acpx")
+        env["ACPX_GUARD_LOG_DIR"] = os.path.join(canonical_home, ".hermes", "logs", "acpx")
+        env["ACPX_GUARD_USAGE_HOME"] = canonical_home
+        env["ACPX_GUARD_AGENT_HOME"] = canonical_home
+    else:
+        for key in acpx_guard_keys:
+            env.pop(key, None)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

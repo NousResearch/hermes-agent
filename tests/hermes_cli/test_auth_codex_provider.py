@@ -25,12 +25,18 @@ from hermes_cli.auth import (
 )
 
 
-def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
+def _setup_hermes_auth(
+    hermes_home: Path,
+    *,
+    access_token: str = "access",
+    refresh_token: str = "refresh",
+    active_provider: str = "openai-codex",
+):
     """Write Codex tokens into the Hermes auth store."""
     hermes_home.mkdir(parents=True, exist_ok=True)
     auth_store = {
         "version": 1,
-        "active_provider": "openai-codex",
+        "active_provider": active_provider,
         "providers": {
             "openai-codex": {
                 "tokens": {
@@ -51,6 +57,34 @@ def _jwt_with_exp(exp_epoch: int) -> str:
     payload = {"exp": exp_epoch}
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
     return f"h.{encoded}.s"
+
+
+def _setup_profile_with_global_codex_auth(tmp_path: Path, monkeypatch):
+    """Mirror ~/.hermes + ~/.hermes/profiles/worker profile mode."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    global_root = tmp_path / ".hermes"
+    profile_home = global_root / "profiles" / "worker"
+    global_root.mkdir(parents=True, exist_ok=True)
+    profile_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    return global_root, profile_home
+
+
+def _write_broken_profile_codex_state(profile_home: Path) -> None:
+    profile_home.mkdir(parents=True, exist_ok=True)
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {
+            "openai-codex": {
+                "tokens": {},
+                "last_auth_error": {
+                    "code": "refresh_token_reused",
+                    "message": "redacted",
+                },
+            },
+        },
+    }, indent=2))
 
 
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
@@ -86,6 +120,50 @@ def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkey
     assert exc.value.relogin_required is True
 
 
+def test_profile_broken_codex_state_falls_back_to_global_auth(tmp_path, monkeypatch):
+    global_root, profile_home = _setup_profile_with_global_codex_auth(tmp_path, monkeypatch)
+    _setup_hermes_auth(global_root, access_token="global-access", refresh_token="global-refresh")
+    _write_broken_profile_codex_state(profile_home)
+
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == "global-access"
+    assert data["auth_source"] == "global-auth-store-fallback"
+
+    creds = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+    assert creds["api_key"] == "global-access"
+    assert creds["source"] == "global-auth-store-fallback"
+
+
+def test_profile_global_codex_fallback_refresh_updates_global_not_profile(tmp_path, monkeypatch):
+    global_root, profile_home = _setup_profile_with_global_codex_auth(tmp_path, monkeypatch)
+    expiring_token = _jwt_with_exp(int(time.time()) - 10)
+    _setup_hermes_auth(
+        global_root,
+        access_token=expiring_token,
+        refresh_token="global-refresh-old",
+        active_provider="nous",
+    )
+    _write_broken_profile_codex_state(profile_home)
+
+    def _fake_refresh(access_token, refresh_token, *, timeout_seconds):
+        assert access_token == expiring_token
+        assert refresh_token == "global-refresh-old"
+        return {"access_token": "global-access-new", "refresh_token": "global-refresh-new"}
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _fake_refresh)
+
+    creds = resolve_codex_runtime_credentials()
+    assert creds["api_key"] == "global-access-new"
+    assert creds["source"] == "global-auth-store-fallback"
+
+    global_auth = json.loads((global_root / "auth.json").read_text())
+    profile_auth = json.loads((profile_home / "auth.json").read_text())
+    assert global_auth["active_provider"] == "nous"
+    assert global_auth["providers"]["openai-codex"]["tokens"]["access_token"] == "global-access-new"
+    assert global_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "global-refresh-new"
+    assert profile_auth["providers"]["openai-codex"]["tokens"] == {}
+
+
 def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     expiring_token = _jwt_with_exp(int(time.time()) - 10)
@@ -94,7 +172,7 @@ def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, mo
 
     called = {"count": 0}
 
-    def _fake_refresh(tokens, timeout_seconds):
+    def _fake_refresh(tokens, timeout_seconds, **kwargs):
         called["count"] += 1
         return {"access_token": "access-new", "refresh_token": "refresh-new"}
 
@@ -113,7 +191,7 @@ def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
 
     called = {"count": 0}
 
-    def _fake_refresh(tokens, timeout_seconds):
+    def _fake_refresh(tokens, timeout_seconds, **kwargs):
         called["count"] += 1
         return {"access_token": "access-forced", "refresh_token": "refresh-new"}
 

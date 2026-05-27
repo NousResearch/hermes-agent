@@ -1100,6 +1100,127 @@ def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawna
         assert kb.get_task(conn, t).claim_lock is None
 
 
+def test_dispatch_readiness_gate_ignores_task_max_retries(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """Deterministic readiness failures block immediately, even with retries."""
+    default_spawn_called = []
+
+    def should_not_spawn(task, workspace, *, board=None):
+        default_spawn_called.append(task.id)
+        raise AssertionError("default spawn should not be reached")
+
+    monkeypatch.setattr(kb, "_default_spawn", should_not_spawn)
+    monkeypatch.setattr(
+        kb,
+        "_worker_readiness_failure",
+        lambda profile: "Worker readiness failed: openai-codex auth unavailable for profile alice",
+        raising=False,
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs-auth", assignee="alice", max_retries=5)
+        res = kb.dispatch_once(conn, failure_limit=3)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert default_spawn_called == []
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.claim_lock is None
+    assert t in res.auto_blocked
+    assert res.readiness_blocked == [(t, "openai-codex_auth_unavailable")]
+    assert run is not None
+    assert run.outcome == "gave_up"
+
+
+def test_worker_readiness_allows_configured_runtime_fallback(tmp_path, monkeypatch):
+    """Primary Codex auth failure should not block workers with a valid fallback."""
+    profile_home = tmp_path / ".hermes" / "profiles" / "alice"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openai-codex\n"
+        "  default: gpt-5.5\n"
+        "fallback_providers:\n"
+        "  - provider: openrouter\n"
+        "    model: openai/gpt-5-mini\n",
+        encoding="utf-8",
+    )
+
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.resolve_profile_env",
+        lambda profile: str(profile_home),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda **kwargs: (_ for _ in ()).throw(AuthError("missing access_token")),
+    )
+
+    seen = {}
+
+    def fake_resolve_runtime_provider(**kwargs):
+        seen.update(kwargs)
+        return {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "fallback-test-key",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve_runtime_provider,
+    )
+
+    assert kb._worker_readiness_failure("alice") is None
+    assert seen["requested"] == "openrouter"
+    assert seen["target_model"] == "openai/gpt-5-mini"
+
+
+def test_dispatch_readiness_gate_blocks_before_default_spawn(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """Known-fatal worker readiness failures should block before Popen.
+
+    This catches profile/provider auth failures (for example Codex auth missing
+    access_token) before the dispatcher crash-loops a worker subprocess.
+    """
+    default_spawn_called = []
+
+    def should_not_spawn(task, workspace, *, board=None):
+        default_spawn_called.append(task.id)
+        raise AssertionError("default spawn should not be reached")
+
+    monkeypatch.setattr(kb, "_default_spawn", should_not_spawn)
+    monkeypatch.setattr(
+        kb,
+        "_worker_readiness_failure",
+        lambda profile: "Worker readiness failed: openai-codex auth unavailable for profile alice",
+        raising=False,
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs-auth", assignee="alice")
+        res = kb.dispatch_once(conn, failure_limit=3)
+        task = kb.get_task(conn, t)
+        run = kb.latest_run(conn, t)
+
+    assert default_spawn_called == []
+    assert task is not None
+    assert task.status == "blocked"
+    assert task.claim_lock is None
+    assert task.worker_pid is None
+    assert t in res.auto_blocked
+    assert res.readiness_blocked == [(t, "openai-codex_auth_unavailable")]
+    assert task.last_failure_error is not None
+    assert "Worker readiness failed" in task.last_failure_error
+    assert run is not None
+    assert run.outcome == "gave_up"
+
+
 def test_dispatch_max_spawn_counts_existing_running_tasks(
     kanban_home, all_assignees_spawnable
 ):
@@ -2013,6 +2134,67 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+
+    def test_dispatcher_spawn_sets_acpx_canonical_home_for_profile_workers(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda _profile: str(profile_home),
+        )
+        monkeypatch.setenv("ACPX_GUARD_REAL_HOME", "/tmp/stale-real")
+        monkeypatch.setenv("ACPX_GUARD_HOME", "/tmp/stale-home")
+        monkeypatch.setenv("ACPX_GUARD_LOG_DIR", "/tmp/stale-log")
+        monkeypatch.setenv("ACPX_GUARD_USAGE_HOME", "/tmp/stale-usage")
+        monkeypatch.setenv("ACPX_GUARD_AGENT_HOME", "/tmp/stale-agent")
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_acpx_env",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            branch_name=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["HERMES_HOME"] == str(profile_home)
+        assert env["ACPX_GUARD_REAL_HOME"] == str(tmp_path)
+        assert env["ACPX_GUARD_HOME"] == str(tmp_path / ".hermes" / "acpx")
+        assert env["ACPX_GUARD_LOG_DIR"] == str(tmp_path / ".hermes" / "logs" / "acpx")
+        assert env["ACPX_GUARD_USAGE_HOME"] == str(tmp_path)
+        assert env["ACPX_GUARD_AGENT_HOME"] == str(tmp_path)
+
+    def test_acpx_canonical_home_supports_generic_profile_layout(self):
+        assert kb._canonical_home_from_profile_hermes_home("/opt/hermes/profiles/coder") == "/opt/hermes"
+
+    def test_acpx_canonical_home_returns_none_for_non_profile_layout(self):
+        assert kb._canonical_home_from_profile_hermes_home("/opt/hermes/coder") is None
 
 
 # ---------------------------------------------------------------------------

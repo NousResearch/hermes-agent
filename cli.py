@@ -42,7 +42,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -8172,6 +8172,88 @@ class HermesCLI:
         except Exception as exc:
             print(f"(._.) curator: {exc}")
 
+    def _handle_stayawake_command(self, cmd: str):
+        """Handle /stayawake — caffeinate to prevent macOS sleep.
+
+        /stayawake          → toggle (on if off, off if on)
+        /stayawake on       → prevent sleep
+        /stayawake off      → allow sleep
+        /stayawake status   → show current state
+        """
+        import shlex, subprocess, os
+
+        tokens = shlex.split(cmd)[1:] if cmd else []
+        sub = tokens[0].lower() if tokens else ""
+        state_path = os.path.expanduser("~/.hermes/.stayawake.pid")
+
+        if sub == "status" or (not sub and os.path.exists(state_path)):
+            # Show status of _any_ active caffeinate, not just one Hermes started
+            import subprocess as _sp
+            try:
+                _sp.run(["pgrep", "-x", "caffeinate"], check=True, capture_output=True)
+                # Get the pid(s) and how long it's been running
+                _result = _sp.run(["pgrep", "-x", "caffeinate"], capture_output=True, text=True)
+                pids = _result.stdout.strip().splitlines()
+                if pids:
+                    print(f"  🟢 StayAwake is ON (caffeinate PID{'s' if len(pids) > 1 else ''}: {', '.join(pids)})")
+                    # Show flags used
+                    _ps = _sp.run(["ps", "-o", "command=", "-p", pids[0]], capture_output=True, text=True)
+                    cmdline = _ps.stdout.strip() if _ps.stdout else ""
+                    if cmdline:
+                        print(f"     Command: {cmdline}")
+                else:
+                    print("  ⚪ StayAwake is OFF")
+            except _sp.CalledProcessError:
+                print("  ⚪ StayAwake is OFF")
+            return
+
+        if sub == "on" or not sub:
+            # Check if already running
+            try:
+                _sp = subprocess
+                _sp.run(["pgrep", "-x", "caffeinate"], check=True, capture_output=True)
+                print("  🟢 StayAwake is already ON")
+                return
+            except subprocess.CalledProcessError:
+                pass
+
+            # Start caffeinate in background with all sleep-prevention flags
+            proc = subprocess.Popen(
+                ["/usr/bin/caffeinate", "-disu"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            with open(state_path, "w") as f:
+                f.write(str(proc.pid))
+            print(f"  🟢 StayAwake ON — macOS will not sleep (caffeinate PID {proc.pid})")
+            print("     Run /stayawake off to allow sleep again")
+
+        elif sub == "off":
+            killed = 0
+            try:
+                _result = subprocess.run(
+                    ["pgrep", "-x", "caffeinate"],
+                    capture_output=True, text=True, timeout=5
+                )
+                for pid in _result.stdout.strip().splitlines():
+                    pid = pid.strip()
+                    if pid:
+                        subprocess.run(["kill", pid], capture_output=True, timeout=3)
+                        killed += 1
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass
+
+            # Clean up state file
+            if os.path.exists(state_path):
+                os.remove(state_path)
+
+            if killed:
+                print(f"  🔴 StayAwake OFF — {killed} caffeinate process(es) stopped")
+            else:
+                print("  ⚪ StayAwake was not running")
+        else:
+            print("  Usage: /stayawake [on|off|status]")
+
     def _handle_kanban_command(self, cmd: str):
         """Handle the /kanban command — delegate to the shared kanban CLI.
 
@@ -8515,6 +8597,8 @@ class HermesCLI:
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
+        elif canonical == "stayawake":
+            self._handle_stayawake_command(cmd_original)
         elif canonical == "update":
             if self._handle_update_command():
                 return False
@@ -8614,6 +8698,8 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
+        elif canonical == "tracelog":
+            self._handle_tracelog_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
         else:
@@ -10245,6 +10331,8 @@ class HermesCLI:
 
         return choice
 
+    _MCP_RELOAD_SKIP_TOKENS: ClassVar[frozenset[str]] = frozenset({"now", "--yes", "-y"})
+
     def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
         """Interactive /reload-mcp — confirm with the user, then reload.
 
@@ -10257,7 +10345,37 @@ class HermesCLI:
         ``approvals.mcp_reload_confirm: false`` so future reloads run
         without this prompt), Cancel.  Gated by
         ``approvals.mcp_reload_confirm`` — default on.
+
+        **Thread safety:** Called from the ``process_loop`` daemon thread.
+        We cannot safely interact with the prompt_toolkit modal from a
+        background thread — ``_prompt_text_input_modal`` falls back to raw
+        ``input()`` which fights prompt_toolkit's stdin ownership and
+        corrupts terminal state (no echo, broken raw mode, lost keyboard).
+        Instead, inline skip tokens (``/reload-mcp now`` / ``--yes`` / ``-y``)
+        bypass the gate entirely; without them the warning is printed as
+        text and reload proceeds with a header print so the session is
+        never blocked.
         """
+        # Inline-skip escape hatch — matches _confirm_destructive_slash pattern.
+        # User types "/reload-mcp now" or "/reload-mcp --yes" to bypass gate.
+        _skip = False
+        _always = False
+        _extra = ""
+        if cmd_original:
+            tokens = cmd_original.strip().split()
+            if tokens and tokens[0].startswith("/"):
+                tokens = tokens[1:]
+            kept: list[str] = []
+            for tok in tokens:
+                if tok.lower() in ("now", "--yes", "-y"):
+                    _skip = True
+                elif tok.lower() == "always":
+                    _always = True
+                    _skip = True
+                else:
+                    kept.append(tok)
+            _extra = " ".join(kept)
+
         # Gate check — respects prior "Always Approve" clicks.
         try:
             cfg = load_cli_config()
@@ -10268,41 +10386,20 @@ class HermesCLI:
         except Exception:
             confirm_required = True
 
-        if not confirm_required:
-            with self._busy_command(self._slow_command_status(cmd_original)):
-                self._reload_mcp()
-            return
+        if confirm_required and not _skip:
+            # Print warning as text — cannot use modal from daemon thread.
+            print()
+            print("⚠️  /reload-mcp invalidates the provider prompt cache (next message")
+            print("   re-sends full input tokens — can be expensive on long-context or")
+            print("   high-reasoning models).  Proceeding with reload...")
+            print()
+            print("   To skip this warning in the future:")
+            print("     • Run /reload-mcp now   — skip once")
+            print("     • Run /reload-mcp always — skip permanently")
+            print(f"     • Or set `approvals.mcp_reload_confirm: false` in config.yaml")
+            print()
 
-        # Render warning + prompt.  Use the same prompt_toolkit-native composer
-        # modal as destructive slash confirmations so choices stay visible.
-        choices = [
-            ("once", "Approve Once", "reload now"),
-            ("always", "Always Approve", "reload now and silence this prompt permanently"),
-            ("cancel", "Cancel", "leave MCP tools unchanged"),
-        ]
-        raw = self._prompt_text_input_modal(
-            title="⚠️  /reload-mcp — Prompt cache invalidation warning",
-            detail=(
-                "Reloading MCP servers rebuilds the tool set for this session and\n"
-                "invalidates the provider prompt cache. The next message will\n"
-                "re-send full input tokens (can be expensive on long-context or\n"
-                "high-reasoning models)."
-            ),
-            choices=choices,
-        )
-        if raw is None:
-            print("🟡 /reload-mcp cancelled (no input).")
-            return
-        choice = self._normalize_slash_confirm_choice(raw, choices)
-        if choice is None:
-            print(f"🟡 Unrecognized choice '{raw}'. /reload-mcp cancelled.")
-            return
-
-        if choice == "cancel":
-            print("🟡 /reload-mcp cancelled. MCP tools unchanged.")
-            return
-
-        if choice == "always":
+        if _always or (not confirm_required and _extra == "always"):
             if save_config_value("approvals.mcp_reload_confirm", False):
                 print("🔒 Future /reload-mcp calls will run without confirmation.")
                 print("   Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.")
@@ -10310,7 +10407,13 @@ class HermesCLI:
                 print("⚠️  Couldn't persist opt-out — reloading once.")
 
         with self._busy_command(self._slow_command_status(cmd_original)):
-            self._reload_mcp()
+            _reload_thread = threading.Thread(
+                target=self._reload_mcp, daemon=True
+            )
+            _reload_thread.start()
+            _reload_thread.join(timeout=30)
+            if _reload_thread.is_alive():
+                print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
@@ -10921,6 +11024,44 @@ class HermesCLI:
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _handle_tracelog_command(self, command: str):
+        """Handle /tracelog [on|off|status|clear] command."""
+        parts = command.strip().split(maxsplit=1)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
+
+        if subcommand == "on":
+            os.environ["HERMES_LLM_TRACE"] = "1"
+            _cprint(f"  {_BOLD}LLM trace logging ENABLED{_RST} (HERMES_LLM_TRACE=1)")
+        elif subcommand == "off":
+            os.environ.pop("HERMES_LLM_TRACE", None)
+            _cprint(f"  LLM trace logging DISABLED (HERMES_LLM_TRACE cleared)")
+        elif subcommand == "clear":
+            trace_path = get_hermes_home() / "llm_trace.jsonl"
+            try:
+                trace_path.write_text("")
+                _cprint(f"  LLM trace log cleared: {trace_path}")
+            except Exception as e:
+                _cprint(f"  {_BOLD}Failed to clear trace log:{_RST} {e}")
+        elif subcommand == "status":
+            enabled = os.environ.get("HERMES_LLM_TRACE") == "1"
+            status = f"{_BOLD}on{_RST}" if enabled else f"{_DIM}off{_RST}"
+            full_val = os.environ.get("HERMES_LLM_TRACE", "<not set>")
+            full_status = os.environ.get("HERMES_LLM_TRACE_FULL", "<not set>")
+            _cprint(f"  LLM trace:   {status}")
+            _cprint(f"  Full trace:  {full_status}")
+            _cprint(f"  Env value:   {full_val}")
+        elif subcommand == "":
+            # Toggle
+            if os.environ.get("HERMES_LLM_TRACE") == "1":
+                os.environ.pop("HERMES_LLM_TRACE", None)
+                _cprint(f"  LLM trace logging DISABLED")
+            else:
+                os.environ["HERMES_LLM_TRACE"] = "1"
+                _cprint(f"  {_BOLD}LLM trace logging ENABLED{_RST}")
+        else:
+            _cprint(f"Unknown tracelog subcommand: {subcommand}")
+            _cprint("Usage: /tracelog [on|off|status|clear]")
 
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""

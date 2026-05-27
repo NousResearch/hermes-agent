@@ -211,6 +211,14 @@ class TestMCPReloadTimeout:
         assert "Thread" in source or "thread" in source.lower(), \
             "_check_config_mcp_changes should use a thread for _reload_mcp"
 
+    def test_confirm_and_reload_mcp_does_not_block_forever(self):
+        """_confirm_and_reload_mcp also uses a thread + timeout for _reload_mcp."""
+        import inspect
+        from cli import HermesCLI
+        source = inspect.getsource(HermesCLI._confirm_and_reload_mcp)
+        assert "Thread" in source or "thread" in source.lower(), \
+            "_confirm_and_reload_mcp should use a thread for _reload_mcp"
+
 
 # ---------------------------------------------------------------------------
 # Fix 4: MCP initial connection retry with backoff

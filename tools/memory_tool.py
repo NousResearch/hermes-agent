@@ -508,6 +508,25 @@ class MemoryStore:
         if not raw.strip():
             return []
 
+        # Detect raw markdown (no § delimiters) — the most common user error.
+        # When MEMORY.md is written as plain markdown instead of §-delimited
+        # entries, the entire file becomes a single oversized entry that
+        # silently exceeds memory_char_limit and gets blocked.  Warn loudly
+        # so the user knows exactly what to fix (issue #32965).
+        if ENTRY_DELIMITER not in raw and not raw.strip().startswith("§"):
+            logger.warning(
+                "%s contains no § delimiter entries — the file will be "
+                "treated as a single oversized entry and silently ignored. "
+                "Convert to §-delimited format: separate each entry with "
+                "'§' on its own line (blank lines before and after). "
+                "See https://hermes-agent.nousresearch.com/docs/user-guide/memory/ "
+                "for the expected format. (issue #32965)",
+                path.name,
+            )
+            # Still return as a single entry so the user sees it in
+            # memory(action=read) output and can diagnose the problem.
+            return [raw.strip()]
+
         # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
         # alone would incorrectly split entries that contain "§" in their content.
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
@@ -555,6 +574,14 @@ class MemoryStore:
 
         drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
         if not drift_detected:
+            return None
+
+        # Raw markdown without § delimiters — not external drift, just wrong
+        # format.  _read_file already logged a warning and returned the file as
+        # a single entry so the user can see + fix it via memory(action=read).
+        # Don't block mutations for this — the threat scan in add/replace
+        # still catches actual injection.  Fixes #32965.
+        if ENTRY_DELIMITER not in raw:
             return None
 
         # Drift confirmed — snapshot the file so the operator can recover

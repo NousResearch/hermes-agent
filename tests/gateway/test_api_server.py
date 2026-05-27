@@ -345,12 +345,41 @@ class TestAdapterInit:
 
 
 class TestAuth:
-    def test_no_key_configured_allows_all(self):
+    def test_no_key_configured_loopback_allows(self):
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
         mock_request = MagicMock()
         mock_request.headers = {}
+        mock_request.remote = "127.0.0.1"
         assert adapter._check_auth(mock_request) is None
+
+    def test_no_key_non_loopback_returns_401(self):
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        mock_request.remote = "10.0.0.1"
+        result = adapter._check_auth(mock_request)
+        assert result is not None
+        assert result.status == 401
+
+    def test_no_key_ipv6_loopback_allows(self):
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        mock_request.remote = "::1"
+        assert adapter._check_auth(mock_request) is None
+
+    def test_no_key_no_remote_fails_closed(self):
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        mock_request.remote = None
+        result = adapter._check_auth(mock_request)
+        assert result is not None
+        assert result.status == 401
 
     def test_valid_key_passes(self):
         config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
@@ -551,13 +580,35 @@ class TestHealthDetailedEndpoint:
                 assert data["platforms"] == {}
 
     @pytest.mark.asyncio
-    async def test_health_detailed_does_not_require_auth(self, auth_adapter):
-        """Health detailed endpoint should be accessible without auth, like /health."""
+    async def test_health_detailed_requires_auth_when_key_configured(self, auth_adapter):
+        """With an API key configured, /health/detailed requires authentication."""
         app = _create_app(auth_adapter)
         with patch("gateway.status.read_runtime_status", return_value=None):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
+                assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_with_valid_auth_passes(self, auth_adapter):
+        """A valid bearer token can read /health/detailed."""
+        app = _create_app(auth_adapter)
+        with patch("gateway.status.read_runtime_status", return_value={
+            "gateway_state": "running",
+            "platforms": {"telegram": {"state": "connected"}},
+            "active_agents": 2,
+            "exit_reason": None,
+            "updated_at": "2026-04-14T00:00:00Z",
+        }):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/health/detailed",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
                 assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "ok"
+                assert data["gateway_state"] == "running"
+                assert isinstance(data["pid"], int)
 
 
 # ---------------------------------------------------------------------------

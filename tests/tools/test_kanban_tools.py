@@ -569,7 +569,9 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     # Create a real child via the tool so it gets the worker-profile
     # attribution the gate trusts.
     child = json.loads(kt._handle_create({
-        "title": "real child", "assignee": "peer",
+        "title": "real child",
+        "assignee": "test-worker",
+        "parents": [worker_env],
     }))
     assert child["ok"]
     real_id = child["task_id"]
@@ -751,7 +753,7 @@ def test_create_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "child task",
-        "assignee": "peer",
+        "assignee": "test-worker",
         "parents": [worker_env],
     })
     d = json.loads(out)
@@ -763,7 +765,7 @@ def test_create_happy_path(worker_env):
     try:
         child = kb.get_task(conn, d["task_id"])
         assert child.title == "child task"
-        assert child.assignee == "peer"
+        assert child.assignee == "test-worker"
     finally:
         conn.close()
 
@@ -778,7 +780,7 @@ def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "from chat",
-        "assignee": "peer",
+        "assignee": "test-worker",
         "parents": [worker_env],
     })
     d = json.loads(out)
@@ -801,7 +803,7 @@ def test_create_session_id_arg_overrides_env(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "explicit override",
-        "assignee": "peer",
+        "assignee": "test-worker",
         "parents": [worker_env],
         "session_id": "explicit-arg",
     })
@@ -824,7 +826,7 @@ def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "no session",
-        "assignee": "peer",
+        "assignee": "test-worker",
         "parents": [worker_env],
     })
     d = json.loads(out)
@@ -859,7 +861,8 @@ def test_create_parses_triage_string_false(worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "not triage",
-        "assignee": "peer",
+        "assignee": "test-worker",
+        "parents": [worker_env],
         "triage": "false",
     })
     d = json.loads(out)
@@ -867,7 +870,7 @@ def test_create_parses_triage_string_false(worker_env):
     conn = kb.connect()
     try:
         task = kb.get_task(conn, d["task_id"])
-        assert task.status == "ready"
+        assert task.status == "todo"
     finally:
         conn.close()
 
@@ -877,7 +880,8 @@ def test_create_parses_triage_string_true(worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "needs triage",
-        "assignee": "peer",
+        "assignee": "test-worker",
+        "parents": [worker_env],
         "triage": "true",
     })
     d = json.loads(out)
@@ -904,7 +908,7 @@ def test_create_accepts_string_parent(worker_env):
     """Convenience: a single parent id as string is coerced to [id]."""
     from tools import kanban_tools as kt
     out = kt._handle_create({
-        "title": "t", "assignee": "a", "parents": worker_env,
+        "title": "t", "assignee": "test-worker", "parents": worker_env,
     })
     assert json.loads(out)["ok"]
 
@@ -915,7 +919,8 @@ def test_create_accepts_skills_list(worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "skilled",
-        "assignee": "linguist",
+        "assignee": "test-worker",
+        "parents": [worker_env],
         "skills": ["translation", "github-code-review"],
     })
     d = json.loads(out)
@@ -931,7 +936,8 @@ def test_create_accepts_skills_string(worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "one-skill",
-        "assignee": "a",
+        "assignee": "test-worker",
+        "parents": [worker_env],
         "skills": "translation",
     })
     d = json.loads(out)
@@ -1042,7 +1048,7 @@ def test_worker_lifecycle_through_tools(worker_env):
     # 4. spawn a child task for follow-up
     child_out = json.loads(kt._handle_create({
         "title": "write integration test",
-        "assignee": "qa",
+        "assignee": "test-worker",
         "parents": [worker_env],
     }))
     assert child_out["ok"]
@@ -1171,8 +1177,8 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # kanban_unblock) must refuse to operate
 # on any OTHER task id, even if the caller supplies an explicit `task_id`
 # argument. Workers legitimately call kanban_show / kanban_list /
-# kanban_comment / kanban_create / kanban_link on other tasks, so those
-# are unrestricted.
+# kanban_comment / kanban_link on other tasks. kanban_create is allowed
+# only for constrained child-task fan-out.
 #
 # Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
 # exempt — their job is routing, and they sometimes close out child
@@ -1279,6 +1285,139 @@ def test_worker_can_comment_on_foreign_task(worker_env):
         assert comments[0].body.startswith("handoff:")
     finally:
         conn.close()
+
+
+def test_worker_create_requires_current_task_parent(worker_env):
+    """A task-scoped worker cannot create orphaned follow-up work."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "orphan",
+        "assignee": "test-worker",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "parents" in d.get("error", "")
+
+
+def test_worker_create_rejects_persistent_workspace(worker_env):
+    """Workers cannot point child tasks at shared dir/worktree workspaces."""
+    from tools import kanban_tools as kt
+
+    for workspace_kind in ("dir", "worktree"):
+        out = kt._handle_create({
+            "title": "bad workspace",
+            "assignee": "test-worker",
+            "parents": [worker_env],
+            "workspace_kind": workspace_kind,
+        })
+        d = json.loads(out)
+        assert d.get("ok") is not True
+        assert "workspace_kind" in d.get("error", "")
+
+
+def test_worker_create_rejects_explicit_workspace_path(worker_env):
+    """Workers must use auto-allocated scratch workspaces."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "bad path",
+        "assignee": "test-worker",
+        "parents": [worker_env],
+        "workspace_path": "/tmp/not-worker-owned",
+    })
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "workspace_path" in d.get("error", "")
+
+
+def test_worker_create_rejects_cross_profile_assignee(worker_env):
+    """Workers cannot assign follow-up tasks to arbitrary profiles."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "privileged follow-up",
+        "assignee": "privileged-profile",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d.get("ok") is not True
+    assert "allowed_cross_profile_assignees" in d.get("error", "")
+
+
+def test_worker_create_allows_self_assignee(worker_env):
+    """Workers can create child tasks for their own profile."""
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "self follow-up",
+        "assignee": "test-worker",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True
+    assert d["task_id"]
+
+
+def test_worker_create_allowed_cross_profile(monkeypatch, tmp_path):
+    """Config can opt specific profiles into worker-created handoffs."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n"
+        "  allowed_cross_profile_assignees:\n"
+        "    - reviewer\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "builder")
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="builder")
+        kb.claim_task(conn, parent)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", parent)
+
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "review",
+        "assignee": "reviewer",
+        "parents": [parent],
+    })
+    d = json.loads(out)
+    assert d.get("ok") is True
+
+    rejected = kt._handle_create({
+        "title": "security review",
+        "assignee": "security",
+        "parents": [parent],
+    })
+    assert json.loads(rejected).get("ok") is not True
+
+
+def test_worker_create_remains_constrained_with_kanban_toolset(monkeypatch, worker_env, tmp_path):
+    """Task scope wins over profile kanban toolset config for create policy."""
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "still constrained",
+        "assignee": "someone-else",
+        "parents": [worker_env],
+    })
+    d = json.loads(out)
+    assert d.get("ok") is not True
 
 
 def test_worker_unblock_rejects_foreign_task_id(worker_env):

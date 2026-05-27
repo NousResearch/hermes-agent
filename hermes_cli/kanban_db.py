@@ -87,6 +87,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_constants import secure_dir, secure_file
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -1160,6 +1161,7 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
+    secure_file(path)
     # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
     # and other invalid-header cases without opening a sqlite connection.
     _validate_sqlite_header(path)
@@ -1170,6 +1172,7 @@ def connect(
     resolved = str(path.resolve())
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     try:
+        secure_file(path)
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:
             # WAL activation can take an exclusive lock while SQLite creates the
@@ -3929,8 +3932,12 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                     f"{task.workspace_path!r}; workspace paths must be absolute"
                 )
         else:
-            p = workspaces_root(board=board) / task.id
+            root = workspaces_root(board=board)
+            p = root / task.id
         p.mkdir(parents=True, exist_ok=True)
+        if not task.workspace_path:
+            secure_dir(root)
+        secure_dir(p)
         return p
     if kind == "dir":
         if not task.workspace_path:
@@ -5788,12 +5795,14 @@ def _default_spawn(
     # logs don't collide across boards that happen to share task ids.
     log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
+    secure_dir(log_dir)
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    secure_file(log_path)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,

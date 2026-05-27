@@ -274,6 +274,49 @@ def secure_parent_dir(path: Path) -> None:
         pass
 
 
+def secure_file(path: Path) -> None:
+    """Set an existing file to owner-only read/write permissions.
+
+    Missing files, unsupported platforms, and chmod failures are ignored so
+    callers can use this as a best-effort post-create hardening step.
+    """
+    try:
+        if path.exists():
+            os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def _secure_dir_mode(default: int = 0o700) -> int:
+    """Return the chmod mode for Hermes-owned state directories."""
+    raw_managed = os.environ.get("HERMES_MANAGED", "").strip()
+    if raw_managed:
+        return 0o2770
+    try:
+        if (get_hermes_home() / ".managed").exists():
+            return 0o2770
+    except OSError:
+        pass
+
+    try:
+        mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()
+        return int(mode_str, 8) if mode_str else default
+    except ValueError:
+        return default
+
+
+def secure_dir(path: Path) -> None:
+    """Set secure permissions on an existing Hermes-owned directory."""
+    try:
+        resolved = path.resolve()
+        if resolved == Path("/") or len(resolved.parts) < 3:
+            return
+        if resolved.exists():
+            os.chmod(resolved, _secure_dir_mode())
+    except (OSError, NotImplementedError):
+        pass
+
+
 def get_subprocess_home() -> str | None:
     """Return a per-profile HOME directory for subprocesses, or None.
 

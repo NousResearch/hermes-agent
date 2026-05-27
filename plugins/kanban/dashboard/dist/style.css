@@ -67,6 +67,8 @@
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
 .hermes-kanban-columns::-webkit-scrollbar {
@@ -75,6 +77,7 @@
 
 .hermes-kanban-column {
   flex: 0 0 280px;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -227,6 +230,7 @@
 
 .hermes-kanban-card {
   cursor: grab;
+  touch-action: pan-x pan-y pinch-zoom;
   transition: transform 100ms ease, box-shadow 100ms ease;
 }
 .hermes-kanban-card:hover {
@@ -1503,6 +1507,7 @@
 
 .hermes-kanban-trash {
   display: flex;
+  box-sizing: border-box;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -1538,4 +1543,33 @@
 
 .hermes-kanban-trash-label {
   font-weight: 500;
+}
+
+/* ---- Mobile column swipe mode --------------------------------------- */
+
+@media (max-width: 767px) {
+  .hermes-kanban {
+    overflow-x: hidden;
+  }
+
+  .hermes-kanban-columns {
+    scroll-snap-type: x mandatory;
+  }
+
+  .hermes-kanban-column,
+  .hermes-kanban-trash {
+    flex-basis: 100%;
+    min-width: 100%;
+    max-width: 100%;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+
+  .hermes-kanban-column {
+    max-height: calc(100dvh - 220px);
+  }
+
+  .hermes-kanban-trash:not(.hermes-kanban-trash--active) {
+    display: none;
+  }
 }

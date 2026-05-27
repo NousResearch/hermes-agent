@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import sqlite3
+import stat
 import time
 from pathlib import Path
 
@@ -2592,6 +2593,58 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# File permissions
+# ---------------------------------------------------------------------------
+
+def test_connect_creates_private_kanban_db(kanban_home):
+    db_path = kb.kanban_db_path()
+    assert stat.S_IMODE(os.stat(db_path).st_mode) == 0o600
+
+
+def test_connect_resecures_existing_kanban_db(kanban_home):
+    db_path = kb.kanban_db_path()
+    os.chmod(db_path, 0o644)
+
+    conn = kb.connect()
+    conn.close()
+
+    assert stat.S_IMODE(os.stat(db_path).st_mode) == 0o600
+
+
+def test_resolve_workspace_creates_private_scratch_dir(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="workspace", assignee="worker")
+        task = kb.get_task(conn, tid)
+
+    workspace = kb.resolve_workspace(task)
+
+    assert stat.S_IMODE(os.stat(kb.workspaces_root()).st_mode) == 0o700
+    assert stat.S_IMODE(os.stat(workspace).st_mode) == 0o700
+
+
+def test_default_spawn_creates_private_worker_log(kanban_home, monkeypatch, tmp_path):
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            stdout = kwargs.get("stdout")
+            if stdout is not None:
+                stdout.close()
+            self.pid = 12345
+
+    monkeypatch.setattr("subprocess.Popen", FakePopen)
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="spawn", assignee="worker")
+        task = kb.get_task(conn, tid)
+
+    kb._default_spawn(task, str(tmp_path), board=None)
+
+    log_dir = kb.worker_logs_dir()
+    log_path = log_dir / f"{tid}.log"
+    assert stat.S_IMODE(os.stat(log_dir).st_mode) == 0o700
+    assert stat.S_IMODE(os.stat(log_path).st_mode) == 0o600
+
+
+# ---------------------------------------------------------------------------
 # Board-level default_workdir
 # ---------------------------------------------------------------------------
 
@@ -3338,4 +3391,3 @@ def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog
                 "SELECT kind FROM task_events WHERE task_id = ?", (tid,),
             ).fetchall()
             assert "tip_scratch_workspace" not in [e["kind"] for e in events]
-

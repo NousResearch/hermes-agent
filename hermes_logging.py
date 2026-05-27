@@ -30,7 +30,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
 
-from hermes_constants import get_config_path, get_hermes_home
+from hermes_constants import get_config_path, get_hermes_home, secure_dir
 
 # Sentinel to track whether setup_logging() has already run.  The function
 # is idempotent — calling it twice is safe but the second call is a no-op
@@ -198,6 +198,7 @@ def setup_logging(
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    secure_dir(log_dir)
 
     # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
@@ -296,13 +297,13 @@ def setup_verbose_logging() -> None:
 # ---------------------------------------------------------------------------
 
 class _ManagedRotatingFileHandler(RotatingFileHandler):
-    """RotatingFileHandler that ensures group-writable perms in managed mode.
+    """RotatingFileHandler that applies secure permissions after creation.
 
     In managed mode (NixOS), the stateDir uses setgid (2770) so new files
     inherit the hermes group. However, both _open() (initial creation) and
     doRollover() create files via open(), which uses the process umask —
-    typically 0022, producing 0644. This subclass applies chmod 0660 after
-    both operations so the gateway and interactive users can share log files.
+    typically 0022, producing 0644. Managed installs keep group sharing with
+    0660; all other installs use owner-only 0600.
     """
 
     def __init__(self, *args, **kwargs):
@@ -310,21 +311,20 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._managed = is_managed()
         super().__init__(*args, **kwargs)
 
-    def _chmod_if_managed(self):
-        if self._managed:
-            try:
-                os.chmod(self.baseFilename, 0o660)
-            except OSError:
-                pass
+    def _chmod_secure(self):
+        try:
+            os.chmod(self.baseFilename, 0o660 if self._managed else 0o600)
+        except OSError:
+            pass
 
     def _open(self):
         stream = super()._open()
-        self._chmod_if_managed()
+        self._chmod_secure()
         return stream
 
     def doRollover(self):
         super().doRollover()
-        self._chmod_if_managed()
+        self._chmod_secure()
 
 
 def _add_rotating_handler(
@@ -355,6 +355,7 @@ def _add_rotating_handler(
             return  # already attached
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    secure_dir(path.parent)
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
         encoding="utf-8",

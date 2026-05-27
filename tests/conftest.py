@@ -147,7 +147,6 @@ _CREDENTIAL_NAMES = frozenset({
     "TOOL_GATEWAY_USER_TOKEN",
     "TELEGRAM_WEBHOOK_SECRET",
     "WEBHOOK_SECRET",
-    "AI_GATEWAY_API_KEY",
     "VOICE_TOOLS_OPENAI_KEY",
     "BROWSER_USE_API_KEY",
     "CUSTOM_API_KEY",
@@ -158,7 +157,6 @@ _CREDENTIAL_NAMES = frozenset({
     "OLLAMA_BASE_URL",
     "GROQ_BASE_URL",
     "XAI_BASE_URL",
-    "AI_GATEWAY_BASE_URL",
     "ANTHROPIC_BASE_URL",
 })
 
@@ -215,9 +213,16 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
     "HERMES_TENANT",
+    # Dashboard OAuth auth gate (PR #30156). When set, the bundled
+    # dashboard-auth `nous` plugin auto-registers itself on plugin discovery,
+    # which is triggered by any `/api/status` call. That leaks a provider
+    # into the dashboard_auth registry across tests in the same worker and
+    # makes assertions like `auth_providers == []` flaky. CI never sets
+    # these, so production tests must not see them either.
+    "HERMES_DASHBOARD_OAUTH_CLIENT_ID",
+    "HERMES_DASHBOARD_PORTAL_URL",
     "TERMINAL_CWD",
     "TERMINAL_ENV",
-    "TERMINAL_VERCEL_RUNTIME",
     "TERMINAL_CONTAINER_CPU",
     "TERMINAL_CONTAINER_DISK",
     "TERMINAL_CONTAINER_MEMORY",

@@ -176,6 +176,45 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
+def _worker_non_kanban_tool_evidence() -> tuple[str, list[str], list[str]]:
+    """Return current-session non-kanban tool-call evidence for a worker."""
+    from gateway.session_context import get_session_env
+    from hermes_state import SessionDB
+
+    session_id = (
+        os.environ.get("HERMES_SESSION_ID", "").strip()
+        or get_session_env("HERMES_SESSION_ID", "").strip()
+    )
+    if not session_id:
+        return "", [], []
+
+    db = SessionDB()
+    try:
+        messages = db.get_messages(session_id)
+    finally:
+        db.close()
+
+    all_tool_calls: list[str] = []
+    non_kanban_calls: list[str] = []
+    for msg in messages:
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function")
+            if not isinstance(fn, dict):
+                continue
+            name = str(fn.get("name") or "").strip()
+            if not name:
+                continue
+            all_tool_calls.append(name)
+            if not name.startswith("kanban_"):
+                non_kanban_calls.append(name)
+    return session_id, non_kanban_calls, all_tool_calls
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
@@ -469,6 +508,48 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            if os.environ.get("HERMES_KANBAN_TASK") == tid:
+                session_id, non_kanban_calls, all_tool_calls = (
+                    _worker_non_kanban_tool_evidence()
+                )
+                if not non_kanban_calls:
+                    reason = (
+                        "worker attempted kanban_complete without any prior "
+                        "non-kanban tool calls in this session"
+                    )
+                    detail = (
+                        f" session_id={session_id}."
+                        if session_id else
+                        " session_id unavailable."
+                    )
+                    observed = (
+                        ", ".join(all_tool_calls)
+                        if all_tool_calls else
+                        "(none recorded)"
+                    )
+                    blocked = kb.block_task_for_protocol_violation(
+                        conn, tid,
+                        reason=reason + detail,
+                        expected_run_id=_worker_run_id(tid),
+                        details={
+                            "session_id": session_id or None,
+                            "observed_tool_calls": all_tool_calls,
+                            "non_kanban_tool_calls": non_kanban_calls,
+                        },
+                    )
+                    if not blocked:
+                        return tool_error(
+                            f"kanban_complete blocked: {reason}{detail} "
+                            f"Observed tool calls: {observed}. Task state "
+                            f"could not be updated because the run is no "
+                            f"longer current."
+                        )
+                    return tool_error(
+                        f"kanban_complete blocked: {reason}{detail} "
+                        f"Observed tool calls: {observed}. The task was "
+                        f"auto-blocked with a protocol_violation event; do "
+                        f"real tool work before retrying."
+                    )
             try:
                 ok = kb.complete_task(
                     conn, tid,

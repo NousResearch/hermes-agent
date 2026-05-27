@@ -3398,6 +3398,64 @@ def block_task(
         return True
 
 
+def block_task_for_protocol_violation(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    expected_run_id: Optional[int] = None,
+    details: Optional[dict] = None,
+) -> bool:
+    """Auto-block a worker and emit a ``protocol_violation`` event."""
+    payload = {"reason": reason}
+    if isinstance(details, dict) and details:
+        payload.update(details)
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'blocked',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """,
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'blocked',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                   AND current_run_id = ?
+                """,
+                (task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn, task_id,
+            outcome="blocked", status="blocked",
+            summary=reason,
+        )
+        if run_id is None and reason:
+            run_id = _synthesize_ended_run(
+                conn, task_id,
+                outcome="blocked",
+                summary=reason,
+            )
+        _append_event(conn, task_id, "protocol_violation", payload, run_id=run_id)
+        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        return True
+
+
 
 def promote_task(
     conn: sqlite3.Connection,

@@ -14,6 +14,29 @@ import os
 import pytest
 
 
+def _seed_worker_session(session_id: str, tool_names: list[str]) -> None:
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session(session_id=session_id, source="cli")
+        db.append_message(
+            session_id,
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "id": f"call-{idx}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": "{}"},
+                }
+                for idx, name in enumerate(tool_names, start=1)
+            ],
+        )
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------
@@ -168,6 +191,9 @@ def worker_env(monkeypatch, tmp_path):
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    session_id = "sess-worker-default"
+    monkeypatch.setenv("HERMES_SESSION_ID", session_id)
+    _seed_worker_session(session_id, ["read_file"])
     return tid
 
 
@@ -306,7 +332,10 @@ def test_complete_happy_path(worker_env):
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
         assert run.summary == "got the thing done"
-        assert run.metadata == {"files": 2}
+        assert run.metadata == {
+            "files": 2,
+            "worker_session_id": "sess-worker-default",
+        }
     finally:
         conn.close()
 
@@ -334,13 +363,17 @@ def test_complete_metadata_round_trips_through_show(worker_env):
     shown = json.loads(show_out)
     assert shown["task"]["status"] == "done"
     assert shown["runs"][-1]["summary"] == "finished with structured evidence"
-    assert shown["runs"][-1]["metadata"] == handoff
+    assert shown["runs"][-1]["metadata"] == {
+        **handoff,
+        "worker_session_id": "sess-worker-default",
+    }
 
 
 def test_complete_stamps_worker_session_id_from_env(monkeypatch, worker_env):
     from tools import kanban_tools as kt
 
     monkeypatch.setenv("HERMES_SESSION_ID", "session-trusted")
+    _seed_worker_session("session-trusted", ["read_file"])
     metadata = {"files": 2, "worker_session_id": "user-spoof"}
 
     out = kt._handle_complete({
@@ -494,6 +527,32 @@ def test_complete_rejects_non_dict_metadata(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({"summary": "x", "metadata": [1, 2, 3]})
     assert json.loads(out).get("error")
+
+
+def test_complete_auto_blocks_without_non_kanban_tool_evidence(worker_env, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from hermes_state import SessionDB
+    from tools import kanban_tools as kt
+
+    session_id = "sess-kanban-only"
+    monkeypatch.setenv("HERMES_SESSION_ID", session_id)
+    _seed_worker_session(session_id, ["kanban_show", "kanban_complete"])
+
+    out = json.loads(kt._handle_complete({"summary": "fabricated completion"}))
+    err = out.get("error", "")
+    assert "non-kanban tool calls" in err
+    assert "protocol_violation" in err
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "blocked"
+        events = kb.list_events(conn, worker_env)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds
+        assert "blocked" in kinds
+    finally:
+        conn.close()
 
 
 def test_complete_phantom_card_message_advertises_retry(worker_env):
@@ -1063,7 +1122,10 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
+        assert run.metadata == {
+            "child_task": child_out["task_id"],
+            "worker_session_id": "sess-worker-default",
+        }
         # Child is todo (parent just finished, but recompute_ready may
         # have promoted it — complete_task runs recompute internally).
         child = kb.get_task(conn, child_out["task_id"])
@@ -1312,9 +1374,11 @@ def test_worker_unblock_rejects_foreign_task_id(worker_env):
         conn.close()
 
 
-def test_worker_complete_own_task_still_works(worker_env):
+def test_worker_complete_own_task_still_works(worker_env, monkeypatch):
     """The ownership check doesn't break the normal own-task happy path."""
     from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-own-task")
+    _seed_worker_session("session-own-task", ["read_file"])
     # Both implicit (no task_id arg) and explicit (matching env) must work.
     out = kt._handle_complete({"task_id": worker_env, "summary": "explicit own"})
     d = json.loads(out)
@@ -1325,6 +1389,9 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     """A retried worker cannot complete the task using an old run token."""
     from hermes_cli import kanban_db as kb
     import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-stale-run")
+    _seed_worker_session("session-stale-run", ["read_file"])
 
     conn = kb.connect()
     try:

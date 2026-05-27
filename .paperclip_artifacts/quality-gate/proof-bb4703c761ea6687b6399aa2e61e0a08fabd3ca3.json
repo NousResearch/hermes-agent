@@ -1,0 +1,25 @@
+{
+  "branch": "fix/32746-kanban-tool-evidence",
+  "worktree_path": "/Users/leongong/Desktop/LeonProjects/worktrees/hermes-agent/fix-32746-kanban-tool-evidence",
+  "head": "bb4703c761ea6687b6399aa2e61e0a08fabd3ca3",
+  "fetched_origin_main_sha": "bb4703c761ea6687b6399aa2e61e0a08fabd3ca3",
+  "latest_fetch_timestamp": "2026-05-27T02:00:52Z",
+  "gate_scope": "lightweight_targeted",
+  "targeted_commands": [
+    {
+      "cmd": "uv run --frozen --extra dev pytest tests/tools/test_kanban_tools.py -q",
+      "exit_code": 0
+    },
+    {
+      "cmd": "uv run --frozen --extra dev ruff check hermes_cli/kanban_db.py tools/kanban_tools.py tests/tools/test_kanban_tools.py",
+      "exit_code": 0
+    },
+    {
+      "cmd": "git diff --check",
+      "exit_code": 0
+    }
+  ],
+  "exception_only_commands": [],
+  "attribution_note": "No overlapping linked PR or keyword-overlap PR was present at final pre-push check; local proof is green for the touched kanban completion gate path.",
+  "green_for_push": true
+}

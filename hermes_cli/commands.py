@@ -167,6 +167,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
                subcommands=("search", "browse", "inspect", "install", "audit")),
+    CommandDef("skill", "Load a skill by name and send an instruction to the agent",
+               "Tools & Skills", gateway_only=True, args_hint="<name> [prompt]"),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
@@ -519,6 +521,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "resume",
     "sessions",
     "model",
+    "skill",
     # Maintenance / diagnostics — the ones that prompted this priority list.
     "debug",
     "restart",
@@ -1081,6 +1084,11 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         if not _is_gateway_available(cmd, overrides):
             continue
         for alias in cmd.aliases:
+            # Slack apps are capped at 50 native slash commands.  Prefer the
+            # shorter /q alias and Telegram-parity commands over /tasks, which
+            # remains reachable as /agents or /hermes tasks.
+            if alias == "tasks":
+                continue
             # Skip aliases that only differ from canonical by case/punctuation
             # normalization (already covered by _add dedup).
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")

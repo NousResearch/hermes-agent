@@ -2167,7 +2167,7 @@ def _setup_canon() -> None:
         "  Agent description",
         default="Hermes gateway agent",
     )
-    owner_phone = prompt("  Owner phone number (E.164, e.g. +15551234567)")
+    owner_phone = prompt("  Canon owner phone number (E.164, exact number from the Canon app)")
     if not owner_phone:
         print_warning("  Skipped — Canon registration needs the owner's phone number.")
         return

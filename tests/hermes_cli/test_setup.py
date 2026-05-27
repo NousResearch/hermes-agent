@@ -183,6 +183,27 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
     assert "hermes gateway" in out
 
 
+def test_setup_gateway_reports_when_selected_platform_did_not_configure(monkeypatch, capsys):
+    """If a selected platform setup returns without configuring anything, do not report success."""
+    import hermes_cli.gateway as gateway_mod
+
+    platform = {"key": "canon", "emoji": "✉️", "label": "Canon"}
+    calls = []
+
+    monkeypatch.setattr(gateway_mod, "_all_platforms", lambda: [platform])
+    monkeypatch.setattr(gateway_mod, "_platform_status", lambda _platform: "not configured")
+    monkeypatch.setattr(gateway_mod, "_configure_platform", lambda p: calls.append(p["key"]))
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda *args, **kwargs: [0])
+
+    result = setup_mod.setup_gateway({})
+
+    out = capsys.readouterr().out
+    assert result is False
+    assert calls == ["canon"]
+    assert "No messaging platform was configured." in out
+    assert "Messaging platforms configured!" not in out
+
+
 def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     """setup_gateway() in a Docker container shows Docker-specific restart instructions."""
     env = {

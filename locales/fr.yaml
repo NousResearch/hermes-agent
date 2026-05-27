@@ -343,13 +343,8 @@ gateway:
     {detail}
 
     _Texte alternatif : répondez `/approve`, `/always` ou `/cancel`._'
-<<<<<<< Updated upstream
   detail_new: "Cela démarre une nouvelle session et supprime l'historique de la conversation actuelle."
   detail_undo: "Cela supprime le dernier échange utilisateur/assistant de l'historique."
-=======
-  detail_new: 'Cela démarre une nouvelle session et supprime l'historique de la conversation actuelle.'
-  detail_undo: 'Cela supprime le dernier échange utilisateur/assistant de l'historique.'
->>>>>>> Stashed changes
   steer_failed: '⚠️ Orientation échouée : {error}'
   resume:
     db_unavailable: Base de données des sessions indisponible.

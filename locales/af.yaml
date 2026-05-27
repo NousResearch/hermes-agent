@@ -741,11 +741,7 @@ gateway:
     • `/compress` — compress earlier messages
 
     • `/new` — fresh start with optional title'
-<<<<<<< Updated upstream
   detail_new: "Hierdie begin 'n nuwe sessie en verwerp die huidige gesprekgeskiedenis."
-=======
-  detail_new: 'Hierdie begin 'n nuwe sessie en verwerp die huidige gesprekgeskiedenis.'
->>>>>>> Stashed changes
   detail_undo: 'Hierdie verwyder die laaste gebruiker/assistent-uitruil uit die geskiedenis.'
   steer_failed: '⚠️ Steer failed: {error}'
   still_working: ⏳ Still working... ({elapsed} min elapsed{detail})

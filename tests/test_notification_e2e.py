@@ -557,7 +557,7 @@ class TestNotificationDeliveryE2E:
         found = False
         try:
             while True:
-                data = srv._kanban_event_queue.get_nowait()
+                data = srv._kanban_fifo_queue.get_nowait()
                 if data.get("task_id") == tid and data.get("kind") == "completed":
                     found = True
                     break
@@ -587,7 +587,7 @@ class TestNotificationDeliveryE2E:
         srv = server_module
 
         # Metrics should be accessible
-        metrics = srv.get_kanban_event_metrics()
+        metrics = srv.get_kanban_fifo_metrics()
         assert "queue_depth" in metrics
         assert "queue_maxsize" in metrics
         assert "dropped_count" in metrics

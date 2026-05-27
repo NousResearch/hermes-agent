@@ -464,7 +464,9 @@ class TestStreamingCallbacks:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_suppressed_pure_toolcall_fragment_fires_no_callback(self, mock_close, mock_create):
+    def test_suppressed_pure_toolcall_fragment_fires_no_callback(
+        self, mock_close, mock_create
+    ):
         """Path B: a suppressed-content delta that is ONLY a leaked tool-call
         opener fragment (e.g. "ool_call>") must fire no stream_delta_callback.
 
@@ -476,9 +478,11 @@ class TestStreamingCallbacks:
         from run_agent import AIAgent
 
         chunks = [
-            _make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(index=0, tc_id="call_abc", name="read_file")
-            ]),
+            _make_stream_chunk(
+                tool_calls=[
+                    _make_tool_call_delta(index=0, tc_id="call_abc", name="read_file")
+                ]
+            ),
             # Pure leaked fragment arriving as suppressed content.
             _make_stream_chunk(content="ool_call>"),
             _make_stream_chunk(finish_reason="tool_calls"),
@@ -509,15 +513,19 @@ class TestStreamingCallbacks:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_suppressed_mixed_toolcall_fragment_scrubs_only_fragment(self, mock_close, mock_create):
+    def test_suppressed_mixed_toolcall_fragment_scrubs_only_fragment(
+        self, mock_close, mock_create
+    ):
         """Path B: a suppressed-content delta mixing prose with a trailing
         fragment must deliver the scrubbed prose (fragment removed)."""
         from run_agent import AIAgent
 
         chunks = [
-            _make_stream_chunk(tool_calls=[
-                _make_tool_call_delta(index=0, tc_id="call_abc", name="read_file")
-            ]),
+            _make_stream_chunk(
+                tool_calls=[
+                    _make_tool_call_delta(index=0, tc_id="call_abc", name="read_file")
+                ]
+            ),
             _make_stream_chunk(content="hello ool_call>"),
             _make_stream_chunk(finish_reason="tool_calls"),
         ]
@@ -552,6 +560,7 @@ class TestPrimaryStreamDeltaFragmentScrub:
 
     def _make_agent(self):
         from run_agent import AIAgent
+
         agent = AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",

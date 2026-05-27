@@ -34,7 +34,11 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname, strip_partial_toolcall_fragments
+from utils import (
+    base_url_host_matches,
+    base_url_hostname,
+    strip_partial_toolcall_fragments,
+)
 
 logger = logging.getLogger(__name__)
 

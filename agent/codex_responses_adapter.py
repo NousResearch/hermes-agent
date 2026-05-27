@@ -878,7 +878,12 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         # The Codex backend can return empty output when the answer was
         # delivered entirely via stream events. Check output_text as a
         # last-resort fallback before raising.
-        out_text = getattr(response, "output_text", None)
+        try:
+            out_text = getattr(response, "output_text", None)
+        except TypeError as exc:
+            if "'NoneType' object is not iterable" not in str(exc):
+                raise
+            out_text = None
         if isinstance(out_text, str) and out_text.strip():
             logger.debug(
                 "Codex response has empty output but output_text is present (%d chars); "

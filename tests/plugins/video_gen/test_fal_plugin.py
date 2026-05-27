@@ -85,15 +85,21 @@ def test_fal_list_models_advertises_both_modalities():
 
 def test_fal_unavailable_without_key(monkeypatch):
     from plugins.video_gen.fal import FALVideoGenProvider
+    from plugins.video_gen import fal as fal_plugin
 
     monkeypatch.delenv("FAL_KEY", raising=False)
+    # Also ensure managed gateway is unavailable
+    monkeypatch.setattr(fal_plugin, "_resolve_managed_fal_video_gateway", lambda: None)
     assert FALVideoGenProvider().is_available() is False
 
 
 def test_fal_generate_requires_fal_key(monkeypatch):
     from plugins.video_gen.fal import FALVideoGenProvider
+    from plugins.video_gen import fal as fal_plugin
 
     monkeypatch.delenv("FAL_KEY", raising=False)
+    # Also ensure managed gateway is unavailable
+    monkeypatch.setattr(fal_plugin, "_resolve_managed_fal_video_gateway", lambda: None)
     result = FALVideoGenProvider().generate("a happy dog")
     assert result["success"] is False
     assert result["error_type"] == "auth_required"
@@ -104,25 +110,34 @@ class TestFamilyRouting:
 
     @pytest.fixture
     def with_fake_fal(self, monkeypatch):
-        """Stub fal_client.subscribe to capture which endpoint we hit."""
+        """Stub fal_client.submit to capture which endpoint we hit."""
         import sys
         import types
 
         captured = {"endpoint": None, "arguments": None}
 
+        class FakeHandle:
+            def get(self):
+                return {"video": {"url": "https://fake/out.mp4"}}
+
         fake = types.ModuleType("fal_client")
-        def _subscribe(endpoint, arguments=None, with_logs=False):
+        def _submit(endpoint, arguments=None, headers=None):
             captured["endpoint"] = endpoint
             captured["arguments"] = arguments
-            return {"video": {"url": "https://fake/out.mp4"}}
-        fake.subscribe = _subscribe  # type: ignore
+            return FakeHandle()
+        fake.submit = _submit  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         # Reset the lazy global so it picks up our stub
         from plugins.video_gen import fal as fal_plugin
         fal_plugin._fal_client = None
+        # Also reset the managed client cache
+        fal_plugin._managed_fal_video_client = None
+        fal_plugin._managed_fal_video_client_config = None
 
         monkeypatch.setenv("FAL_KEY", "test")
+        # Force direct mode — no managed gateway
+        monkeypatch.setattr(fal_plugin, "_resolve_managed_fal_video_gateway", lambda: None)
         return captured
 
     def test_text_to_video_routes_to_text_endpoint(self, with_fake_fal):

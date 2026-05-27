@@ -32,6 +32,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+from functools import partial
 import logging
 import os
 import socket as _socket
@@ -73,6 +74,12 @@ _DEFAULT_APPROVAL_OPTIONS = [
     {"label": "拒绝", "value": "deny"},
 ]
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+# 自定义 JSON 响应函数，默认 ensure_ascii=False 以保留中文等非 ASCII 字符
+_json_response = partial(
+    web.json_response,
+    dumps=lambda x: json.dumps(x, ensure_ascii=False, default=str),
+)
 
 # 文件分类扩展名映射，可在 config.yaml api_server.file_categories 中覆盖
 _DEFAULT_FILE_CATEGORIES: dict[str, set[str]] = {
@@ -1513,10 +1520,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
+                # 检测工具返回 JSON 中的 _media_urls，合并到 progress 事件中
+                _extra = {}
+                if function_result:
+                    try:
+                        _res = json.loads(function_result) if isinstance(function_result, str) else function_result
+                        if isinstance(_res, dict):
+                            _media_urls = _res.get("_media_urls")
+                            if isinstance(_media_urls, list):
+                                _extra["files"] = [
+                                    {"url": u.strip()} for u in _media_urls if isinstance(u, str) and u.strip()
+                                ]
+                    except Exception:
+                        pass
                 _stream_q.put(("__tool_progress__", {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
                     "status": "completed",
+                    **_extra,
                 }))
 
             def _on_reasoning(text: str):
@@ -4408,7 +4429,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             msg["tool_progress"] = tool_progress
                 messages.append(msg)
 
-            return web.json_response({
+            return _json_response({
                 "session": session,
                 "messages": messages,
             })
@@ -4416,7 +4437,7 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.error(
                 "[api_server] Failed to get session '%s': %s", session_id, e, exc_info=True,
             )
-            return web.json_response(
+            return _json_response(
                 {"error": {"message": "Failed to get session", "type": "server_error"}},
                 status=500,
             )
@@ -4433,7 +4454,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         db = self._ensure_session_db()
         if db is None:
-            return web.json_response({"sessions": [], "total": 0, "page": 1, "page_size": 20})
+            return _json_response({"sessions": [], "total": 0, "page": 1, "page_size": 20})
 
         # Parse pagination params
         try:
@@ -4469,7 +4490,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
                 for row in rows
             ]
-            return web.json_response({
+            return _json_response({
                 "sessions": sessions,
                 "total": total,
                 "page": page,
@@ -4594,7 +4615,7 @@ class APIServerAdapter(BasePlatformAdapter):
             offset = (page - 1) * page_size
             files = all_files[offset:offset + page_size]
             rel_path = str(target.relative_to(workspace)) if target != workspace else ""
-            return web.json_response({
+            return _json_response({
                 "files": files,
                 "path": rel_path,
                 "workspace_root": str(workspace),
@@ -4757,7 +4778,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 lines = lines[:max_lines]
 
             suffix = resolved.suffix.lower()
-            return web.json_response({
+            return _json_response({
                 "file": raw_path,
                 "type": "text",
                 "size": file_size,
@@ -4870,7 +4891,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        return web.json_response({"files": result_files})
+        return _json_response({"files": result_files})
 
     # ------------------------------------------------------------------
     # Memories
@@ -4893,7 +4914,7 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 return None
 
-        return web.json_response({
+        return _json_response({
             "soul": _read("SOUL.md"),
             "user": _read("memories/USER.md"),
             "memory": _read("memories/MEMORY.md"),

@@ -1167,7 +1167,82 @@ def _handle_search_files(args, **kw):
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
+DELIVER_FILE_SCHEMA = {
+    "name": "deliver_file",
+    "description": (
+        "将文件交付给用户。当用户要求获取、下载或接收文件时调用此工具，"
+        "支持同时交付多个文件。传入相对于 workspace 的文件路径即可。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "文件路径列表，相对于 workspace 目录（如 ['report.md', 'chart.png']）"
+            },
+            "description": {
+                "type": "string",
+                "description": "对这批文件的文字说明（可选）"
+            }
+        },
+        "required": ["paths"]
+    }
+}
+
+
+def _deliver_file(paths: list, description: str = "") -> str:
+    """Validate files exist under workspace and return their metadata."""
+    ws = Path(
+        os.environ.get("HERMES_WORKSPACE",
+                       str(Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "workspace"))
+    )
+    results = []
+    errors = []
+
+    for _p in paths if isinstance(paths, list) else [paths]:
+        _p = str(_p or "").strip()
+        if not _p:
+            continue
+        full = Path(_p) if _p.startswith("/") else ws / _p
+        try:
+            full = full.resolve()
+        except (OSError, ValueError):
+            errors.append({"path": _p, "error": "Invalid path"})
+            continue
+        if not full.exists():
+            errors.append({"path": _p, "error": "File not found"})
+            continue
+        if not full.is_file():
+            errors.append({"path": _p, "error": "Not a file"})
+            continue
+        try:
+            rel = str(full.relative_to(ws))
+        except (ValueError, OSError):
+            rel = str(full)
+        results.append({
+            "name": full.name,
+            "path": rel,
+            "size": full.stat().st_size,
+            "url": f"/v1/workspace/download?path={rel}",
+        })
+
+    return json.dumps({
+        "success": len(results) > 0,
+        "files": results,
+        "_media_urls": [f"/v1/workspace/download?path={r['path']}" for r in results],
+        "errors": errors or None,
+        "description": description or None,
+    }, ensure_ascii=False)
+
+
+def _check_deliver_file_reqs() -> bool:
+    """deliver_file has no external requirements — always available."""
+    return True
+
+
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
+registry.register(name="deliver_file", toolset="file", schema=DELIVER_FILE_SCHEMA, handler=lambda args, **kw: _deliver_file(paths=args.get("paths", []), description=args.get("description", "")), check_fn=_check_deliver_file_reqs, emoji="📎")

@@ -1589,6 +1589,9 @@ def list_authenticated_providers(
             if not raw_name or not api_url:
                 continue
             api_key = (entry.get("api_key") or "").strip()
+            if not api_key:
+                key_env = str(entry.get("key_env", "") or "").strip()
+                api_key = os.environ.get(key_env, "").strip() if key_env else ""
 
             group_key = (api_url, api_key)
             if group_key not in groups:
@@ -1684,7 +1687,14 @@ def list_authenticated_providers(
             # set. The built-in row carries the curated model list, correct
             # auth wiring, and canonical slug — keep it and hide the shadow.
             _grp_url_norm = _pair_key[1]
-            if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
+            is_current_custom_group = (
+                slug == current_provider
+                or (
+                    bool(current_base_url)
+                    and _grp_url_norm == current_base_url.strip().rstrip("/").lower()
+                )
+            )
+            if _grp_url_norm and _grp_url_norm in _builtin_endpoints and not is_current_custom_group:
                 continue
             # Live model discovery from custom provider endpoints (matches
             # Section 3 behavior for user ``providers:`` entries).
@@ -1720,10 +1730,7 @@ def list_authenticated_providers(
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider or (
-                    bool(current_base_url)
-                    and _grp_url_norm == current_base_url.strip().rstrip("/").lower()
-                ),
+                "is_current": is_current_custom_group,
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),

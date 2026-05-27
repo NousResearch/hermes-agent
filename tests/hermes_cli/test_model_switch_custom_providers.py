@@ -568,3 +568,54 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_current_custom_provider_uses_key_env_despite_builtin_endpoint_collision(
+    monkeypatch,
+):
+    """Current custom providers must stay visible when OPENAI_BASE_URL
+    points at the same OpenAI-compatible endpoint.
+
+    Local Guardian-style setups often set OPENAI_BASE_URL for compatibility
+    while using a named custom provider for the actual Hermes runtime. The
+    custom row must not disappear behind the built-in openai-api row, and
+    key_env should still drive live model discovery.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:11434/v1")
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["qwen3.6-35b-uncensored", "gemma4-heretic", "llama3"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="custom:guardian",
+        current_base_url="http://127.0.0.1:11434/v1",
+        custom_providers=[
+            {
+                "name": "Guardian",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "key_env": "OPENAI_API_KEY",
+                "model": "qwen3.6-35b-uncensored",
+            }
+        ],
+        max_models=50,
+    )
+
+    guardian = next((p for p in providers if p["slug"] == "custom:guardian"), None)
+
+    assert guardian is not None
+    assert guardian["is_current"] is True
+    assert guardian["models"] == [
+        "qwen3.6-35b-uncensored",
+        "gemma4-heretic",
+        "llama3",
+    ]
+    assert guardian["total_models"] == 3
+    assert calls == [("sk-local", "http://127.0.0.1:11434/v1")]

@@ -928,3 +928,12 @@ class InsightsEngine:
                 lines.append(f"**Best streak:** {act['max_streak']} consecutive days")
 
         return "\n".join(lines)
+
+    def close(self) -> None:
+        """Release the borrowed connection reference.
+
+        InsightsEngine borrows db._conn from the owning SessionDB — it
+        does NOT own the connection, so we only clear our reference.
+        """
+        self._conn = None
+        self.db = None

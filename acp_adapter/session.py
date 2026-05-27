@@ -626,3 +626,12 @@ class SessionManager:
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print
         return agent
+
+    def close(self) -> None:
+        """Close the lazily-initialised SessionDB connection."""
+        if self._db_instance is not None:
+            try:
+                self._db_instance.close()
+            except Exception:
+                pass
+            self._db_instance = None

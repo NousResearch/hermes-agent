@@ -406,6 +406,16 @@ class _WriteQueue:
         self._q.put(_ASYNC_SHUTDOWN)
         self._thread.join(timeout=10)
 
+    def close(self) -> None:
+        """Close the thread-local SQLite connection for the calling thread."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
+
 
 # ---------------------------------------------------------------------------
 # Overlay formatter
@@ -759,6 +769,12 @@ class RetainDBMemoryProvider(MemoryProvider):
             t.join(timeout=3.0)
         if self._queue:
             self._queue.shutdown()
+
+    def close(self) -> None:
+        """Shutdown writer threads and close SQLite connections."""
+        self.shutdown()
+        if self._queue:
+            self._queue.close()
 
 
 def register(ctx) -> None:

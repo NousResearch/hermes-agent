@@ -398,6 +398,53 @@ def test_collect_profile_result_packet_rejects_ambiguous_or_non_structured_outpu
         collect_profile_result_packet(invocation, envelope)
 
 
+def test_malformed_profile_output_records_bounded_diagnostics(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+
+    result = run_production_order_autonomously(
+        conn,
+        po.production_order_id,
+        runner=lambda payload: {
+            "stdout": "{not-json}",
+            "stderr": "the-stderr",
+            "exit_code": 0,
+            "duration_ms": 3,
+        },
+        max_steps=5,
+        max_retries=1,
+        timeout_seconds=30,
+    )
+
+    # Ensure run stopped with validation failure
+    assert result.terminal_reason == "validation_failed"
+
+    # Find the failed dispatch event and inspect diagnostics
+    from hermes_cli.production_order_dispatch import list_dispatch_events
+
+    events = list_dispatch_events(conn, po.production_order_id)
+    failed = [e for e in events if e["event_type"] == "dispatch_failed"]
+    assert failed, "no dispatch_failed event recorded"
+    evt = failed[-1]
+
+    # result field holds JSON diagnostics
+    diag = {}
+    try:
+        diag = json.loads(evt["result"] or "{}")
+    except Exception:
+        pytest.fail("dispatch event result is not valid JSON diagnostics")
+
+    assert "parse_error" in diag
+    assert "invocation_log_ref" in diag
+    assert "stdout_preview" in diag
+    assert "stderr_preview" in diag
+    assert "result_channel_preview" in diag
+
+    # Previews must be capped to 4000 chars
+    for key in ("stdout_preview", "stderr_preview", "result_channel_preview"):
+        assert isinstance(diag[key], str)
+        assert len(diag[key]) <= 4000
+
+
 @pytest.mark.parametrize(
     ("mutator", "error_match"),
     [

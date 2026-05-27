@@ -440,6 +440,29 @@ def run_production_order_autonomously(
         except Exception as exc:
             error = str(exc)
             errors.append(error)
+            # Record bounded diagnostic previews to help triage malformed profile output.
+            try:
+                rc_preview_src = None
+                if invocation is not None:
+                    rc = invocation.result_channel
+                    try:
+                        rc_preview_src = json.dumps(rc, ensure_ascii=False)
+                    except Exception:
+                        rc_preview_src = str(rc)
+                else:
+                    rc_preview_src = ""
+            except Exception:
+                rc_preview_src = ""
+
+            diagnostics = {
+                "result": "profile_result_rejected",
+                "parse_error": error,
+                "invocation_log_ref": getattr(invocation, "log_ref", None) if invocation is not None else None,
+                "stdout_preview": _bounded_preview(getattr(invocation, "stdout", None) if invocation is not None else None),
+                "stderr_preview": _bounded_preview(getattr(invocation, "stderr", None) if invocation is not None else None),
+                "result_channel_preview": _bounded_preview(rc_preview_src),
+            }
+
             log_dispatch_event(
                 conn,
                 production_order_id=production_order_id,
@@ -450,7 +473,7 @@ def run_production_order_autonomously(
                 target_profile=envelope.target_profile,
                 kanban_card_id=envelope.child_kanban_card_id,
                 packet_id=None,
-                result="profile_result_rejected",
+                result=json.dumps(diagnostics, ensure_ascii=False),
                 error=error,
                 next_action="manual_review_rejected_packet",
             )
@@ -567,6 +590,21 @@ def _maybe_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
     return int(value)
+
+
+def _bounded_preview(value: Any, limit: int = 4000) -> str:
+    if value is None:
+        return ""
+    try:
+        s = str(value)
+    except Exception:
+        s = repr(value)
+    if len(s) <= limit:
+        return s
+    # keep start and end context for very long outputs
+    head = s[: limit - 64]
+    tail = s[-60:]
+    return head + "\n...<truncated>...\n" + tail
 
 
 def _result_from_order(

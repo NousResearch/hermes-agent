@@ -66,6 +66,14 @@ _CLONE_SUBDIR_FILES = [
     "memories/USER.md",
 ]
 
+_HINDSIGHT_SECRET_KEYS: frozenset[str] = frozenset({
+    "api_key",
+    "apiKey",
+    "llm_api_key",
+    "llmApiKey",
+})
+_HINDSIGHT_PROFILE_TAG_RE = re.compile(r"^hermes-[A-Za-z0-9_-]+$")
+
 # Runtime files stripped after --clone-all (shouldn't carry over).
 # Kept as a post-copy step rather than in the ignore filter because they
 # are created dynamically during normal use and may be absent at copy time.
@@ -570,6 +578,115 @@ def write_profile_meta(
 
 
 # ---------------------------------------------------------------------------
+# Hindsight profile config materialization
+# ---------------------------------------------------------------------------
+
+def _find_hindsight_config_source(source_dir: Optional[Path]) -> Optional[Path]:
+    """Return the Hindsight config to materialize for a new profile, if any."""
+    if source_dir is not None:
+        profile_config = source_dir / "hindsight" / "config.json"
+        if profile_config.exists():
+            return profile_config
+
+    legacy_config = Path.home() / ".hindsight" / "config.json"
+    if legacy_config.exists():
+        return legacy_config
+    return None
+
+
+def _rewrite_hindsight_retain_tags(value, profile_identity: str):
+    """Rewrite old hermes-* profile tags to the new profile identity tag."""
+    if value is None:
+        return value
+
+    raw_items: list
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return value
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            raw_items = parsed if isinstance(parsed, list) else text.split(",")
+        else:
+            raw_items = text.split(",")
+    else:
+        raw_items = [value]
+
+    rewritten: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        tag = str(item).strip()
+        if not tag:
+            continue
+        if _HINDSIGHT_PROFILE_TAG_RE.match(tag):
+            tag = profile_identity
+        if tag in seen:
+            continue
+        seen.add(tag)
+        rewritten.append(tag)
+    return rewritten
+
+
+def _strip_hindsight_secret_settings(config: dict) -> None:
+    """Remove known Hindsight secret fields; .env cloning remains the secret path."""
+    for key in _HINDSIGHT_SECRET_KEYS:
+        config.pop(key, None)
+
+
+def _materialize_hindsight_profile_config(
+    profile_dir: Path,
+    profile_name: str,
+    source_dir: Optional[Path],
+) -> None:
+    """Write profile-scoped Hindsight config with identity rewritten.
+
+    New profiles should not keep sharing ~/.hindsight/config.json or inherit a
+    cloned profile's bank/source identity.  Preserve ordinary config settings,
+    strip any accidentally stored secrets, and force a static per-profile bank.
+    """
+    source_config = _find_hindsight_config_source(source_dir)
+    if source_config is None:
+        return
+
+    try:
+        data = json.loads(source_config.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+
+    materialized = dict(data)
+    _strip_hindsight_secret_settings(materialized)
+
+    profile_identity = f"hermes-{profile_name}"
+    materialized["profile"] = profile_identity
+    materialized["bank_id"] = profile_identity
+    materialized["bank_id_template"] = ""
+    materialized["retain_source"] = profile_identity
+
+    if "retain_tags" in materialized:
+        materialized["retain_tags"] = _rewrite_hindsight_retain_tags(
+            materialized.get("retain_tags"),
+            profile_identity,
+        )
+
+    banks = materialized.get("banks")
+    if isinstance(banks, dict):
+        hermes_bank = banks.get("hermes")
+        if isinstance(hermes_bank, dict):
+            hermes_bank["bankId"] = profile_identity
+
+    config_path = profile_dir / "hindsight" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(materialized, indent=2) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
 
@@ -750,6 +867,8 @@ def create_profile(
                     dst = profile_dir / relpath
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
+
+    _materialize_hindsight_profile_config(profile_dir, canon, source_dir)
 
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).

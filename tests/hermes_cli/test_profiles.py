@@ -309,6 +309,114 @@ class TestCreateProfile:
         # SOUL.md is always seeded with the default even when clone source lacks it
         assert (profile_dir / "SOUL.md").exists()
 
+    @pytest.mark.parametrize("clone_kwargs", [
+        {"clone_config": True},
+        {"clone_all": True},
+    ])
+    def test_clone_materializes_hindsight_config_with_rewritten_identity(
+        self,
+        profile_env,
+        clone_kwargs,
+    ):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        source_dir = create_profile("source", no_alias=True)
+        source_config_dir = source_dir / "hindsight"
+        source_config_dir.mkdir(parents=True)
+        (source_config_dir / "config.json").write_text(json.dumps({
+            "mode": "local_embedded",
+            "profile": "hermes-source",
+            "bank_id": "hermes-source",
+            "bank_id_template": "hermes-{profile}",
+            "retain_source": "hermes-source",
+            "retain_tags": [
+                "hermes-source",
+                "project:alpha",
+                "source_system:hermes-agent",
+                "hermes-old",
+            ],
+            "recall_budget": "high",
+            "llm_provider": "openrouter",
+            "llm_model": "openai/gpt-4o-mini",
+            "llm_api_key": "do-not-copy",
+            "api_key": "do-not-copy",
+            "banks": {
+                "hermes": {
+                    "bankId": "hermes-source",
+                    "budget": "high",
+                    "enabled": True,
+                },
+            },
+        }))
+        legacy_dir = tmp_path / ".hindsight"
+        legacy_dir.mkdir()
+        (legacy_dir / "config.json").write_text(json.dumps({
+            "mode": "cloud",
+            "bank_id": "hermes-legacy",
+        }))
+
+        profile_dir = create_profile(
+            "target",
+            clone_from="source",
+            no_alias=True,
+            **clone_kwargs,
+        )
+
+        materialized = json.loads((profile_dir / "hindsight" / "config.json").read_text())
+        assert materialized["mode"] == "local_embedded"
+        assert materialized["profile"] == "hermes-target"
+        assert materialized["bank_id"] == "hermes-target"
+        assert materialized["bank_id_template"] == ""
+        assert materialized["retain_source"] == "hermes-target"
+        assert materialized["retain_tags"] == [
+            "hermes-target",
+            "project:alpha",
+            "source_system:hermes-agent",
+        ]
+        assert materialized["recall_budget"] == "high"
+        assert materialized["llm_provider"] == "openrouter"
+        assert materialized["llm_model"] == "openai/gpt-4o-mini"
+        assert materialized["banks"]["hermes"]["bankId"] == "hermes-target"
+        assert materialized["banks"]["hermes"]["budget"] == "high"
+        assert "llm_api_key" not in materialized
+        assert "api_key" not in materialized
+        assert not (default_home / "hindsight" / "config.json").exists()
+
+    def test_fresh_profile_materializes_hindsight_config_from_legacy_fallback(self, profile_env):
+        tmp_path = profile_env
+        legacy_dir = tmp_path / ".hindsight"
+        legacy_dir.mkdir()
+        (legacy_dir / "config.json").write_text(json.dumps({
+            "mode": "local_external",
+            "api_url": "http://127.0.0.1:8000",
+            "profile": "hermes-faber",
+            "bank_id": "hermes-faber",
+            "bank_id_template": "hermes-{profile}",
+            "retain_source": "hermes-faber",
+            "retain_tags": "hermes-faber, source_system:hermes-agent, generic",
+            "recall_budget": "low",
+            "apiKey": "do-not-copy",
+            "llmApiKey": "do-not-copy",
+        }))
+
+        profile_dir = create_profile("researcher", no_alias=True)
+
+        materialized = json.loads((profile_dir / "hindsight" / "config.json").read_text())
+        assert materialized["mode"] == "local_external"
+        assert materialized["api_url"] == "http://127.0.0.1:8000"
+        assert materialized["profile"] == "hermes-researcher"
+        assert materialized["bank_id"] == "hermes-researcher"
+        assert materialized["bank_id_template"] == ""
+        assert materialized["retain_source"] == "hermes-researcher"
+        assert materialized["retain_tags"] == [
+            "hermes-researcher",
+            "source_system:hermes-agent",
+            "generic",
+        ]
+        assert materialized["recall_budget"] == "low"
+        assert "apiKey" not in materialized
+        assert "llmApiKey" not in materialized
+
 
 # ===================================================================
 # TestNoSkillsOptOut

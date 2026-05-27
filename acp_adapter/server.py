@@ -517,6 +517,8 @@ class HermesACPAgent(acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self._client_capabilities: ClientCapabilities | None = None
+        self._client_info: Implementation | None = None
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -525,6 +527,12 @@ class HermesACPAgent(acp.Agent):
         self._conn = conn
         logger.info("ACP client connected")
 
+
+    def _supports_elicitation_form(self) -> bool:
+        """Return whether the connected ACP client can answer form elicitations."""
+        from acp_adapter.elicitation import supports_form_elicitation
+
+        return supports_form_elicitation(self._client_capabilities)
 
     def _session_modes(self, state: SessionState) -> SessionModeState:
         """Return ACP session modes while preserving Zed's separate model picker.
@@ -747,6 +755,46 @@ class HermesACPAgent(acp.Agent):
         loop = asyncio.get_running_loop()
         loop.call_soon(asyncio.create_task, self._send_usage_update(state))
 
+    def _acp_toolsets_for_client(self, base_toolsets: list[str] | None) -> list[str]:
+        """Return ACP toolsets adjusted for the connected client's capabilities."""
+        toolsets = _expand_acp_enabled_toolsets(base_toolsets or ["hermes-acp"])
+        # Clarify is exposed dynamically only for clients that can answer ACP
+        # form elicitations. Strip stale entries first so session/load after a
+        # reconnect to an unsupported client degrades back to assistant text.
+        toolsets = [toolset for toolset in toolsets if toolset != "clarify"]
+        if self._supports_elicitation_form():
+            toolsets.append("clarify")
+        return toolsets
+
+    def _refresh_agent_tool_surface(
+        self,
+        state: SessionState,
+        *,
+        mcp_server_names: list[str] | None = None,
+    ) -> None:
+        """Refresh a session agent's tools using ACP client capability gates."""
+        from model_tools import get_tool_definitions
+
+        base_toolsets = getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
+        enabled_toolsets = self._acp_toolsets_for_client(base_toolsets)
+        enabled_toolsets = _expand_acp_enabled_toolsets(
+            enabled_toolsets,
+            mcp_server_names=mcp_server_names,
+        )
+        state.agent.enabled_toolsets = enabled_toolsets
+        disabled_toolsets: Any = getattr(state.agent, "disabled_toolsets", None)
+        state.agent.tools = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+        )
+        state.agent.valid_tool_names = {
+            tool["function"]["name"] for tool in state.agent.tools or []
+        }
+        invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
+        if callable(invalidate):
+            invalidate()
+
     async def _register_session_mcp_servers(
         self,
         state: SessionState,
@@ -785,25 +833,10 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from model_tools import get_tool_definitions
-
-            enabled_toolsets = _expand_acp_enabled_toolsets(
-                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
+            self._refresh_agent_tool_surface(
+                state,
                 mcp_server_names=[server.name for server in mcp_servers],
             )
-            state.agent.enabled_toolsets = enabled_toolsets
-            disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
-            state.agent.tools = get_tool_definitions(
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
-                quiet_mode=True,
-            )
-            state.agent.valid_tool_names = {
-                tool["function"]["name"] for tool in state.agent.tools or []
-            }
-            invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
-            if callable(invalidate):
-                invalidate()
             logger.info(
                 "Session %s: refreshed tool surface after ACP MCP registration (%d tools)",
                 state.session_id,
@@ -829,6 +862,8 @@ class HermesACPAgent(acp.Agent):
             protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION
         )
         auth_methods = build_auth_methods()
+        self._client_capabilities = client_capabilities
+        self._client_info = client_info
 
         client_name = client_info.name if client_info else "unknown"
         logger.info(
@@ -1074,6 +1109,7 @@ class HermesACPAgent(acp.Agent):
     ) -> NewSessionResponse:
         state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._refresh_agent_tool_surface(state)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
@@ -1095,6 +1131,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("load_session: session %s not found", session_id)
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._refresh_agent_tool_surface(state)
         logger.info("Loaded session %s", session_id)
         # Per ACP spec, `session/load` must stream the prior conversation back
         # to the client via `session/update` notifications BEFORE responding,
@@ -1139,6 +1176,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._refresh_agent_tool_surface(state)
         logger.info("Resumed session %s", state.session_id)
         # See `load_session` above for the spec rationale — replay must
         # complete before the response so clients receive the full transcript
@@ -1184,6 +1222,7 @@ class HermesACPAgent(acp.Agent):
         new_id = state.session_id if state else ""
         if state is not None:
             await self._register_session_mcp_servers(state, mcp_servers)
+            self._refresh_agent_tool_surface(state)
         logger.info("Forked session %s -> %s", session_id, new_id)
         if new_id:
             self._schedule_available_commands_update(new_id)
@@ -1342,7 +1381,9 @@ class HermesACPAgent(acp.Agent):
         tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
         tool_call_meta: dict[str, dict[str, Any]] = {}
         previous_approval_cb = None
+        previous_clarify_cb = None
         edit_approval_requester = None
+        clarify_cb = None
 
         streamed_message = False
 
@@ -1377,6 +1418,13 @@ class HermesACPAgent(acp.Agent):
                 )
             except Exception:
                 logger.debug("Could not create ACP edit approval requester", exc_info=True)
+            if self._supports_elicitation_form():
+                try:
+                    from acp_adapter.elicitation import make_elicitation_clarify_callback
+
+                    clarify_cb = make_elicitation_clarify_callback(conn, loop, session_id)
+                except Exception:
+                    logger.debug("Could not create ACP elicitation clarify callback", exc_info=True)
         else:
             tool_progress_cb = None
             reasoning_cb = None
@@ -1410,7 +1458,7 @@ class HermesACPAgent(acp.Agent):
         previous_session_id = None
 
         def _run_agent() -> dict:
-            nonlocal previous_approval_cb, previous_interactive, edit_approval_token, previous_session_id
+            nonlocal previous_approval_cb, previous_clarify_cb, previous_interactive, edit_approval_token, previous_session_id
             # Bind HERMES_SESSION_KEY for this session so per-session caches
             # (e.g. the interactive sudo password cache in tools.terminal_tool)
             # scope to the ACP session rather than leaking across sessions
@@ -1441,6 +1489,12 @@ class HermesACPAgent(acp.Agent):
                     edit_approval_token = set_edit_approval_requester(edit_approval_requester)
                 except Exception:
                     logger.debug("Could not set ACP edit approval requester", exc_info=True)
+            if clarify_cb:
+                try:
+                    previous_clarify_cb = getattr(agent, "clarify_callback", None)
+                    agent.clarify_callback = clarify_cb
+                except Exception:
+                    logger.debug("Could not set ACP clarify callback", exc_info=True)
             # Signal to tools.approval that we have an interactive callback
             # and the non-interactive auto-approve path must not fire.
             previous_interactive = os.environ.get("HERMES_INTERACTIVE")
@@ -1487,6 +1541,11 @@ class HermesACPAgent(acp.Agent):
                         reset_edit_approval_requester(edit_approval_token)
                     except Exception:
                         logger.debug("Could not restore ACP edit approval requester", exc_info=True)
+                if clarify_cb:
+                    try:
+                        agent.clarify_callback = previous_clarify_cb
+                    except Exception:
+                        logger.debug("Could not restore ACP clarify callback", exc_info=True)
                 if session_tokens is not None and clear_session_vars is not None:
                     try:
                         clear_session_vars(session_tokens)

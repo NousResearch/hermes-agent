@@ -31,6 +31,8 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
 
+`clarify` is exposed only when the connected ACP client advertises `clientCapabilities.elicitation.form`. In that case Hermes uses ACP `elicitation/create` to collect the answer from the editor. Clients without form elicitation support do not receive the `clarify` tool; Hermes then falls back to ordinary assistant-message clarification. Dangerous command and edit approvals still use ACP permission requests — `clarify` is not an authorization path.
+
 ## Installation
 
 Install Hermes normally, then add the ACP extra:

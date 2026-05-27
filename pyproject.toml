@@ -116,7 +116,7 @@ sms = ["aiohttp==3.13.3"]
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
 computer-use = ["mcp==1.26.0"]
-acp = ["agent-client-protocol==0.9.0"]
+acp = ["agent-client-protocol==0.10.0"]
 # mistral: extra REMOVED 2026-05-12 — `mistralai` PyPI project quarantined
 # after malicious 2.4.6 release (Mini Shai-Hulud worm). Every version of
 # `mistralai` returns 404 on PyPI right now, so any pin we'd write is

@@ -1274,14 +1274,16 @@ def skill_view(
         if isinstance(metadata, dict):
             hermes_meta = metadata.get("hermes", {}) or {}
 
+        metadata_tags = metadata.get("tags") if isinstance(metadata, dict) else None
+        metadata_related = metadata.get("related_skills") if isinstance(metadata, dict) else None
         tags = _parse_tags(
             hermes_meta.get("tags")
-            or metadata.get("tags")
+            or metadata_tags
             or frontmatter.get("tags", "")
         )
         related_skills = _parse_tags(
             hermes_meta.get("related_skills")
-            or metadata.get("related_skills")
+            or metadata_related
             or frontmatter.get("related_skills", "")
         )
 

@@ -579,3 +579,43 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+def test_resolve_codex_runtime_credentials_prefers_newest_pool_when_singleton_relogin_required(tmp_path, monkeypatch):
+    """Regression: fresh pool login must beat stale singleton marked relogin_required."""
+    future_exp = int(time.time()) + 3600
+    expired = _jwt_with_exp(int(time.time()) - 3600)
+    fresh = _jwt_with_exp(future_exp)
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {
+            "openai-codex": {
+                "tokens": {
+                    "access_token": _jwt_with_exp(future_exp + 1000),
+                    "refresh_token": "singleton-refresh-reused",
+                },
+                "last_auth_error": {
+                    "provider": "openai-codex",
+                    "code": "refresh_token_reused",
+                    "reason": "credential_pool_refresh_failure",
+                    "relogin_required": True,
+                },
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [
+                {"access_token": expired, "refresh_token": "old-refresh", "last_status": "ok"},
+                {"access_token": fresh, "refresh_token": "fresh-refresh"},
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    resolved = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+
+    assert resolved["source"] == "credential_pool"
+    assert resolved["api_key"] == fresh

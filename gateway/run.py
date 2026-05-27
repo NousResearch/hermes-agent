@@ -6901,6 +6901,29 @@ class GatewayRunner:
             _pending_clarify = None
         if _pending_clarify is not None:
             _raw_clarify_reply = (event.text or "").strip()
+            if (
+                not _raw_clarify_reply
+                and getattr(event, "media_urls", None)
+                and not event.get_command()
+            ):
+                try:
+                    _raw_clarify_reply = (
+                        await self._prepare_inbound_message_text(
+                            event=event,
+                            source=source,
+                            history=[],
+                        )
+                        or ""
+                    ).strip()
+                except Exception as exc:
+                    logger.warning(
+                        "Gateway failed to prepare media clarify response "
+                        "(session=%s, id=%s): %s",
+                        _quick_key,
+                        _pending_clarify.clarify_id,
+                        exc,
+                    )
+                    _raw_clarify_reply = ""
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks

@@ -911,7 +911,7 @@ For servers/watchers, do NOT use shell-level background wrappers (nohup/disown/s
 After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
 Use process(action="poll") for progress checks, process(action="wait") to block until done.
 Working directory: Use 'workdir' for per-command cwd.
-PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
+PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL). For long-running coding agents such as `codex-yuna exec` / `codex exec`, do NOT run them in foreground; use background=true with notify_on_complete=true, then inspect git status/diff and run verification yourself.
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
@@ -1580,6 +1580,10 @@ _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\bpython(?:3)?\s+-m\s+http\.server\b", re.IGNORECASE),
 )
 
+_LONG_RUNNING_CODING_AGENT_PATTERNS = (
+    re.compile(r"(?:^|[;&|]\s*)(?:\S*/)?codex(?:-yuna)?\s+exec\b", re.IGNORECASE),
+)
+
 
 def _looks_like_help_or_version_command(command: str) -> bool:
     """Return True for informational invocations that should never be blocked."""
@@ -1624,6 +1628,17 @@ def _foreground_background_guidance(command: str) -> str | None:
                 "This foreground command appears to start a long-lived server/watch process. "
                 "Run it with background=true, verify readiness (health endpoint/log signal), "
                 "then execute tests in a separate command."
+            )
+
+    for pattern in _LONG_RUNNING_CODING_AGENT_PATTERNS:
+        if pattern.search(unquoted):
+            return (
+                "This foreground command starts Codex CLI, which can keep writing files or "
+                "summarizing after long output and may not exit before the foreground timeout. "
+                "Run Codex with background=true and notify_on_complete=true, then inspect "
+                "git status/diff and logs after it exits or times out. Ask Codex to avoid "
+                "large recursive grep output, avoid full diffs in stdout, and run only "
+                "focused tests; Hermes should run final verification separately."
             )
 
     return None

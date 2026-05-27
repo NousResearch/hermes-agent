@@ -1035,15 +1035,10 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_tenant          ON tasks(tenant);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_public_id       ON tasks(public_id) WHERE public_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_tasks_idempotency     ON tasks(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_authority_links_target ON task_authority_links(target_task_id, kind);
 CREATE INDEX IF NOT EXISTS idx_aliases_task          ON task_aliases(task_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_review_phase    ON tasks(review_phase);
-CREATE INDEX IF NOT EXISTS idx_tasks_continuation    ON tasks(continuation_of);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
@@ -1112,7 +1107,7 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
-class KanbanDbCorruptError(RuntimeError):
+class KanbanDbCorruptError(sqlite3.DatabaseError):
     """Raised when an existing kanban DB file fails integrity checks.
 
     Fail-closed guard against silent recreation of a corrupt board file,
@@ -1266,12 +1261,10 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
-    # and other invalid-header cases without opening a sqlite connection.
-    _validate_sqlite_header(path)
     # Full integrity probe — catches corruption past the header (malformed
-    # pages, broken internal metadata). Cached per-path after first success
-    # via _INITIALIZED_PATHS so it only runs once per process per path.
+    # pages, broken internal metadata) and handles cheap header validation
+    # before opening SQLite. Cached per-path after first success via
+    # _INITIALIZED_PATHS so it only runs once per process per path.
     _guard_existing_db_is_healthy(path)
     resolved = str(path.resolve())
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
@@ -1521,8 +1514,6 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     );
     CREATE INDEX IF NOT EXISTS idx_authority_links_target ON task_authority_links(target_task_id, kind);
     CREATE INDEX IF NOT EXISTS idx_aliases_task          ON task_aliases(task_id);
-    CREATE INDEX IF NOT EXISTS idx_tasks_review_phase    ON tasks(review_phase);
-    CREATE INDEX IF NOT EXISTS idx_tasks_continuation    ON tasks(continuation_of);
     """)
     _seed_default_namespaces(conn)
 
@@ -1551,6 +1542,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_public_id "
+        "ON tasks(public_id) WHERE public_id IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_review_phase ON tasks(review_phase)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_continuation ON tasks(continuation_of)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
@@ -2933,11 +2934,20 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status FROM tasks WHERE status IN ('todo', 'blocked')"
+            "SELECT id, status, review_phase, closeout_evidence "
+            "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if (
+                cur_status == "blocked"
+                and row["closeout_evidence"] is not None
+                and row["review_phase"] in {"worker_done", "review_ready"}
+            ):
+                # Governed closeout waits for verifier / human review. Parent
+                # readiness must not auto-promote it back into the worker queue.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only

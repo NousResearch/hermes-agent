@@ -994,19 +994,6 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
         },
-        # Session search is DB-backed now, but the CLI auxiliary menu and
-        # config migration path still expect a stable task slot. Provider/model
-        # fields are ignored by the current tool; max_concurrency is retained
-        # for callers that fan out formatting/search work around it.
-        "session_search": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "max_concurrency": 3,
-        },
         "skills_hub": {
             "provider": "auto",
             "model": "",

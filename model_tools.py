@@ -29,7 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry
+from tools.registry import check_fn_cache_generation, discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -299,6 +299,8 @@ def get_tool_definitions(
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
             registry._generation,
+            check_fn_cache_generation(),
+            int(time.monotonic() // 30),
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
         )

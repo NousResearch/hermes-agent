@@ -27,6 +27,15 @@ const sidebars: SidebarsConfig = {
         'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
         'user-guide/configuring-models',
+        {
+          type: 'category',
+          label: 'Secrets',
+          collapsed: true,
+          items: [
+            'user-guide/secrets/index',
+            'user-guide/secrets/bitwarden',
+          ],
+        },
         'user-guide/sessions',
         'user-guide/profiles',
         'user-guide/profile-distributions',
@@ -383,6 +392,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho',
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands',
                   ],
                 },
                 {
@@ -580,6 +590,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-software-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/software-development/software-development-code-wiki',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                   ],
                 },
@@ -627,6 +638,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/msgraph-webhook',
         'user-guide/messaging/line',
         'user-guide/messaging/simplex',
+        'user-guide/messaging/ntfy',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
       ],
@@ -637,6 +649,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'integrations/index',
+        'integrations/nous-portal',
         'integrations/providers',
         'user-guide/features/mcp',
         'user-guide/features/acp',
@@ -652,6 +665,7 @@ const sidebars: SidebarsConfig = {
       label: 'Guides & Tutorials',
       collapsed: true,
       items: [
+        'guides/run-hermes-with-nous-portal',
         'guides/tips',
         'guides/local-llm-on-mac',
         'guides/daily-briefing-bot',

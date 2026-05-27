@@ -9,16 +9,15 @@
 
 ## Install simplex-chat
 
-Download the latest release from the [simplex-chat GitHub releases](https://github.com/simplex-chat/simplex-chat/releases) page, or via Docker:
+Download the latest release from the [simplex-chat GitHub releases](https://github.com/simplex-chat/simplex-chat/releases) page:
 
 ```bash
 # Linux / macOS binary
 curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-chat-ubuntu-22_04-x86-64 -o simplex-chat
 chmod +x simplex-chat
-
-# Or Docker
-docker run -p 5225:5225 simplexchat/simplex-chat -p 5225
 ```
+
+The SimpleX Chat project does not publish a prebuilt Docker image for the chat client; to run it under Docker, build from source from the [simplex-chat repository](https://github.com/simplex-chat/simplex-chat).
 
 ## Start the daemon
 

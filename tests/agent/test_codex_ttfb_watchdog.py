@@ -148,6 +148,56 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
+def test_ttfb_emit_per_hit_opt_out_silences_user_surface(tmp_path, monkeypatch):
+    """HERMES_CODEX_TTFB_EMIT_PER_HIT=0 must suppress the per-hit
+    ``_emit_status`` call so transient TTFB kills are silent on the user
+    surface (Discord, etc.) while the file ``logger.warning`` and the
+    ``TimeoutError`` remain intact. Use when ``agent.api_max_retries`` is
+    high enough that retries reliably auto-recover and the per-kill warning
+    would only be noise."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_EMIT_PER_HIT", "0")
+
+    closes: list = []
+    statuses: list[str] = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_emit_status", lambda msg: statuses.append(msg))
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+        # The watchdog still kills the connection — only the user-facing
+        # emit is suppressed.
+        assert "codex_ttfb_kill" in closes
+        assert "TTFB" in str(excinfo.value)
+        # No status pushed to Discord / platform.
+        assert statuses == [], f"expected no _emit_status calls, got {statuses!r}"
+    finally:
+        stop["flag"] = True
+
+
 def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     """Once a stream event has arrived, a generation that runs past the TTFB
     cutoff is NOT killed by the watchdog — it completes normally."""

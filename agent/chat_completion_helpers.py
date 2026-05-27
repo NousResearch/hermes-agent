@@ -271,6 +271,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # signal). The marker advances on *any* event (see codex_runtime), so
     # reasoning-only / tool-call-only turns are not mistaken for a stall.
     # Operators can tune via HERMES_CODEX_TTFB_TIMEOUT_SECONDS (0 disables).
+    # User-facing emit on each kill is opt-out via
+    # HERMES_CODEX_TTFB_EMIT_PER_HIT=0: default preserves the silent-hang
+    # hint behavior, while operators running with a healthy
+    # agent.api_max_retries budget can defer all user notification to the
+    # conversation_loop's max-retries-exhausted path. The file logger.warning
+    # is always emitted for diagnostics regardless of this flag.
     _ttfb_enabled = agent.api_mode == "codex_responses"
     try:
         _ttfb_timeout = float(os.getenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "45"))
@@ -278,6 +284,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
         _ttfb_timeout = 45.0
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
+    _ttfb_emit_per_hit = os.getenv(
+        "HERMES_CODEX_TTFB_EMIT_PER_HIT", "1"
+    ).strip().lower() not in {"0", "false", "no", "off"}
     if _ttfb_enabled:
         # Reset before the worker starts so a marker left over from a previous
         # call on this agent can't be misread as first-byte for this one.
@@ -327,18 +336,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 "loop can reconnect.",
                 _elapsed, _ttfb_timeout, api_kwargs.get("model", "unknown"),
             )
-            if _silent_hint:
-                agent._emit_status(
-                    f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Reconnecting. {_silent_hint}"
-                )
-            else:
-                agent._emit_status(
-                    f"⚠️ No first byte from provider in {int(_elapsed)}s "
-                    f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Reconnecting."
-                )
+            if _ttfb_emit_per_hit:
+                if _silent_hint:
+                    agent._emit_status(
+                        f"⚠️ No first byte from provider in {int(_elapsed)}s "
+                        f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"Reconnecting. {_silent_hint}"
+                    )
+                else:
+                    agent._emit_status(
+                        f"⚠️ No first byte from provider in {int(_elapsed)}s "
+                        f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
+                        f"Reconnecting."
+                    )
             try:
                 _close_request_client_once("codex_ttfb_kill")
             except Exception:

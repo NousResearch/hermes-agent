@@ -172,6 +172,43 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_runtime_auth_fallback_honors_entry_api_mode(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        if kwargs.get("requested") == "openai-codex":
+            raise AuthError("Codex token expired")
+        assert kwargs.get("target_model") == "claude-sonnet-4-6"
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://proxy.example/anthropic",
+            "api_key": "fallback-key",
+            "source": "fallback",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        _runtime_resolve,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.format_runtime_provider_error",
+        lambda exc: str(exc),
+    )
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.requested_provider = "openai-codex"
+    shell._fallback_model = [{
+        "provider": "custom:krill",
+        "model": "claude-sonnet-4-6",
+        "api_mode": "anthropic_messages",
+    }]
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.api_mode == "anthropic_messages"
+    assert shell.model == "claude-sonnet-4-6"
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 

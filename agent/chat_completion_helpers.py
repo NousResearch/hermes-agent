@@ -35,7 +35,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
 )
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, base_url_hostname, env_float, env_int
+from utils import base_url_host_matches, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
@@ -1421,27 +1421,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.
     try:
-        from agent.auxiliary_client import resolve_provider_client
-        # Pass base_url and api_key from fallback config so custom
-        # endpoints (e.g. Ollama Cloud) resolve correctly instead of
-        # falling through to OpenRouter defaults.
-        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-        fb_api_key_hint = (fb.get("api_key") or "").strip() or None
-        if not fb_api_key_hint:
-            # key_env and api_key_env are both documented aliases (see
-            # _normalize_custom_provider_entry in hermes_cli/config.py).
-            fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
-            if fb_key_env:
-                fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
-        # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
-        # when no explicit key is in the fallback config. Host match
-        # (not substring) — see GHSA-76xc-57q6-vm5m.
-        if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-            fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
-        fb_client, _resolved_fb_model = resolve_provider_client(
-            fb_provider, model=fb_model, raw_codex=True,
-            explicit_base_url=fb_base_url_hint,
-            explicit_api_key=fb_api_key_hint)
+        from hermes_cli.fallback_config import (
+            resolve_fallback_client,
+            resolve_fallback_transport,
+        )
+
+        fb_client, _resolved_fb_model, fb_api_mode_hint = (
+            resolve_fallback_client(fb, raw_codex=True)
+        )
         if fb_client is None:
             logger.warning(
                 "Fallback to %s failed: provider not configured",
@@ -1458,43 +1445,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
-        # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        # The validated entry hint wins. With no valid hint, reuse the same
+        # provider/URL transport resolver as initial runtime setup, followed by
+        # the agent's model-specific Responses API rule.
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
-            fb_api_mode = "codex_responses"
-        elif (
-            fb_provider == "anthropic"
-            or fb_base_url.rstrip("/").lower().endswith("/anthropic")
-            or base_url_hostname(fb_base_url) == "api.anthropic.com"
-        ):
-            # Custom providers (e.g. cron-anthropic) point at the native
-            # api.anthropic.com host with no "/anthropic" path suffix, so the
-            # name/suffix checks above miss them and they default to
-            # chat_completions → POST /v1/chat/completions → 404. Match the
-            # host the same way determine_api_mode() and _detect_api_mode_for_url()
-            # do on the primary path. (#32243, #49247)
-            fb_api_mode = "anthropic_messages"
-        elif _fb_is_azure:
-            # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
-            # support the Responses API. Stay on chat_completions.
-            fb_api_mode = "chat_completions"
-        elif agent._is_direct_openai_url(fb_base_url):
-            fb_api_mode = "codex_responses"
-        elif agent._provider_model_requires_responses_api(
-            fb_model,
+        fb_api_mode = resolve_fallback_transport(
+            validated_api_mode=fb_api_mode_hint,
             provider=fb_provider,
-        ):
-            # GPT-5.x models usually need Responses API, but keep
-            # provider-specific exceptions like Copilot gpt-5-mini on
-            # chat completions.
-            fb_api_mode = "codex_responses"
-        elif fb_provider == "bedrock" or (
-            base_url_hostname(fb_base_url).startswith("bedrock-runtime.")
-            and base_url_host_matches(fb_base_url, "amazonaws.com")
-        ):
-            fb_api_mode = "bedrock_converse"
+            model_requires_responses=agent._provider_model_requires_responses_api(
+                fb_model,
+                provider=fb_provider,
+            ),
+            base_url=fb_base_url,
+            is_azure=_fb_is_azure,
+        )
 
         old_model = agent.model
         old_provider = agent.provider

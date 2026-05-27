@@ -2032,6 +2032,52 @@ class TestRunJobConfigEnvVarExpansion:
         models = [e.get("model") for e in fb if isinstance(e, dict)]
         assert models == ["gpt-4o-mini", "claude-sonnet-4-6"]
 
+    def test_initial_auth_fallback_honors_entry_api_mode(self, tmp_path):
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  provider: openai-codex\n"
+            "  default: gpt-5\n"
+            "fallback_providers:\n"
+            "  - provider: custom:krill\n"
+            "    model: claude-sonnet-4-6\n"
+            "    api_mode: anthropic_messages\n"
+        )
+        job = {"id": "fb-mode", "name": "fallback mode", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        def _resolve(**kwargs):
+            if kwargs.get("requested") is None:
+                raise AuthError("primary token expired")
+            assert kwargs.get("target_model") == "claude-sonnet-4-6"
+            return {
+                "api_key": "fallback-key",
+                "base_url": "https://proxy.example/anthropic",
+                "provider": "custom",
+                "api_mode": "chat_completions",
+            }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 side_effect=_resolve,
+             ), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["api_mode"] == "anthropic_messages"
+
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
         (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")

@@ -80,6 +80,7 @@ def _make_runner(tmp_path):
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db = None
     runner.session_store = MagicMock()
+    runner.config = SimpleNamespace(stt_enabled=True)
     runner._is_user_authorized = lambda source: True
     return runner
 
@@ -261,6 +262,37 @@ class TestHandleVoiceCommand:
 
         assert runner._voice_mode["telegram:999"] == "voice_only"
         assert runner._voice_mode["slack:999"] == "off"
+
+
+class TestHandleTranscribeCommand:
+
+    @pytest.fixture
+    def runner(self, tmp_path, monkeypatch):
+        runner = _make_runner(tmp_path)
+        monkeypatch.setattr(runner, "_persist_transcribe_enabled", MagicMock())
+        return runner
+
+    @pytest.mark.asyncio
+    async def test_transcribe_on(self, runner):
+        runner.config.stt_enabled = False
+        result = await runner._handle_transcribe_command(_make_event("/transcribe on"))
+        assert "enabled" in result.lower()
+        assert runner.config.stt_enabled is True
+        runner._persist_transcribe_enabled.assert_called_once_with(True)
+
+    @pytest.mark.asyncio
+    async def test_transcribe_off(self, runner):
+        result = await runner._handle_transcribe_command(_make_event("/transcribe off"))
+        assert "disabled" in result.lower()
+        assert runner.config.stt_enabled is False
+        runner._persist_transcribe_enabled.assert_called_once_with(False)
+
+    @pytest.mark.asyncio
+    async def test_transcribe_status(self, runner):
+        runner.config.stt_enabled = True
+        result = await runner._handle_transcribe_command(_make_event("/transcribe status"))
+        assert "on" in result.lower()
+        runner._persist_transcribe_enabled.assert_not_called()
 
 
 # =====================================================================
@@ -522,6 +554,7 @@ class TestDiscordPlayTtsSkip:
         adapter._voice_locks = {}
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
+        adapter._voice_ready_at = {}
         adapter._voice_timeout_tasks = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
@@ -808,6 +841,10 @@ class TestVoiceChannelCommands:
         mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
         mock_adapter._voice_text_channels = {}
         mock_adapter._voice_sources = {}
+        mock_adapter._voice_ready_at = {}
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=None)
         mock_adapter._voice_input_callback = None
         event = self._make_discord_event()
         event.source.chat_type = "group"
@@ -816,9 +853,109 @@ class TestVoiceChannelCommands:
         result = await runner._handle_voice_channel_join(event)
         assert "joined" in result.lower()
         assert "General" in result
+        assert "announce" in result
         assert runner._voice_mode["discord:123"] == "all"
         assert mock_adapter._voice_sources[111]["chat_id"] == "123"
         assert mock_adapter._voice_sources[111]["chat_type"] == "group"
+        assert mock_adapter._voice_ready_at[111] > 0
+
+
+    @pytest.mark.asyncio
+    async def test_voice_ready_notice_sends_after_warmup(self, runner):
+        """Ready notice is posted when the warm-up marker is still current."""
+        import time
+        from gateway.config import Platform
+
+        mock_channel = AsyncMock()
+        mock_adapter = MagicMock()
+        ready_at = time.monotonic()
+        mock_adapter._voice_ready_at = {111: ready_at}
+        mock_adapter._voice_sources = {}
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._send_voice_reply = AsyncMock()
+
+        await runner._send_discord_voice_ready_notice(111, 123, ready_at)
+
+        runner._send_voice_reply.assert_called_once()
+        args = runner._send_voice_reply.call_args[0]
+        assert args[1] == "Voice link online."
+        mock_channel.send.assert_called_once_with("🎙️ Voice link online.")
+
+    @pytest.mark.asyncio
+    async def test_voice_ready_notice_uses_configured_operator_name(self, runner):
+        """Ready notice can use a configured operator name instead of hardcoding it."""
+        import time
+        from types import SimpleNamespace
+        from gateway.config import Platform
+
+        mock_channel = AsyncMock()
+        mock_adapter = MagicMock()
+        ready_at = time.monotonic()
+        mock_adapter.config = SimpleNamespace(extra={"voice_operator_name": "Dave"})
+        mock_adapter._voice_ready_at = {111: ready_at}
+        mock_adapter._voice_sources = {}
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._send_voice_reply = AsyncMock()
+
+        await runner._send_discord_voice_ready_notice(111, 123, ready_at)
+
+        args = runner._send_voice_reply.call_args[0]
+        assert args[1] == "Voice link online, Dave."
+        mock_channel.send.assert_called_once_with("🎙️ Voice link online, Dave.")
+
+    @pytest.mark.asyncio
+    async def test_voice_ready_notice_skips_stale_marker(self, runner):
+        """A later join/leave marker prevents stale ready notices."""
+        import time
+        from gateway.config import Platform
+
+        mock_channel = AsyncMock()
+        mock_adapter = MagicMock()
+        old_ready_at = time.monotonic()
+        mock_adapter._voice_ready_at = {111: old_ready_at + 10.0}
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._send_voice_reply = AsyncMock()
+
+        await runner._send_discord_voice_ready_notice(111, 123, old_ready_at)
+
+        runner._send_voice_reply.assert_not_called()
+        mock_channel.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_voice_ready_notice_skips_text_if_left_during_tts(self, runner):
+        """Leaving while the ready TTS plays prevents the text ready notice."""
+        import time
+        from gateway.config import Platform
+
+        mock_channel = AsyncMock()
+        mock_adapter = MagicMock()
+        ready_at = time.monotonic()
+        mock_adapter._voice_ready_at = {111: ready_at}
+        mock_adapter._voice_sources = {}
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        async def leave_during_tts(*_args):
+            mock_adapter._voice_ready_at.pop(111, None)
+            mock_adapter.is_in_voice_channel.return_value = False
+
+        runner._send_voice_reply = AsyncMock(side_effect=leave_during_tts)
+
+        await runner._send_discord_voice_ready_notice(111, 123, ready_at)
+
+        runner._send_voice_reply.assert_called_once()
+        mock_channel.send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_join_failure(self, runner):
@@ -895,10 +1032,25 @@ class TestVoiceChannelCommands:
         event = self._make_discord_event("/voice leave")
         runner.adapters[event.source.platform] = mock_adapter
         runner._voice_mode["discord:123"] = "all"
+        runner._discord_voice_followup_until = {(111, 42): 999999.0, (222, 42): 999999.0}
         result = await runner._handle_voice_channel_leave(event)
         assert "left" in result.lower()
         assert runner._voice_mode["discord:123"] == "off"
+        assert (111, 42) not in runner._discord_voice_followup_until
+        assert (222, 42) in runner._discord_voice_followup_until
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
+
+    def test_voice_timeout_cleanup_clears_followup_windows(self, runner):
+        """Timeout cleanup removes ambient follow-up windows after disconnect."""
+        from gateway.config import Platform
+
+        mock_adapter = MagicMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._discord_voice_followup_until = {(111, 42): 999999.0, (222, 99): 999999.0}
+
+        runner._handle_voice_timeout_cleanup("123")
+
+        assert runner._discord_voice_followup_until == {}
 
     # -- _handle_voice_channel_input --
 
@@ -931,10 +1083,10 @@ class TestVoiceChannelCommands:
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
-        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, hello from VC")
         mock_adapter.handle_message.assert_called_once()
         event = mock_adapter.handle_message.call_args[0][0]
-        assert event.text == "Hello from VC"
+        assert event.text == "Jarvis, hello from VC"
         assert event.message_type == MessageType.VOICE
         assert event.source.chat_id == "123"
         assert event.source.chat_type == "channel"
@@ -962,7 +1114,7 @@ class TestVoiceChannelCommands:
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 
-        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, hello from VC")
 
         mock_adapter.handle_message.assert_called_once()
         event = mock_adapter.handle_message.call_args[0][0]
@@ -972,10 +1124,12 @@ class TestVoiceChannelCommands:
         assert event.source.user_id == "42"
 
     @pytest.mark.asyncio
-    async def test_input_posts_transcript_in_text_channel(self, runner):
-        """Voice input sends transcript message to text channel."""
+    async def test_input_posts_transcript_in_text_channel_when_enabled(self, runner):
+        """Voice input can opt in to transcript messages in the text channel."""
+        from types import SimpleNamespace
         from gateway.config import Platform
         mock_adapter = AsyncMock()
+        mock_adapter.config = SimpleNamespace(extra={"voice_show_transcripts": True})
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
         mock_channel = AsyncMock()
@@ -983,10 +1137,10 @@ class TestVoiceChannelCommands:
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
-        await runner._handle_voice_channel_input(111, 42, "Test transcript")
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, test transcript")
         mock_channel.send.assert_called_once()
         msg = mock_channel.send.call_args[0][0]
-        assert "Test transcript" in msg
+        assert "Jarvis, test transcript" in msg
         assert "42" in msg  # user_id in mention
 
     @pytest.mark.asyncio
@@ -1003,11 +1157,11 @@ class TestVoiceChannelCommands:
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 
-        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
-        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, hello from VC")
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, hello from VC")
 
         mock_adapter.handle_message.assert_called_once()
-        mock_channel.send.assert_called_once()
+        mock_channel.send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_input_suppresses_near_duplicate_transcript(self, runner):
@@ -1023,11 +1177,248 @@ class TestVoiceChannelCommands:
         mock_adapter.handle_message = AsyncMock()
         runner.adapters[Platform.DISCORD] = mock_adapter
 
-        await runner._handle_voice_channel_input(111, 42, "This is a test of the voice system")
-        await runner._handle_voice_channel_input(111, 42, "This is a test for the voice system")
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, this is a test of the voice system")
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, this is a test for the voice system")
 
         mock_adapter.handle_message.assert_called_once()
-        mock_channel.send.assert_called_once()
+        mock_channel.send.assert_not_called()
+
+
+
+    @pytest.mark.asyncio
+    async def test_input_during_join_warmup_suppresses_transcript_and_dispatch(self, runner):
+        """Voice captured during the post-join warm-up is ignored entirely."""
+        import time
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_ready_at = {111: time.monotonic() + 30.0}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, too early")
+
+        mock_channel.send.assert_not_called()
+        mock_adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_input_after_join_warmup_allows_direct_address(self, runner):
+        """Once warm-up expires, direct-addressed voice dispatches normally."""
+        import time
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_ready_at = {111: time.monotonic() - 1.0}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, ready now")
+
+        mock_channel.send.assert_not_called()
+        mock_adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_input_without_wake_word_does_not_post_or_dispatch(self, runner):
+        """Ambient Discord VC speech stays internal and is not sent to the agent."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Testing audio capture only")
+
+        mock_channel.send.assert_not_called()
+        mock_adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_input_service_misrecognition_does_not_dispatch(self, runner):
+        """STT mishearing Jarvis as 'Service' must not trigger a voice reply."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Service, testing audio capture only")
+
+        mock_channel.send.assert_not_called()
+        mock_adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_input_uses_configured_wake_words(self, runner):
+        """Wake words come from Discord voice config, not hardcoded names only."""
+        from types import SimpleNamespace
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.config = SimpleNamespace(extra={"voice_wake_words": "alfred,jarvis"})
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Alfred, test configured wake word")
+
+        mock_channel.send.assert_not_called()
+        mock_adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_input_allows_wake_word_anywhere_as_standalone_word(self, runner):
+        """Jarvis/Jervis can appear mid-sentence or at the end of a request."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Who ate the cake? Was it you, Jarvis?")
+
+        mock_channel.send.assert_not_called()
+        mock_adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_input_does_not_match_wake_word_inside_larger_word(self, runner):
+        """Standalone-word matching avoids accidental wake-word substrings."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "This is jarvisian trivia")
+
+        mock_channel.send.assert_not_called()
+        mock_adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_followup_window_uses_configured_duration(self, runner):
+        """Solo no-wake follow-up duration is configurable."""
+        import time
+        from types import SimpleNamespace
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.config = SimpleNamespace(extra={"voice_followup_seconds": 7.5})
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        before = time.monotonic()
+        runner._extend_voice_followup_window(111, 42)
+        after = time.monotonic()
+
+        expires = runner._discord_voice_followup_until[(111, 42)]
+        assert before + 7.5 <= expires <= after + 7.5
+
+    @pytest.mark.asyncio
+    async def test_input_allows_followup_without_wake_when_solo(self, runner):
+        """After a direct address, Dave can continue hands-free when alone in VC."""
+        import time
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_ready_at = {111: time.monotonic() - 1.0}
+        mock_adapter.get_voice_channel_info = MagicMock(return_value={
+            "members": [{"user_id": 42, "display_name": "Solitude", "is_bot": False}],
+            "member_count": 1,
+        })
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, start a conversation")
+        await runner._handle_voice_channel_input(111, 42, "What about this follow up?")
+
+        assert mock_adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_input_requires_wake_for_followup_when_others_present(self, runner):
+        """Follow-up conversation is disabled when another human is in VC."""
+        import time
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_ready_at = {111: time.monotonic() - 1.0}
+        mock_adapter.get_voice_channel_info = MagicMock(return_value={
+            "members": [
+                {"user_id": 42, "display_name": "Solitude", "is_bot": False},
+                {"user_id": 99, "display_name": "Other", "is_bot": False},
+            ],
+            "member_count": 2,
+        })
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Jarvis, start a conversation")
+        await runner._handle_voice_channel_input(111, 42, "What about this follow up?")
+
+        mock_adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_input_requires_wake_when_solo_followup_expired(self, runner):
+        """Solo mode still expires, so old ambient speech stays ignored."""
+        import time
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_ready_at = {111: time.monotonic() - 1.0}
+        mock_adapter.get_voice_channel_info = MagicMock(return_value={
+            "members": [{"user_id": 42, "display_name": "Solitude", "is_bot": False}],
+            "member_count": 1,
+        })
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._discord_voice_followup_until = {(111, 42): time.monotonic() - 1.0}
+
+        await runner._handle_voice_channel_input(111, 42, "What about this old follow up?")
+
+        mock_adapter.handle_message.assert_not_called()
 
     # -- _get_guild_id --
 
@@ -1078,6 +1469,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_locks = {}
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
+        adapter._voice_ready_at = {}
         adapter._voice_timeout_tasks = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
@@ -1113,6 +1505,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_clients[111] = mock_vc
         adapter._voice_text_channels[111] = 123
         adapter._voice_sources[111] = {"chat_id": "123", "chat_type": "group"}
+        adapter._voice_ready_at[111] = 999999.0
 
         mock_receiver = MagicMock()
         adapter._voice_receivers[111] = mock_receiver
@@ -1132,6 +1525,7 @@ class TestDiscordVoiceChannelMethods:
         assert 111 not in adapter._voice_clients
         assert 111 not in adapter._voice_text_channels
         assert 111 not in adapter._voice_sources
+        assert 111 not in adapter._voice_ready_at
         assert 111 not in adapter._voice_receivers
 
     @pytest.mark.asyncio
@@ -1139,6 +1533,36 @@ class TestDiscordVoiceChannelMethods:
         """Leave when not connected — no crash."""
         adapter = self._make_adapter()
         await adapter.leave_voice_channel(111)  # should not raise
+
+    def test_voice_idle_seconds_defaults_to_fifteen_minutes(self):
+        adapter = self._make_adapter()
+        assert adapter._voice_idle_seconds() == 900.0
+
+    def test_voice_idle_seconds_reads_platform_extra(self):
+        adapter = self._make_adapter()
+        adapter.config.extra["voice_idle_seconds"] = "1200"
+        assert adapter._voice_idle_seconds() == 1200.0
+
+    @pytest.mark.asyncio
+    async def test_voice_timeout_handler_asks_before_leaving(self):
+        adapter = self._make_adapter()
+        adapter.config.extra["voice_idle_seconds"] = 0
+        adapter.config.extra["voice_idle_prompt"] = "If I'm not needed, I'll be in my room."
+        adapter._voice_text_channels[111] = 123
+
+        mock_channel = AsyncMock()
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        adapter._voice_clients[111] = mock_vc
+        adapter.leave_voice_channel = AsyncMock()
+        adapter._reset_voice_timeout = MagicMock()
+
+        await adapter._voice_timeout_handler(111)
+
+        mock_channel.send.assert_awaited_once_with("If I'm not needed, I'll be in my room.")
+        adapter.leave_voice_channel.assert_not_called()
+        adapter._reset_voice_timeout.assert_called_once_with(111)
 
     @pytest.mark.asyncio
     async def test_get_user_voice_channel_no_client(self):
@@ -1860,6 +2284,7 @@ class TestVoiceTimeoutCleansRunnerState:
         adapter._voice_locks = {}
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
+        adapter._voice_ready_at = {}
         adapter._voice_timeout_tasks = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
@@ -1880,8 +2305,8 @@ class TestVoiceTimeoutCleansRunnerState:
         assert adapter._on_voice_disconnect is None
 
     @pytest.mark.asyncio
-    async def test_timeout_calls_disconnect_callback(self, adapter):
-        """_voice_timeout_handler calls _on_voice_disconnect with chat_id."""
+    async def test_timeout_asks_before_disconnect_cleanup(self, adapter):
+        """Idle prompt no longer disconnects or clears runner voice state."""
         callback_calls = []
         adapter._on_voice_disconnect = lambda chat_id: callback_calls.append(chat_id)
 
@@ -1894,13 +2319,16 @@ class TestVoiceTimeoutCleansRunnerState:
         adapter._voice_timeout_tasks[111] = MagicMock()
         adapter._voice_receivers[111] = MagicMock()
         adapter._voice_listen_tasks[111] = MagicMock()
+        adapter._reset_voice_timeout = MagicMock()
 
         # Patch sleep to return immediately
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await adapter._voice_timeout_handler(111)
 
-        assert "999" in callback_calls, \
-            "_on_voice_disconnect must be called with chat_id on timeout"
+        assert callback_calls == [], \
+            "idle prompt should not clean up voice mode before the user agrees to leave"
+        assert 111 in adapter._voice_clients
+        adapter._reset_voice_timeout.assert_called_once_with(111)
 
     @pytest.mark.asyncio
     async def test_runner_cleanup_method_removes_voice_mode(self, tmp_path):
@@ -1925,10 +2353,13 @@ class TestVoiceTimeoutCleansRunnerState:
         adapter._voice_text_channels[111] = 999
         adapter._voice_timeout_tasks[111] = MagicMock()
 
+        adapter._reset_voice_timeout = MagicMock()
+
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await adapter._voice_timeout_handler(111)
 
-        assert 111 not in adapter._voice_clients
+        assert 111 in adapter._voice_clients
+        adapter._reset_voice_timeout.assert_called_once_with(111)
 
 
 # =====================================================================
@@ -1951,6 +2382,7 @@ class TestPlaybackTimeout:
         adapter._voice_locks = {}
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
+        adapter._voice_ready_at = {}
         adapter._voice_timeout_tasks = {}
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}

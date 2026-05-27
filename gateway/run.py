@@ -7674,6 +7674,9 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "transcribe":
+            return await self._handle_transcribe_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -11195,6 +11198,45 @@ class GatewayRunner:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return t("gateway.voice.disabled_short")
 
+    def _persist_transcribe_enabled(self, enabled: bool) -> None:
+        """Persist /transcribe on|off to config.yaml's stt.enabled field."""
+        try:
+            import yaml
+            config_path = _hermes_home / "config.yaml"
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+            except FileNotFoundError:
+                cfg = {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+            stt_cfg = cfg.get("stt")
+            if not isinstance(stt_cfg, dict):
+                stt_cfg = {}
+            stt_cfg["enabled"] = bool(enabled)
+            cfg["stt"] = stt_cfg
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+        except Exception as exc:
+            logger.warning("Failed to persist transcribe setting: %s", exc)
+
+    async def _handle_transcribe_command(self, event: MessageEvent) -> str:
+        """Handle /transcribe [on|off|status] for inbound voice/audio STT."""
+        args = event.get_command_args().strip().lower()
+        if args in {"on", "enable", "enabled", "true"}:
+            self.config.stt_enabled = True
+            self._persist_transcribe_enabled(True)
+            return "Transcription enabled. Inbound voice/audio messages will be transcribed."
+        if args in {"off", "disable", "disabled", "false"}:
+            self.config.stt_enabled = False
+            self._persist_transcribe_enabled(False)
+            return "Transcription disabled. Inbound voice/audio messages will not be transcribed."
+        if args in {"", "status"}:
+            status = "on" if getattr(self.config, "stt_enabled", True) else "off"
+            return f"Transcription is {status}."
+        return "Usage: /transcribe on, /transcribe off, or /transcribe status"
+
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
         adapter = self.adapters.get(event.source.platform)
@@ -11235,16 +11277,110 @@ class GatewayRunner:
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
+            # Discord voice receive can report the receiver as started before
+            # SPEAKING/SSRC mapping and first packet flow are reliable.  Ignore
+            # very early transcripts so stale/partial audio does not become a
+            # Jarvis turn immediately after /voice join.
+            ready_map = getattr(adapter, "_voice_ready_at", None)
+            if not isinstance(ready_map, dict):
+                ready_map = {}
+                adapter._voice_ready_at = ready_map
+            ready_at = time.monotonic() + self._discord_voice_float(
+                adapter, "voice_warmup_seconds", 5.0
+            )
+            ready_map[guild_id] = ready_at
+            task = asyncio.create_task(
+                self._send_discord_voice_ready_notice(guild_id, int(event.source.chat_id), ready_at)
+            )
+            if not hasattr(self, "_background_tasks"):
+                self._background_tasks = set()
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
-                f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
+                f"Voice receive is warming up; I'll announce when the voice link is online. "
+                f"Use /voice leave to disconnect."
             )
         # Join failed — clear callback
         adapter._voice_input_callback = None
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+    async def _send_discord_voice_ready_notice(
+        self, guild_id: int, text_ch_id: int, ready_at: float
+    ) -> None:
+        """Notify the linked Discord text channel when VC warm-up is complete."""
+        def still_current(adapter: Any, marker: float) -> bool:
+            ready_map = getattr(adapter, "_voice_ready_at", None)
+            if not isinstance(ready_map, dict) or ready_map.get(guild_id) != marker:
+                return False
+            if hasattr(adapter, "is_in_voice_channel") and not adapter.is_in_voice_channel(guild_id):
+                return False
+            return True
+
+        try:
+            await asyncio.sleep(max(0.0, ready_at - time.monotonic()))
+            adapter = self.adapters.get(Platform.DISCORD)
+            if not adapter:
+                return
+            # Avoid stale notices when /voice leave or a later /voice join changed
+            # the warm-up marker before this task fired.
+            if not still_current(adapter, ready_at):
+                return
+            ready_map = getattr(adapter, "_voice_ready_at", None)
+            source_map = getattr(adapter, "_voice_sources", None)
+            source_data = source_map.get(guild_id) if isinstance(source_map, dict) else None
+            if isinstance(source_data, dict):
+                source = SessionSource.from_dict(source_data)
+            else:
+                source = SessionSource(
+                    platform=Platform.DISCORD,
+                    chat_id=str(text_ch_id),
+                    user_id="system",
+                    user_name="Jarvis",
+                    chat_type="group",
+                )
+
+            from types import SimpleNamespace
+            ready_text = self._discord_voice_ready_text(adapter)
+            event = MessageEvent(
+                source=source,
+                text=ready_text,
+                message_type=MessageType.VOICE,
+                raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
+                internal=True,
+            )
+            logger.info("Discord voice ready notice starting for guild=%s", guild_id)
+            await self._send_voice_reply(event, ready_text)
+            if not still_current(adapter, ready_at):
+                return
+
+            # Playing the ready notice pauses the receiver to avoid self-echo.
+            # Give Discord a tiny post-playback settle window, then mark the
+            # voice link ready and send the text-channel confirmation. This
+            # prevents the visible/text ready signal from arriving before the
+            # receiver has actually resumed.
+            settle_until = time.monotonic() + self._discord_voice_float(
+                adapter, "voice_ready_settle_seconds", 0.75
+            )
+            if isinstance(ready_map, dict):
+                ready_map[guild_id] = settle_until
+            await asyncio.sleep(max(0.0, settle_until - time.monotonic()))
+            if not still_current(adapter, settle_until):
+                return
+            if isinstance(ready_map, dict):
+                ready_map[guild_id] = time.monotonic()
+
+            channel = getattr(adapter, "_client", None).get_channel(text_ch_id) if getattr(adapter, "_client", None) else None
+            if channel:
+                await channel.send(f"🎙️ {ready_text}")
+            logger.info("Discord voice ready notice complete for guild=%s", guild_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Failed to send Discord voice ready notice: %s", exc, exc_info=True)
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
@@ -11267,6 +11403,7 @@ class GatewayRunner:
         self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
+        self._clear_discord_voice_followup(guild_id=guild_id)
         return "Left voice channel."
 
     def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
@@ -11278,6 +11415,7 @@ class GatewayRunner:
         self._save_voice_modes()
         adapter = self.adapters.get(Platform.DISCORD)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        self._clear_discord_voice_followup()
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.
@@ -11320,13 +11458,123 @@ class GatewayRunner:
         recent_store[key] = recent[-5:]
         return False
 
+    def _is_direct_addressed_voice_transcript(self, transcript: str) -> bool:
+        """Return True when Discord VC speech is explicitly addressed to Jarvis.
+
+        Voice channels are ambient by nature. Transcribed speech must not become
+        an agent turn unless Dave clearly addresses Jarvis/Jervis. The wake word
+        may appear anywhere as a standalone word ("Jarvis, help" or "what do
+        you think, Jarvis?"). Follow-up conversation is handled separately and
+        only while Dave is alone with Jarvis in VC.
+        """
+        text = re.sub(r"[^a-z0-9\s]", " ", (transcript or "").lower())
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return False
+        words = set(text.split())
+        adapter = self.adapters.get(Platform.DISCORD)
+        return bool(words & self._discord_voice_wake_words(adapter))
+
+    def _discord_voice_extra(self, adapter: Any) -> dict:
+        cfg = getattr(adapter, "config", None)
+        extra = getattr(cfg, "extra", {})
+        return extra if isinstance(extra, dict) else {}
+
+    def _discord_voice_float(self, adapter: Any, key: str, default: float) -> float:
+        value = self._discord_voice_extra(adapter).get(key, default)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0.0, parsed)
+
+    def _discord_voice_wake_words(self, adapter: Any) -> set[str]:
+        value = self._discord_voice_extra(adapter).get(
+            "voice_wake_words", ["jarvis", "jervis"]
+        )
+        if isinstance(value, str):
+            raw_words = re.split(r"[,\s]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            raw_words = value
+        else:
+            raw_words = ["jarvis", "jervis"]
+        words = {
+            re.sub(r"[^a-z0-9\s]", " ", str(word).lower()).strip().split(" ")[0]
+            for word in raw_words
+            if str(word).strip()
+        }
+        return {word for word in words if word} or {"jarvis", "jervis"}
+
+    def _discord_voice_ready_text(self, adapter: Any) -> str:
+        operator = str(
+            self._discord_voice_extra(adapter).get("voice_operator_name", "") or ""
+        ).strip()
+        if operator:
+            return f"Voice link online, {operator}."
+        return "Voice link online."
+
+    def _is_solo_discord_voice_conversation(
+        self, adapter: Any, guild_id: int, user_id: int
+    ) -> bool:
+        """Return True only when the speaker is the sole non-bot VC participant."""
+        if not hasattr(adapter, "get_voice_channel_info"):
+            return False
+        try:
+            info = adapter.get_voice_channel_info(guild_id)
+        except Exception:
+            return False
+        if inspect.isawaitable(info):
+            close = getattr(info, "close", None)
+            if callable(close):
+                close()
+            return False
+        if not isinstance(info, dict):
+            return False
+        humans = [
+            m for m in info.get("members", [])
+            if isinstance(m, dict) and not m.get("is_bot")
+        ]
+        return len(humans) == 1 and str(humans[0].get("user_id")) == str(user_id)
+
+    def _voice_followup_allowed(self, guild_id: int, user_id: int) -> bool:
+        store = getattr(self, "_discord_voice_followup_until", None)
+        if not isinstance(store, dict):
+            return False
+        until = store.get((guild_id, user_id))
+        return until is not None and time.monotonic() < until
+
+    def _clear_discord_voice_followup(
+        self, guild_id: int | None = None, user_id: int | None = None
+    ) -> None:
+        store = getattr(self, "_discord_voice_followup_until", None)
+        if not isinstance(store, dict):
+            return
+        if guild_id is None:
+            store.clear()
+            return
+        for key in list(store):
+            key_guild, key_user = key
+            if key_guild == guild_id and (user_id is None or key_user == user_id):
+                store.pop(key, None)
+
+    def _extend_voice_followup_window(self, guild_id: int, user_id: int) -> None:
+        store = getattr(self, "_discord_voice_followup_until", None)
+        if not isinstance(store, dict):
+            store = {}
+            self._discord_voice_followup_until = store
+        adapter = self.adapters.get(Platform.DISCORD)
+        store[(guild_id, user_id)] = time.monotonic() + self._discord_voice_float(
+            adapter, "voice_followup_seconds", 120.0
+        )
+
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str
     ):
         """Handle transcribed voice from a user in a voice channel.
 
         Creates a synthetic MessageEvent and processes it through the
-        adapter's full message pipeline (session, typing, agent, TTS reply).
+        adapter's full message pipeline (session, typing, agent, TTS reply)
+        only when the utterance is explicitly addressed to Jarvis.
         """
         adapter = self.adapters.get(Platform.DISCORD)
         if not adapter:
@@ -11357,6 +11605,19 @@ class GatewayRunner:
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
 
+        ready_map = getattr(adapter, "_voice_ready_at", None)
+        ready_at = ready_map.get(guild_id) if isinstance(ready_map, dict) else None
+        if ready_at is not None:
+            remaining = ready_at - time.monotonic()
+            if remaining > 0:
+                logger.debug(
+                    "Suppressing Discord voice transcript during join warm-up for guild=%s user=%s remaining=%.1fs",
+                    guild_id,
+                    user_id,
+                    remaining,
+                )
+                return
+
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
             logger.info(
                 "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
@@ -11366,14 +11627,40 @@ class GatewayRunner:
             )
             return
 
-        # Show transcript in text channel (after auth, with mention sanitization)
-        try:
-            channel = adapter._client.get_channel(text_ch_id)
-            if channel:
-                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
-        except Exception:
-            pass
+        is_direct_address = self._is_direct_addressed_voice_transcript(transcript)
+
+        # The transcript is needed internally for wake-word routing and agent
+        # input, but it does not need to be echoed into the Discord text
+        # channel. Keep text-channel transcript echo opt-in to avoid noisy
+        # "everything I say" logs during normal voice use.
+        show_transcripts = bool(
+            self._discord_voice_extra(adapter).get("voice_show_transcripts", False)
+        )
+        if show_transcripts:
+            try:
+                channel = adapter._client.get_channel(text_ch_id)
+                if channel:
+                    safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                    await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+            except Exception:
+                pass
+
+        is_solo_conversation = self._is_solo_discord_voice_conversation(adapter, guild_id, user_id)
+        if not is_direct_address:
+            if not (is_solo_conversation and self._voice_followup_allowed(guild_id, user_id)):
+                logger.debug(
+                    "Suppressing Discord voice transcript without wake word for guild=%s user=%s solo=%s followup=%s",
+                    guild_id,
+                    user_id,
+                    is_solo_conversation,
+                    self._voice_followup_allowed(guild_id, user_id),
+                )
+                return
+
+        # Extend after the dispatch decision so a directly-addressed turn opens
+        # a short hands-free conversation only when Dave is alone with Jarvis.
+        if is_solo_conversation:
+            self._extend_voice_followup_window(guild_id, user_id)
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract

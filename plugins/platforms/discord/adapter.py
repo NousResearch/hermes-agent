@@ -179,7 +179,7 @@ class VoiceReceiver:
     completed utterances via a callback.
     """
 
-    SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
+    SILENCE_THRESHOLD = 0.7    # seconds of silence → end of utterance
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
@@ -574,8 +574,15 @@ class DiscordAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
 
-    # Auto-disconnect from voice channel after this many seconds of inactivity
-    VOICE_TIMEOUT = 300
+    # Prompt after this many seconds of voice-channel inactivity.
+    # The bot no longer auto-disconnects here; it asks first so the operator
+    # can decide whether Jarvis should stay or leave.
+    VOICE_TIMEOUT = 900
+    VOICE_IDLE_PROMPT = (
+        "I've been quietly keeping the chair warm for a bit. "
+        "If I'm not needed here anymore, I'll be working in my room — "
+        "just say the word if you want me to stay."
+    )
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -594,6 +601,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
+        self._voice_ready_at: Dict[int, float] = {}  # guild_id -> monotonic timestamp when input may dispatch
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
@@ -1978,6 +1986,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 task.cancel()
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
+            self._voice_ready_at.pop(guild_id, None)
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -2038,7 +2047,7 @@ class DiscordAdapter(BasePlatformAdapter):
         return member.voice.channel
 
     def _reset_voice_timeout(self, guild_id: int) -> None:
-        """Reset the auto-disconnect inactivity timer."""
+        """Reset the voice-channel inactivity prompt timer."""
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
@@ -2046,27 +2055,43 @@ class DiscordAdapter(BasePlatformAdapter):
             self._voice_timeout_handler(guild_id)
         )
 
-    async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+    def _voice_idle_seconds(self) -> float:
+        """Return configured idle seconds before asking whether to leave."""
+        value = getattr(getattr(self, "config", None), "extra", {}).get(
+            "voice_idle_seconds",
+            os.getenv("HERMES_DISCORD_VOICE_IDLE_SECONDS", self.VOICE_TIMEOUT),
+        )
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return float(self.VOICE_TIMEOUT)
+        return max(0.0, seconds)
+
+    def _voice_idle_prompt(self) -> str:
+        """Return the configured idle prompt sent before any voice leave."""
+        value = getattr(getattr(self, "config", None), "extra", {}).get(
+            "voice_idle_prompt",
+            os.getenv("HERMES_DISCORD_VOICE_IDLE_PROMPT", self.VOICE_IDLE_PROMPT),
+        )
+        text = str(value).strip() if value is not None else ""
+        return text or self.VOICE_IDLE_PROMPT
+
+    async def _voice_timeout_handler(self, guild_id: int) -> None:
+        """Ask whether to leave after a voice-channel idle period."""
+        try:
+            await asyncio.sleep(self._voice_idle_seconds())
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
-        await self.leave_voice_channel(guild_id)
-        # Notify the runner so it can clean up voice_mode state
-        if self._on_voice_disconnect and text_ch_id:
-            try:
-                self._on_voice_disconnect(str(text_ch_id))
-            except Exception:
-                pass
         if text_ch_id and self._client:
             ch = self._client.get_channel(text_ch_id)
             if ch:
                 try:
-                    await ch.send("Left voice channel (inactivity timeout).")
+                    await ch.send(self._voice_idle_prompt())
                 except Exception:
                     pass
+        if self.is_in_voice_channel(guild_id):
+            self._reset_voice_timeout(guild_id)
 
     def is_in_voice_channel(self, guild_id: int) -> bool:
         """Check if the bot is connected to a voice channel in this guild."""
@@ -3050,23 +3075,76 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reload_skills(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-skills")
 
-        @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
-        @discord.app_commands.choices(mode=[
-            # `join` and `channel` both route to _handle_voice_channel_join in
-            # gateway/run.py — expose both in the slash UI so autocomplete
-            # matches what the docs advertise and what the runner accepts when
-            # the command is typed as plain text.
-            discord.app_commands.Choice(name="join — join your voice channel", value="join"),
-            discord.app_commands.Choice(name="channel — join your voice channel (alias)", value="channel"),
-            discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
-            discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
-            discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
-            discord.app_commands.Choice(name="off — text only", value="off"),
-            discord.app_commands.Choice(name="status — show current mode", value="status"),
-        ])
-        async def slash_voice(interaction: discord.Interaction, mode: str = ""):
-            await self._run_simple_slash(interaction, f"/voice {mode}".strip())
+        # Discord subcommand groups let users type/select `/voice join` or
+        # `/transcribe on` as one complete command, without Discord's extra
+        # fill-in-an-option confirmation step.
+        voice_group = discord.app_commands.Group(
+            name="voice",
+            description="Voice channel and voice reply controls",
+        )
+
+        async def slash_voice_join(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/voice join")
+
+        async def slash_voice_channel(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/voice channel")
+
+        async def slash_voice_leave(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/voice leave")
+
+        async def slash_voice_on(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/voice on")
+
+        async def slash_voice_tts(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/voice tts")
+
+        async def slash_voice_off(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/voice off")
+
+        async def slash_voice_status(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/voice status")
+
+        for _name, _description, _callback in (
+            ("join", "Join your current Discord voice channel", slash_voice_join),
+            ("channel", "Join your voice channel (alias for join)", slash_voice_channel),
+            ("leave", "Leave the Discord voice channel", slash_voice_leave),
+            ("on", "Reply by voice to voice messages", slash_voice_on),
+            ("tts", "Reply by voice to all messages", slash_voice_tts),
+            ("off", "Text replies only", slash_voice_off),
+            ("status", "Show current voice mode", slash_voice_status),
+        ):
+            voice_group.add_command(discord.app_commands.Command(
+                name=_name,
+                description=_description,
+                callback=_callback,
+            ))
+        tree.add_command(voice_group)
+
+        transcribe_group = discord.app_commands.Group(
+            name="transcribe",
+            description="Inbound voice/audio transcription controls",
+        )
+
+        async def slash_transcribe_on(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/transcribe on")
+
+        async def slash_transcribe_off(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/transcribe off")
+
+        async def slash_transcribe_status(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/transcribe status")
+
+        for _name, _description, _callback in (
+            ("on", "Enable inbound voice/audio transcription", slash_transcribe_on),
+            ("off", "Disable inbound voice/audio transcription", slash_transcribe_off),
+            ("status", "Show whether transcription is enabled", slash_transcribe_status),
+        ):
+            transcribe_group.add_command(discord.app_commands.Command(
+                name=_name,
+                description=_description,
+                callback=_callback,
+            ))
+        tree.add_command(transcribe_group)
 
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):

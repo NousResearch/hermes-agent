@@ -460,3 +460,31 @@ class TestYamlConfigLoading:
         load_gateway_config()
 
         assert os.environ.get("DISCORD_REPLY_TO_MODE") == "all"
+
+    def test_discord_voice_config_bridges_into_platform_extra(self, tmp_path, monkeypatch):
+        """Top-level discord voice keys are available to the Discord adapter."""
+        hermes_home = self._write_config(
+            tmp_path,
+            "discord:\n"
+            "  voice_operator_name: Dave\n"
+            "  voice_wake_words: jarvis,jervis\n"
+            "  voice_warmup_seconds: 5.0\n"
+            "  voice_ready_settle_seconds: 0.75\n"
+            "  voice_followup_seconds: 120.0\n"
+            "  voice_idle_seconds: 900\n"
+            "  voice_idle_prompt: 'If I am not needed here anymore, I will be working in my room.'\n"
+            "  voice_show_transcripts: true\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        cfg = load_gateway_config()
+
+        extra = cfg.platforms[Platform.DISCORD].extra
+        assert extra["voice_operator_name"] == "Dave"
+        assert extra["voice_wake_words"] == "jarvis,jervis"
+        assert extra["voice_warmup_seconds"] == 5.0
+        assert extra["voice_ready_settle_seconds"] == 0.75
+        assert extra["voice_followup_seconds"] == 120.0
+        assert extra["voice_idle_seconds"] == 900
+        assert extra["voice_idle_prompt"] == "If I am not needed here anymore, I will be working in my room."
+        assert extra["voice_show_transcripts"] is True

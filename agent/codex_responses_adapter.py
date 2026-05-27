@@ -913,6 +913,26 @@ def _preflight_codex_api_kwargs(
     elif "stream" in api_kwargs:
         raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")
 
+    # Safety-net sanitization for xAI Responses (#28490): defense-in-depth
+    # for the same slash-enum strip that ``chat_completion_helpers`` and
+    # ``auxiliary_client`` apply at request-build time.  If a future code
+    # path forgets to sanitize before calling us, this catches the bypass
+    # so xAI doesn't 400 with ``Invalid arguments passed to the model``
+    # (HuggingFace IDs like ``Qwen/Qwen3.5-0.8B`` from MCP tool schemas).
+    #
+    # Gated on the model name pattern because native Codex (OpenAI) DOES
+    # accept slash-containing enum values — stripping them there would
+    # silently degrade tool-schema constraints.  xAI is the only
+    # Responses-API surface that rejects the shape.
+    model_name_for_provider_check = str(api_kwargs.get("model") or "").lower()
+    is_xai_model = model_name_for_provider_check.startswith(("grok-", "x-ai/grok-"))
+    if is_xai_model and normalized.get("tools"):
+        try:
+            from tools.schema_sanitizer import strip_slash_enum
+            normalized["tools"], _ = strip_slash_enum(normalized["tools"])
+        except Exception:
+            pass  # Best-effort — the caller-level sanitization should have handled it
+
     unexpected = sorted(key for key in api_kwargs if key not in allowed_keys)
     if unexpected:
         raise ValueError(

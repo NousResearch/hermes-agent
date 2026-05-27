@@ -868,6 +868,61 @@ class TestDeliverResultErrorReturns:
 
 
 class TestRunJobSessionPersistence:
+    def test_run_job_auth_fallback_uses_fallback_model(self, tmp_path):
+        """Auth fallback must switch both provider and model for cron jobs."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.5\n"
+            "  provider: openai-codex\n"
+            "fallback_providers:\n"
+            "  - provider: zai\n"
+            "    model: glm-5.1\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "fallback-job",
+            "name": "fallback",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 side_effect=[
+                     AuthError(
+                         "Codex auth is missing access_token.",
+                         provider="openai-codex",
+                         relogin_required=True,
+                     ),
+                     {
+                         "api_key": "test-key",
+                         "base_url": "https://example.invalid/v1",
+                         "provider": "zai",
+                         "api_mode": "chat_completions",
+                     },
+                 ],
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "zai"
+        assert kwargs["model"] == "glm-5.1"
+
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
         job = {
             "id": "test-job",

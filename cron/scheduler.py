@@ -1284,7 +1284,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        # Model resolution: job.model > HERMES_MODEL env var > config.yaml default
+        model = job.get("model")  # May be None if not persisted
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -1296,13 +1297,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
-                if not job.get("model"):
+                # Only apply config default if job doesn't have an explicit model
+                if model is None:
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+                        model = _model_cfg.get("default", "")
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        # Fall back to environment variable if still no model
+        if not model:
+            model = os.getenv("HERMES_MODEL", "")
 
         # Apply IPv4 preference if configured.
         try:

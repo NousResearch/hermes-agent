@@ -175,6 +175,69 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_start_gateway_wires_status_heartbeat(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    calls = []
+
+    class _ShortRunRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = False
+            self.should_exit_with_failure = False
+            self.exit_reason = None
+            self.adapters = {}
+            self.exit_code = None
+            self._restart_requested = False
+            self._restart_via_service = False
+
+        async def start(self):
+            return True
+
+        async def wait_for_shutdown(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: None)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _ShortRunRunner)
+    monkeypatch.setattr("gateway.run._start_cron_ticker", lambda stop_event, adapters=None, loop=None: stop_event.wait(0.01))
+    monkeypatch.setattr("gateway.memory_monitor.start_memory_monitoring", lambda interval_seconds=300.0: True)
+    monkeypatch.setattr("gateway.memory_monitor.stop_memory_monitoring", lambda timeout=2.0: None)
+    monkeypatch.setattr(
+        "gateway.status_heartbeat.start_status_heartbeat",
+        lambda interval_seconds=60.0: calls.append(("start", interval_seconds)) or True,
+    )
+    monkeypatch.setattr(
+        "gateway.status_heartbeat.stop_status_heartbeat",
+        lambda timeout=2.0: calls.append(("stop", timeout)),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "logging": {
+                "memory_monitor": {"enabled": False},
+                "status_heartbeat": {"enabled": True, "interval_seconds": 7},
+            }
+        },
+    )
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert ok is True
+    assert ("start", 7.0) in calls
+    assert ("stop", 2.0) in calls
+
+
+@pytest.mark.asyncio
 async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

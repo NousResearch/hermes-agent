@@ -1683,6 +1683,13 @@ DEFAULT_CONFIG = {
             "enabled": True,         # Flip to false to silence the periodic line
             "interval_seconds": 300, # Default: every 5 minutes
         },
+        # Periodic gateway runtime-status heartbeat. Refreshes
+        # gateway_state.json during otherwise idle periods so external
+        # health checks don't mistake "quiet" for "dead".
+        "status_heartbeat": {
+            "enabled": True,
+            "interval_seconds": 60,
+        },
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches

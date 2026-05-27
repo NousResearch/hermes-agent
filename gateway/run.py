@@ -18279,6 +18279,28 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception as _mm_exc:
         logger.debug("Failed to start memory monitor: %s", _mm_exc)
 
+    # Periodic runtime-status heartbeat (gateway only). Refreshes the
+    # gateway_state.json timestamp during quiet periods so external
+    # health checks can tell "idle" from "dead".
+    try:
+        from gateway import status_heartbeat as _status_heartbeat
+
+        _sh_cfg = {}
+        try:
+            from hermes_cli.config import load_config as _load_cli_config
+
+            _sh_cfg = (_load_cli_config() or {}).get("logging", {}).get("status_heartbeat", {}) or {}
+        except Exception:
+            _sh_cfg = {}
+        if _sh_cfg.get("enabled", True):
+            try:
+                _sh_interval = float(_sh_cfg.get("interval_seconds", 60))
+            except (TypeError, ValueError):
+                _sh_interval = 60.0
+            _status_heartbeat.start_status_heartbeat(interval_seconds=_sh_interval)
+    except Exception as _sh_exc:
+        logger.debug("Failed to start status heartbeat: %s", _sh_exc)
+
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output
     # verbosity=0    (default):    WARNING and above
@@ -18517,6 +18539,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway import memory_monitor as _memory_monitor
 
         _memory_monitor.stop_memory_monitoring(timeout=2.0)
+    except Exception:
+        pass
+
+    try:
+        from gateway import status_heartbeat as _status_heartbeat
+
+        _status_heartbeat.stop_status_heartbeat(timeout=2.0)
     except Exception:
         pass
 

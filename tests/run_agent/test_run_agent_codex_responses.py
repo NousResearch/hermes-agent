@@ -576,6 +576,82 @@ def test_run_codex_create_stream_fallback_coerces_none_output(monkeypatch):
     assert response.output == []
 
 
+def test_run_codex_stream_recovers_streamed_tool_call_on_sdk_none_output_typeerror(monkeypatch):
+    """Same SDK null-output crash, but on a tool-call turn. The function_call
+    item already arrived via a response.output_item.done event before the
+    accumulator choked on the null response.output, so recover it and
+    synthesize the response. Re-driving via create(stream=True) returns the
+    same null output (coerced to an empty list), which would silently drop the
+    tool call so it never executes.
+    """
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    fc_item = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments='{"command": "echo ok"}',
+        status="completed",
+    )
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(
+                    type="response.function_call_arguments.delta",
+                    delta='{"command": "echo ok"}',
+                ),
+                SimpleNamespace(type="response.output_item.done", item=fc_item),
+            ],
+            iter_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    def _fake_create(**kwargs):
+        # Re-drive returns the same null output the SDK chokes on — proves we
+        # must recover from the stream, not by re-driving.
+        calls["create"] += 1
+        return SimpleNamespace(output=None, status="completed", model="gpt-5-codex")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create)
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    # Recovered from the streamed function_call item — request not re-driven.
+    assert calls["stream"] == 1
+    assert calls["create"] == 0
+    fc = next(item for item in response.output if getattr(item, "type", None) == "function_call")
+    assert fc.call_id == "call_1"
+    assert fc.name == "terminal"
+
+
+def test_run_codex_create_stream_fallback_coerces_none_terminal_output(monkeypatch):
+    """The create(stream=True) fallback can emit a terminal response.completed
+    event whose .output is null (not merely []). With nothing collected to
+    backfill from, coerce the null to [] so the SDK Response.output_text
+    property and the codex normalizer never iterate None.
+    """
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output=None, status="completed", model="gpt-5-codex"),
+            ),
+        ]
+    )
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream)
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assert response.output == []
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

@@ -7013,11 +7013,31 @@ class AIAgent:
                         status="completed",
                         model=api_kwargs.get("model"),
                     )
-                # Nothing recoverable from the stream (e.g. a tool-call turn) —
-                # re-drive via create(stream=True), which parses events manually.
+                # A tool-call turn hits the same null-output crash. The
+                # function_call item(s) already arrived via
+                # response.output_item.done events (collected above) before the
+                # accumulator choked, so synthesize the response from them —
+                # re-driving via create(stream=True) returns the same null
+                # output and would silently drop the tool call.
+                if collected_output_items:
+                    logger.debug(
+                        "Codex stream accumulator hit SDK None-output TypeError; "
+                        "recovered %d output item(s) from stream events. %s",
+                        len(collected_output_items), self._client_log_context(),
+                    )
+                    return SimpleNamespace(
+                        output=list(collected_output_items),
+                        output_text="",
+                        usage=None,
+                        status="completed",
+                        model=api_kwargs.get("model"),
+                    )
+                # Nothing recoverable from the stream — re-drive via
+                # create(stream=True), which parses events manually and guards
+                # a null output.
                 logger.debug(
                     "Codex stream accumulator hit SDK None-output TypeError with no "
-                    "recoverable streamed text; falling back to create(stream=True). %s",
+                    "recoverable streamed output; falling back to create(stream=True). %s",
                     self._client_log_context(),
                 )
                 return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
@@ -7075,7 +7095,7 @@ class AIAgent:
                 if terminal_response is not None:
                     # Backfill empty output from collected stream events
                     _out = getattr(terminal_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if _out is None or (isinstance(_out, list) and not _out):
                         if collected_output_items:
                             terminal_response.output = list(collected_output_items)
                             logger.debug(
@@ -7093,6 +7113,10 @@ class AIAgent:
                                 "Codex fallback stream: synthesized from %d deltas (%d chars)",
                                 len(collected_text_deltas), len(assembled),
                             )
+                        elif _out is None:
+                            # Null output with nothing to backfill — coerce to
+                            # [] so downstream never iterates None.
+                            terminal_response.output = []
                     return terminal_response
         finally:
             close_fn = getattr(stream_or_response, "close", None)

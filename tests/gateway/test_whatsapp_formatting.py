@@ -164,6 +164,14 @@ class TestMessageLimits:
 
         assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
 
+    def test_video_upload_timeout_scales_above_default(self, tmp_path):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        video = tmp_path / "large.mp4"
+        video.write_bytes(b"0" * (20 * 1024 * 1024))
+
+        assert WhatsAppAdapter._media_upload_timeout_ms(str(video), "video") > 300_000
+
 
 # ---------------------------------------------------------------------------
 # send() chunking tests

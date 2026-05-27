@@ -545,6 +545,33 @@ class TestMediaInsideSerializedJson:
         assert "MEDIA:" not in cleaned          # real tag removed
         assert cleaned.endswith("now")          # trailing text intact (not chopped)
 
+    def test_media_tag_resolves_home_relative_safe_root_path(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "Hermes"
+        movie = safe_root / "weaver_output" / "final_weaver_movie.mp4"
+        movie.parent.mkdir(parents=True)
+        movie.write_bytes(b"movie")
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        content = f"MEDIA:{os.path.expanduser('~')}/weaver_output/final_weaver_movie.mp4"
+
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+
+        assert media == [(str(movie), False)]
+        assert cleaned == ""
+
+    def test_bare_local_file_resolves_typoed_user_home_under_safe_root(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "Hermes"
+        movie = safe_root / "weaver_output" / "final_weaver_movie.mp4"
+        movie.parent.mkdir(parents=True)
+        movie.write_bytes(b"movie")
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        content = "The film is ready: /Users/hedimand/weaver_output/final_weaver_movie.mp4"
+
+        local_files, cleaned = BasePlatformAdapter.extract_local_files(content)
+
+        assert local_files == [str(movie)]
+        assert "final_weaver_movie.mp4" not in cleaned
+
 
 class TestMediaExtensionAllowlistParity:
     """Regression coverage for issue #34517 — the MEDIA: extension black hole.

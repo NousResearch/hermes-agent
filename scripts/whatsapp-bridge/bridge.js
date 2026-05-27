@@ -23,7 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -67,6 +67,10 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+// Default ceiling for media uploads. Large videos can legitimately take longer
+// than SEND_TIMEOUT_MS — mediaUploadTimeoutMs() scales by file size and the
+// caller can override via the request body's `mediaUploadTimeoutMs` field.
+const DEFAULT_MEDIA_UPLOAD_TIMEOUT_MS = parseInt(process.env.WHATSAPP_MEDIA_UPLOAD_TIMEOUT_MS || '300000', 10);
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -113,6 +117,19 @@ function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
   }
   if (remaining) chunks.push(remaining);
   return chunks;
+}
+
+function mediaUploadTimeoutMs(filePath, requestedTimeoutMs) {
+  const requested = Number(requestedTimeoutMs);
+  if (Number.isFinite(requested) && requested > 0) {
+    return requested;
+  }
+  let sizeMb = 0;
+  try {
+    sizeMb = statSync(filePath).size / (1024 * 1024);
+  } catch {}
+  const scaled = Math.floor(60000 + (sizeMb * 30000));
+  return Math.max(DEFAULT_MEDIA_UPLOAD_TIMEOUT_MS, Math.min(scaled, 900000));
 }
 
 function trackSentMessageId(sent) {
@@ -611,7 +628,7 @@ app.post('/send-media', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, filePath, mediaType, caption, fileName } = req.body;
+  const { chatId, filePath, mediaType, caption, fileName, mediaUploadTimeoutMs: requestedUploadTimeoutMs } = req.body;
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
@@ -668,7 +685,12 @@ app.post('/send-media', async (req, res) => {
         break;
     }
 
-    const sent = await sendWithTimeout(chatId, msgPayload);
+    // Media uploads scale by file size and can legitimately exceed SEND_TIMEOUT_MS.
+    const sent = await sendWithTimeout(
+      chatId,
+      msgPayload,
+      mediaUploadTimeoutMs(filePath, requestedUploadTimeoutMs),
+    );
 
     trackSentMessageId(sent);
 

@@ -2890,6 +2890,62 @@ class BasePlatformAdapter(ABC):
         return ''.join(chars)
 
     @staticmethod
+    def _resolve_local_file_candidate(path_text: str) -> Optional[str]:
+        """Resolve model-written local paths against the configured safe root.
+
+        Small/local models sometimes report a path just outside the configured
+        Hermes workspace, e.g. ``~/weaver_output/movie.mp4`` when the file was
+        actually created under ``$HERMES_WRITE_SAFE_ROOT/weaver_output``.  Keep
+        delivery reliable without broad filesystem searching by trying the same
+        home-relative suffix under known safe roots.
+        """
+        raw = str(path_text or "").strip()
+        if not raw:
+            return None
+
+        expanded = os.path.expanduser(raw)
+        if os.path.isfile(expanded):
+            return expanded
+
+        roots: list[Path] = []
+        for root_text in (
+            os.getenv("HERMES_WRITE_SAFE_ROOT", ""),
+            os.getenv("HERMES_WORKSPACE", ""),
+        ):
+            if root_text:
+                root = Path(os.path.expanduser(root_text))
+                if root not in roots:
+                    roots.append(root)
+
+        # In normal gateway runs the cwd is the Hermes workspace; include it
+        # as a fallback for older configs that have not set HERMES_WRITE_SAFE_ROOT.
+        try:
+            cwd = Path.cwd()
+            if cwd not in roots:
+                roots.append(cwd)
+        except Exception:
+            pass
+
+        suffixes: list[Path] = []
+        expanded_path = Path(expanded)
+        try:
+            suffixes.append(expanded_path.relative_to(Path.home()))
+        except Exception:
+            pass
+        parts = expanded_path.parts
+        if len(parts) > 3 and parts[1] == "Users":
+            # Handles typo'd/macOS user homes like /Users/hedimand/foo/bar.mp4
+            suffixes.append(Path(*parts[3:]))
+
+        for root in roots:
+            for suffix in suffixes:
+                candidate = root / suffix
+                if os.path.isfile(candidate):
+                    return str(candidate)
+
+        return None
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -2946,7 +3002,11 @@ class BasePlatformAdapter(ABC):
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
                 try:
-                    media.append((os.path.expanduser(path), has_voice_tag))
+                    resolved = (
+                        BasePlatformAdapter._resolve_local_file_candidate(path)
+                        or os.path.expanduser(path)
+                    )
+                    media.append((resolved, has_voice_tag))
                 except (OSError, RuntimeError, ValueError):
                     # Skip a crafted ~\x00 path rather than aborting extraction
                     # and dropping every other attachment in the response.
@@ -3025,9 +3085,9 @@ class BasePlatformAdapter(ABC):
             if _in_code(match.start()):
                 continue
             raw = match.group(0)
-            expanded = os.path.expanduser(raw)
-            if os.path.isfile(expanded):
-                found.append((raw, expanded))
+            resolved = BasePlatformAdapter._resolve_local_file_candidate(raw)
+            if resolved:
+                found.append((raw, resolved))
             else:
                 # The reply mentions a deliverable-looking path that does not
                 # exist on disk, so it is silently dropped from native delivery.

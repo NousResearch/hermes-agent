@@ -1047,11 +1047,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 payload["caption"] = caption
             if file_name:
                 payload["fileName"] = file_name
+            media_upload_timeout_ms = self._media_upload_timeout_ms(file_path, media_type)
+            payload["mediaUploadTimeoutMs"] = media_upload_timeout_ms
 
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/send-media",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=120),
+                timeout=aiohttp.ClientTimeout(total=(media_upload_timeout_ms / 1000) + 30),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -1066,6 +1068,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    @staticmethod
+    def _media_upload_timeout_ms(file_path: str, media_type: str) -> int:
+        """Return a size-aware timeout for bridge media uploads."""
+        try:
+            size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        except OSError:
+            size_mb = 0
+        base = 120_000
+        if media_type in {"video", "document"}:
+            base = 300_000
+        # Slow residential/mobile paths can take a while to POST to WhatsApp's
+        # CDN.  Scale with size but cap to avoid hanging forever.
+        scaled = int(60_000 + (size_mb * 30_000))
+        return max(base, min(scaled, 900_000))
 
     async def send_image(
         self,

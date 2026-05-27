@@ -287,6 +287,42 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except TypeError as exc:
+            # The chatgpt.com/backend-api/codex backend emits
+            # ``response.completed`` events whose ``response.output`` field is
+            # ``null`` rather than ``[]``.  The OpenAI SDK's stream
+            # accumulator calls ``parse_response`` on every snapshot, and
+            # ``parse_response`` blindly iterates ``response.output``
+            # (``openai/lib/_parsing/_responses.py``), so the terminal event
+            # raises ``TypeError: 'NoneType' object is not iterable`` from
+            # inside the ``for event in stream`` loop — before our
+            # ``get_final_response()``-time output-backfill can run.
+            #
+            # ``responses.create(stream=True)`` returns the raw SSE iterator
+            # without invoking ``parse_response``, so the fallback path
+            # tolerates ``output=None`` and synthesizes output from the
+            # collected text deltas.  Narrow this catch to the specific
+            # signature (message text + frame in the SDK's parser) so genuine
+            # programming bugs surface as crashes.
+            err_text = str(exc)
+            tb = exc.__traceback__
+            from_sdk_parser = False
+            while tb is not None:
+                fname = tb.tb_frame.f_code.co_filename or ""
+                if fname.endswith("openai/lib/_parsing/_responses.py"):
+                    from_sdk_parser = True
+                    break
+                tb = tb.tb_next
+            if from_sdk_parser and "NoneType" in err_text and "not iterable" in err_text:
+                logger.debug(
+                    "Responses stream parser rejected null output field "
+                    "(chatgpt.com/backend-api/codex returns output=null on "
+                    "response.completed); falling back to create(stream=True). %s err=%s",
+                    agent._client_log_context(),
+                    err_text,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text
@@ -412,9 +448,11 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is None and isinstance(event, dict):
                 terminal_response = event.get("response")
             if terminal_response is not None:
-                # Backfill empty output from collected stream events
+                # Backfill empty/missing output from collected stream events.
+                # chatgpt.com/backend-api/codex sends output=None on
+                # response.completed (not an empty list), so accept both.
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(

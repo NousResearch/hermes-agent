@@ -97,6 +97,9 @@ def detect_audio_environment() -> dict:
     termux_mic_cmd = _termux_microphone_command()
     termux_app_installed = _termux_api_app_installed()
     termux_capture = bool(termux_mic_cmd and termux_app_installed)
+    has_forwarded_audio = bool(
+        os.environ.get('PULSE_SERVER') or os.environ.get('PIPEWIRE_REMOTE')
+    )
 
     # SSH detection
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
@@ -108,7 +111,7 @@ def detect_audio_environment() -> dict:
     # (issue #21203).  Only block when no forwarding is configured.
     from hermes_constants import is_container
     if is_container():
-        if os.environ.get('PULSE_SERVER') or os.environ.get('PIPEWIRE_REMOTE'):
+        if has_forwarded_audio:
             notices.append("Running inside container (Docker/Podman/LXC) with host audio forwarding")
         else:
             warnings.append(
@@ -143,17 +146,22 @@ def detect_audio_environment() -> dict:
         try:
             devices = sd.query_devices()
             if not devices:
-                if os.environ.get('PULSE_SERVER'):
-                    notices.append("No PortAudio devices detected but PULSE_SERVER is set -- continuing")
+                if has_forwarded_audio:
+                    notices.append(
+                        "No PortAudio devices detected but host audio forwarding is configured -- continuing"
+                    )
                 elif termux_capture:
                     notices.append("No PortAudio devices detected, but Termux:API microphone capture is available")
                 else:
                     warnings.append("No audio input/output devices detected")
         except Exception:
             # In WSL with PulseAudio, device queries can fail even though
-            # recording/playback works fine. Don't block if PULSE_SERVER is set.
-            if os.environ.get('PULSE_SERVER'):
-                notices.append("Audio device query failed but PULSE_SERVER is set -- continuing")
+            # recording/playback works fine. Don't block if host audio
+            # forwarding is configured.
+            if has_forwarded_audio:
+                notices.append(
+                    "Audio device query failed but host audio forwarding is configured -- continuing"
+                )
             elif termux_capture:
                 notices.append("PortAudio device query failed, but Termux:API microphone capture is available")
             else:

@@ -118,7 +118,8 @@ class TestFindStaleDashboardPids:
             assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
 
     def test_self_pid_excluded(self):
-        with patch("subprocess.run") as mock_run:
+        with patch("subprocess.run") as mock_run, \
+             patch("hermes_cli.main._get_ancestor_pids", return_value={os.getpid()}):
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="\n".join([
@@ -130,6 +131,21 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids()
         assert os.getpid() not in pids
         assert 12345 in pids
+
+    def test_ancestor_pid_excluded(self):
+        with patch("subprocess.run") as mock_run, \
+             patch("hermes_cli.main._get_ancestor_pids", return_value={54321, os.getpid()}):
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(54321, "bash -lc hermes dashboard --status"),
+                    _ps_line(12345, "hermes dashboard --port 9119"),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert 54321 not in pids
+        assert pids == [12345]
 
     def test_ps_not_found_returns_empty(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):

@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_cli.main import cmd_dashboard, _report_dashboard_status
+from hermes_cli.main import cmd_dashboard, _report_dashboard_status, _get_process_cmdline
 
 
 def _ns(**kw):
@@ -41,14 +41,16 @@ class TestDashboardStatus:
     def test_status_with_processes(self, capsys):
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
+             patch("hermes_cli.main._get_process_cmdline",
+                   side_effect=["hermes dashboard --port 9119", "hermes dashboard --port 9120 --no-open"]), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         # Status is informational — always exits 0.
         assert exc.value.code == 0
         out = capsys.readouterr().out
         assert "2 hermes dashboard process(es) running" in out
-        assert "PID 12345" in out
-        assert "PID 12346" in out
+        assert "PID 12345: hermes dashboard --port 9119" in out
+        assert "PID 12346: hermes dashboard --port 9120 --no-open" in out
 
     def test_status_does_not_try_to_import_fastapi(self):
         """`--status` must not require dashboard runtime deps — it's a
@@ -66,6 +68,21 @@ class TestDashboardStatus:
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
+
+
+class TestDashboardCmdlineHelpers:
+    def test_get_process_cmdline_falls_back_to_ps_when_proc_missing(self):
+        mock_result = MagicMock(returncode=0, stdout="python -m hermes_cli.main dashboard --port 9119\n")
+        with patch("os.path.exists", return_value=False), \
+             patch("subprocess.run", return_value=mock_result) as mock_run:
+            cmdline = _get_process_cmdline(12345)
+        assert cmdline == "python -m hermes_cli.main dashboard --port 9119"
+        mock_run.assert_called_once_with(
+            ["ps", "-o", "command=", "-p", "12345"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
 
 
 class TestDashboardStop:

@@ -197,11 +197,11 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if isinstance(value, bool):
         return value, None
     text = str(value).strip().lower()
-    if text in {"true", "1", "yes"}:
+    if text in {"true", "1", "yes", "on"}:
         return True, None
-    if text in {"false", "0", "no"}:
+    if text in {"false", "0", "no", "off"}:
         return False, None
-    return default, f"{name} must be a boolean or 'true'/'false'"
+    return default, f"{name} must be a boolean or one of: true/false, yes/no, on/off, 1/0"
 
 
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:

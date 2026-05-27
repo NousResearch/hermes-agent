@@ -872,6 +872,24 @@ def test_create_parses_triage_string_false(worker_env):
         conn.close()
 
 
+def test_create_parses_triage_string_off(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "not triage",
+        "assignee": "peer",
+        "triage": "off",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task.status == "ready"
+    finally:
+        conn.close()
+
+
 def test_create_parses_triage_string_true(worker_env):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb

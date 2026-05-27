@@ -1006,8 +1006,9 @@ class AIAgent:
             "on chatgpt.com/backend-api/codex (no stream events, no error). "
             "This is a known backend-side pattern that has affected ChatGPT "
             "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4-codex` on the same OAuth profile, "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
             "or switch to a different model/provider in your fallback chain. "
+            "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See hermes-agent#21444 for symptom history."
         )
 

@@ -25,6 +25,7 @@ from agent.model_metadata import (
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
+    fetch_endpoint_model_metadata,
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
@@ -1313,3 +1314,128 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# fetch_endpoint_model_metadata — llama.cpp /props slot-aware context
+# =========================================================================
+
+class TestFetchEndpointLlamaCppSlotAwareContext:
+    """Regression tests for issue #6797.
+
+    llama.cpp divides its KV cache across parallel slots, so a single request
+    can only use ``n_ctx / total_slots`` tokens. Hermes must report the per-slot
+    capacity so the compressor fires before the server silently truncates the
+    prompt (which strips tool definitions and produces hallucinated tool calls).
+    """
+
+    def _reset_cache(self):
+        import agent.model_metadata as mm
+        mm._endpoint_model_metadata_cache = {}
+        mm._endpoint_model_metadata_cache_time = {}
+
+    def _mock_responses(self, models_payload, props_payload, props_ok=True):
+        """Build a side_effect sequence: /models, then /v1/props."""
+        models_resp = MagicMock()
+        models_resp.json.return_value = models_payload
+        models_resp.raise_for_status = MagicMock()
+        models_resp.ok = True
+
+        props_resp = MagicMock()
+        props_resp.json.return_value = props_payload
+        props_resp.ok = props_ok
+        return [models_resp, props_resp]
+
+    @patch("agent.model_metadata.requests.get")
+    def test_divides_n_ctx_by_total_slots(self, mock_get):
+        """n_ctx=65536 across 4 slots → 16384 per-request context."""
+        self._reset_cache()
+        mock_get.side_effect = self._mock_responses(
+            {"data": [{"id": "my-model.gguf", "owned_by": "llamacpp"}]},
+            {
+                "default_generation_settings": {"n_ctx": 65536},
+                "total_slots": 4,
+                "model_alias": "my-model.gguf",
+            },
+        )
+
+        result = fetch_endpoint_model_metadata("http://localhost:8080/v1", force_refresh=True)
+
+        assert result["my-model.gguf"]["context_length"] == 16384
+
+    @patch("agent.model_metadata.requests.get")
+    def test_single_slot_uses_full_n_ctx(self, mock_get):
+        """--parallel 1 means the full n_ctx is available per request."""
+        self._reset_cache()
+        mock_get.side_effect = self._mock_responses(
+            {"data": [{"id": "my-model.gguf", "owned_by": "llamacpp"}]},
+            {
+                "default_generation_settings": {"n_ctx": 32768},
+                "total_slots": 1,
+                "model_alias": "my-model.gguf",
+            },
+        )
+
+        result = fetch_endpoint_model_metadata("http://localhost:8080/v1", force_refresh=True)
+
+        assert result["my-model.gguf"]["context_length"] == 32768
+
+    @patch("agent.model_metadata.requests.get")
+    def test_missing_total_slots_defaults_to_one(self, mock_get):
+        """Older llama.cpp builds may omit total_slots — don't over-divide."""
+        self._reset_cache()
+        mock_get.side_effect = self._mock_responses(
+            {"data": [{"id": "my-model.gguf", "owned_by": "llamacpp"}]},
+            {
+                "default_generation_settings": {"n_ctx": 16384},
+                "model_alias": "my-model.gguf",
+            },
+        )
+
+        result = fetch_endpoint_model_metadata("http://localhost:8080/v1", force_refresh=True)
+
+        assert result["my-model.gguf"]["context_length"] == 16384
+
+    @patch("agent.model_metadata.requests.get")
+    def test_invalid_total_slots_falls_back_to_one(self, mock_get):
+        """Non-integer or zero total_slots must not crash or produce 0 ctx."""
+        self._reset_cache()
+        mock_get.side_effect = self._mock_responses(
+            {"data": [{"id": "my-model.gguf", "owned_by": "llamacpp"}]},
+            {
+                "default_generation_settings": {"n_ctx": 8192},
+                "total_slots": "oops",
+                "model_alias": "my-model.gguf",
+            },
+        )
+
+        result = fetch_endpoint_model_metadata("http://localhost:8080/v1", force_refresh=True)
+
+        assert result["my-model.gguf"]["context_length"] == 8192
+
+    @patch("agent.model_metadata.requests.get")
+    def test_props_failure_leaves_models_endpoint_value(self, mock_get):
+        """If /props fails, the /models endpoint value (if any) is preserved."""
+        self._reset_cache()
+        models_resp = MagicMock()
+        models_resp.json.return_value = {
+            "data": [{
+                "id": "my-model.gguf",
+                "owned_by": "llamacpp",
+                "context_length": 4096,
+            }]
+        }
+        models_resp.raise_for_status = MagicMock()
+        models_resp.ok = True
+
+        v1_props_resp = MagicMock()
+        v1_props_resp.ok = False
+        legacy_props_resp = MagicMock()
+        legacy_props_resp.ok = False
+
+        mock_get.side_effect = [models_resp, v1_props_resp, legacy_props_resp]
+
+        result = fetch_endpoint_model_metadata("http://localhost:8080/v1", force_refresh=True)
+
+        # /models reported 4096; /props failed so we don't override it.
+        assert result["my-model.gguf"]["context_length"] == 4096

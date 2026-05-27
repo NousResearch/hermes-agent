@@ -770,10 +770,25 @@ def fetch_endpoint_model_metadata(
                         gen_settings = props.get("default_generation_settings", {})
                         n_ctx = gen_settings.get("n_ctx")
                         model_alias = props.get("model_alias", "")
+                        # llama.cpp divides its KV cache across parallel slots, so a
+                        # single request can only use n_ctx / total_slots tokens before
+                        # the server silently truncates the prompt. Report the per-slot
+                        # capacity so the compressor fires against the real limit
+                        # (issue #6797).
+                        total_slots = props.get("total_slots")
+                        if not isinstance(total_slots, int) or total_slots < 1:
+                            total_slots = 1
                         if n_ctx and model_alias and model_alias in cache:
-                            cache[model_alias]["context_length"] = n_ctx
-                except Exception:
-                    pass
+                            per_slot_ctx = n_ctx // total_slots
+                            cache[model_alias]["context_length"] = per_slot_ctx
+                            if total_slots > 1:
+                                logger.info(
+                                    "llama.cpp: n_ctx=%s across %s slots -> using %s tokens per request "
+                                    "(run the server with --parallel 1 to use the full context)",
+                                    n_ctx, total_slots, per_slot_ctx,
+                                )
+                except Exception as exc:
+                    logger.debug("Failed to fetch llama.cpp /props metadata: %s", exc)
 
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()

@@ -154,3 +154,24 @@ class TestGatewayPlatformsF541Regression:
         assert result.returncode == 0, (
             f"{self.TARGET.name} has {count} F541 violation(s)\n{result.stdout}"
         )
+
+
+class TestAcpAdapterF541Regression:
+    """acp_adapter/tools.py must have zero F541 violations."""
+
+    TARGET = REPO_ROOT / "acp_adapter" / "tools.py"
+
+    def test_acp_adapter_tools_has_zero_f541_violations(self) -> None:
+        """acp_adapter/tools.py should have no f-strings without placeholders."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True, check=False,
+        )
+
+        count = result.stdout.count("error[F541]")
+        assert result.returncode == 0, (
+            f"{self.TARGET.name} has {count} F541 violation(s)\n{result.stdout}"
+        )

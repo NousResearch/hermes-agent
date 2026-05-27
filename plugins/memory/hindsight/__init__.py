@@ -507,23 +507,25 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     return profile_env
 
 def _sanitize_bank_segment(value: str) -> str:
-    """Encode a bank_id_template placeholder value without collisions.
+    """Sanitize a bank_id_template placeholder value.
 
-    Bank IDs should be safe for URL paths and filesystem use. ASCII letters,
-    digits, dash, and underscore are kept readable; every other UTF-8 byte is
-    escaped as ``~HH``. The escape marker is itself escaped, making the mapping
-    reversible so distinct platform IDs cannot collapse to the same bank ID.
+    Bank IDs should be safe for URL paths and filesystem use. Replaces any
+    character that isn't alphanumeric, dash, or underscore with a dash, and
+    collapses runs of dashes.
     """
     if not value:
         return ""
     out = []
-    for byte in str(value).encode("utf-8"):
-        ch = chr(byte)
-        if ch.isascii() and (ch.isalnum() or ch in "-_"):
+    prev_dash = False
+    for ch in str(value):
+        if ch.isalnum() or ch == "-" or ch == "_":
             out.append(ch)
+            prev_dash = False
         else:
-            out.append(f"~{byte:02X}")
-    return "".join(out)
+            if not prev_dash:
+                out.append("-")
+                prev_dash = True
+    return "".join(out).strip("-_")
 
 
 def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str) -> str:
@@ -553,7 +555,9 @@ def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str)
         return fallback
     while "--" in rendered:
         rendered = rendered.replace("--", "-")
-    rendered = rendered.strip("-")
+    while "__" in rendered:
+        rendered = rendered.replace("__", "_")
+    rendered = rendered.strip("-_")
     return rendered or fallback
 
 
@@ -891,7 +895,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
-            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholder values are collision-resistant escaped. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
+            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},

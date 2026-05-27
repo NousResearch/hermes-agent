@@ -29,7 +29,6 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
-import { createIgnoredMessageLogger } from './ignoredLogger.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -81,7 +80,6 @@ function loadBridgeToken() {
 }
 
 const BRIDGE_TOKEN = loadBridgeToken();
-const logIgnoredMessage = createIgnoredMessageLogger({ debugEnabled: WHATSAPP_DEBUG });
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -299,11 +297,25 @@ async function startSocket() {
       // to arbitrary incoming messages (#8389).
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
-          logIgnoredMessage('self_chat_mode_rejects_non_self');
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'self_chat_mode_rejects_non_self',
+              chatId,
+              senderId,
+            }));
+          } catch {}
           continue;
         }
         if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-          logIgnoredMessage('allowlist_mismatch');
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'allowlist_mismatch',
+              chatId,
+              senderId,
+            }));
+          } catch {}
           continue;
         }
       }

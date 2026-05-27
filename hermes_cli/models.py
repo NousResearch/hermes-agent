@@ -3193,8 +3193,8 @@ def validate_requested_model(
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
 
             message = (
-                f"Model `{requested}` was not found in this custom endpoint's model listing "
-                f"({probe.get('probed_url')})."
+                f"Note: `{requested}` was not found in this custom endpoint's model listing "
+                f"({probe.get('probed_url')}). It may still work if the server supports hidden or aliased models."
                 f"{suggestion_text}"
             )
             if probe.get("used_fallback"):
@@ -3204,8 +3204,8 @@ def validate_requested_model(
                 )
 
             return {
-                "accepted": False,
-                "persist": False,
+                "accepted": True,
+                "persist": True,
                 "recognized": False,
                 "message": message,
             }

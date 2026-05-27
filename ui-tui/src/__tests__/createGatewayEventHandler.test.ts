@@ -142,7 +142,9 @@ describe('createGatewayEventHandler', () => {
       type: 'review.summary'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'hermes-release' patched")
+    expect(ctx.system.sys).toHaveBeenCalledWith(
+      "💾 Self-improvement review: Skill 'hermes-release' patched"
+    )
   })
 
   it('ignores review.summary events with empty or missing text', () => {
@@ -589,7 +591,7 @@ describe('createGatewayEventHandler', () => {
       }
 
       if (method === 'session.most_recent') {
-        return { session_id: 'sess-most-recent', source: 'tui' }
+        return { session_id: 'sess-most-recent' }
       }
 
       return null
@@ -599,33 +601,6 @@ describe('createGatewayEventHandler', () => {
 
     await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-most-recent'))
     expect(newSession).not.toHaveBeenCalled()
-  })
-
-  it('on gateway.ready with auto_resume on and a non-local recent session, falls back to new', async () => {
-    const appended: Msg[] = []
-    const newSession = vi.fn()
-    const resumeById = vi.fn()
-    const ctx = buildCtx(appended)
-
-    ctx.session.newSession = newSession
-    ctx.session.resumeById = resumeById
-    ctx.session.STARTUP_RESUME_ID = ''
-    ctx.gateway.rpc = vi.fn(async (method: string) => {
-      if (method === 'config.get') {
-        return { config: { display: { tui_auto_resume_recent: true } } }
-      }
-
-      if (method === 'session.most_recent') {
-        return { session_id: 'webhook-attacker-new', source: 'webhook' }
-      }
-
-      return null
-    })
-
-    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
-
-    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
-    expect(resumeById).not.toHaveBeenCalled()
   })
 
   it('on gateway.ready with auto_resume on but no eligible session, falls back to new', async () => {

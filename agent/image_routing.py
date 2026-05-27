@@ -35,11 +35,10 @@ main model.
 from __future__ import annotations
 
 import base64
-import importlib.util
 import logging
+import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 
 logger = logging.getLogger(__name__)
 
@@ -130,13 +129,19 @@ def decide_image_input_mode(
     return "text"
 
 
-# Native attachment must validate and cap local files before they are
-# converted to data URLs. The retry loop can still shrink provider-specific
-# rejections, but it cannot protect this process from reading/encoding an
-# unbounded local payload or prevent non-image bytes from being sent.
-_MAX_NATIVE_IMAGE_BASE64_BYTES = 20 * 1024 * 1024
-_IMAGE_HEADER_BYTES = 4096
-_DATA_URL_OVERHEAD_BYTES = 128
+# Image size handling is REACTIVE rather than proactive: we attempt native
+# attachment at full size regardless of provider, and rely on
+# ``run_agent._try_shrink_image_parts_in_messages`` to shrink + retry if
+# the provider rejects the request (e.g. Anthropic's hard 5 MB per-image
+# ceiling returned as HTTP 400 "image exceeds 5 MB maximum").
+#
+# Why reactive: our knowledge of provider ceilings is partial and evolving
+# (OpenAI accepts 49 MB+, Anthropic 5 MB, Gemini 100 MB, others unknown).
+# A proactive per-provider table would be stale the moment a provider raises
+# or lowers its limit, and silently degrading quality for users on providers
+# that would have accepted the full image is the worse failure mode.
+# The shrink-on-reject path loses 1 API call + maybe 1s of Pillow work when
+# it fires, which is cheaper than permanent quality loss.
 
 
 def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
@@ -171,141 +176,55 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
         b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis",
     }:
         return "image/heic"
-    if b"<svg" in raw[:_IMAGE_HEADER_BYTES].lower():
-        return "image/svg+xml"
     return None
 
 
-def _estimated_data_url_bytes(raw_size: int) -> int:
-    """Return a conservative data-URL size estimate for raw image bytes."""
-    return ((raw_size + 2) // 3) * 4 + _DATA_URL_OVERHEAD_BYTES
+def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
+    """Return image MIME type for *path*.
 
-
-def _read_image_header(path: Path) -> Optional[bytes]:
-    """Read enough bytes to validate the image type without loading the file."""
-    try:
-        with path.open("rb") as handle:
-            return handle.read(_IMAGE_HEADER_BYTES)
-    except Exception as exc:
-        logger.warning("image_routing: failed to read image header %s — %s", path, exc)
-        return None
-
-
-def _pillow_can_open(path: Path) -> bool:
-    """Return True when Pillow is installed and accepts the image file."""
-    if importlib.util.find_spec("PIL") is None:
-        logger.warning("image_routing: Pillow unavailable; cannot resize oversized image %s", path)
-        return False
-
-    from PIL import Image
-
-    try:
-        with Image.open(path) as image:
-            image.verify()
-        return True
-    except Exception as exc:
-        logger.warning("image_routing: image failed Pillow validation %s — %s", path, exc)
-        return False
-
-
-def _resize_image_for_native_cap(path: Path, mime: str) -> str:
-    """Resize an image with Pillow without falling back to uncapped raw bytes."""
-    import io
-
-    from PIL import Image
-
-    with Image.open(path) as image:
-        if mime == "image/png":
-            output_format = "PNG"
-            output_mime = "image/png"
-            quality_steps = (None,)
-        else:
-            output_format = "JPEG"
-            output_mime = "image/jpeg"
-            quality_steps = (85, 70, 50)
-            if image.mode in {"RGBA", "P"}:
-                image = image.convert("RGB")
-
-        previous_size = (image.width, image.height)
-        best_candidate = ""
-        for attempt in range(5):
-            if attempt > 0:
-                new_width = max(int(image.width * 0.5), 64)
-                new_height = max(int(image.height * 0.5), 64)
-                if (new_width, new_height) == previous_size:
-                    break
-                image = image.resize((new_width, new_height), Image.LANCZOS)
-                previous_size = (new_width, new_height)
-
-            for quality in quality_steps:
-                buffer = io.BytesIO()
-                save_kwargs: Dict[str, Any] = {"format": output_format}
-                if quality is not None:
-                    save_kwargs["quality"] = quality
-                image.save(buffer, **save_kwargs)
-                encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-                candidate = f"data:{output_mime};base64,{encoded}"
-                if not best_candidate or len(candidate) < len(best_candidate):
-                    best_candidate = candidate
-                if len(candidate) <= _MAX_NATIVE_IMAGE_BASE64_BYTES:
-                    return candidate
-        return best_candidate
-
-
-def _resize_to_capped_data_url(path: Path, mime: str) -> Optional[str]:
-    """Resize an oversized image and return it only if it fits the native cap."""
-    if mime == "image/svg+xml" or not _pillow_can_open(path):
-        return None
-
-    data_url = _resize_image_for_native_cap(path, mime)
-    if len(data_url) <= _MAX_NATIVE_IMAGE_BASE64_BYTES:
-        return data_url
-
-    logger.warning(
-        "image_routing: resized image still exceeds native cap: %s (%.1f MB > %.1f MB)",
-        path,
-        len(data_url) / (1024 * 1024),
-        _MAX_NATIVE_IMAGE_BASE64_BYTES / (1024 * 1024),
-    )
-    return None
+    If *raw* bytes are provided, magic-byte sniffing wins (authoritative).
+    Otherwise we fall back to ``mimetypes`` then suffix-based defaults.
+    """
+    if raw is not None:
+        sniffed = _sniff_mime_from_bytes(raw)
+        if sniffed:
+            return sniffed
+    mime, _ = mimetypes.guess_type(str(path))
+    if mime and mime.startswith("image/"):
+        return mime
+    # mimetypes on some Linux distros mis-maps .jpg; default to jpeg when
+    # the suffix looks imagey.
+    suffix = path.suffix.lower()
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }.get(suffix, "image/jpeg")
 
 
 def _file_to_data_url(path: Path) -> Optional[str]:
-    """Validate and encode a local image as a capped base64 data URL.
+    """Encode a local image as a base64 data URL at its native size.
 
-    Native routing runs before provider-side retries, so it must reject
-    non-image files and avoid reading unbounded attachment payloads into
-    memory. Oversized real images are resized when Pillow can process them;
-    otherwise they are skipped and reported to the caller.
+    Size limits are NOT enforced here — the agent retry loop
+    (``run_agent._try_shrink_image_parts_in_messages``) shrinks on the
+    provider's first rejection. Keeping this simple means providers that
+    accept large images (OpenAI 49 MB+, Gemini 100 MB) don't pay a silent
+    quality tax just because one other provider is stricter.
+
+    Returns None only if the file can't be read (missing, permission
+    denied, etc.); the caller reports those paths in ``skipped``.
     """
-    try:
-        raw_size = path.stat().st_size
-    except Exception as exc:
-        logger.warning("image_routing: failed to stat %s — %s", path, exc)
-        return None
-
-    header = _read_image_header(path)
-    if header is None:
-        return None
-
-    mime = _sniff_mime_from_bytes(header)
-    if not mime:
-        logger.warning("image_routing: rejected non-image attachment %s", path)
-        return None
-
-    if _estimated_data_url_bytes(raw_size) > _MAX_NATIVE_IMAGE_BASE64_BYTES:
-        return _resize_to_capped_data_url(path, mime)
-
     try:
         raw = path.read_bytes()
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
-
-    data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-    if len(data_url) <= _MAX_NATIVE_IMAGE_BASE64_BYTES:
-        return data_url
-    return _resize_to_capped_data_url(path, mime)
+    mime = _guess_mime(path, raw=raw)
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{b64}"
 
 
 def build_native_content_parts(
@@ -328,11 +247,13 @@ def build_native_content_parts(
     ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:
     <path>``) so behaviour is consistent across both image input modes.
 
-    Images are validated by content and capped before being attached.
-    Oversized images are resized when possible; unreadable, non-image, or
-    still-too-large files are skipped and are NOT advertised in path hints.
+    Images are attached at their native size. If a provider rejects the
+    request because an image is too large (e.g. Anthropic's 5 MB per-image
+    ceiling), the agent's retry loop transparently shrinks and retries
+    once — see ``run_agent._try_shrink_image_parts_in_messages``.
 
-    Returns (content_parts, skipped_paths).
+    Returns (content_parts, skipped_paths). Skipped paths are files that
+    couldn't be read from disk and are NOT advertised in the path hints.
     """
     skipped: List[str] = []
     image_parts: List[Dict[str, Any]] = []

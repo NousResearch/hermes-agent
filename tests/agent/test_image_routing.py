@@ -232,15 +232,6 @@ class TestBuildNativeContentParts:
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/webp;base64,")
 
-    def test_non_image_file_is_skipped(self, tmp_path: Path):
-        fake = tmp_path / "secret.jpg"
-        fake.write_text("not actually an image: token=shh", encoding="utf-8")
-
-        parts, skipped = build_native_content_parts("hi", [str(fake)])
-
-        assert skipped == [str(fake)]
-        assert parts == [{"type": "text", "text": "hi"}]
-
     def test_mime_sniff_overrides_misleading_extension(self, tmp_path: Path):
         """Discord-style bug: file is named .webp but contains PNG bytes.
         Anthropic rejects on MIME mismatch (HTTP 400) so we MUST sniff.
@@ -259,67 +250,23 @@ class TestBuildNativeContentParts:
 
 
 class TestLargeImageHandling:
-    """Native routing validates and caps images before provider submission."""
+    """Large images attach at native size; shrink is handled reactively at
+    retry time in ``run_agent._try_shrink_image_parts_in_messages`` rather
+    than proactively here.
+    """
 
-    def test_image_under_cap_passes_through_unchanged(self, tmp_path: Path):
+    def test_large_image_passes_through_unchanged(self, tmp_path: Path):
+        """A multi-MB image is attached as-is — no resize, no skip."""
         from agent import image_routing as _ir
 
         img = tmp_path / "medium.png"
+        # 200 KB of real bytes; not huge but enough to verify no size gate fires.
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"X" * 200_000)
         url = _ir._file_to_data_url(img)
         assert url is not None
         assert url.startswith("data:image/png;base64,")
+        # Base64 expansion means output is ~4/3 of input, plus header.
         assert len(url) > 200_000
-
-    def test_oversized_image_uses_resized_payload(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from agent import image_routing as _ir
-
-        img = tmp_path / "large.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"X" * 200)
-        resized = "data:image/png;base64,AAAA"
-        monkeypatch.setattr(_ir, "_MAX_NATIVE_IMAGE_BASE64_BYTES", 100)
-        monkeypatch.setattr(_ir, "_pillow_can_open", lambda path: True)
-        monkeypatch.setattr(_ir, "_resize_image_for_native_cap", lambda path, mime: resized)
-
-        assert _ir._file_to_data_url(img) == resized
-
-    def test_oversized_image_is_skipped_when_resize_still_exceeds_cap(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from agent import image_routing as _ir
-
-        img = tmp_path / "large.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"X" * 200)
-        monkeypatch.setattr(_ir, "_MAX_NATIVE_IMAGE_BASE64_BYTES", 100)
-        monkeypatch.setattr(_ir, "_pillow_can_open", lambda path: True)
-        monkeypatch.setattr(
-            _ir,
-            "_resize_image_for_native_cap",
-            lambda path, mime: "data:image/png;base64," + "A" * 200,
-        )
-
-        parts, skipped = _ir.build_native_content_parts("hi", [str(img)])
-
-        assert skipped == [str(img)]
-        assert parts == [{"type": "text", "text": "hi"}]
-
-    def test_oversized_non_image_is_skipped_without_full_read(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from agent import image_routing as _ir
-
-        fake = tmp_path / "large.jpg"
-        fake.write_bytes(b"not an image" + b"X" * 200)
-        monkeypatch.setattr(_ir, "_MAX_NATIVE_IMAGE_BASE64_BYTES", 100)
-        monkeypatch.setattr(
-            Path,
-            "read_bytes",
-            lambda self: (_ for _ in ()).throw(AssertionError("full read")),
-        )
-
-        assert _ir._file_to_data_url(fake) is None
 
     def test_missing_file_returns_none(self, tmp_path: Path):
         from agent import image_routing as _ir

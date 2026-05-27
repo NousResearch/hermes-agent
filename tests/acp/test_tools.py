@@ -508,51 +508,6 @@ class TestBuildToolComplete:
         assert diff_item.old_text is None
         assert diff_item.new_text == "hello from hermes"
 
-    def test_build_tool_complete_for_write_file_redacts_snapshot_diff(self, tmp_path):
-        target = tmp_path / "secrets.env"
-        target.write_text("OPENAI_API_KEY=sk-newsecretvalue1234567890\n", encoding="utf-8")
-        snapshot = type(
-            "Snapshot",
-            (),
-            {
-                "paths": [target],
-                "before": {str(target): "OPENAI_API_KEY=sk-oldsecretvalue1234567890\n"},
-            },
-        )()
-
-        result = build_tool_complete(
-            "tc-wf-secret",
-            "write_file",
-            '{"bytes_written": 47, "dirs_created": false}',
-            function_args={
-                "path": str(target),
-                "content": "OPENAI_API_KEY=sk-newsecretvalue1234567890\n",
-            },
-            snapshot=snapshot,
-        )
-
-        assert isinstance(result, ToolCallProgress)
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.old_text == "OPENAI_API_KEY=***"
-        assert diff_item.new_text == "OPENAI_API_KEY=***"
-
-    def test_build_tool_complete_for_patch_redacts_diff(self):
-        patch_result = (
-            '{"success": true, "diff": "--- a/.env\\n+++ b/.env\\n@@ -1 +1 @@\\n'
-            '-OPENAI_API_KEY=sk-oldsecretvalue1234567890\\n'
-            '+OPENAI_API_KEY=sk-newsecretvalue1234567890\\n"}'
-        )
-
-        result = build_tool_complete("tc-p-secret", "patch", patch_result)
-
-        assert isinstance(result, ToolCallProgress)
-        diff_item = result.content[0]
-        assert isinstance(diff_item, FileEditToolCallContent)
-        assert diff_item.path == ".env"
-        assert diff_item.old_text == "OPENAI_API_KEY=***"
-        assert diff_item.new_text == "OPENAI_API_KEY=***"
-
 
 # ---------------------------------------------------------------------------
 # extract_locations

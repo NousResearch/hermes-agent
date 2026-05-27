@@ -8,11 +8,7 @@ import type { FrameEvent } from '@hermes/ink'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
-import {
-  isAutomaticHeapDumpEnabled,
-  type MemorySnapshot,
-  startMemoryMonitor
-} from './lib/memoryMonitor.js'
+import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
@@ -28,15 +24,8 @@ const gw = new GatewayClient()
 
 gw.start()
 
-const autoHeapDump = isAutomaticHeapDumpEnabled()
-
-const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) => {
-  const dumpStatus = autoHeapDump
-    ? `auto heap dump → ${dump?.heapPath ?? '(failed)'}`
-    : 'auto heap dump disabled (set HERMES_AUTO_HEAPDUMP=1 to opt in)'
-
-  return `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — ${dumpStatus}\n`
-}
+const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
+  `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`
 
 setupGracefulExit({
   cleanups: [
@@ -58,7 +47,6 @@ setupGracefulExit({
 })
 
 const stopMemoryMonitor = startMemoryMonitor({
-  autoHeapDump,
   onCritical: (snap, dump) => {
     resetTerminalModes()
     process.stderr.write(dumpNotice(snap, dump))

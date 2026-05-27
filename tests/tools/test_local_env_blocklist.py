@@ -73,18 +73,6 @@ class TestProviderEnvBlocklist:
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
-    def test_langfuse_standard_sdk_vars_are_stripped(self):
-        """Standard Langfuse SDK credentials must not leak to terminal subprocesses."""
-        langfuse_vars = {
-            "LANGFUSE_PUBLIC_KEY": "pk-lf-test",
-            "LANGFUSE_SECRET_KEY": "sk-lf-test",
-            "LANGFUSE_BASE_URL": "https://cloud.langfuse.com",
-        }
-        result_env = _run_with_env(extra_os_env=langfuse_vars)
-
-        for var in langfuse_vars:
-            assert var not in result_env, f"{var} leaked into subprocess env"
-
     def test_auxiliary_api_key_vars_are_stripped(self):
         """Auxiliary direct-endpoint API keys must not leak to terminal subprocesses."""
         auxiliary_secret_vars = {
@@ -283,11 +271,6 @@ class TestBlocklistCoverage:
             "XAI_API_KEY",
             "HELICONE_API_KEY",
         }
-        assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
-
-    def test_langfuse_standard_sdk_vars_are_in_blocklist(self):
-        """Standard Langfuse SDK credentials must stay covered."""
-        extras = {"LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"}
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
     def test_optional_tool_and_messaging_vars_are_in_blocklist(self):

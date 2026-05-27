@@ -592,11 +592,7 @@ def _resolve_openrouter_runtime(
     cfg_provider = cfg_provider.strip().lower()
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
-    env_custom_base_url = (
-        os.getenv("CUSTOM_BASE_URL", "").strip()
-        if requested_norm == "custom"
-        else ""
-    )
+    env_custom_base_url = os.getenv("CUSTOM_BASE_URL", "").strip()
 
     # Use config base_url when available and the provider context matches.
     # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
@@ -611,17 +607,13 @@ def _resolve_openrouter_runtime(
         ):
             use_config_base_url = True
 
-    config_base_url = cfg_base_url.strip() if use_config_base_url else ""
     base_url = (
         (explicit_base_url or "").strip()
         or env_custom_base_url
-        or config_base_url
+        or (cfg_base_url.strip() if use_config_base_url else "")
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
     ).rstrip("/")
-    use_config_api_key = bool(
-        config_base_url and base_url == config_base_url.rstrip("/")
-    )
 
     # Choose API key based on whether the resolved base_url targets OpenRouter.
     # When hitting OpenRouter, prefer OPENROUTER_API_KEY (issue #289).
@@ -646,7 +638,7 @@ def _resolve_openrouter_runtime(
         _is_ollama_url = base_url_host_matches(base_url, "ollama.com")
         api_key_candidates = [
             explicit_api_key,
-            (cfg_api_key if use_config_api_key else ""),
+            (cfg_api_key if use_config_base_url else ""),
             (os.getenv("OLLAMA_API_KEY") if _is_ollama_url else ""),
             os.getenv("OPENAI_API_KEY"),
             os.getenv("OPENROUTER_API_KEY"),

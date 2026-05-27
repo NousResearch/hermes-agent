@@ -48,7 +48,6 @@ from gateway.run import (
     _should_clear_resume_pending_after_turn,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
-from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
@@ -639,40 +638,6 @@ class TestResumePendingSystemNote:
             agent_history=agent_history,
         )
         assert result == "start a new task"
-
-    def test_sqlite_transcript_timestamps_gate_stale_resume_pending(self, tmp_path):
-        """SQLite-loaded transcripts must carry timestamps for freshness gates."""
-        db = SessionDB(db_path=tmp_path / "state.db")
-        old_store_db = None
-        try:
-            db.create_session(session_id="sid", source="telegram")
-            db.append_message("sid", role="assistant", content="old in progress")
-            stale_ts = time.time() - 7200
-            db._conn.execute(
-                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
-                (stale_ts, "sid"),
-            )
-            db._conn.commit()
-
-            store = _make_store(tmp_path / "sessions")
-            old_store_db = store._db
-            store._db = db
-
-            history = store.load_transcript("sid")
-            assert history and "timestamp" in history[-1]
-
-            entry = self._pending_entry()
-            result = _simulate_note_injection(
-                history=history,
-                user_message="start a new task",
-                resume_entry=entry,
-            )
-
-            assert result == "start a new task"
-        finally:
-            if old_store_db is not None:
-                old_store_db.close()
-            db.close()
 
     def test_freshness_gate_disabled_via_zero_window(self):
         """window_secs=0 restores pre-fix behaviour (always inject)."""

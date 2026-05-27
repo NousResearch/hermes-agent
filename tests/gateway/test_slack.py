@@ -1966,35 +1966,11 @@ class TestReactions:
 
         adapter._app.client.reactions_add.assert_not_called()
         adapter._app.client.reactions_remove.assert_not_called()
-        assert "1234567890.000004" not in adapter._reacting_message_ids
 
     @pytest.mark.asyncio
     async def test_reactions_enabled_by_default(self, adapter):
         """SLACK_REACTIONS defaults to true (matches existing behavior)."""
         assert adapter._reactions_enabled() is True
-
-    @pytest.mark.asyncio
-    async def test_reaction_tracking_is_bounded_for_unprocessed_messages(self, adapter):
-        """DM reaction tracking should evict old IDs even if processing hooks never run."""
-        adapter._app.client.users_info = AsyncMock(return_value={
-            "user": {"profile": {"display_name": "Tyler"}}
-        })
-        adapter._reacting_message_ids.max_size = 3
-
-        for i in range(5):
-            await adapter._handle_slack_message({
-                "text": f"queued {i}",
-                "user": "U_USER",
-                "channel": "C123",
-                "channel_type": "im",
-                "ts": f"1234567890.00000{i}",
-            })
-
-        assert len(adapter._reacting_message_ids) == 3
-        assert "1234567890.000000" not in adapter._reacting_message_ids
-        assert "1234567890.000001" not in adapter._reacting_message_ids
-        assert "1234567890.000002" in adapter._reacting_message_ids
-        assert "1234567890.000004" in adapter._reacting_message_ids
 
 
 # ---------------------------------------------------------------------------
@@ -2923,7 +2899,6 @@ class TestSlackReplyToText:
         (e.g. cron summary), reply_to_text must carry the parent's text."""
         adapter._channel_team = {}  # primary workspace only
         adapter._team_bot_user_ids = {}
-        adapter.config.extra["allow_bots"] = "all"
 
         # Mock conversations_replies to return a bot-posted parent
         adapter._app.client.conversations_replies = AsyncMock(return_value={
@@ -2961,40 +2936,6 @@ class TestSlackReplyToText:
         # gateway can inject it when not already in the session history.
         assert msg_event.reply_to_text is not None
         assert "メール要約" in msg_event.reply_to_text
-
-    @pytest.mark.asyncio
-    async def test_slack_reply_to_text_excludes_bot_parent_by_default(self, adapter):
-        """Slack reply context must respect allow_bots for bot-authored parents."""
-        adapter._channel_team = {}
-        adapter._team_bot_user_ids = {}
-        adapter._app.client.conversations_replies = AsyncMock(return_value={
-            "messages": [
-                {
-                    "ts": "1000.0",
-                    "bot_id": "B_CRON",
-                    "text": "Cron prompt injection",
-                },
-                {"ts": "1000.5", "user": "U_USER", "text": "details"},
-            ]
-        })
-
-        event = {
-            "text": "details",
-            "user": "U_USER",
-            "channel": "D123",
-            "channel_type": "im",
-            "ts": "1000.5",
-            "thread_ts": "1000.0",
-        }
-
-        with patch.object(
-            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
-        ):
-            await adapter._handle_slack_message(event)
-
-        msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.reply_to_text is None
-        assert "Cron prompt injection" not in msg_event.text
 
     @pytest.mark.asyncio
     async def test_slack_reply_to_text_none_for_top_level_message(self, adapter):

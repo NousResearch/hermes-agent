@@ -2709,12 +2709,12 @@ def _default_verify() -> bool | ssl.SSLContext:
     return True
 
 
-def _resolve_tls_settings(
+def _resolve_verify(
     *,
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     auth_state: Optional[Dict[str, Any]] = None,
-) -> tuple[bool, Optional[str]]:
+) -> bool | ssl.SSLContext:
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
@@ -2729,36 +2729,11 @@ def _resolve_tls_settings(
         or os.getenv("SSL_CERT_FILE")
         or os.getenv("REQUESTS_CA_BUNDLE")
     )
-    return effective_insecure, str(effective_ca) if effective_ca else None
-
-
-def _resolve_ca_bundle_path(
-    *,
-    insecure: Optional[bool] = None,
-    ca_bundle: Optional[str] = None,
-    auth_state: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
-    effective_insecure, ca_path = _resolve_tls_settings(
-        insecure=insecure, ca_bundle=ca_bundle, auth_state=auth_state
-    )
-    if effective_insecure or not ca_path or not os.path.isfile(ca_path):
-        return None
-    return ca_path
-
-
-def _resolve_verify(
-    *,
-    insecure: Optional[bool] = None,
-    ca_bundle: Optional[str] = None,
-    auth_state: Optional[Dict[str, Any]] = None,
-) -> bool | ssl.SSLContext:
-    effective_insecure, ca_path = _resolve_tls_settings(
-        insecure=insecure, ca_bundle=ca_bundle, auth_state=auth_state
-    )
 
     if effective_insecure:
         return False
-    if ca_path:
+    if effective_ca:
+        ca_path = str(effective_ca)
         if not os.path.isfile(ca_path):
             logger.warning(
                 "CA bundle path does not exist: %s — falling back to default certificates",
@@ -3332,9 +3307,6 @@ def resolve_nous_access_token(
         ).rstrip("/")
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
         verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
-        resolved_ca_bundle = _resolve_ca_bundle_path(
-            insecure=insecure, ca_bundle=ca_bundle, auth_state=state
-        )
 
         with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
             merged_shared = _merge_shared_nous_oauth_state(state)
@@ -3389,7 +3361,7 @@ def resolve_nous_access_token(
             state["client_id"] = client_id
             state["tls"] = {
                 "insecure": verify is False,
-                "ca_bundle": resolved_ca_bundle,
+                "ca_bundle": verify if isinstance(verify, str) else None,
             }
             _save_provider_state(auth_store, "nous", state)
             _save_auth_store(auth_store)
@@ -3643,9 +3615,6 @@ def resolve_nous_runtime_credentials(
             _write_shared_nous_state(state)
 
         verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
-        resolved_ca_bundle = _resolve_ca_bundle_path(
-            insecure=insecure, ca_bundle=ca_bundle, auth_state=state
-        )
         timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
         _oauth_trace(
             "nous_runtime_credentials_start",
@@ -3816,7 +3785,7 @@ def resolve_nous_runtime_credentials(
             state["client_id"] = client_id
             state["tls"] = {
                 "insecure": verify is False,
-                "ca_bundle": resolved_ca_bundle,
+                "ca_bundle": verify if isinstance(verify, str) else None,
             }
 
         _persist_state("resolve_nous_runtime_credentials_final")

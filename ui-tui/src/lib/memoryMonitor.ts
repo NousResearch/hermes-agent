@@ -9,7 +9,6 @@ export interface MemorySnapshot {
 }
 
 export interface MemoryMonitorOptions {
-  autoHeapDump?: boolean
   criticalBytes?: number
   highBytes?: number
   intervalMs?: number
@@ -18,9 +17,6 @@ export interface MemoryMonitorOptions {
 }
 
 const GB = 1024 ** 3
-
-export const isAutomaticHeapDumpEnabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
-  env.HERMES_AUTO_HEAPDUMP === '1' || env.HERMES_AUTO_HEAPDUMP?.toLowerCase() === 'true'
 
 // Deferred @hermes/ink import: loading `@hermes/ink` at module top-level
 // pulls the full ~414KB Ink bundle (React, renderer, components, hooks) onto
@@ -57,7 +53,6 @@ async function _ensureEvictInkCaches(): Promise<(level: 'all' | 'half') => unkno
 }
 
 export function startMemoryMonitor({
-  autoHeapDump = isAutomaticHeapDumpEnabled(),
   criticalBytes = 2.5 * GB,
   highBytes = 1.5 * GB,
   intervalMs = 10_000,
@@ -73,7 +68,6 @@ export function startMemoryMonitor({
 
     if (level === 'normal') {
       dumped.clear()
-
       return
     }
 
@@ -94,15 +88,11 @@ export function startMemoryMonitor({
         evictInkCaches(level === 'critical' ? 'all' : 'half')
       } catch {
         // Best-effort: if the dynamic import fails for any reason we still
-        // notify the user and optionally write diagnostics below.
+        // continue to the heap dump below so the user gets diagnostics.
       }
 
       dumped.add(level)
-
-      const dump = autoHeapDump
-        ? await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)
-        : null
-
+      const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)
       const snap: MemorySnapshot = { heapUsed, level, rss }
 
       ;(level === 'critical' ? onCritical : onHigh)?.(snap, dump)

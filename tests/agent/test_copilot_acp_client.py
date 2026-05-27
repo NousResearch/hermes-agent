@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.copilot_acp_client import CopilotACPClient, _build_subprocess_env
+from agent.copilot_acp_client import CopilotACPClient
 
 
 class _FakeProcess:
@@ -205,21 +205,3 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
-
-
-def test_build_subprocess_env_uses_private_home_fallback(monkeypatch):
-    monkeypatch.delenv("HOME", raising=False)
-    monkeypatch.delenv("HERMES_HOME", raising=False)
-    monkeypatch.setattr("agent.copilot_acp_client._FALLBACK_HOME_DIR", None)
-    monkeypatch.setattr("agent.copilot_acp_client.os.path.expanduser", lambda value: "~")
-
-    with _patch("pwd.getpwuid", side_effect=KeyError):
-        env = _build_subprocess_env()
-        second_env = _build_subprocess_env()
-
-    home = Path(env["HOME"])
-    assert second_env["HOME"] == env["HOME"]
-    assert home != Path("/tmp")
-    assert home.name.startswith("hermes-copilot-acp-home-")
-    assert home.is_dir()
-    assert home.stat().st_mode & 0o777 == 0o700

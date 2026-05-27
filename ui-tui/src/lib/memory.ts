@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs'
-import { chmod, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
@@ -147,8 +147,7 @@ export async function performHeapDump(trigger: MemoryTrigger = 'manual'): Promis
     const diagnostics = await captureMemoryDiagnostics(trigger)
     const dir = process.env.HERMES_HEAPDUMP_DIR?.trim() || join(homedir() || tmpdir(), '.hermes', 'heapdumps')
 
-    await mkdir(dir, { mode: 0o700, recursive: true })
-    await swallow(async () => chmod(dir, 0o700))
+    await mkdir(dir, { recursive: true })
 
     const base = `hermes-${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}-${trigger}`
     const heapPath = join(dir, `${base}.heapsnapshot`)

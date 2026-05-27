@@ -699,6 +699,10 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   extra:
+#     tag_aliases:                   # Map usernames to Discord user IDs for auto-tagging
+#       lachlan: "556627489947123749"
+#       marvin: "123456789012345678"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

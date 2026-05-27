@@ -483,6 +483,54 @@ def test_run_codex_stream_parses_create_stream_events(monkeypatch):
     assert response.status == "completed"
 
 
+def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatch):
+    """Regression: Codex may send response.completed.response.output=null.
+
+    The SDK's high-level ``responses.stream(...)`` helper used to reconstruct
+    the final Response from that terminal field and raised ``TypeError:
+    'NoneType' object is not iterable``. The Hermes runtime consumes raw
+    ``response.output_item.done`` events instead, so a null terminal ``output``
+    must not affect the returned assistant/function-call items.
+    """
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="terminal output was null")],
+    )
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_null_output",
+                    status="completed",
+                    output=None,
+                    usage=SimpleNamespace(input_tokens=7, output_tokens=4, total_tokens=11),
+                ),
+            ),
+        ]
+    )
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response is not None
+    assert create_stream.closed is True
+    assert response.id == "resp_null_output"
+    assert response.status == "completed"
+    assert response.output == [output_item]
+    assert response.usage.total_tokens == 11
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

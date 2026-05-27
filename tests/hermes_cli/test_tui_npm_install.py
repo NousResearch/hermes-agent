@@ -168,7 +168,10 @@ def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
 
     argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
-    assert argv == ["/bin/node", str(tmp_path / "dist" / "entry.js")]
+    # _make_tui_argv prepends --expose-gc per fix(tui): pass --expose-gc as
+    # node argv (commit 3d2f14646 — also at hermes_cli/main.py:1276,1282,1359).
+    # This test was missed when --expose-gc was added.
+    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
     assert cwd == tmp_path
 
 

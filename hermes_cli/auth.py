@@ -3694,6 +3694,18 @@ def _save_xai_oauth_tokens(
             state["redirect_uri"] = redirect_uri
         _save_provider_state(auth_store, "xai-oauth", state)
         _save_auth_store(auth_store)
+    # Mirror the freshly-rotated tokens to the cross-profile shared store so
+    # sibling profiles can pick them up via :func:`_merge_shared_xai_oauth_state`
+    # on their next refresh attempt — instead of reusing their own (now
+    # server-side-consumed) refresh_token and getting the family revoked.
+    # Best-effort: any failure is logged and swallowed, the local save above
+    # remains the source of truth.
+    _write_shared_xai_state(
+        tokens,
+        discovery=discovery,
+        redirect_uri=redirect_uri,
+        last_refresh=last_refresh,
+    )
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
@@ -4007,16 +4019,57 @@ def resolve_xai_oauth_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _xai_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_xai_oauth_tokens(_lock=False)
+        # Cross-profile serialization: hold the shared xAI store lock for the
+        # whole "re-read → maybe-merge → maybe-refresh → persist" cycle so
+        # two profiles can't both consume the same single-use refresh_token.
+        # Persistence helpers called below (``_save_xai_oauth_tokens`` and
+        # the terminal-failure quarantine block) acquire ``_auth_store_lock``
+        # internally and briefly. Lock ordering exception, mirroring
+        # ``_try_import_shared_nous_state`` — see ``_xai_shared_store_lock``.
+        shared_lock_timeout = max(
+            float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0
+        )
+        with _xai_shared_store_lock(timeout_seconds=shared_lock_timeout):
+            # Re-read local under the shared lock: another in-process caller
+            # may have refreshed while we waited on the lock, in which case
+            # the existing logic below correctly sees the fresh access_token
+            # and skips the HTTP refresh.
+            data = _read_xai_oauth_tokens()
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
             discovery = dict(data.get("discovery") or {})
             token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
             redirect_uri = str(data.get("redirect_uri", "") or "").strip()
+
+            # If a sibling profile refreshed while we waited on the lock,
+            # the shared store has fresher tokens. Merge them in and persist
+            # locally — avoids burning our own refresh_token (which is now
+            # server-side-consumed because the sibling's refresh rotated it)
+            # and skips the HTTP round trip entirely.
+            merge_state: Dict[str, Any] = {
+                "tokens": tokens,
+                "last_refresh": data.get("last_refresh"),
+                "discovery": discovery,
+                "redirect_uri": redirect_uri,
+            }
+            if _merge_shared_xai_oauth_state(merge_state):
+                tokens = dict(merge_state["tokens"])
+                access_token = str(tokens.get("access_token", "") or "").strip()
+                discovery = dict(merge_state.get("discovery") or {})
+                token_endpoint = str(discovery.get("token_endpoint", "") or "").strip()
+                redirect_uri = str(merge_state.get("redirect_uri") or "")
+                _save_xai_oauth_tokens(
+                    tokens,
+                    discovery=discovery if discovery else None,
+                    redirect_uri=redirect_uri,
+                    last_refresh=merge_state.get("last_refresh"),
+                )
+
             should_refresh = bool(force_refresh)
             if (not should_refresh) and refresh_if_expiring:
-                should_refresh = _xai_access_token_is_expiring(access_token, refresh_skew_seconds)
+                should_refresh = _xai_access_token_is_expiring(
+                    access_token, refresh_skew_seconds
+                )
             if should_refresh:
                 if not token_endpoint:
                     token_endpoint = _xai_oauth_discovery(refresh_timeout_seconds)["token_endpoint"]
@@ -4054,6 +4107,11 @@ def resolve_xai_oauth_runtime_credentials(
                             logger.debug(
                                 "xAI OAuth: failed to persist quarantined state: %s", _save_exc,
                             )
+                        # Wipe the shared store too — leaving these dead
+                        # tokens in <hermes-root>/shared/xai_auth.json would
+                        # poison every sibling profile that's still running
+                        # against the same family revocation.
+                        _clear_shared_xai_state(reason=exc.code or "xai_refresh_failed")
                     raise
 
     base_url = _xai_validate_inference_base_url(
@@ -4532,6 +4590,268 @@ def _clear_shared_nous_state(reason: str) -> None:
         _oauth_trace("nous_shared_store_cleared", reason=reason)
     except Exception as exc:
         logger.debug("Failed to clear shared Nous auth store: %s", exc)
+
+
+# =============================================================================
+# Shared xAI OAuth token store — same idea as the Nous shared store above, but
+# for xAI tokens. Without this, every profile that picks ``model.provider:
+# xai-oauth`` keeps its OWN copy of the rotating refresh_token in its
+# profile-local auth.json. xAI uses single-use rotating refresh tokens: when
+# profile A refreshes, the server mints a new pair and invalidates the old
+# refresh_token; if profile B still holds the old one and refreshes, xAI
+# treats it as a reuse attempt and revokes the entire token family for both
+# profiles. The shared store gives every profile under the same hermes-root
+# a single authoritative copy of the latest tokens plus a cross-profile file
+# lock that serializes refreshes so siblings can't race on the single-use
+# token.
+#
+# File lives at ``${HERMES_SHARED_AUTH_DIR}/xai_auth.json``, defaulting to
+# ``<hermes-root>/shared/xai_auth.json`` (same dir Nous's shared store uses).
+# Written on successful login and on every runtime refresh. If the stored
+# refresh_token does go stale server-side (e.g. user re-logs in from
+# another machine), :func:`resolve_xai_oauth_runtime_credentials` clears
+# the shared store on terminal failure so the dead token doesn't survive
+# to poison other profiles.
+# =============================================================================
+
+XAI_SHARED_STORE_FILENAME = "xai_auth.json"
+_xai_shared_lock_holder = threading.local()
+
+
+def _xai_shared_auth_dir() -> Path:
+    """Resolve the directory that holds the shared xAI OAuth token store.
+
+    Mirrors :func:`_nous_shared_auth_dir`: honors ``HERMES_SHARED_AUTH_DIR``
+    so tests can redirect to a tmp path, defaults to
+    ``<hermes-root>/shared/`` for normal installs.
+    """
+    override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root() / "shared"
+
+
+def _xai_shared_store_path() -> Path:
+    path = _xai_shared_auth_dir() / XAI_SHARED_STORE_FILENAME
+    # Seat belt: same as :func:`_nous_shared_store_path`. Pytest must redirect
+    # ``HERMES_SHARED_AUTH_DIR`` to a tmp_path or this raises rather than
+    # silently corrupt the real user's shared store.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        from hermes_constants import get_default_hermes_root
+        real_home_shared = (
+            get_default_hermes_root() / "shared" / XAI_SHARED_STORE_FILENAME
+        ).resolve(strict=False)
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if resolved == real_home_shared:
+            raise RuntimeError(
+                f"Refusing to touch real user shared xAI auth store during test run: "
+                f"{path}. Set HERMES_SHARED_AUTH_DIR to a tmp_path in your test fixture."
+            )
+    return path
+
+
+@contextmanager
+def _xai_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Cross-profile lock for the shared xAI OAuth store.
+
+    Lock ordering: this lock is acquired ALONE for the entire refresh +
+    persistence cycle inside
+    :func:`resolve_xai_oauth_runtime_credentials`, so concurrent profiles
+    can't race on the single-use refresh_token. The persistence helpers
+    called inside (``_save_xai_oauth_tokens``, the terminal-failure
+    quarantine block) acquire ``_auth_store_lock`` internally and briefly.
+    Callers must NOT hold ``_auth_store_lock`` when acquiring this one —
+    mirrors the exception documented on :func:`_nous_shared_store_lock`.
+    """
+    try:
+        lock_path = _xai_shared_store_path().with_suffix(".lock")
+    except RuntimeError:
+        # No HERMES_HOME yet (pre-setup): fall through without locking.
+        yield
+        return
+
+    with _file_lock(
+        lock_path,
+        _xai_shared_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for shared xAI auth lock",
+    ):
+        yield
+
+
+def _write_shared_xai_state(
+    tokens: Dict[str, Any],
+    *,
+    discovery: Optional[Dict[str, Any]] = None,
+    redirect_uri: str = "",
+    last_refresh: Optional[str] = None,
+) -> None:
+    """Persist xAI OAuth tokens to the shared store.
+
+    Best-effort: any failure is swallowed after logging. The shared store
+    is a sync layer across profiles; the per-profile auth.json remains the
+    source of truth.
+    """
+    access_token = (
+        str(tokens.get("access_token", "") or "").strip()
+        if isinstance(tokens, dict)
+        else ""
+    )
+    refresh_token = (
+        str(tokens.get("refresh_token", "") or "").strip()
+        if isinstance(tokens, dict)
+        else ""
+    )
+    if not refresh_token or not access_token:
+        # Nothing worth sharing across profiles.
+        return
+
+    shared = {
+        "_schema": 1,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": str(tokens.get("token_type") or "Bearer"),
+        "id_token": str(tokens.get("id_token") or ""),
+        "expires_in": tokens.get("expires_in"),
+        "discovery": dict(discovery) if discovery else {},
+        "redirect_uri": redirect_uri or "",
+        "last_refresh": last_refresh
+        or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        with _xai_shared_store_lock():
+            path = _xai_shared_store_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
+            secure_parent_dir(path)
+            tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+            # Atomic 0o600 create — closes the TOCTOU window where
+            # write_text + post-write chmod briefly exposed refresh_token
+            # at process umask. Mirrors :func:`_write_shared_nous_state`.
+            fd = os.open(
+                str(tmp),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(shared, indent=2, sort_keys=True))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            finally:
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except OSError:
+                    pass
+        _oauth_trace(
+            "xai_shared_store_written",
+            path=str(path),
+            refresh_token_fp=_token_fingerprint(refresh_token),
+        )
+    except Exception as exc:
+        logger.debug("Failed to write shared xAI auth store: %s", exc)
+
+
+def _read_shared_xai_state() -> Optional[Dict[str, Any]]:
+    """Return the shared xAI OAuth state if present and well-formed.
+
+    ``None`` means the file is missing, unreadable, malformed, or lacks
+    required fields — callers fall through to whatever they have locally.
+    """
+    try:
+        path = _xai_shared_store_path()
+    except RuntimeError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.debug("Shared xAI auth store at %s is unreadable: %s", path, exc)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    refresh_token = payload.get("refresh_token")
+    access_token = payload.get("access_token")
+    if not (isinstance(refresh_token, str) and refresh_token.strip()):
+        return None
+    if not (isinstance(access_token, str) and access_token.strip()):
+        return None
+    return payload
+
+
+def _clear_shared_xai_state(reason: str) -> None:
+    """Remove the shared xAI OAuth store after a terminal token failure."""
+    try:
+        with _xai_shared_store_lock():
+            path = _xai_shared_store_path()
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        _oauth_trace("xai_shared_store_cleared", reason=reason)
+    except Exception as exc:
+        logger.debug("Failed to clear shared xAI auth store: %s", exc)
+
+
+def _merge_shared_xai_oauth_state(state: Dict[str, Any]) -> bool:
+    """If the shared store has fresher xAI tokens than ``state``, copy
+    them in and return True.
+
+    ``state`` matches the shape returned by :func:`_read_xai_oauth_tokens`
+    (with a ``tokens`` sub-dict, ``last_refresh``, ``discovery``,
+    ``redirect_uri``). The merge mutates ``state`` in place.
+
+    "Fresher" means the shared store's ``refresh_token`` differs from
+    local — the most reliable cross-profile signal, since xAI rotates
+    the refresh_token on every successful refresh and the shared store
+    is written by every refresh path.
+    """
+    shared = _read_shared_xai_state()
+    if not shared:
+        return False
+
+    shared_refresh = str(shared.get("refresh_token") or "").strip()
+    if not shared_refresh:
+        return False
+
+    tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else {}
+    local_refresh = (
+        str(tokens.get("refresh_token") or "").strip()
+        if isinstance(tokens, dict)
+        else ""
+    )
+    if shared_refresh == local_refresh:
+        # No new refresh_token in the shared store.
+        return False
+
+    # Apply the shared tokens. We preserve the local state shape (a mutable
+    # ``tokens`` dict at the top level + sibling ``last_refresh``,
+    # ``discovery``, ``redirect_uri``).
+    new_tokens = dict(tokens) if isinstance(tokens, dict) else {}
+    new_tokens["access_token"] = shared.get("access_token", "")
+    new_tokens["refresh_token"] = shared_refresh
+    if shared.get("token_type"):
+        new_tokens["token_type"] = shared["token_type"]
+    if shared.get("id_token"):
+        new_tokens["id_token"] = shared["id_token"]
+    if shared.get("expires_in") is not None:
+        new_tokens["expires_in"] = shared["expires_in"]
+    state["tokens"] = new_tokens
+    if shared.get("last_refresh"):
+        state["last_refresh"] = shared["last_refresh"]
+    if shared.get("discovery"):
+        state.setdefault("discovery", dict(shared["discovery"]))
+    if shared.get("redirect_uri"):
+        state.setdefault("redirect_uri", shared["redirect_uri"])
+    return True
 
 
 def _is_terminal_nous_refresh_error(exc: Exception) -> bool:

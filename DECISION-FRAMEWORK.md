@@ -113,23 +113,25 @@ REVERSIBLE: [yes/no + rollback plan]
 ## 5. Current Pending Decisions
 
 ### Decision 5a: Gateway Choice
-- **Question**: Use `hermes-cli` or `run_bridge.py` as primary gateway entry point?
-- **Options**:
-  - A) `hermes-cli` — unified CLI, consistent across platforms
-  - B) `run_bridge.py` — current bridge runner, more integrated with signals
-- **Status**: ⏳ Awaiting board recommendation
+|- **Question**: Use `hermes-cli` or `run_bridge.py` as primary gateway entry point?
+|- **Options**:
+|  - A) `hermes-cli` — unified CLI, consistent across platforms
+|  - B) `run_bridge.py` — current bridge runner, more integrated with signals
+|- **Status**: ✅ RESOLVED — Option A (`hermes-cli`), Water Clear 98/100
+|- **Resolved**: 2026-06-02
 
 ### Decision 5b: Quality Gate Enforcement Policy
-- **Question**: Should quality gate violations be warning-only or enforce (block) after N responses?
-- **Options**:
-  - A) Warning-only — log and flag, never block
-  - B) Enforce after 100 responses — hard block with operator notification
-  - C) Enforce after 50 responses — earlier block, more conservative
-- **Status**: ⏳ Awaiting board recommendation
+|- **Question**: Should quality gate violations be warning-only or enforce (block) after N responses?
+|- **Options**:
+|  - A) Warning-only — log and flag, never block
+|  - B) Enforce after 100 responses — hard block with operator notification
+|  - C) Enforce after 50 responses — earlier block, more conservative
+|- **Status**: ✅ RESOLVED — Option B (enforce after 100), High Confidence 95/100
+|- **Resolved**: 2026-06-02
 
 ## 6. "High Confidence" Threshold
 
-A decision meets the **high confidence** ("water clear") standard when:
+A decision meets the **high confidence** (\"water clear\") standard when:
 1. ≥3 board members agree on the same option
 2. No member flags a critical unknown or risk
 3. Gerald confirms understanding and approves

@@ -16853,7 +16853,7 @@ class GatewayRunner:
                             r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
                             r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
                             r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|json|md|apk|ipa))',
+                            r'txt|csv|json|md|html?|apk|ipa))',
                             re.IGNORECASE
                         )
                         for _match in _TOOL_MEDIA_RE.finditer(_hc):
@@ -17159,7 +17159,7 @@ class GatewayRunner:
                                 r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
                                 r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
                                 r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                                r'txt|csv|json|md|apk|ipa))',
+                                r'txt|csv|json|md|html?|apk|ipa))',
                                 re.IGNORECASE
                             )
                             for match in _TOOL_MEDIA_RE.finditer(content):

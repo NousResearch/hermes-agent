@@ -2387,7 +2387,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         from hermes_cli.runtime_provider import _detect_api_mode_for_url
 
         base_lower = configured_base_url.lower()
-        provider = "custom"
+        provider = configured_provider
         api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"
@@ -2397,9 +2397,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             api_mode = "codex_responses"
         elif base_url_hostname(configured_base_url) == "api.anthropic.com":
             provider = "anthropic"
-            api_mode = "anthropic_messages"
-        elif "api.kimi.com/coding" in base_lower:
-            provider = "custom"
             api_mode = "anthropic_messages"
 
         # Explicit delegation.api_mode in config always wins. Lets users force

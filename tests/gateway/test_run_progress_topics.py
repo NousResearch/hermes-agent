@@ -100,6 +100,10 @@ class SmallLimitProgressAdapter(ProgressCaptureAdapter):
 
 
 class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM, *, edit_success=True):
+        super().__init__(platform=platform)
+        self.edit_success = edit_success
+
     async def edit_message(
         self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
     ) -> SendResult:
@@ -111,7 +115,31 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
                 "metadata": metadata,
             }
         )
-        return SendResult(success=True, message_id=message_id)
+        if self.edit_success:
+            return SendResult(success=True, message_id=message_id)
+        return SendResult(success=False, error="edit failed")
+
+
+class FailingMetadataEditProgressCaptureAdapter(MetadataEditProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform, edit_success=False)
+
+
+class _StreamConsumerStub:
+    def __init__(self, adapter, *, message_id="progress-1", metadata=None):
+        self.adapter = adapter
+        self.chat_id = "chat-1"
+        self.message_id = message_id
+        self.metadata = metadata
+
+    async def _edit_message(self, *, message_id, content, finalize=False):
+        return await self.adapter.edit_message(
+            self.chat_id,
+            message_id,
+            content,
+            finalize=finalize,
+            metadata=self.metadata,
+        )
 
 
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
@@ -996,6 +1024,52 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
     assert any("[plugin appended this]" in text for text in edited_texts), (
         f"expected transformed text in adapter.edits, got: {edited_texts!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_transformed_stream_edit_uses_consumer_metadata():
+    from gateway.run import _edit_transformed_streamed_response
+
+    adapter = MetadataEditProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    response = {"final_response": "original\n\n[plugin appended this]"}
+    consumer = _StreamConsumerStub(
+        adapter,
+        metadata={"thread_id": "17585", "message_thread_id": "17585"},
+    )
+
+    await _edit_transformed_streamed_response(
+        response=response,
+        stream_consumer=consumer,
+        session_key="sess",
+    )
+
+    assert response.get("already_sent") is True
+    assert adapter.edits == [
+        {
+            "chat_id": "chat-1",
+            "message_id": "progress-1",
+            "content": "original\n\n[plugin appended this]",
+            "metadata": {"thread_id": "17585", "message_thread_id": "17585"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transformed_stream_edit_failure_keeps_final_send_fallback():
+    from gateway.run import _edit_transformed_streamed_response
+
+    adapter = FailingMetadataEditProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    response = {"final_response": "original\n\n[plugin appended this]"}
+    consumer = _StreamConsumerStub(adapter)
+
+    await _edit_transformed_streamed_response(
+        response=response,
+        stream_consumer=consumer,
+        session_key="sess",
+    )
+
+    assert response.get("already_sent") is not True
+    assert adapter.edits[0]["content"] == "original\n\n[plugin appended this]"
 
 
 @pytest.mark.asyncio

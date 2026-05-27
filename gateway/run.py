@@ -18029,27 +18029,11 @@ class GatewayRunner:
                 )
                 response["already_sent"] = True
             elif not _is_empty_sentinel and _transformed and _sc is not None:
-                # Plugin hooks transformed the response after streaming — edit the
-                # existing streamed message instead of sending a duplicate.
-                _sc_msg_id = _sc.message_id
-                if _sc_msg_id:
-                    try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=response["final_response"],
-                            finalize=True,
-                        )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
-                    except Exception as _edit_err:
-                        logger.warning(
-                            "Failed to edit streamed message for session %s: %s",
-                            session_key or "?", _edit_err,
-                        )
+                await _edit_transformed_streamed_response(
+                    response=response,
+                    stream_consumer=_sc,
+                    session_key=session_key,
+                )
 
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as
@@ -18098,6 +18082,45 @@ class GatewayRunner:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
 
         return response
+
+
+async def _edit_transformed_streamed_response(
+    *,
+    response: dict,
+    stream_consumer,
+    session_key: str | None = None,
+) -> None:
+    """Update an existing streamed message with post-stream plugin changes.
+
+    Only mark ``already_sent`` when the platform edit succeeds.  If the edit
+    fails, the caller's normal final-send path remains available as a fallback.
+    """
+    message_id = stream_consumer.message_id
+    if not message_id:
+        return
+    try:
+        edit_result = await stream_consumer._edit_message(
+            message_id=message_id,
+            content=response["final_response"],
+            finalize=True,
+        )
+        if getattr(edit_result, "success", False):
+            response["already_sent"] = True
+            logger.info(
+                "Edited streamed message %s for session %s to include plugin-transformed content.",
+                message_id, session_key or "?",
+            )
+        else:
+            logger.warning(
+                "Failed to edit streamed message for session %s: %s",
+                session_key or "?",
+                getattr(edit_result, "error", None) or "unknown error",
+            )
+    except Exception as edit_err:
+        logger.warning(
+            "Failed to edit streamed message for session %s: %s",
+            session_key or "?", edit_err,
+        )
 
 
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):

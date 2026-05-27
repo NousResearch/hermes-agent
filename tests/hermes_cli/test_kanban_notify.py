@@ -327,6 +327,28 @@ def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
     )
 
 
+def test_gateway_dispatcher_health_probe_skips_disabled_corrupt_boards():
+    """The ready-queue health probe must not re-open disabled corrupt boards.
+
+    The dispatch tick already fingerprints and disables a corrupt board. The
+    later health probe runs every tick too; if it ignores that disabled set, it
+    keeps opening the same malformed DB and creates another .corrupt backup.
+    """
+    import inspect
+    from gateway.run import GatewayRunner
+
+    src = inspect.getsource(GatewayRunner._kanban_dispatcher_watcher)
+    ready_src = src.split("def _ready_nonempty", 1)[1].split(
+        "# Auto-decompose:", 1
+    )[0]
+
+    assert "disabled_corrupt_boards.get(slug)" in ready_src
+    assert "_board_db_fingerprint(slug)" in ready_src
+    assert ready_src.index("disabled_corrupt_boards.get(slug)") < ready_src.index(
+        "_kb.connect(board=slug)"
+    )
+
+
 @pytest.mark.asyncio
 async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
     """Each gateway keeps its watcher on, but only the subscribing profile claims."""

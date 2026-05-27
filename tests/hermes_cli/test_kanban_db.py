@@ -3189,6 +3189,56 @@ def test_connect_refuses_corrupt_existing_file(tmp_path):
         kb.connect(db_path=db_path)
 
 
+def test_corrupt_db_error_is_sqlite_database_error():
+    """Gateway dispatcher catches sqlite3.DatabaseError to disable corrupt boards.
+
+    If KanbanDbCorruptError is only a RuntimeError, the dispatcher logs a full
+    traceback every tick and never records the board as disabled.
+    """
+    assert issubclass(kb.KanbanDbCorruptError, sqlite3.DatabaseError)
+
+
+def test_repeated_corrupt_existing_file_reuses_first_backup(tmp_path):
+    """Repeated probes of the same corrupt DB must not create backup spam.
+
+    The gateway has several periodic paths that may attempt to open a board.
+    Once one path preserved a specific corrupt file fingerprint, later opens in
+    the same process should raise with that same backup path until the DB file
+    changes.
+    """
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as first:
+        kb.connect(db_path=db_path)
+    with pytest.raises(kb.KanbanDbCorruptError) as second:
+        kb.connect(db_path=db_path)
+
+    assert first.value.backup_path == second.value.backup_path
+    backups = sorted(tmp_path.glob("kanban.db.corrupt.*.bak"))
+    assert backups == [first.value.backup_path]
+
+
+def test_changed_corrupt_existing_file_gets_new_backup(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as first:
+        kb.connect(db_path=db_path)
+
+    # Change the underlying corrupt DB fingerprint; that should be preserved
+    # separately so operators have the latest broken bytes too.
+    db_path.write_bytes(db_path.read_bytes() + b"changed")
+    with pytest.raises(kb.KanbanDbCorruptError) as second:
+        kb.connect(db_path=db_path)
+
+    assert first.value.backup_path != second.value.backup_path
+    backups = set(tmp_path.glob("kanban.db.corrupt.*.bak"))
+    assert backups == {first.value.backup_path, second.value.backup_path}
+
+
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     """A transient lock during the probe must not produce a .corrupt backup
     and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite

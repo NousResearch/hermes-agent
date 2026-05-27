@@ -954,6 +954,8 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
+_CORRUPT_BACKUP_LOCK = threading.RLock()
+_CORRUPT_BACKUPS: dict[tuple[str, int, int], Optional[Path]] = {}
 
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
@@ -1007,7 +1009,7 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
-class KanbanDbCorruptError(RuntimeError):
+class KanbanDbCorruptError(sqlite3.DatabaseError):
     """Raised when an existing kanban DB file fails integrity checks.
 
     Fail-closed guard against silent recreation of a corrupt board file,
@@ -1074,6 +1076,35 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     return candidate
 
 
+def _corrupt_db_fingerprint(path: Path) -> tuple[str, int, int]:
+    """Return a process-local fingerprint for a corrupt DB's current bytes."""
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return (str(resolved), stat.st_mtime_ns, stat.st_size)
+
+
+def _backup_corrupt_db_once(path: Path) -> Optional[Path]:
+    """Preserve a corrupt DB once per unchanged file fingerprint.
+
+    Gateway dispatcher, health probes, CLI retries, and cron tasks may all try
+    to open the same malformed board DB. Re-copying identical bytes on every
+    attempt creates backup spam and makes a single corruption look like many
+    new incidents. If the underlying DB changes, the fingerprint changes and we
+    preserve the new bytes separately.
+    """
+    try:
+        fingerprint = _corrupt_db_fingerprint(path)
+    except OSError:
+        return _backup_corrupt_db(path)
+    with _CORRUPT_BACKUP_LOCK:
+        existing = _CORRUPT_BACKUPS.get(fingerprint)
+        if existing is not None and existing.exists():
+            return existing
+        backup = _backup_corrupt_db(path)
+        _CORRUPT_BACKUPS[fingerprint] = backup
+        return backup
+
+
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
@@ -1128,7 +1159,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
         return
-    backup = _backup_corrupt_db(resolved)
+    backup = _backup_corrupt_db_once(resolved)
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 

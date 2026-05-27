@@ -5543,6 +5543,9 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                disabled_fingerprint = disabled_corrupt_boards.get(slug)
+                if disabled_fingerprint == _board_db_fingerprint(slug):
+                    continue
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)

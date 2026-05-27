@@ -61,6 +61,12 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     cron: { icon: Clock, color: "text-warning" },
   };
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
 function SnippetHighlight({ snippet }: { snippet: string }) {
@@ -380,6 +386,17 @@ function SessionRow({
                     <span className="text-border">&#183;</span>
                     <span className="shrink-0">
                       {session.tool_call_count} {t.common.tools}
+                    </span>
+                  </>
+                )}
+                {(session.input_tokens > 0 || session.output_tokens > 0) && (
+                  <>
+                    <span className="text-border">&#183;</span>
+                    <span className="shrink-0 font-medium text-text-tertiary">
+                      {formatTokens(session.input_tokens)} in / {formatTokens(session.output_tokens)} out
+                      {session.cache_read_tokens > 0 && (
+                        <> · {(session.cache_read_tokens / (session.input_tokens + session.cache_read_tokens) * 100).toFixed(0)}% cached</>
+                      )}
                     </span>
                   </>
                 )}
@@ -896,8 +913,11 @@ export default function SessionsPage() {
                         <span className="font-mono-ui">
                           {(s.model ?? t.common.unknown).split("/").pop()}
                         </span>{" "}
-                        · {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
+                        · {s.message_count} {t.common.msgs}
+                        {(s.input_tokens > 0 || s.output_tokens > 0) && (
+                          <> · {formatTokens(s.input_tokens)} in / {formatTokens(s.output_tokens)} out{s.cache_read_tokens > 0 ? <> · {(s.cache_read_tokens / (s.input_tokens + s.cache_read_tokens) * 100).toFixed(0)}% cached</> : ""}</>
+                        )}{" "}
+                        · {timeAgo(s.last_active)}
                       </span>
 
                       {s.preview && (

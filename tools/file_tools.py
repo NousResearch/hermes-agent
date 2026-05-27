@@ -300,6 +300,7 @@ def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
 _READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
 _DEDUP_CAP = 1000             # dict; skip-identical-reread guard
 _READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+_PATH_RANGES_CAP = 64         # list; covered-line intervals for path-loop guard
 _READ_DEDUP_STATUS_MESSAGE = (
     "File unchanged since last read. The content from "
     "the earlier read_file result in this conversation is "
@@ -356,6 +357,62 @@ def _cap_read_tracker_data(task_data: dict) -> None:
                 ts.pop(next(iter(ts)))
             except (StopIteration, KeyError):
                 break
+
+    pr = task_data.get("path_ranges")
+    if pr is not None and len(pr) > _PATH_RANGES_CAP:
+        # Too many disjoint intervals on one file (lots of scattered reads).
+        # Forget the coverage history and restart path tracking.  Costs at
+        # most one delayed loop detection; keeps the list bounded.
+        task_data["path_ranges"] = []
+        task_data["path_consecutive"] = 0
+
+
+def _range_uncovered_lines(ranges: list, start: int, end: int) -> int:
+    """Return how many line positions in [start, end) are NOT already covered
+    by ``ranges`` — a sorted list of disjoint ``[s, e)`` intervals.
+
+    Used by the path-level loop guard to tell "this read surfaced new lines"
+    (forward progress) from "this read only re-covered lines we already had"
+    (a no-progress loop).
+    """
+    if end <= start:
+        return 0
+    uncovered = end - start
+    for s, e in ranges:
+        if e <= start:
+            continue
+        if s >= end:
+            break
+        overlap = min(e, end) - max(s, start)
+        if overlap > 0:
+            uncovered -= overlap
+    return uncovered
+
+
+def _merge_range(ranges: list, start: int, end: int) -> list:
+    """Insert ``[start, end)`` into ``ranges`` (sorted, disjoint ``[s, e)``
+    intervals), merging any overlapping or adjacent intervals.  Returns a new
+    sorted list.  Adjacent intervals are merged so sequential pagination
+    collapses to a single interval (keeping ``path_ranges`` small)."""
+    if end <= start:
+        return ranges
+    result = []
+    new_s, new_e = start, end
+    placed = False
+    for s, e in ranges:
+        if e < new_s:            # interval ends before the new one begins
+            result.append([s, e])
+        elif s > new_e:          # interval begins after the new one ends
+            if not placed:
+                result.append([new_s, new_e])
+                placed = True
+            result.append([s, e])
+        else:                    # overlapping or adjacent — absorb
+            new_s = min(new_s, s)
+            new_e = max(new_e, e)
+    if not placed:
+        result.append([new_s, new_e])
+    return result
 
 
 def _is_internal_file_status_text(content: str) -> bool:
@@ -582,6 +639,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
                 "dedup_hits": {}, "read_timestamps": {},
+                "path_last": None, "path_consecutive": 0,
+                "path_ranges": [],
             })
             # Backward-compat for pre-existing tracker entries that predate
             # dedup_hits/read_timestamps (long-lived task or crossed an
@@ -630,6 +689,65 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     }, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
+
+        # ── Path-level loop pre-check ─────────────────────────────────
+        # Count *consecutive reads that surface no new lines* of this file
+        # and bail out BEFORE the (potentially expensive) read + redaction
+        # when we've been re-reading it in a loop.  Forward pagination
+        # (advancing, non-overlapping windows) always covers new lines and
+        # resets the counter, so this never fires on legitimate sequential
+        # reads.  Counting happens here, not after the read, so a blocked
+        # retry costs nothing — mirroring the dedup guard above.  Identical
+        # re-reads with a churning mtime stay on the per-key count>=4 guard
+        # below; this tier catches varying-parameter no-progress loops.
+        # See issue #14991.
+        _PATH_NO_PROGRESS_LIMIT = 6
+        _PATH_NO_PROGRESS_WARN = 4
+        read_start, read_end = offset, offset + limit
+        with _read_tracker_lock:
+            # Backward-compat for trackers that predate the path-level fields.
+            if "path_last" not in task_data:
+                task_data["path_last"] = None
+            if "path_consecutive" not in task_data:
+                task_data["path_consecutive"] = 0
+            if "path_ranges" not in task_data:
+                task_data["path_ranges"] = []
+            if task_data["path_last"] != resolved_str:
+                # Switched files — start tracking this one fresh.
+                task_data["path_last"] = resolved_str
+                task_data["path_ranges"] = [[read_start, read_end]]
+                task_data["path_consecutive"] = 0
+            elif _range_uncovered_lines(
+                    task_data["path_ranges"], read_start, read_end) > 0:
+                # Surfaced new lines — real progress, not a loop.
+                task_data["path_ranges"] = _merge_range(
+                    task_data["path_ranges"], read_start, read_end)
+                task_data["path_consecutive"] = 0
+            else:
+                # Whole window already covered — no progress.
+                task_data["path_consecutive"] += 1
+            path_count = task_data["path_consecutive"]
+            _cap_read_tracker_data(task_data)
+
+        if path_count >= _PATH_NO_PROGRESS_LIMIT:
+            return json.dumps({
+                "error": (
+                    f"BLOCKED: You have re-read the file '{path}' {path_count} "
+                    "times in a row without reaching any new content. You "
+                    "already have this information from earlier reads. STOP "
+                    "reading this file and proceed with your task using what "
+                    "you already know."
+                ),
+                "path": path,
+                "already_read": path_count,
+            }, ensure_ascii=False)
+        _path_warning = None
+        if path_count >= _PATH_NO_PROGRESS_WARN:
+            _path_warning = (
+                f"You have re-read '{path}' {path_count} times without reaching "
+                "new content. If you are stuck in a loop, stop reading and "
+                "proceed with writing or responding."
+            )
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
@@ -743,6 +861,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
+        # Path-level loop guard (warn tier): the hard block already ran in
+        # the pre-check before the read; here we just surface the warning it
+        # computed, if any.  See issue #14991.
+        if _path_warning is not None:
+            result_dict.setdefault("_warning", _path_warning)
+
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -769,12 +893,20 @@ def reset_file_dedup(task_id: str = None):
                     task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                # Also reset path-level loop state so reads after
+                # compression start fresh (issue #14991).
+                task_data["path_last"] = None
+                task_data["path_consecutive"] = 0
+                task_data["path_ranges"] = []
         else:
             for task_data in _read_tracker.values():
                 if "dedup" in task_data:
                     task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
+                task_data["path_last"] = None
+                task_data["path_consecutive"] = 0
+                task_data["path_ranges"] = []
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -791,6 +923,11 @@ def notify_other_tool_call(task_id: str = "default"):
         if task_data:
             task_data["last_key"] = None
             task_data["consecutive"] = 0
+            # Also reset path-level loop state — a different tool call
+            # breaks the "consecutive same-file reads" pattern (issue #14991).
+            task_data["path_last"] = None
+            task_data["path_consecutive"] = 0
+            task_data["path_ranges"] = []
             # An intervening non-read tool call breaks any stub-loop in
             # progress, so clear per-key dedup hit counters too.
             if "dedup_hits" in task_data:

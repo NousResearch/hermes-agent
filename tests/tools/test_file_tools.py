@@ -425,3 +425,154 @@ class TestPatchSchemaShape:
         params = PATCH_SCHEMA["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
+
+
+class TestPathLevelLoopDetection:
+    """Tests for the path-level read loop guard (issue #14991).
+
+    The guard counts *consecutive reads that surface no new lines* of the
+    same file — overlapping or re-read regions — rather than the raw read
+    count.  Legitimate forward pagination through a large file (advancing,
+    non-overlapping windows) always surfaces new lines and is therefore
+    never warned or blocked.  Thresholds in tools.file_tools: warn after 4
+    consecutive no-progress reads, hard-block after 6.
+    """
+
+    def _make_mock_ops(self, content="line1\nline2", total_lines=2):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = content
+        result_obj.to_dict.return_value = {
+            "content": content, "total_lines": total_lines,
+        }
+        mock_ops.read_file.return_value = result_obj
+        return mock_ops
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops")
+    def test_forward_pagination_never_blocks(self, mock_get, mock_mtime):
+        """Advancing, non-overlapping windows always surface new lines, so
+        sequential pagination through a large file is never warned/blocked."""
+        from tools.file_tools import read_file_tool, _read_tracker
+        mock_get.return_value = self._make_mock_ops()
+        _read_tracker.clear()
+
+        # 12 non-overlapping 500-line windows — far past the old count-based
+        # block at 8.  Each advances into brand-new content.
+        for i in range(12):
+            result = json.loads(
+                read_file_tool("/tmp/big.txt", offset=i * 500 + 1, limit=500)
+            )
+            assert "_warning" not in result, f"unexpected warning at read {i+1}"
+            assert "BLOCKED" not in result.get("error", ""), \
+                f"unexpected block at read {i+1}"
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops")
+    def test_overlapping_rereads_trigger_warning(self, mock_get, mock_mtime):
+        """Re-reading already-covered regions (no new lines) warns after the
+        4th consecutive no-progress read."""
+        from tools.file_tools import read_file_tool, _read_tracker
+        mock_get.return_value = self._make_mock_ops()
+        _read_tracker.clear()
+
+        # Establish coverage of lines [1, 501).
+        read_file_tool("/tmp/t.txt", offset=1, limit=500)
+
+        # Sub-region re-reads: distinct (offset,limit) keys (so no dedup
+        # short-circuit) but every window is already covered -> no new lines.
+        for lim in (400, 300, 200):           # no-progress reads 1, 2, 3
+            result = json.loads(read_file_tool("/tmp/t.txt", offset=1, limit=lim))
+            assert "_warning" not in result
+
+        # 4th consecutive no-progress read -> warning.
+        result = json.loads(read_file_tool("/tmp/t.txt", offset=1, limit=100))
+        assert "_warning" in result
+        assert "BLOCKED" not in result.get("error", "")
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops")
+    def test_overlapping_rereads_trigger_block(self, mock_get, mock_mtime):
+        """6 consecutive no-progress reads escalate to a hard block."""
+        from tools.file_tools import read_file_tool, _read_tracker
+        mock_get.return_value = self._make_mock_ops()
+        _read_tracker.clear()
+
+        read_file_tool("/tmp/t.txt", offset=1, limit=500)   # coverage [1, 501)
+        result = None
+        for lim in (450, 400, 350, 300, 250, 200):          # 6 no-progress reads
+            result = json.loads(read_file_tool("/tmp/t.txt", offset=1, limit=lim))
+
+        assert "error" in result
+        assert "BLOCKED" in result["error"]
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops")
+    def test_different_file_resets_no_progress_counter(self, mock_get, mock_mtime):
+        """Reading a different file resets the no-progress counter to 0."""
+        from tools.file_tools import read_file_tool, _read_tracker
+        mock_get.return_value = self._make_mock_ops()
+        _read_tracker.clear()
+
+        # Build up no-progress reads on file A (counter -> 3).
+        read_file_tool("/tmp/fileA.txt", offset=1, limit=500)
+        for lim in (400, 300, 200):
+            read_file_tool("/tmp/fileA.txt", offset=1, limit=lim)
+        assert _read_tracker["default"]["path_consecutive"] == 3
+
+        # Reading file B switches the tracked path and zeroes the counter.
+        read_file_tool("/tmp/fileB.txt", offset=1, limit=500)
+        assert _read_tracker["default"]["path_consecutive"] == 0
+
+        # Re-reading file A (a fresh key, so no dedup) starts from 0, not 3.
+        read_file_tool("/tmp/fileA.txt", offset=1, limit=450)
+        assert _read_tracker["default"]["path_consecutive"] == 0
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops")
+    def test_notify_other_tool_call_resets_no_progress_counter(self, mock_get, mock_mtime):
+        """A non-read tool call resets the no-progress counter, so a
+        following overlapping read does not warn."""
+        from tools.file_tools import read_file_tool, notify_other_tool_call, _read_tracker
+        mock_get.return_value = self._make_mock_ops()
+        _read_tracker.clear()
+
+        # Drive the no-progress counter up to 3 on the same file.
+        read_file_tool("/tmp/test.txt", offset=1, limit=500)
+        for lim in (400, 300, 200):
+            read_file_tool("/tmp/test.txt", offset=1, limit=lim)
+        assert _read_tracker["default"]["path_consecutive"] == 3
+
+        # An intervening non-read tool call breaks the loop.
+        notify_other_tool_call("default")
+        assert _read_tracker["default"]["path_consecutive"] == 0
+
+        # A following overlapping read (distinct key) starts fresh: no warning,
+        # even though it covers already-seen lines.  Regression guard: if the
+        # reset were dropped, this would be the 4th no-progress read and warn.
+        result = json.loads(read_file_tool("/tmp/test.txt", offset=1, limit=350))
+        assert "_warning" not in result
+        assert "BLOCKED" not in result.get("error", "")
+
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops")
+    def test_reset_file_dedup_resets_no_progress_counter(self, mock_get, mock_mtime):
+        """reset_file_dedup clears the path-level no-progress counter."""
+        from tools.file_tools import read_file_tool, reset_file_dedup, _read_tracker
+        mock_get.return_value = self._make_mock_ops()
+        _read_tracker.clear()
+
+        read_file_tool("/tmp/test.txt", offset=1, limit=500)
+        for lim in (400, 300, 200):
+            read_file_tool("/tmp/test.txt", offset=1, limit=lim)
+        assert _read_tracker["default"]["path_consecutive"] == 3
+
+        # Context compression resets dedup + path-level loop state.
+        reset_file_dedup("default")
+        assert _read_tracker["default"]["path_consecutive"] == 0
+
+        # Fresh key (350 was never read above) so this is a real read; it
+        # covers already-seen lines but starts from a reset counter -> no warn.
+        result = json.loads(read_file_tool("/tmp/test.txt", offset=1, limit=350))
+        assert "_warning" not in result
+        assert "BLOCKED" not in result.get("error", "")

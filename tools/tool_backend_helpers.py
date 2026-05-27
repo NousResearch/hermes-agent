@@ -14,16 +14,21 @@ _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
-def managed_nous_tools_enabled() -> bool:
+def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     """Return True when the user has paid Nous Portal service access.
 
     Tool Gateway availability fails closed on unknown/error entitlement.  We
     intentionally catch all exceptions and return False — never block startup.
+    ``force_fresh=True`` is for interactive configuration flows that should
+    reflect a just-purchased subscription or credits immediately.
     """
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
 
-        account_info = get_nous_portal_account_info()
+        if force_fresh:
+            account_info = get_nous_portal_account_info(force_fresh=True)
+        else:
+            account_info = get_nous_portal_account_info()
         if not account_info.logged_in:
             return False
         return account_info.paid_service_access is True
@@ -90,6 +95,7 @@ def resolve_modal_backend_state(
     *,
     has_direct: bool,
     managed_ready: bool,
+    managed_enabled: bool | None = None,
 ) -> Dict[str, Any]:
     """Resolve direct vs managed Modal backend selection.
 
@@ -100,16 +106,18 @@ def resolve_modal_backend_state(
     """
     requested_mode = coerce_modal_mode(modal_mode)
     normalized_mode = normalize_modal_mode(modal_mode)
+    if managed_enabled is None:
+        managed_enabled = managed_nous_tools_enabled()
     managed_mode_blocked = (
-        requested_mode == "managed" and not managed_nous_tools_enabled()
+        requested_mode == "managed" and not managed_enabled
     )
 
     if normalized_mode == "managed":
-        selected_backend = "managed" if managed_nous_tools_enabled() and managed_ready else None
+        selected_backend = "managed" if managed_enabled and managed_ready else None
     elif normalized_mode == "direct":
         selected_backend = "direct" if has_direct else None
     else:
-        selected_backend = "managed" if managed_nous_tools_enabled() and managed_ready else "direct" if has_direct else None
+        selected_backend = "managed" if managed_enabled and managed_ready else "direct" if has_direct else None
 
     return {
         "requested_mode": requested_mode,

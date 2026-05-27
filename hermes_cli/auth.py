@@ -3550,6 +3550,26 @@ def resolve_codex_runtime_credentials(
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
 
+    # If the singleton was previously marked as needing re-login, prefer the
+    # newest usable pool credential. A fresh `hermes auth` can add a valid pool
+    # credential without replacing the stale singleton, and the chat runtime
+    # must not keep sending the rejected singleton bearer.
+    if _codex_singleton_requires_pool_fallback():
+        pool_token = _pool_codex_access_token()
+        if pool_token:
+            base_url = (
+                os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                or DEFAULT_CODEX_BASE_URL
+            )
+            return {
+                "provider": "openai-codex",
+                "base_url": base_url,
+                "api_key": pool_token,
+                "source": "credential_pool",
+                "last_refresh": None,
+                "auth_mode": "chatgpt",
+            }
+
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
@@ -3583,15 +3603,34 @@ def resolve_codex_runtime_credentials(
     }
 
 
+def _codex_singleton_requires_pool_fallback() -> bool:
+    """Return True when singleton Codex state is known-bad and pool should win."""
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "openai-codex") or {}
+        last_error = state.get("last_auth_error")
+        if not isinstance(last_error, dict):
+            return False
+        if last_error.get("relogin_required") is True:
+            return True
+        if last_error.get("code") == "refresh_token_reused":
+            return True
+        if last_error.get("reason") == "credential_pool_refresh_failure":
+            return True
+    except Exception:
+        logger.debug("Codex singleton error-state lookup failed", exc_info=True)
+    return False
+
+
 def _pool_codex_access_token() -> str:
-    """Return the most-recent usable access_token from the openai-codex pool.
+    """Return the newest usable access_token from the openai-codex pool.
 
     Used as a fallback by ``resolve_codex_runtime_credentials`` when the
-    singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
-    directly from auth.json and picks the first non-empty access_token,
-    preferring entries that are not currently in an exhaustion cooldown.
-    Returns ``""`` when no usable entry is found (caller handles by raising
-    the original AuthError).
+    singleton has no creds or is marked known-bad. Reads
+    ``credential_pool.openai-codex`` entries directly from auth.json and picks
+    the newest non-empty, non-expired access_token that is not currently in an
+    exhaustion cooldown. Returns ``""`` when no usable entry is found.
     """
     try:
         with _auth_store_lock():
@@ -3609,13 +3648,15 @@ def _pool_codex_access_token() -> str:
             token = entry.get("access_token")
             if not isinstance(token, str) or not token.strip():
                 return False
+            if _codex_access_token_is_expiring(token, 0):
+                return False
             # Skip entries currently in an exhaustion cooldown window.
             reset_at = entry.get("last_error_reset_at")
             if isinstance(reset_at, (int, float)) and reset_at > time.time():
                 return False
             return True
 
-        for entry in entries:
+        for entry in reversed(entries):
             if _entry_usable(entry):
                 return str(entry.get("access_token", "")).strip()
     except Exception:

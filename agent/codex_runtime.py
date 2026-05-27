@@ -20,10 +20,87 @@ import json
 import logging
 import os
 import time
+from functools import wraps
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_completed_response_output(response: Any) -> bool:
+    """Normalize Codex completed events that omit ``output``.
+
+    ChatGPT's Codex backend can emit ``response.completed`` with the
+    ``output`` field omitted/null.  OpenAI SDK versions that assume the
+    field is iterable raise ``TypeError: 'NoneType' object is not
+    iterable`` before Hermes can fall back.  Only completed responses are
+    coerced; incomplete/failed responses keep their original shape.
+    """
+    if response is None or getattr(response, "output", None) is not None:
+        return False
+    if getattr(response, "status", None) != "completed":
+        return False
+    try:
+        response.output = []
+    except Exception:
+        try:
+            object.__setattr__(response, "output", [])
+        except Exception:
+            logger.debug(
+                "Unable to coerce missing output on completed Codex response",
+                exc_info=True,
+            )
+            return False
+    return True
+
+
+def _response_from_parse_args(args: tuple, kwargs: dict) -> Any:
+    response = kwargs.get("response")
+    if response is not None:
+        return response
+    # Current OpenAI SDK versions expose response as keyword-only, but this
+    # keeps the compatibility patch safe if a relay/vendor-pinned SDK uses a
+    # positional helper signature.
+    for arg in reversed(args):
+        if hasattr(arg, "output") and hasattr(arg, "status"):
+            return arg
+    return None
+
+
+def _install_openai_missing_output_patch() -> None:
+    """Patch OpenAI response parsing for Codex completed events missing output."""
+    try:
+        import openai.lib._parsing._responses as oai_parsing
+    except Exception:
+        logger.debug("OpenAI response parser unavailable for Codex output patch", exc_info=True)
+        return
+
+    original_parse_response = oai_parsing.parse_response
+    if getattr(original_parse_response, "_hermes_missing_output_patch", False):
+        return
+
+    @wraps(original_parse_response)
+    def patched_parse_response(*args, **kwargs):
+        _coerce_completed_response_output(_response_from_parse_args(args, kwargs))
+        return original_parse_response(*args, **kwargs)
+
+    patched_parse_response._hermes_missing_output_patch = True
+    oai_parsing.parse_response = patched_parse_response
+
+    for module_name in (
+        "openai.lib.streaming.responses._responses",
+        "openai.resources.responses.responses",
+    ):
+        try:
+            module = __import__(module_name, fromlist=["parse_response"])
+            if getattr(getattr(module, "parse_response", None), "_hermes_missing_output_patch", False):
+                continue
+            module.parse_response = patched_parse_response
+        except Exception:
+            logger.debug("Unable to patch %s.parse_response", module_name, exc_info=True)
+
+
+_install_openai_missing_output_patch()
 
 
 def run_codex_app_server_turn(
@@ -287,9 +364,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
-        except RuntimeError as exc:
+        except (RuntimeError, TypeError) as exc:
             err_text = str(exc)
-            missing_completed = "response.completed" in err_text
+            missing_completed = "response.completed" in err_text or "'NoneType' object is not iterable" in err_text
             # The OpenAI SDK's Responses streaming state machine raises
             # ``RuntimeError("Expected to have received `response.created`
             # before `<event-type>`")`` when the first SSE event from the

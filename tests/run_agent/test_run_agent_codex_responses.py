@@ -397,6 +397,33 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "prompt_cache_key" not in kwargs
 
 
+def test_codex_parse_patch_only_coerces_completed_missing_output():
+    from agent.codex_runtime import _coerce_completed_response_output
+
+    completed = SimpleNamespace(status="completed", output=None)
+    incomplete = SimpleNamespace(status="incomplete", output=None)
+    failed = SimpleNamespace(status="failed", output=None)
+    populated = SimpleNamespace(status="completed", output=["already set"])
+
+    assert _coerce_completed_response_output(completed) is True
+    assert completed.output == []
+    assert _coerce_completed_response_output(incomplete) is False
+    assert incomplete.output is None
+    assert _coerce_completed_response_output(failed) is False
+    assert failed.output is None
+    assert _coerce_completed_response_output(populated) is False
+    assert populated.output == ["already set"]
+
+
+def test_codex_parse_patch_finds_keyword_and_positional_response():
+    from agent.codex_runtime import _response_from_parse_args
+
+    response = SimpleNamespace(status="completed", output=None)
+    assert _response_from_parse_args((), {"response": response}) is response
+    assert _response_from_parse_args((object(), response), {}) is response
+    assert _response_from_parse_args((object(),), {}) is None
+
+
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0}
@@ -429,6 +456,39 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
         calls["stream"] += 1
         return _FakeResponsesStream(
             final_error=RuntimeError("Didn't receive a `response.completed` event.")
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("create fallback ok")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls["stream"] == 2
+    assert calls["create"] == 1
+    assert response.output[0].content[0].text == "create fallback ok"
+
+
+def test_run_codex_stream_handles_none_output_completed_event_typeerror(monkeypatch):
+    """ChatGPT Codex can send response.completed with no output field.
+
+    Newer OpenAI SDK streaming parsers surface that as TypeError before
+    Hermes can inspect the final response, so treat it like a missing
+    response.completed postlude and use the existing retry/fallback path.
+    """
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            final_error=TypeError("'NoneType' object is not iterable")
         )
 
     def _fake_create(**kwargs):

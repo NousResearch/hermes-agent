@@ -180,6 +180,90 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     assert user_prov["total_models"] == 2
 
 
+@pytest.mark.parametrize(
+    "model_entry, expected_model",
+    [
+        ({"name": "qwen3.7-max"}, "qwen3.7-max"),
+        ({"id": "qwen3.7-max"}, "qwen3.7-max"),
+        ({"model": "qwen3.7-max"}, "qwen3.7-max"),
+    ],
+)
+def test_list_authenticated_providers_normalizes_list_of_model_dicts(
+    monkeypatch, model_entry, expected_model
+):
+    """providers: entries may use YAML list items like ``- name: model``.
+
+    Regression: Telegram /model crashed because list_authenticated_providers
+    passed those dicts through to the picker instead of extracting strings.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "dashscope": {
+            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "models": [
+                model_entry,
+                {"name": "qwen3.6-flash"},
+            ],
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "dashscope"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["total_models"] == 2
+    assert user_prov["models"] == [expected_model, "qwen3.6-flash"]
+    assert all(isinstance(model, str) for model in user_prov["models"])
+
+
+def test_list_authenticated_providers_ignores_empty_dict_model_entries_and_dedupes(monkeypatch):
+    """Malformed dict model entries should not leak to the Telegram picker."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "xiaomi-token-plan": {
+            "base_url": "https://api.example.test/v1",
+            "model": "mimo-v2.5-pro",
+            "models": [
+                {"name": "mimo-v2.5-pro"},
+                {"id": "mimo-v2.5"},
+                {"model": "mimo-v2.5-flash"},
+                {"name": "mimo-v2.5-pro"},
+                {},
+                123,
+            ],
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="xiaomi-token-plan",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "xiaomi-token-plan"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["models"] == ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2.5-flash"]
+    assert user_prov["total_models"] == 3
+
+
 def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):
     """Dict-format ``models:`` without a ``default_model`` must still expose
     every dict key, not collapse to an empty list."""

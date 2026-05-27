@@ -1142,6 +1142,17 @@ def list_authenticated_providers(
             )
         )
 
+    def _add_model_id(target: list, item) -> None:
+        """Append a model id from config entries that may be strings or dicts."""
+        if isinstance(item, str):
+            model_id = item.strip()
+        elif isinstance(item, dict):
+            model_id = str(item.get("name") or item.get("id") or item.get("model") or "").strip()
+        else:
+            model_id = ""
+        if model_id and model_id not in target:
+            target.append(model_id)
+
     def _has_aws_sdk_creds_for_listing(slug: str) -> bool:
         """Credential check for AWS SDK providers in non-runtime discovery."""
         slug_norm = str(slug or "").strip().lower()
@@ -1499,12 +1510,10 @@ def list_authenticated_providers(
             cfg_models = ep_cfg.get("models", [])
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    _add_model_id(models_list, m)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+                    _add_model_id(models_list, m)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -1639,12 +1648,10 @@ def list_authenticated_providers(
             cfg_models = entry.get("models", {})
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+                    _add_model_id(groups[group_key]["models"], m)
             elif isinstance(cfg_models, list):
                 for m in cfg_models:
-                    if m and m not in groups[group_key]["models"]:
-                        groups[group_key]["models"].append(m)
+                    _add_model_id(groups[group_key]["models"], m)
 
         _section4_emitted_slugs: set = set()
         for grp_key, grp in groups.items():

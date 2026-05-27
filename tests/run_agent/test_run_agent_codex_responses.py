@@ -155,9 +155,10 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -166,7 +167,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -482,6 +483,97 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_conversation_recovers_when_codex_final_parse_typeerror_has_output_items(monkeypatch):
+    """Regression: chatgpt.com/backend-api/codex can stream valid output
+    items, then the SDK final parser raises ``'NoneType' object is not
+    iterable``. The user-visible turn should still complete with the streamed
+    assistant text instead of surfacing a non-retryable provider failure.
+    """
+    agent = _build_agent(monkeypatch)
+    calls = {"create": 0}
+    item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream item ok")],
+    )
+
+    def _unexpected_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("unexpected fallback")
+
+    fake_client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[SimpleNamespace(type="response.output_item.done", item=item)],
+                final_error=TypeError("'NoneType' object is not iterable"),
+            ),
+            create=_unexpected_create,
+        )
+    )
+    agent._create_request_openai_client = lambda **kwargs: fake_client
+
+    result = agent.run_conversation("Say hello")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "stream item ok"
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == "stream item ok"
+    assert calls["create"] == 0
+
+
+def test_run_conversation_recovers_when_codex_final_parse_typeerror_has_text_deltas(monkeypatch):
+    """If the SDK final parser fails before producing output items, preserve
+    the already streamed assistant text as the final conversation response.
+    """
+    agent = _build_agent(monkeypatch)
+    calls = {"create": 0}
+
+    def _unexpected_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("unexpected fallback")
+
+    fake_client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.output_text.delta", delta="hello "),
+                    SimpleNamespace(type="response.output_text.delta", delta="world"),
+                ],
+                final_error=TypeError("'NoneType' object is not iterable"),
+            ),
+            create=_unexpected_create,
+        )
+    )
+    agent._create_request_openai_client = lambda **kwargs: fake_client
+
+    result = agent.run_conversation("Say hello")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "hello world"
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == "hello world"
+    assert calls["create"] == 0
+
+
+def test_run_codex_stream_reraises_unrelated_final_parse_typeerror(monkeypatch):
+    """Only the known SDK final-response parse failure is recoverable; other
+    TypeErrors should keep failing so unrelated bugs are not hidden.
+    """
+    agent = _build_agent(monkeypatch)
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[SimpleNamespace(type="response.output_text.delta", delta="hello")],
+                final_error=TypeError("different parser failure"),
+            ),
+            create=lambda **kwargs: _codex_message_response("unexpected fallback"),
+        )
+    )
+
+    with pytest.raises(TypeError, match="different parser failure"):
+        agent._run_codex_stream(_codex_request_kwargs())
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

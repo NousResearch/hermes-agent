@@ -6963,6 +6963,49 @@ class AIAgent:
                     )
                     return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 raise
+            except TypeError as exc:
+                # The OpenAI SDK streaming Responses accumulator
+                # (openai/lib/streaming/responses/_responses.py accumulate_event
+                # -> openai/lib/_parsing/_responses.py parse_response) runs
+                # ``for output in response.output`` with no None-guard, as does
+                # the SDK ``Response.output_text`` property. The ChatGPT Codex
+                # backend (chatgpt.com/backend-api/codex) can emit a streamed
+                # snapshot whose ``response.output`` is null, so the SDK raises
+                # ``TypeError: 'NoneType' object is not iterable`` from inside
+                # ``for event in stream`` here. Narrow to that signature so
+                # genuine TypeErrors in our own event handling still surface.
+                if "not iterable" not in str(exc):
+                    raise
+                # The assistant text already arrived via output_text.delta
+                # events (collected in self._codex_streamed_text_parts), so
+                # synthesize the response from it — same shape as the empty-output
+                # backfill above. Re-driving via create(stream=True) returns the
+                # same null output, so prefer the text we already streamed.
+                if self._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(self._codex_streamed_text_parts)
+                    logger.debug(
+                        "Codex stream accumulator hit SDK None-output TypeError; "
+                        "recovered %d chars from streamed deltas. %s",
+                        len(assembled), self._client_log_context(),
+                    )
+                    return SimpleNamespace(
+                        output=[SimpleNamespace(
+                            type="message", role="assistant", status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        output_text=assembled,
+                        usage=None,
+                        status="completed",
+                        model=api_kwargs.get("model"),
+                    )
+                # Nothing recoverable from the stream (e.g. a tool-call turn) —
+                # re-drive via create(stream=True), which parses events manually.
+                logger.debug(
+                    "Codex stream accumulator hit SDK None-output TypeError with no "
+                    "recoverable streamed text; falling back to create(stream=True). %s",
+                    self._client_log_context(),
+                )
+                return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
 
     def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""
@@ -6974,6 +7017,12 @@ class AIAgent:
 
         # Compatibility shim for mocks or providers that still return a concrete response.
         if hasattr(stream_or_response, "output"):
+            # The Codex backend can return a completed response with output=None
+            # (not merely an empty list). The SDK Response.output_text property
+            # and the codex normalizer both iterate .output, so coerce the null
+            # to an empty list here to avoid 'NoneType' object is not iterable.
+            if getattr(stream_or_response, "output", None) is None:
+                stream_or_response.output = []
             return stream_or_response
         if not hasattr(stream_or_response, "__iter__"):
             return stream_or_response

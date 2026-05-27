@@ -157,9 +157,11 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, iter_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._iter_error = iter_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -168,7 +170,12 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        # Yield any streamed events first (so callers can observe text deltas),
+        # then raise iter_error to simulate a mid-stream accumulator failure.
+        for ev in self._events:
+            yield ev
+        if self._iter_error is not None:
+            raise self._iter_error
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -483,6 +490,90 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_from_sdk_none_output_typeerror(monkeypatch):
+    """ChatGPT Codex backend can stream a response whose ``response.output`` is
+    null. The OpenAI SDK's streaming accumulator (lib/_parsing/_responses.py
+    ``parse_response``) then runs ``for output in response.output`` with no
+    None-guard and raises ``TypeError: 'NoneType' object is not iterable`` from
+    inside ``for event in stream``. _run_codex_stream only caught transport
+    errors and RuntimeError, so the TypeError bubbled up and was misclassified
+    as a non-retryable client error ("HTTP None"), forcing a provider fallback
+    on every codex turn. It must instead fall back to create(stream=True),
+    which parses events manually and guards ``output``.
+    """
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            iter_error=TypeError("'NoneType' object is not iterable")
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("create fallback ok")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create)
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    # No recoverable streamed text -> re-drive via the create(stream=True)
+    # fallback rather than retrying the same (deterministically failing) stream.
+    assert calls["stream"] == 1
+    assert calls["create"] == 1
+    assert response.output[0].content[0].text == "create fallback ok"
+
+
+def test_run_codex_stream_recovers_streamed_text_on_sdk_none_output_typeerror(monkeypatch):
+    """When the SDK accumulator chokes on a null response.output mid-stream, the
+    assistant text has already arrived via output_text.delta events. Recover it
+    and synthesize the response rather than re-driving the request — create
+    (stream=True) returns the same null output, so re-driving would just fail
+    again downstream.
+    """
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            events=[SimpleNamespace(type="response.output_text.delta", delta="ok")],
+            iter_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("should not be reached")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create)
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    # Recovered from the streamed deltas — no re-drive of the request.
+    assert calls["create"] == 0
+    assert response.output[0].content[0].text == "ok"
+
+
+def test_run_codex_create_stream_fallback_coerces_none_output(monkeypatch):
+    """The ChatGPT Codex backend can return a completed response whose .output
+    is None (not merely an empty list). The create(stream=True) fallback must
+    not hand a None-output response downstream — the SDK Response.output_text
+    property and the codex normalizer both iterate .output and would raise
+    TypeError: 'NoneType' object is not iterable.
+    """
+    agent = _build_agent(monkeypatch)
+    none_output_response = SimpleNamespace(output=None, status="completed", model="gpt-5-codex")
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: none_output_response)
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assert response.output == []
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

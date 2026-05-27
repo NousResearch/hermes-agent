@@ -20,10 +20,31 @@ def test_kanban_store_protocol_module_imports():
         KanbanStoreConnection,
         StoreCapabilities,
     )
+    from hermes_cli.kanban_store_sqlite import SQLiteKanbanStore
+
+    store = SQLiteKanbanStore()
 
     assert KanbanStore is not None
     assert KanbanStoreConnection is not None
     assert StoreCapabilities().backend == "unknown"
+    assert store.capabilities.backend == "sqlite"
+    assert store.capabilities.supports_concurrent_writers is False
+
+
+@pytest.fixture(params=("legacy", "sqlite_store"))
+def store(request, kanban_home):
+    """Kanban backend under contract."""
+    if request.param == "legacy":
+        return kb
+    from hermes_cli.kanban_store_sqlite import SQLiteKanbanStore
+
+    return SQLiteKanbanStore()
+
+
+@pytest.fixture
+def legacy_store(kanban_home):
+    """Raw legacy module for direct migration comparisons."""
+    return kb
 
 
 @pytest.fixture
@@ -38,12 +59,6 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
-
-
-@pytest.fixture
-def store(kanban_home):
-    """Current backend under contract: the legacy SQLite facade."""
-    return kb
 
 
 def test_store_contract_create_list_show_roundtrip(store):

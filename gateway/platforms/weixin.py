@@ -376,14 +376,16 @@ async def _api_post(
     token: Optional[str],
     timeout_ms: int,
 ) -> Dict[str, Any]:
-    body = _json_dumps({**payload, "base_info": _base_info()})
-    url = f"{base_url.rstrip('/')}/{endpoint}"
-    timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
-    async with session.post(url, data=body, headers=_headers(token, body), timeout=timeout) as response:
-        raw = await response.text()
-        if not response.ok:
-            raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+    async def _inner():
+        body = _json_dumps({**payload, "base_info": _base_info()})
+        url = f"{base_url.rstrip('/')}/{endpoint}"
+        timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
+        async with session.post(url, data=body, headers=_headers(token, body), timeout=timeout) as response:
+            raw = await response.text()
+            if not response.ok:
+                raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
+            return json.loads(raw)
+    return await asyncio.create_task(_inner())
 
 
 async def _api_get(
@@ -393,17 +395,19 @@ async def _api_get(
     endpoint: str,
     timeout_ms: int,
 ) -> Dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/{endpoint}"
-    headers = {
-        "iLink-App-Id": ILINK_APP_ID,
-        "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
-    }
-    timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
-    async with session.get(url, headers=headers, timeout=timeout) as response:
-        raw = await response.text()
-        if not response.ok:
-            raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+    async def _inner():
+        url = f"{base_url.rstrip('/')}/{endpoint}"
+        headers = {
+            "iLink-App-Id": ILINK_APP_ID,
+            "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
+        }
+        timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
+        async with session.get(url, headers=headers, timeout=timeout) as response:
+            raw = await response.text()
+            if not response.ok:
+                raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
+            return json.loads(raw)
+    return await asyncio.create_task(_inner())
 
 
 async def _get_updates(

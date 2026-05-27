@@ -26,6 +26,13 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _is_codex_tool_call_event(event_type: Any) -> bool:
+    """Return True for Responses events that indicate a tool-call turn."""
+    if not isinstance(event_type, str):
+        return False
+    return "function_call" in event_type or "tool_call" in event_type
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -326,9 +333,9 @@ def _consume_codex_event_stream(
                             logger.debug("Codex stream on_text_delta raised", exc_info=True)
             continue
 
-        if "function_call" in event_type:
+        if _is_codex_tool_call_event(event_type):
             has_tool_calls = True
-            # fall through — function_call items still get added on output_item.done
+            # fall through — tool-call items still get added on output_item.done
 
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")

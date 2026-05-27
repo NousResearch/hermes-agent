@@ -2592,6 +2592,41 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
         assert response.choices[0].message.content == "aux survived"
 
 
+    @pytest.mark.parametrize(
+        "event_type",
+        ["response.tool_call.delta", "response.custom_tool_call.delta"],
+    )
+    def test_does_not_synthesize_text_after_tool_call_event(self, event_type):
+        """Auxiliary recovery should not turn tool-call deltas into text."""
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="incidental aux text"),
+            SimpleNamespace(type=event_type),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed",
+                id="resp_tool_call_null_output",
+                output=None,
+                usage=None,
+            )),
+        ]
+
+        class _NullOutputCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                return _NullOutputCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert response.choices[0].message.content is None
+        assert response.choices[0].message.tool_calls is None
+
+
 # ---------------------------------------------------------------------------
 # Issue #23432 — auxiliary timeout poisons cached client; later aux calls fail
 # ---------------------------------------------------------------------------

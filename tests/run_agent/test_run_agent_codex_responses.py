@@ -531,6 +531,51 @@ def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatc
     assert response.usage.total_tokens == 11
 
 
+@pytest.mark.parametrize(
+    "event_type",
+    ["response.tool_call.delta", "response.custom_tool_call.delta"],
+)
+def test_run_codex_stream_does_not_synthesize_text_after_tool_call_event(monkeypatch, event_type):
+    """Tool/custom-tool events should suppress leaked text synthesis.
+
+    Codex-compatible backends may emit incidental output_text deltas around a
+    tool-call turn and then finish with ``response.output = null``.  When the
+    only tool indicator is a generic/custom tool event, the recovery path must
+    not convert those incidental deltas into an assistant message.
+    """
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="incidental text"),
+            SimpleNamespace(type=event_type),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    id="resp_tool_call_null_output",
+                    status="completed",
+                    output=None,
+                    usage=None,
+                ),
+            ),
+        ]
+    )
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert create_stream.closed is True
+    assert response.output == []
+    assert response.output_text == "incidental text"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

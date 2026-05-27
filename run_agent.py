@@ -3139,35 +3139,6 @@ class AIAgent:
             "api_mode": getattr(self, "api_mode", "") or "",
         }
 
-    def _compression_aux_context_provider(
-        self,
-        *,
-        aux_cfg_provider: str = "",
-        aux_base_url: str = "",
-        aux_api_key: str = "",
-    ) -> str:
-        """Return the provider label that owns the auxiliary credentials."""
-        cfg_provider = (aux_cfg_provider or "").strip()
-        if cfg_provider and cfg_provider != "auto":
-            return cfg_provider
-
-        main_provider = (getattr(self, "provider", "") or "").strip()
-        if main_provider in {"", "auto", "openrouter", "custom"}:
-            return main_provider
-
-        main_base_url = str(getattr(self, "base_url", "") or "").strip().rstrip("/")
-        main_api_key = str(getattr(self, "api_key", "") or "")
-        aux_base_url = str(aux_base_url or "").strip().rstrip("/")
-        aux_api_key = str(aux_api_key or "")
-        if main_base_url == aux_base_url and main_api_key == aux_api_key:
-            return main_provider
-
-        # Auto-resolved auxiliary clients may fall back to a different provider
-        # than the main chat model. Leave provider blank so model metadata
-        # resolution infers it from the auxiliary base_url instead of sending
-        # aux credentials to main-provider-specific probes.
-        return ""
-
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
         window is smaller than the main model's compression threshold.
@@ -3223,17 +3194,15 @@ class AIAgent:
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
 
-            aux_context_provider = self._compression_aux_context_provider(
-                aux_cfg_provider=_aux_cfg_provider,
-                aux_base_url=aux_base_url,
-                aux_api_key=aux_api_key,
-            )
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
-                provider=aux_context_provider,
+                # Each model must be resolved with its own provider so that
+                # provider-specific paths (e.g. Bedrock static table, OpenRouter API)
+                # are invoked for the correct client, not inherited from the main model.
+                provider=(_aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(self, "provider", "")),
             )
 
             # Hard floor: the auxiliary compression model must have at least

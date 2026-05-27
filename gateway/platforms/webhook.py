@@ -464,7 +464,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # using /skill-name slash commands — the gateway's command parser
         # would intercept those and break the flow.
         skills = route_config.get("skills", [])
-        if skills and not route_config.get("deliver_only"):
+        if skills:
             try:
                 from agent.skill_commands import (
                     build_skill_invocation_message,

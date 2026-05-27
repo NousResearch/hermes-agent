@@ -10,7 +10,6 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
-from collections import OrderedDict
 import json
 import logging
 import os
@@ -62,33 +61,6 @@ logger = logging.getLogger(__name__)
 _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_slash_user_id", default=None,
 )
-
-
-class _BoundedMessageIdSet:
-    """Set-like FIFO cache for Slack message IDs awaiting reaction cleanup."""
-
-    def __init__(self, max_size: int):
-        self.max_size = max(1, int(max_size))
-        self._items: OrderedDict[str, None] = OrderedDict()
-
-    def add(self, item: str) -> None:
-        if item in self._items:
-            self._items.move_to_end(item)
-        self._items[item] = None
-        while len(self._items) > self.max_size:
-            self._items.popitem(last=False)
-
-    def discard(self, item: str) -> None:
-        self._items.pop(item, None)
-
-    def __contains__(self, item: object) -> bool:
-        return item in self._items
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    def __iter__(self):
-        return iter(self._items)
 
 
 @dataclass
@@ -346,12 +318,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
-        # Bounded because active-session bypass/queue paths can return before
-        # background-processing hooks get a chance to clean up superseded IDs.
-        self._REACTING_MESSAGE_IDS_MAX = 5000
-        self._reacting_message_ids = _BoundedMessageIdSet(
-            self._REACTING_MESSAGE_IDS_MAX
-        )
+        self._reacting_message_ids: set = set()
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
@@ -1410,12 +1377,12 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
+        if not self._reactions_enabled():
+            return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
         self._reacting_message_ids.discard(ts)
-        if not self._reactions_enabled():
-            return
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
@@ -1838,34 +1805,6 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
 
-    def _bot_message_policy(self) -> str:
-        """Return the configured Slack bot-message policy."""
-        allow_bots = self.config.extra.get("allow_bots", "")
-        if not allow_bots:
-            allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
-        allow_bots = str(allow_bots).lower().strip()
-        return allow_bots if allow_bots in {"none", "mentions", "all"} else "none"
-
-    @staticmethod
-    def _is_bot_message(message: Dict[str, Any]) -> bool:
-        """Return True when a Slack message was authored by a bot."""
-        return bool(message.get("bot_id")) or message.get("subtype") == "bot_message"
-
-    def _bot_message_allowed(
-        self,
-        message: Dict[str, Any],
-        bot_user_id: Optional[str] = None,
-    ) -> bool:
-        """Apply the Slack bot-message policy to direct or historical messages."""
-        policy = self._bot_message_policy()
-        if policy == "all":
-            return True
-        if policy == "mentions":
-            bot_uid = bot_user_id or self._bot_user_id
-            text_check = message.get("text", "")
-            return bool(bot_uid and f"<@{bot_uid}>" in text_check)
-        return False
-
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
@@ -1877,9 +1816,18 @@ class SlackAdapter(BasePlatformAdapter):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
-        if self._is_bot_message(event):
-            if not self._bot_message_allowed(event):
+        if event.get("bot_id") or event.get("subtype") == "bot_message":
+            allow_bots = self.config.extra.get("allow_bots", "")
+            if not allow_bots:
+                allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
+            allow_bots = str(allow_bots).lower().strip()
+            if allow_bots == "none":
                 return
+            elif allow_bots == "mentions":
+                text_check = event.get("text", "")
+                if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                    return
+            # "all" falls through to process the message
             # Always ignore our own messages to prevent echo loops
             msg_user = event.get("user", "")
             if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
@@ -2680,9 +2628,7 @@ class SlackAdapter(BasePlatformAdapter):
         Returns a formatted string with prior thread history, or empty string
         on failure or if the thread has no prior messages.
         """
-        cache_key = (
-            f"{channel_id}:{thread_ts}:{team_id}:{self._bot_message_policy()}"
-        )
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
@@ -2738,7 +2684,7 @@ class SlackAdapter(BasePlatformAdapter):
                     continue
 
                 is_parent = msg_ts == thread_ts
-                is_bot = self._is_bot_message(msg)
+                is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
                 msg_user = msg.get("user", "")
 
                 # Identify "our own" bot for this workspace (multi-workspace safe).
@@ -2749,12 +2695,18 @@ class SlackAdapter(BasePlatformAdapter):
                     else None
                 ) or self._bot_user_id
 
-                if is_bot:
-                    if not self._bot_message_allowed(msg, self_bot_uid):
-                        continue
-                    # Exclude our own prior child replies (circular context).
-                    if not is_parent and self_bot_uid and msg_user == self_bot_uid:
-                        continue
+                # Exclude only our own prior bot replies (circular context).
+                # Keep:
+                #   - the thread parent even if it was posted by a bot
+                #     (e.g. a cron job summary we are now replying to);
+                #   - other bots' child messages (useful third-party context).
+                if (
+                    is_bot
+                    and not is_parent
+                    and self_bot_uid
+                    and msg_user == self_bot_uid
+                ):
+                    continue
 
                 msg_text = msg.get("text", "").strip()
                 if not msg_text:
@@ -2806,9 +2758,7 @@ class SlackAdapter(BasePlatformAdapter):
         Returns empty string on any failure — callers should treat an empty
         return as "no parent context to inject".
         """
-        cache_key = (
-            f"{channel_id}:{thread_ts}:{team_id}:{self._bot_message_policy()}"
-        )
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
@@ -2829,10 +2779,6 @@ class SlackAdapter(BasePlatformAdapter):
             if parent.get("ts", "") != thread_ts:
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            if self._is_bot_message(parent) and not self._bot_message_allowed(
-                parent, bot_uid
-            ):
-                return ""
             text = (parent.get("text") or "").strip()
             if bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()

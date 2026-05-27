@@ -141,6 +141,9 @@ _EXTRA_ENV_KEYS = frozenset({
     "HERMES_LANGFUSE_SAMPLE_RATE",
     "HERMES_LANGFUSE_MAX_CHARS",
     "HERMES_LANGFUSE_DEBUG",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_BASE_URL",
 })
 import yaml
 
@@ -1126,11 +1129,11 @@ DEFAULT_CONFIG = {
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         # When delegate_task narrows child toolsets explicitly, preserve any
-        # MCP toolsets the parent already has enabled. Off by default so an
-        # explicit narrowed toolset list remains a strict least-privilege
-        # boundary. Set to true only when delegated workers should keep MCP
-        # tools already available to the parent.
-        "inherit_mcp_toolsets": False,
+        # MCP toolsets the parent already has enabled. On by default so
+        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
+        # extras" without silently stripping MCP tools the parent already has.
+        # Set to false for strict intersection.
+        "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
@@ -2219,30 +2222,6 @@ OPTIONAL_ENV_VARS = {
     },
     "HERMES_LANGFUSE_BASE_URL": {
         "description": "Langfuse server URL (default: https://cloud.langfuse.com)",
-        "prompt": "Langfuse server URL (leave empty for cloud.langfuse.com)",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "LANGFUSE_PUBLIC_KEY": {
-        "description": "Langfuse project public key (standard SDK variable)",
-        "prompt": "Langfuse public key",
-        "url": "https://cloud.langfuse.com",
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "LANGFUSE_SECRET_KEY": {
-        "description": "Langfuse project secret key (standard SDK variable)",
-        "prompt": "Langfuse secret key",
-        "url": "https://cloud.langfuse.com",
-        "password": True,
-        "category": "tool",
-        "advanced": True,
-    },
-    "LANGFUSE_BASE_URL": {
-        "description": "Langfuse server URL (standard SDK variable)",
         "prompt": "Langfuse server URL (leave empty for cloud.langfuse.com)",
         "url": None,
         "password": False,

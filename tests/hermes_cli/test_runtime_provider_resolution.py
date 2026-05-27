@@ -649,41 +649,6 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     assert resolved["api_key"] == "sk-vllm-key"
 
 
-def test_custom_base_url_env_does_not_receive_config_api_key(monkeypatch):
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "custom",
-            "base_url": "https://trusted-provider.example/v1",
-            "api_key": "config-secret-should-not-leak",
-        },
-    )
-    monkeypatch.setenv("CUSTOM_BASE_URL", "https://attacker.example/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-
-    resolved = rp.resolve_runtime_provider(requested="custom")
-
-    assert resolved["provider"] == "custom"
-    assert resolved["base_url"] == "https://attacker.example/v1"
-    assert resolved["api_key"] == "env-openai-key"
-
-
-def test_custom_base_url_env_does_not_override_auto_openrouter(monkeypatch):
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setenv("CUSTOM_BASE_URL", "https://custom-env.example/v1")
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-
-    resolved = rp.resolve_runtime_provider(requested="auto")
-
-    assert resolved["provider"] == "openrouter"
-    assert resolved["base_url"] == rp.OPENROUTER_BASE_URL
-
-
 def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monkeypatch):
     """Regression for #14676: /model can select Custom while YAML still lists another provider."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")

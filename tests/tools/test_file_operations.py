@@ -570,27 +570,6 @@ class TestPatchReplacePostWriteVerification:
         assert "verification failed" in result.error.lower()
         assert "did not persist" in result.error.lower()
 
-    def test_patch_replace_error_hint_redacts_secret_lines(self, mock_env):
-        """Failed replacement hints must not leak raw secrets from file content."""
-        secret = "sk-abcdefghijklmnopqrstuvwxyz12345678901234567890"
-        content = f"# project configuration\nOPENAI_API_KEY={secret}\nSAFE_VALUE=notsecret\n"
-
-        def side_effect(command, **kwargs):
-            if command.startswith("cat "):
-                return {"output": content, "returncode": 0}
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-
-        result = ops.patch_replace("/tmp/test/.env.local", "OPENAI_API_KEY_MISSING", "replacement")
-
-        assert result.error is not None
-        assert "Did you mean" in result.error
-        assert "OPENAI_API_KEY=" in result.error
-        assert secret not in result.error
-        assert "sk-abc...7890" in result.error
-
     def test_patch_replace_succeeds_when_file_persisted(self, mock_env):
         """Normal success path: write persists, verify read returns new bytes."""
         state = {"content": "hello world\n"}

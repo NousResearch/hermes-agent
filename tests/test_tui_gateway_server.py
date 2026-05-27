@@ -3724,21 +3724,14 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
 # ── session.most_recent ──────────────────────────────────────────────
 
 
-def test_session_most_recent_prefers_local_tui_sessions(monkeypatch):
-    """Auto-resume follows classic TUI behavior and scopes lookup to TUI first."""
-
-    calls = []
+def test_session_most_recent_returns_first_non_denied(monkeypatch):
+    """Drops `tool` rows like session.list does, returns the first hit."""
 
     class _DB:
         def list_sessions_rich(self, *, source=None, limit=200):
-            calls.append((source, limit))
-            assert source in {"tui", "cli"}
-            if source == "tui":
-                return [
-                    {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99}
-                ]
             return [
-                {"id": "cli-1", "source": "cli", "title": "fallback", "started_at": 100}
+                {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
+                {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
             ]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -3750,38 +3743,12 @@ def test_session_most_recent_prefers_local_tui_sessions(monkeypatch):
     assert resp["result"]["session_id"] == "tui-1"
     assert resp["result"]["title"] == "real"
     assert resp["result"]["source"] == "tui"
-    assert calls == [("tui", 1)]
 
 
-def test_session_most_recent_falls_back_to_local_cli_sessions(monkeypatch):
-    calls = []
-
+def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
         def list_sessions_rich(self, *, source=None, limit=200):
-            calls.append((source, limit))
-            assert source in {"tui", "cli"}
-            if source == "cli":
-                return [
-                    {"id": "cli-1", "source": "cli", "title": "fallback", "started_at": 1}
-                ]
-            return []
-
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
-
-    resp = server.handle_request(
-        {"id": "1", "method": "session.most_recent", "params": {}}
-    )
-
-    assert resp["result"]["session_id"] == "cli-1"
-    assert resp["result"]["source"] == "cli"
-    assert calls == [("tui", 1), ("cli", 1)]
-
-
-def test_session_most_recent_returns_null_when_no_local_sessions(monkeypatch):
-    class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
-            assert source in {"tui", "cli"}
-            return []
+            return [{"id": "tool-1", "source": "tool", "started_at": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 

@@ -906,7 +906,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR, can_reference_context_job, get_job
+        from cron.jobs import OUTPUT_DIR
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
@@ -915,17 +915,6 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 logger.warning("context_from: skipping invalid job_id %r", source_job_id)
                 continue
             try:
-                source_job = get_job(source_job_id)
-                if not source_job:
-                    logger.warning("context_from: source job %r not found", source_job_id)
-                    continue
-                if not can_reference_context_job(job, source_job):
-                    logger.warning(
-                        "context_from: source job %r is not available to requester job %r",
-                        source_job_id,
-                        job.get("id"),
-                    )
-                    continue
                 job_output_dir = OUTPUT_DIR / source_job_id
                 if not job_output_dir.exists():
                     continue  # silent skip — no output yet

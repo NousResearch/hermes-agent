@@ -1,5 +1,4 @@
 import { defineConfig, type Plugin } from "vite";
-import type { IncomingMessage, ServerResponse } from "node:http";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
@@ -16,70 +15,6 @@ const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
  * load, scrapes the `window.__HERMES_SESSION_TOKEN__` assignment, and
  * re-injects it into the dev HTML. No-op in production builds.
  */
-function isLoopbackAddress(address: string | undefined): boolean {
-  if (!address) return false;
-
-  const normalized = address.replace(/^\[|\]$/g, "").toLowerCase();
-  if (normalized === "localhost" || normalized === "::1") return true;
-  if (normalized.startsWith("127.")) return true;
-  if (normalized.startsWith("::ffff:")) {
-    return isLoopbackAddress(normalized.slice("::ffff:".length));
-  }
-
-  return false;
-}
-
-function acceptsHtml(req: IncomingMessage): boolean {
-  const accept = req.headers.accept;
-  const values = Array.isArray(accept) ? accept : [accept ?? ""];
-  return values.some((value) => value.includes("text/html"));
-}
-
-function isHtmlDocumentRoute(req: IncomingMessage): boolean {
-  if (req.method !== "GET" && req.method !== "HEAD") return false;
-
-  const pathname = new URL(req.url ?? "/", "http://vite.invalid").pathname;
-  const leaf = pathname.split("/").pop() ?? "";
-  return (
-    acceptsHtml(req) ||
-    pathname === "/" ||
-    pathname.endsWith(".html") ||
-    !leaf.includes(".")
-  );
-}
-
-function isProtectedDashboardRoute(req: IncomingMessage): boolean {
-  const pathname = new URL(req.url ?? "/", "http://vite.invalid").pathname;
-  return (
-    pathname === "/api" ||
-    pathname.startsWith("/api/") ||
-    pathname === "/dashboard-plugins" ||
-    pathname.startsWith("/dashboard-plugins/") ||
-    isHtmlDocumentRoute(req)
-  );
-}
-
-function blockRemoteDashboardAccess(
-  req: IncomingMessage,
-  res: ServerResponse,
-  next: () => void,
-): void {
-  if (
-    isLoopbackAddress(req.socket.remoteAddress) ||
-    !isProtectedDashboardRoute(req)
-  ) {
-    next();
-    return;
-  }
-
-  res.statusCode = 403;
-  res.setHeader("content-type", "text/plain; charset=utf-8");
-  res.end(
-    "Hermes dashboard dev access is limited to loopback clients. " +
-      "Run the production dashboard or connect through localhost to use protected APIs.",
-  );
-}
-
 function hermesDevToken(): Plugin {
   const TOKEN_RE = /window\.__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
   const EMBEDDED_RE =
@@ -90,9 +25,6 @@ function hermesDevToken(): Plugin {
   return {
     name: "hermes:dev-session-token",
     apply: "serve",
-    configureServer(server) {
-      server.middlewares.use(blockRemoteDashboardAccess);
-    },
     async transformIndexHtml() {
       try {
         const res = await fetch(BACKEND, { headers: { accept: "text/html" } });

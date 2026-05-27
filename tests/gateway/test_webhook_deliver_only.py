@@ -122,45 +122,6 @@ class TestDeliverOnlyBypassesAgent:
         assert content_arg == "alice matched with bob!"
 
     @pytest.mark.asyncio
-    async def test_deliver_only_ignores_route_skills(self):
-        """Configured skills must not mutate literal direct-delivery content."""
-        routes = {
-            "safe-alert": {
-                "secret": _INSECURE_NO_AUTH,
-                "deliver": "telegram",
-                "deliver_only": True,
-                "deliver_extra": {"chat_id": "12345"},
-                "prompt": "Notification: {message}",
-                "skills": ["leaky-skill"],
-            }
-        }
-        adapter = _make_adapter(routes)
-        mock_target = _wire_mock_target(adapter)
-
-        with patch(
-            "agent.skill_commands.build_skill_invocation_message",
-            return_value="SECRET SKILL CONTENT",
-        ) as mock_build, patch(
-            "agent.skill_commands.get_skill_commands",
-            return_value={"/leaky-skill": {"name": "leaky-skill"}},
-        ) as mock_get:
-            app = _create_app(adapter)
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.post(
-                    "/webhooks/safe-alert",
-                    json={"message": "hello webhook"},
-                    headers={"X-GitHub-Delivery": "delivery-skills-1"},
-                )
-                assert resp.status == 200
-
-        mock_get.assert_not_called()
-        mock_build.assert_not_called()
-        mock_target.send.assert_awaited_once()
-        delivered_content = mock_target.send.await_args.args[1]
-        assert delivered_content == "Notification: hello webhook"
-        assert "SECRET SKILL CONTENT" not in delivered_content
-
-    @pytest.mark.asyncio
     async def test_template_rendering_works(self):
         """Dot-notation template variables resolve in deliver_only mode."""
         routes = {

@@ -7,7 +7,6 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 import acp
-from agent.redact import redact_sensitive_text
 from acp.schema import (
     ToolCallLocation,
     ToolCallStart,
@@ -825,11 +824,6 @@ def _strip_diff_prefix(path: str) -> str:
     return raw
 
 
-def _redact_diff_text(diff_text: str) -> str:
-    """Redact and bound diff previews before exposing them to ACP clients."""
-    return _truncate_text(redact_sensitive_text(diff_text, force=True))
-
-
 def _parse_unified_diff_content(diff_text: str) -> List[Any]:
     """Convert unified diff text into ACP diff content blocks."""
     if not diff_text:
@@ -912,7 +906,7 @@ def _build_tool_complete_content(
                 snapshot=snapshot,
             )
             if isinstance(diff_text, str) and diff_text.strip():
-                diff_content = _parse_unified_diff_content(_redact_diff_text(diff_text))
+                diff_content = _parse_unified_diff_content(diff_text)
                 if diff_content:
                     return diff_content
         except Exception:

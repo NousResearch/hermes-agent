@@ -65,7 +65,6 @@ import argparse
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -7189,41 +7188,21 @@ def _cmd_update_check():
         print(f"  Run '{recommended_update_command()}' to install.")
 
 
-def _root_home_dir() -> Path:
-    """Return root's passwd-database home, independent of inherited HOME."""
-    try:
-        import pwd
-
-        return Path(pwd.getpwuid(0).pw_dir or "/root")
-    except (ImportError, KeyError, OSError):
-        return Path("/root")
-
-
-def _is_safe_root_owned_path(path: Path, *, require_file: bool) -> bool:
-    """Return True when a root startup path is safe to inspect or modify."""
-    try:
-        info = path.lstat()
-    except OSError:
-        return False
-    expected_type = stat.S_ISREG if require_file else stat.S_ISDIR
-    return (
-        expected_type(info.st_mode)
-        and info.st_uid == 0
-        and not (info.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
-    )
-
-
 def _ensure_fhs_path_guard() -> None:
     """Ensure /usr/local/bin is on PATH for RHEL-family root non-login shells.
 
-    Mirrors the post-symlink repair in ``scripts/install.sh`` so that existing
-    FHS-layout root installs on RHEL/CentOS/Rocky/Alma 8+ get repaired on
-    ``hermes update`` without requiring a reinstall. The repair intentionally
-    avoids launching an interactive root shell: ``bash -i`` would source
-    startup files before running the probe command, so a preserved HOME could
-    cross a privilege boundary. Instead, this helper resolves root's home from
-    the passwd database and only updates root-owned, non-group/world-writable
-    startup files. Idempotent.
+    Mirrors the post-symlink probe added to ``scripts/install.sh`` so that
+    existing FHS-layout root installs on RHEL/CentOS/Rocky/Alma 8+ get
+    repaired on ``hermes update`` without requiring a reinstall.  The
+    installer's assumption that ``/usr/local/bin`` is on PATH for every
+    standard shell breaks on those distros in non-login interactive shells
+    (su, sudo -s, tmux panes, some web terminals): /etc/bashrc doesn't
+    add /usr/local/bin and /root/.bash_profile doesn't either.  Symptom:
+    ``hermes`` prints ``command not found`` even though the symlink lives
+    at /usr/local/bin/hermes.
+
+    Silent no-op on: non-Linux, non-root, non-FHS installs, and any system
+    where ``bash -i -c 'command -v hermes'`` already resolves.  Idempotent.
     """
     if sys.platform != "linux":
         return
@@ -7238,9 +7217,30 @@ def _ensure_fhs_path_guard() -> None:
     if not fhs_link.is_symlink() and not fhs_link.exists():
         return
 
-    home = _root_home_dir()
-    if not _is_safe_root_owned_path(home, require_file=False):
-        return
+    # Probe a fresh non-login interactive bash the way the user will use it.
+    # ``bash -i -c`` sources ~/.bashrc but NOT ~/.bash_profile or /etc/profile,
+    # which is the exact scenario where RHEL root loses /usr/local/bin.
+    home = os.environ.get("HOME") or "/root"
+    try:
+        probe = subprocess.run(
+            [
+                "env",
+                "-i",
+                f"HOME={home}",
+                f"TERM={os.environ.get('TERM', 'dumb')}",
+                "bash",
+                "-i",
+                "-c",
+                "command -v hermes",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return  # no bash or probe hung — don't block update on this
+    if probe.returncode == 0:
+        return  # already on PATH, nothing to do
 
     path_line = 'export PATH="/usr/local/bin:$PATH"'
     path_comment = (
@@ -7248,8 +7248,8 @@ def _ensure_fhs_path_guard() -> None:
     )
     wrote_any = False
     for candidate in (".bashrc", ".bash_profile"):
-        cfg = home / candidate
-        if not _is_safe_root_owned_path(cfg, require_file=True):
+        cfg = Path(home) / candidate
+        if not cfg.is_file():
             continue
         try:
             existing = cfg.read_text(errors="replace")

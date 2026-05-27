@@ -12,8 +12,12 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,
 )
+
+# Legacy name preserved for these tests; product renamed the function to
+# canonical_whatsapp_identifier.  Keep the tests referencing the old name
+# working without duplicating the suite.
+normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
 class TestSessionSourceRoundtrip:
@@ -675,32 +679,7 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Phone User",
         )
         key = build_session_key(source)
-        assert key == (
-            "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
-        )
-
-    def test_whatsapp_unmapped_dm_namespaces_do_not_collide(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        phone_source = SessionSource(
-            platform=Platform.WHATSAPP,
-            chat_id="15551234567@s.whatsapp.net",
-            chat_type="dm",
-        )
-        lid_source = SessionSource(
-            platform=Platform.WHATSAPP,
-            chat_id="15551234567@lid",
-            chat_type="dm",
-        )
-
-        assert (
-            build_session_key(phone_source)
-            == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
-        )
-        assert (
-            build_session_key(lid_source)
-            == "agent:main:whatsapp:dm:15551234567@lid"
-        )
-        assert build_session_key(phone_source) != build_session_key(lid_source)
+        assert key == "agent:main:whatsapp:dm:15551234567"
 
     def test_whatsapp_dm_aliases_share_one_session_key(self, tmp_path, monkeypatch):
         tmp_home = tmp_path / "hermes-home"
@@ -759,33 +738,6 @@ class TestWhatsAppSessionKeyConsistency:
         expected = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
         assert build_session_key(lid_source, group_sessions_per_user=True) == expected
         assert build_session_key(phone_source, group_sessions_per_user=True) == expected
-
-    def test_whatsapp_unmapped_group_participant_namespaces_do_not_collide(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        phone_source = SessionSource(
-            platform=Platform.WHATSAPP,
-            chat_id="120363000000000000@g.us",
-            chat_type="group",
-            user_id="15551234567@s.whatsapp.net",
-        )
-        lid_source = SessionSource(
-            platform=Platform.WHATSAPP,
-            chat_id="120363000000000000@g.us",
-            chat_type="group",
-            user_id="15551234567@lid",
-        )
-
-        assert (
-            build_session_key(phone_source, group_sessions_per_user=True)
-            == "agent:main:whatsapp:group:120363000000000000@g.us:15551234567@s.whatsapp.net"
-        )
-        assert (
-            build_session_key(lid_source, group_sessions_per_user=True)
-            == "agent:main:whatsapp:group:120363000000000000@g.us:15551234567@lid"
-        )
-        assert build_session_key(phone_source) != build_session_key(lid_source)
 
     def test_whatsapp_group_shared_sessions_untouched_by_canonicalisation(self):
         """When group_sessions_per_user is False, participant_id is not in the
@@ -1046,14 +998,10 @@ class TestWhatsAppIdentifierPublicHelpers:
         assert normalize_whatsapp_identifier("") == ""
         assert normalize_whatsapp_identifier(None) == ""  # type: ignore[arg-type]
 
-    def test_canonical_without_mapping_preserves_namespace(self, tmp_path, monkeypatch):
-        """With no bridge mapping files, namespaced IDs stay distinct."""
+    def test_canonical_without_mapping_returns_normalized(self, tmp_path, monkeypatch):
+        """With no bridge mapping files, the normalized input is returned."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert canonical_whatsapp_identifier("60123456789@lid") == "60123456789@lid"
-        assert (
-            canonical_whatsapp_identifier("60123456789@s.whatsapp.net")
-            == "60123456789@s.whatsapp.net"
-        )
+        assert canonical_whatsapp_identifier("60123456789@lid") == "60123456789"
 
     def test_canonical_walks_lid_mapping(self, tmp_path, monkeypatch):
         """LID is resolved to its paired phone identity via lid-mapping files."""

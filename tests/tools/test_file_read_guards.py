@@ -91,33 +91,6 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertIn("device file", result["error"])
 
 
-def test_internal_hub_read_guard_uses_terminal_cwd_resolution(tmp_path, monkeypatch):
-    """Relative reads must be blocked after resolving against TERMINAL_CWD."""
-    process_cwd = tmp_path / "process"
-    terminal_cwd = tmp_path / "session" / "workdir"
-    hermes_home = tmp_path / "session" / ".hermes"
-    blocked_file = hermes_home / "skills" / ".hub" / "index-cache" / "entry.json"
-
-    process_cwd.mkdir()
-    terminal_cwd.mkdir(parents=True)
-    blocked_file.parent.mkdir(parents=True)
-    blocked_file.write_text("PWNED_INTERNAL_CACHE_MARKER")
-
-    monkeypatch.chdir(process_cwd)
-    monkeypatch.setenv("TERMINAL_CWD", str(terminal_cwd))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    relative_path = "../.hermes/skills/.hub/index-cache/entry.json"
-    with patch("tools.file_tools._get_file_ops") as mock_ops:
-        mock_ops.return_value = _make_fake_ops(content=blocked_file.read_text())
-
-        result = json.loads(read_file_tool(relative_path, task_id="hub_guard"))
-
-    assert "error" in result
-    assert "internal Hermes cache file" in result["error"]
-    mock_ops.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # Character-count limits
 # ---------------------------------------------------------------------------

@@ -575,19 +575,61 @@ def test_review_ready_contract_rejects_stale_criteria_hash_and_requires_worktree
     assert retained["reason_codes"] == []
 
 
+def test_verifier_result_pass_builds_kanban_ssot_and_criterion_rows():
+    from gateway.kanban_autopilot import evaluate_verifier_result, validate_worker_done_evidence
+
+    evidence = {**_worker_done_evidence(), "worker_identity": "arisu"}
+    worker_done = validate_worker_done_evidence(evidence, task_body=evidence["task_body"])
+    assert worker_done["worker_done_evidence_valid"] is True
+
+    result = evaluate_verifier_result(evidence, verifier_identity="yuuka")
+
+    assert result["verdict"] == "PASS"
+    assert result["review_ready"] is True
+    assert result["criterion_results"]
+    assert all({"criterion_id", "verdict", "reason_codes", "remediation", "checks", "evidence"} <= set(row) for row in result["criterion_results"])
+    assert result["kanban_ssot"]["task_runs"]["metadata"]["verifier_result"]["verdict"] == "PASS"
+
+
+def test_verifier_result_blocks_self_approval_even_when_worker_done_is_valid():
+    from gateway.kanban_autopilot import evaluate_verifier_result, validate_worker_done_evidence
+
+    evidence = {**_worker_done_evidence(), "worker_identity": "arisu", "verifier_identity": "arisu"}
+    worker_done = validate_worker_done_evidence(evidence, task_body=evidence["task_body"])
+    assert worker_done["worker_done_evidence_valid"] is True
+
+    result = evaluate_verifier_result(evidence, verifier_identity="arisu")
+
+    assert result["verdict"] == "BLOCKED"
+    assert result["review_ready"] is False
+    assert "self_approval_prohibited" in result["reason_codes"]
+
+
 def test_review_ready_contract_requires_verifier_pass():
-    from gateway.kanban_autopilot import evaluate_review_ready_contract
+    from gateway.kanban_autopilot import evaluate_review_ready_contract, evaluate_verifier_result
 
-    missing = evaluate_review_ready_contract({k: v for k, v in _review_ready_evidence().items() if k != "verifier_verdict"})
-    failed = evaluate_review_ready_contract({**_review_ready_evidence(), "verifier_verdict": {"verdict": "FAIL", "reason_codes": ["criterion_failed"]}})
-    passed = evaluate_review_ready_contract(_review_ready_evidence())
-
+    base = _review_ready_evidence()
+    missing = evaluate_review_ready_contract({k: v for k, v in base.items() if k not in {"verifier_verdict", "verifier_result"}})
     assert missing["review_ready"] is False
     assert "missing_verifier_pass" in missing["reason_codes"]
-    assert failed["review_ready"] is False
-    assert "missing_verifier_pass" in failed["reason_codes"]
-    assert passed["review_ready"] is True
-    assert "missing_verifier_pass" not in passed["reason_codes"]
+
+    pass_result = evaluate_verifier_result({**_worker_done_evidence(), "worker_identity": "arisu"}, verifier_identity="yuuka")
+    pass_contract = evaluate_review_ready_contract({**base, "verifier_result": pass_result})
+    assert pass_contract["review_ready"] is True
+    assert pass_contract["verifier_result"]["verdict"] == "PASS"
+
+    fail_contract = evaluate_review_ready_contract({
+        **base,
+        "verifier_result": {
+            "verdict": "FAIL",
+            "status": "failed",
+            "reason_codes": ["verifier_failed_criterion"],
+            "criterion_results": [],
+            "review_ready": False,
+        },
+    })
+    assert fail_contract["review_ready"] is False
+    assert "verifier_not_pass" in fail_contract["reason_codes"]
 
 
 def test_ready_gate_accepts_native_contract_but_never_claims_or_spawns(monkeypatch):

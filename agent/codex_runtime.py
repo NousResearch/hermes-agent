@@ -20,10 +20,48 @@ import json
 import logging
 import os
 import time
+import traceback
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
+
+
+def _is_openai_responses_output_none_typeerror(exc: BaseException) -> bool:
+    """Detect the OpenAI SDK Responses parser crash for output=None events."""
+    if not isinstance(exc, TypeError):
+        return False
+    if "'NoneType' object is not iterable" not in str(exc):
+        return False
+    tb_text = "".join(traceback.format_tb(exc.__traceback__))
+    return (
+        "openai/lib/_parsing/_responses.py" in tb_text
+        or "openai/lib/streaming/responses/_responses.py" in tb_text
+    )
+
+
+def _codex_response_from_stream_backfill(
+    *,
+    collected_output_items: list,
+    collected_text_deltas: list,
+) -> Any:
+    if collected_output_items:
+        return SimpleNamespace(
+            status="completed",
+            output=list(collected_output_items),
+        )
+    if collected_text_deltas:
+        assembled = "".join(collected_text_deltas)
+        return SimpleNamespace(
+            status="completed",
+            output=[SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )],
+        )
+    return None
 
 
 def run_codex_app_server_turn(
@@ -251,7 +289,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -270,7 +308,37 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             "Codex stream: synthesized output from %d text deltas (%d chars)",
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
+                    elif _out is None:
+                        # Newer chatgpt.com/backend-api/codex streams can end
+                        # with a completed Response whose output is JSON null.
+                        # The SDK's output_text property assumes an iterable
+                        # output, so normalize null to an empty list here and
+                        # let the outer response-validation path retry/fallback
+                        # as a malformed empty response.
+                        final_response.output = []
                 return final_response
+        except TypeError as exc:
+            if not _is_openai_responses_output_none_typeerror(exc):
+                raise
+            backfilled = _codex_response_from_stream_backfill(
+                collected_output_items=collected_output_items,
+                collected_text_deltas=agent._codex_streamed_text_parts,
+            )
+            if backfilled is not None:
+                logger.debug(
+                    "Codex Responses stream SDK parser hit output=None; "
+                    "recovered response from %d output item(s), %d text delta(s). %s",
+                    len(collected_output_items),
+                    len(agent._codex_streamed_text_parts),
+                    agent._client_log_context(),
+                )
+                return backfilled
+            logger.debug(
+                "Codex Responses stream SDK parser hit output=None with no "
+                "recoverable stream content; falling back to create(stream=True). %s",
+                agent._client_log_context(),
+            )
+            return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
@@ -348,6 +416,8 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
 
     # Compatibility shim for mocks or providers that still return a concrete response.
     if hasattr(stream_or_response, "output"):
+        if getattr(stream_or_response, "output", None) is None:
+            stream_or_response.output = []
         return stream_or_response
     if not hasattr(stream_or_response, "__iter__"):
         return stream_or_response
@@ -414,7 +484,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is not None:
                 # Backfill empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(
@@ -432,6 +502,8 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                             "Codex fallback stream: synthesized from %d deltas (%d chars)",
                             len(collected_text_deltas), len(assembled),
                         )
+                    elif _out is None:
+                        terminal_response.output = []
                 return terminal_response
     finally:
         close_fn = getattr(stream_or_response, "close", None)

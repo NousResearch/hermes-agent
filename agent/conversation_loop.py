@@ -1224,7 +1224,10 @@ def run_conversation(
                             else:
                                 # output_text fallback: stream backfill may have failed
                                 # but normalize can still recover from output_text
-                                _out_text = getattr(response, "output_text", None)
+                                try:
+                                    _out_text = getattr(response, "output_text", None)
+                                except TypeError:
+                                    _out_text = None
                                 _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
                                 if _out_text_stripped:
                                     logger.debug(

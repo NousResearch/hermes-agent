@@ -484,6 +484,95 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_recovers_text_delta_when_sdk_parser_sees_output_none(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setattr(
+        "agent.codex_runtime._is_openai_responses_output_none_typeerror",
+        lambda exc: True,
+    )
+
+    class _OutputNoneCrashStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            yield SimpleNamespace(type="response.output_text.delta", delta="hello")
+            raise TypeError("'NoneType' object is not iterable")
+
+    fallback_calls = {"n": 0}
+
+    def _fallback(*args, **kwargs):
+        fallback_calls["n"] += 1
+        return _codex_message_response("fallback")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _OutputNoneCrashStream(),
+            create=lambda **kwargs: _codex_message_response("unused"),
+        )
+    )
+    agent._run_codex_create_stream_fallback = _fallback
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output[0].content[0].text == "hello"
+    assert fallback_calls["n"] == 0
+
+
+def test_run_codex_stream_falls_back_when_sdk_parser_sees_output_none_without_deltas(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setattr(
+        "agent.codex_runtime._is_openai_responses_output_none_typeerror",
+        lambda exc: True,
+    )
+
+    class _OutputNoneCrashStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            raise TypeError("'NoneType' object is not iterable")
+
+    fallback_response = _codex_message_response("fallback ok")
+    fallback_calls = {"n": 0}
+
+    def _fallback(*args, **kwargs):
+        fallback_calls["n"] += 1
+        return fallback_response
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _OutputNoneCrashStream(),
+            create=lambda **kwargs: _codex_message_response("unused"),
+        )
+    )
+    agent._run_codex_create_stream_fallback = _fallback
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response is fallback_response
+    assert fallback_calls["n"] == 1
+
+
+def test_codex_create_stream_fallback_normalizes_concrete_output_none(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    response = SimpleNamespace(output=None, status="completed")
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: response)
+    )
+
+    result = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+
+    assert result is response
+    assert result.output == []
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

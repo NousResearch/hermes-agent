@@ -398,6 +398,20 @@ class TestCodexNormalizeResponse:
         assert nr.content == "Hello world"
         assert nr.finish_reason == "stop"
 
+    def test_output_none_with_sdk_output_text_property_error_raises_clean_runtimeerror(self, transport):
+        class _OutputNoneResponse:
+            output = None
+            status = "completed"
+            incomplete_details = None
+            usage = None
+
+            @property
+            def output_text(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        with pytest.raises(RuntimeError, match="Responses API returned no output items"):
+            transport.normalize_response(_OutputNoneResponse())
+
     def test_message_items_preserved_in_provider_data(self, transport):
         """Codex assistant message item ids/phases must survive transport normalization."""
         r = SimpleNamespace(

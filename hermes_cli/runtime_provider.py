@@ -198,7 +198,15 @@ def _get_model_config() -> Dict[str, Any]:
                 cfg["default"] = detected
         return cfg
     if isinstance(model_cfg, str) and model_cfg.strip():
-        return {"default": model_cfg.strip()}
+        cfg = {"default": model_cfg.strip()}
+        # Mirror load_cli_config's root-level provider/base_url fallback
+        # so that users with legacy flat configs (model: <name> + provider: <name>)
+        # get consistent provider resolution across CLI and runtime paths.
+        if config.get("provider"):
+            cfg["provider"] = config["provider"]
+        if config.get("base_url"):
+            cfg["base_url"] = config["base_url"]
+        return cfg
     return {}
 
 

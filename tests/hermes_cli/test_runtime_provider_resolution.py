@@ -2657,3 +2657,83 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+# ── _get_model_config root-level provider/base_url fallback ──────────
+
+
+def test_get_model_config_string_model_with_root_provider(monkeypatch):
+    """String model + root-level provider → provider injected into result."""
+    monkeypatch.setattr(
+        rp, "load_config",
+        lambda: {"model": "deepseek-v4-flash", "provider": "deepseek"},
+    )
+
+    cfg = rp._get_model_config()
+
+    assert cfg["default"] == "deepseek-v4-flash"
+    assert cfg["provider"] == "deepseek"
+
+
+def test_get_model_config_string_model_with_root_base_url(monkeypatch):
+    """String model + root-level base_url → base_url injected into result."""
+    monkeypatch.setattr(
+        rp, "load_config",
+        lambda: {
+            "model": "deepseek-v4-flash",
+            "base_url": "https://api.deepseek.com",
+        },
+    )
+
+    cfg = rp._get_model_config()
+
+    assert cfg["default"] == "deepseek-v4-flash"
+    assert cfg["base_url"] == "https://api.deepseek.com"
+
+
+def test_get_model_config_string_model_with_both_roots(monkeypatch):
+    """String model + both root-level keys → both injected."""
+    monkeypatch.setattr(
+        rp, "load_config",
+        lambda: {
+            "model": "deepseek-v4-flash",
+            "provider": "deepseek",
+            "base_url": "https://api.deepseek.com",
+        },
+    )
+
+    cfg = rp._get_model_config()
+
+    assert cfg["default"] == "deepseek-v4-flash"
+    assert cfg["provider"] == "deepseek"
+    assert cfg["base_url"] == "https://api.deepseek.com"
+
+
+def test_get_model_config_string_model_no_roots_is_unchanged(monkeypatch):
+    """String model without root-level keys — original behavior preserved."""
+    monkeypatch.setattr(
+        rp, "load_config",
+        lambda: {"model": "deepseek-v4-flash"},
+    )
+
+    cfg = rp._get_model_config()
+
+    assert cfg == {"default": "deepseek-v4-flash"}
+
+
+def test_get_model_config_dict_model_is_unchanged(monkeypatch):
+    """Dict model format — no change (dict path already has provider)."""
+    monkeypatch.setattr(
+        rp, "load_config",
+        lambda: {
+            "model": {
+                "default": "claude-sonnet-4-6",
+                "provider": "anthropic",
+            },
+            "provider": "deepseek",  # should NOT leak into dict model path
+        },
+    )
+
+    cfg = rp._get_model_config()
+
+    assert cfg["default"] == "claude-sonnet-4-6"
+    assert cfg["provider"] == "anthropic"  # from dict, not rootprovider/base_url fallback in _get_model_config())

@@ -119,6 +119,8 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "Use target='origin' to send back to the current gateway conversation "
+        "(same chat/topic/thread).\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
@@ -135,7 +137,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Use 'origin' to send back to the current gateway conversation. Other formats: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'origin', 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -166,23 +168,60 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _get_current_session_target(platform_name: str) -> tuple[str | None, str | None]:
+    """Return the current gateway chat/thread when sending on the same platform.
+
+    This lets a bare target like ``telegram`` or ``feishu`` route back to the
+    active chat when the tool is invoked from a gateway conversation, instead
+    of unexpectedly falling back to the configured home channel.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return None, None
+
+    session_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    if session_platform != platform_name:
+        return None, None
+
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+    if not chat_id:
+        return None, None
+
+    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None
+    return chat_id, thread_id
+
+
 def _handle_send(args):
     """Send a message to a platform target."""
-    target = args.get("target", "")
+    target = str(args.get("target", "") or "").strip()
     message = args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
-    chat_id = None
-    thread_id = None
-
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    if target.lower() == "origin":
+        try:
+            from gateway.session_context import get_session_env
+        except Exception:
+            return tool_error("target='origin' is only available inside a gateway conversation")
+        platform_name = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip() or None
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None
+        if not platform_name or platform_name == "local" or not chat_id:
+            return tool_error("target='origin' is only available inside a gateway conversation")
+        target_ref = None
+        is_explicit = True
     else:
-        is_explicit = False
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        chat_id = None
+        thread_id = None
+
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        else:
+            is_explicit = False
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -256,21 +295,26 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
-        if not home and platform_name == "weixin":
-            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
-            if wx_home:
-                from gateway.config import HomeChannel
-                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
-        if home:
-            chat_id = home.chat_id
-            used_home_channel = True
+        current_chat_id, current_thread_id = _get_current_session_target(platform_name)
+        if current_chat_id:
+            chat_id = current_chat_id
+            thread_id = thread_id or current_thread_id
         else:
-            return json.dumps({
-                "error": f"No home channel set for {platform_name} to determine where to send the message. "
-                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
-            })
+            home = config.get_home_channel(platform)
+            if not home and platform_name == "weixin":
+                wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+                if wx_home:
+                    from gateway.config import HomeChannel
+                    home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+            if home:
+                chat_id = home.chat_id
+                used_home_channel = True
+            else:
+                return json.dumps({
+                    "error": f"No home channel set for {platform_name} to determine where to send the message. "
+                    f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                    f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                })
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:

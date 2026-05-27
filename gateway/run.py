@@ -12945,6 +12945,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
+            def _log_failed_send(label: str, result: Any) -> None:
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.warning(
+                        "[%s] Post-stream %s delivery failed: %s",
+                        adapter.name,
+                        label,
+                        getattr(result, "error", None) or result,
+                    )
+
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
@@ -12986,23 +12995,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
+                        _log_failed_send("media", result)
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
+                        _log_failed_send("media", result)
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                        _log_failed_send("media", result)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
@@ -13010,17 +13022,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
                         )
+                        _log_failed_send("file", result)
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
+                        _log_failed_send("file", result)
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
 

@@ -70,6 +70,8 @@ from gateway_integration import (  # noqa: E402
     gateway_register_turn,
     gateway_trim_check,
     gateway_set_block_protected,
+    gateway_shadow_review,
+    gateway_shadow_review_result,
 )
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -8716,6 +8718,23 @@ class GatewayRunner:
                         "Quality gate low score (%s/10) for session %s — flags: %s",
                         _qg_score, session_key, _qg_flags,
                     )
+
+            # Shadow review — fire async review of code changes via local 30B.
+            # Does NOT block delivery; findings are logged for audit and
+            # available via gateway_shadow_review_result(request_id).
+            if response and agent_result.get("tools"):
+                try:
+                    _sr_id = gateway_shadow_review(
+                        diff=response,
+                        file_after=response,
+                        project_context=_orch_result.get("context", ""),
+                        gateway_session_id=session_key,
+                        orchestrator_session_key=session_key,
+                    )
+                    if _sr_id:
+                        logger.debug("Shadow review queued: %s", _sr_id)
+                except Exception as _sr_err:
+                    logger.warning("Shadow review dispatch failed: %s", _sr_err)
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When

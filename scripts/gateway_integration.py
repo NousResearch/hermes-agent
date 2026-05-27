@@ -233,6 +233,30 @@ def gateway_quality_gate(content: str, task_type: str = "general",
     return orch.quality_gate(content=content, task_type=task_type)
 
 
+# ── Shadow Review Integration ──────────────────────────────────────
+
+def gateway_shadow_review(diff: str, file_after: str,
+                           project_context: str = "",
+                           session_history: str = "",
+                           gateway_session_id: str = "default",
+                           orchestrator_session_key: str | None = None) -> str:
+    """Request an asynchronous shadow review of a code change.
+
+    Fires off a background review against the local 30B model and returns
+    a request_id.  Use gateway_shadow_review_result() to poll for findings.
+    """
+    _ensure_session_key(gateway_session_id, orchestrator_session_key)
+    from shadow_reviewer import review_code_change
+    return review_code_change(diff, file_after, project_context,
+                              session_history, gateway_session_id)
+
+
+def gateway_shadow_review_result(request_id: str) -> dict | None:
+    """Poll for a shadow review result. Returns None if still running."""
+    from shadow_reviewer import get_review_result
+    return get_review_result(request_id)
+
+
 # ── Batch cleanup (for Night Council / shutdown) ────────────────
 
 def gateway_cleanup_all():

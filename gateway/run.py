@@ -11768,6 +11768,7 @@ class GatewayRunner:
                     session_id=task_id,
                     platform=platform_key,
                     user_id=source.user_id,
+                    user_id_alt=source.user_id_alt,
                     user_name=source.user_name,
                     chat_id=source.chat_id,
                     chat_name=source.chat_name,
@@ -15070,6 +15071,29 @@ class GatewayRunner:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
+
+        # Honcho identity-mapping keys live in honcho.json, not user_config.
+        # HonchoSessionManager freezes the resolved peer_name / ai_peer /
+        # pin / aliases / prefix at construction; without busting here,
+        # mid-flight honcho.json edits go unread until the next unrelated
+        # cache eviction.
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig
+
+            hcfg = HonchoClientConfig.from_global_config()
+            out["honcho.peer_name"] = hcfg.peer_name
+            out["honcho.ai_peer"] = hcfg.ai_peer
+            out["honcho.pin_peer_name"] = bool(hcfg.pin_peer_name)
+            out["honcho.runtime_peer_prefix"] = hcfg.runtime_peer_prefix or ""
+            aliases = hcfg.user_peer_aliases or {}
+            out["honcho.user_peer_aliases"] = sorted(aliases.items()) if isinstance(aliases, dict) else []
+        except Exception:
+            out["honcho.peer_name"] = None
+            out["honcho.ai_peer"] = None
+            out["honcho.pin_peer_name"] = None
+            out["honcho.runtime_peer_prefix"] = None
+            out["honcho.user_peer_aliases"] = None
+
         return out
 
     @staticmethod
@@ -15079,6 +15103,8 @@ class GatewayRunner:
         enabled_toolsets: list,
         ephemeral_prompt: str,
         cache_keys: dict | None = None,
+        user_id: str | None = None,
+        user_id_alt: str | None = None,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -15092,6 +15118,20 @@ class GatewayRunner:
         the output of ``_extract_cache_busting_config(user_config)`` so
         edits to model.context_length / compression.* in config.yaml are
         picked up on the next gateway message without a manual restart.
+
+        ``user_id`` and ``user_id_alt`` are the runtime user identities
+        carried by the current message's gateway source.  They participate
+        in the cache key because the Honcho memory provider freezes them
+        into ``HonchoSessionManager`` at first-message init (see
+        ``plugins/memory/honcho/__init__.py::_do_session_init``).  Without
+        them in the signature, a shared-thread session_key (one in which
+        ``build_session_key`` intentionally omits the participant ID,
+        e.g. ``thread_sessions_per_user=False``) would reuse the cached
+        AIAgent across distinct users, causing the second user's messages
+        to be attributed to the first user's resolved Honcho peer.  This
+        broke #27371's per-user-peer contract in multi-user gateways.
+        Per-user agent rebuilds in shared threads trade prompt-cache
+        warmth for correct memory attribution.
         """
         import hashlib, json as _j
 
@@ -15116,6 +15156,8 @@ class GatewayRunner:
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
                 _cache_keys_sorted,
+                str(user_id or ""),
+                str(user_id_alt or ""),
             ],
             sort_keys=True,
             default=str,
@@ -16657,6 +16699,8 @@ class GatewayRunner:
                 enabled_toolsets,
                 combined_ephemeral,
                 cache_keys=self._extract_cache_busting_config(user_config),
+                user_id=getattr(source, "user_id", None),
+                user_id_alt=getattr(source, "user_id_alt", None),
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -16700,6 +16744,7 @@ class GatewayRunner:
                     session_id=session_id,
                     platform=platform_key,
                     user_id=source.user_id,
+                    user_id_alt=source.user_id_alt,
                     user_name=source.user_name,
                     chat_id=source.chat_id,
                     chat_name=source.chat_name,

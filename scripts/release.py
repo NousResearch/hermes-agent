@@ -261,6 +261,8 @@ AUTHOR_MAP = {
     "maciekczech@users.noreply.github.com": "maciekczech",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
     "cine.dreamer.one@gmail.com": "LeonSGP43",
+    "david@nutricraft.ca": "cyb0rgk1tty",
+    "chris+dora@cmullins.io": "cmullins70",
     "zjtan1@gmail.com": "zeejaytan",
     "asslaenn5@gmail.com": "Aslaaen",
     "trae.anderson17@icloud.com": "Tkander1715",

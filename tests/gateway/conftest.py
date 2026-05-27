@@ -108,6 +108,8 @@ def _ensure_discord_mock() -> None:
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
     discord_mod.Interaction = object
     discord_mod.Message = type("Message", (), {})
 

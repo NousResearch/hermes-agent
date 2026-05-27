@@ -51,6 +51,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from plugins.platforms.discord.thread_labels import extract_thread_labels
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -4324,13 +4325,18 @@ class DiscordAdapter(BasePlatformAdapter):
         guild_name = getattr(guild, "name", None)
         parent_name = getattr(parent, "name", None)
 
+        label_suffix = ""
+        labels = extract_thread_labels(thread_name)
+        if labels:
+            label_suffix = " [labels: " + ", ".join(label["id"] for label in labels) + "]"
+
         if self._is_forum_parent(parent) and guild_name and parent_name:
-            return f"{guild_name} / {parent_name} / {thread_name}"
+            return f"{guild_name} / {parent_name} / {thread_name}{label_suffix}"
         if parent_name and guild_name:
-            return f"{guild_name} / #{parent_name} / {thread_name}"
+            return f"{guild_name} / #{parent_name} / {thread_name}{label_suffix}"
         if parent_name:
-            return f"{parent_name} / {thread_name}"
-        return thread_name
+            return f"{parent_name} / {thread_name}{label_suffix}"
+        return f"{thread_name}{label_suffix}"
 
     # ------------------------------------------------------------------
     # Attachment download helpers
@@ -4552,7 +4558,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

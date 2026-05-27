@@ -82,6 +82,7 @@ fal = ["fal-client==0.13.1"]
 edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
+vercel = ["vercel==0.5.7"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "pytest-timeout==2.4.0", "mcp==1.26.0", "ty==0.0.21", "ruff==0.15.10"]
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.3", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]
@@ -188,7 +189,7 @@ all = [
   #
   # Removed from [all] on 2026-05-12 (covered by lazy-install):
   #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
-  #   modal, daytona, messaging (telegram/discord/slack),
+  #   modal, daytona, vercel, messaging (telegram/discord/slack),
   #   matrix, slack, honcho, voice (faster-whisper),
   #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
   #
@@ -226,6 +227,7 @@ plugins = [
   "*/dashboard/manifest.json",
   "*/dashboard/dist/*",
   "*/dashboard/dist/**/*",
+  "platforms/discord/thread_labels.json",
 ]
 
 [tool.setuptools.packages.find]

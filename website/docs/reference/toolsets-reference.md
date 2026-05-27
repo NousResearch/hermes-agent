@@ -56,6 +56,7 @@ Or in-session:
 | `clarify` | `clarify` | Ask the user a question when the agent needs clarification. |
 | `code_execution` | `execute_code` | Run Python scripts that call Hermes tools programmatically. |
 | `aider` | `aider_subagent` | Delegate code-writing tasks to a local Aider subprocess while Hermes remains the high-level orchestrator. Requires `aider` on `PATH` or `AIDER_BIN`. |
+| `pr_agent` | `pr_agent` | Run PR-Agent against GitHub pull requests for dry-run triage, review, description, or label generation before Aider performs follow-up edits. Requires `pr-agent`, GitHub auth, and model credentials. |
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
@@ -92,8 +93,8 @@ Platform toolsets define the complete tool configuration for a deployment target
 
 | Toolset | Differences from `hermes-cli` |
 |---------|-------------------------------|
-| `hermes-cli` | Full toolset — the default for interactive CLI sessions. Includes file, terminal, web, browser, memory, skills, vision, image_gen, todo, tts, delegation, code_execution, aider, cronjob, session_search, clarify, and `safe` (read-only) bundles plus the standard messaging tools. |
-| `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `send_message`, `text_to_speech`, and all four Home Assistant tools. Keeps `aider_subagent` for coding delegation in IDE context. |
+| `hermes-cli` | Full toolset — the default for interactive CLI sessions. Includes file, terminal, web, browser, memory, skills, vision, image_gen, todo, tts, delegation, code_execution, aider, pr_agent, cronjob, session_search, clarify, and `safe` (read-only) bundles plus the standard messaging tools. |
+| `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `send_message`, `text_to_speech`, and all four Home Assistant tools. Keeps `aider_subagent` and `pr_agent` for coding/PR delegation in IDE context. |
 | `hermes-api-server` | Drops `clarify`, `send_message`, and `text_to_speech`. Keeps everything else — suitable for programmatic access where user interaction isn't possible. |
 | `hermes-cron` | Same as `hermes-cli`. |
 | `hermes-telegram` | Same as `hermes-cli`. |

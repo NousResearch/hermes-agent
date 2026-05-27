@@ -5,6 +5,7 @@ git_provider = "github"
 response_language = "en-US"
 ai_timeout = 120
 max_model_tokens = 32000
+custom_model_max_tokens = 32000
 temperature = 0.2
 
 [pr_reviewer]

@@ -53,7 +53,7 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation
-    "execute_code", "delegate_task", "aider_subagent",
+    "execute_code", "delegate_task", "aider_subagent", "pr_agent",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -246,6 +246,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "pr_agent": {
+        "description": "Run PR-Agent against GitHub pull requests before Aider follow-up edits",
+        "tools": ["pr_agent"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
@@ -358,7 +364,7 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
-            "execute_code", "delegate_task", "aider_subagent",
+            "execute_code", "delegate_task", "aider_subagent", "pr_agent",
         ],
         "includes": []
     },
@@ -386,7 +392,7 @@ TOOLSETS = {
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task", "aider_subagent",
+            "execute_code", "delegate_task", "aider_subagent", "pr_agent",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

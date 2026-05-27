@@ -13,6 +13,11 @@ def test_build_default_command():
         "--message",
         "Fix the tests",
         "--yes",
+        "--no-auto-commits",
+        "--no-gitignore",
+        "--no-restore-chat-history",
+        "--map-tokens",
+        "0",
     ]
 
 
@@ -25,6 +30,11 @@ def test_build_model_command_prefixes_openrouter():
         "--message",
         "Fix the tests",
         "--yes",
+        "--no-auto-commits",
+        "--no-gitignore",
+        "--no-restore-chat-history",
+        "--map-tokens",
+        "0",
         "--model",
         "openrouter/deepseek/deepseek-v4-flash",
     ]
@@ -54,7 +64,10 @@ def test_missing_aider_binary_returns_actionable_error(monkeypatch, tmp_path):
 
     assert result["status"] == "error"
     assert "Aider executable not found" in result["error"]
-    assert result["command"] == "aider --message '<instruction>' --yes"
+    assert result["command"] == (
+        "aider --message '<instruction>' --yes --no-auto-commits --no-gitignore "
+        "--no-restore-chat-history --map-tokens 0"
+    )
 
 
 def test_command_preview_redacts_full_instruction():
@@ -68,6 +81,18 @@ def test_command_preview_redacts_full_instruction():
     assert "SECRET_TOKEN" not in preview
     assert "<instruction>" in preview
     assert "--model openrouter/deepseek/deepseek-v4-flash" in preview
+
+
+def test_aider_env_file_bridges_openrouter_token(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("OPENROUTER_API_KEY='or-secret'\n", encoding="utf-8")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    env = aider_tool._build_aider_env("deepseek/deepseek-v4-flash", env_file=str(env_file))
+
+    assert env["OPENROUTER_API_KEY"] == "or-secret"
+    assert env["OPENAI_API_KEY"] == "or-secret"
 
 
 def test_subprocess_receives_expected_command(monkeypatch, tmp_path):
@@ -88,21 +113,28 @@ def test_subprocess_receives_expected_command(monkeypatch, tmp_path):
             model="deepseek/deepseek-v4-flash",
             workdir=str(tmp_path),
             timeout_seconds=42,
+            env_file="/tmp/missing.env",
         )
     )
 
     assert result["status"] == "completed"
-    assert result["command"] == (
-        "aider --message '<instruction>' --yes --model openrouter/deepseek/deepseek-v4-flash"
-    )
-    assert captured["command"] == [
+    assert "aider --message '<instruction>' --yes --no-auto-commits" in result["command"]
+    assert "--model openrouter/deepseek/deepseek-v4-flash" in result["command"]
+    assert captured["command"][:9] == [
         "aider",
         "--message",
         "Fix the tests",
         "--yes",
-        "--model",
-        "openrouter/deepseek/deepseek-v4-flash",
+        "--no-auto-commits",
+        "--no-gitignore",
+        "--no-restore-chat-history",
+        "--map-tokens",
+        "0",
     ]
+    assert "--input-history-file" in captured["command"]
+    assert "--chat-history-file" in captured["command"]
+    assert "--llm-history-file" in captured["command"]
+    assert captured["command"][-2:] == ["--model", "openrouter/deepseek/deepseek-v4-flash"]
     assert captured["cwd"] == str(tmp_path)
     assert captured["timeout"] == 42
 

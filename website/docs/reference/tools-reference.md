@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~70 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 7 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `aider_subagent`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
+**Quick counts (current registry):** ~70 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 10 RL tools, 4 Home Assistant tools, 2 terminal tools, 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 7 kanban tools (registered when the kanban dispatcher spawns the agent), 2 Discord tools, and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `aider_subagent`, `pr_agent`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `video_generate`, `vision_analyze`, `video_analyze`, `mixture_of_agents`, `send_message`, `todo`, `computer_use`, `process`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp_<server>_` (e.g., `mcp_github_create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -54,7 +54,13 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `aider_subagent` | Delegate code-writing work to a local Aider subprocess. Hermes stays the orchestrator and passes a self-contained instruction to `aider --message <instruction> --yes`; Aider performs the repository edits. Optional `model`, `workdir`, and `timeout_seconds` parameters override the default model, target directory, and subprocess timeout. | `aider` on `PATH` or `AIDER_BIN` |
+| `aider_subagent` | Delegate code-writing work to a local Aider subprocess. Hermes stays the orchestrator and passes a self-contained instruction to `aider --message <instruction> --yes`; Aider performs the repository edits. The wrapper disables Aider auto-commits, prevents `.gitignore` edits, and stores transient history under `/tmp` so target repos stay clean. Optional `model`, `workdir`, `timeout_seconds`, and `env_file` parameters override the default model, target directory, subprocess timeout, and dotenv bridge. OpenRouter credentials are bridged from `~/.hermes/.env` by default for OpenRouter models. | `aider` on `PATH` or `AIDER_BIN`; OpenRouter token via `OPENROUTER_API_KEY` for OpenRouter models |
+
+## `pr_agent` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `pr_agent` | Run PR-Agent against a GitHub pull request for `ask`, `review`, `describe`, or `generate_labels` actions. Defaults to `publish_output=false` for dry-run triage and routes OpenRouter models through a minimal env bridge so Hermes' Guardian/OpenAI settings do not leak into PR-Agent. Use this before Aider: PR-Agent analyzes the PR, then `aider_subagent` handles code edits only when there is actionable work. | `pr-agent` on `PATH` or `PR_AGENT_BIN`; GitHub token via `GITHUB__USER_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth`; OpenRouter token via `OPENROUTER_API_KEY` for OpenRouter models |
 
 ## `cronjob` toolset
 

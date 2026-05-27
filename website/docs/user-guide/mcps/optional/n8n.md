@@ -5,7 +5,7 @@ sidebar_label: "n8n"
 description: "Manage and inspect n8n workflows from Hermes (stdio bridge, no public port)."
 ---
 
-{/* This page is auto-generated from `optional-mcps/n8n/manifest.yaml` by website/scripts/generate-mcp-catalog-docs.py. Edit the manifest, not this page. */}
+<!-- This page is auto-generated from optional-mcps/n8n/manifest.yaml by website/scripts/generate-mcp-catalog-docs.py. Edit the manifest, not this page. -->
 
 # n8n
 

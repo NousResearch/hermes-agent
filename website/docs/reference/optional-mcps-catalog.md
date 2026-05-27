@@ -4,7 +4,7 @@ title: "Optional MCPs Catalog"
 description: "Nous-approved optional MCP servers shipped with hermes-agent — install via hermes mcp install <name>"
 ---
 
-{/* This page is auto-generated from optional-mcps/*/manifest.yaml by website/scripts/generate-mcp-catalog-docs.py. Edit the manifests, not this page. */}
+<!-- This page is auto-generated from optional-mcps/<name>/manifest.yaml by website/scripts/generate-mcp-catalog-docs.py. Edit the manifests, not this page. -->
 
 # Optional MCPs Catalog
 

@@ -372,10 +372,10 @@ def render_entry_page(entry: Dict[str, Any]) -> str:
     lines.append("---")
     lines.append("")
     lines.append(
-        "{/* This page is auto-generated from "
-        f"`optional-mcps/{name}/manifest.yaml` by "
+        "<!-- This page is auto-generated from "
+        f"optional-mcps/{name}/manifest.yaml by "
         "website/scripts/generate-mcp-catalog-docs.py. "
-        "Edit the manifest, not this page. */}"
+        "Edit the manifest, not this page. -->"
     )
     lines.append("")
     lines.append(f"# {name}")
@@ -533,9 +533,9 @@ def render_catalog_page(entries: List[Dict[str, Any]]) -> str:
     lines.append("---")
     lines.append("")
     lines.append(
-        "{/* This page is auto-generated from optional-mcps/*/manifest.yaml by "
+        "<!-- This page is auto-generated from optional-mcps/<name>/manifest.yaml by "
         "website/scripts/generate-mcp-catalog-docs.py. Edit the manifests, not "
-        "this page. */}"
+        "this page. -->"
     )
     lines.append("")
     lines.append("# Optional MCPs Catalog")

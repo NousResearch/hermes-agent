@@ -5,7 +5,7 @@ sidebar_label: "linear"
 description: "Find, create, and update Linear issues, projects, and comments."
 ---
 
-{/* This page is auto-generated from `optional-mcps/linear/manifest.yaml` by website/scripts/generate-mcp-catalog-docs.py. Edit the manifest, not this page. */}
+<!-- This page is auto-generated from optional-mcps/linear/manifest.yaml by website/scripts/generate-mcp-catalog-docs.py. Edit the manifest, not this page. -->
 
 # linear
 

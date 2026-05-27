@@ -1018,7 +1018,6 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
-            self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"

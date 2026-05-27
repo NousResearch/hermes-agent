@@ -591,6 +591,210 @@ def test_xai_loopback_login_timeout_empty_paste_reraises(monkeypatch):
     assert captured["prompt_calls"] == 1
 
 
+def test_xai_loopback_login_timeout_paste_with_error_raises_auth_failed(monkeypatch):
+    """Timeout fallback with a paste containing only `error` (no `code`) should
+    NOT re-raise the timeout — it should continue to validation and surface
+    the OAuth error as `xai_authorization_failed`."""
+    monkeypatch.setattr(
+        auth_mod, "_xai_oauth_discovery",
+        lambda *_a, **_k: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+
+    class _StubServer:
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    class _StubThread:
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_start_callback_server",
+        lambda: (
+            _StubServer(),
+            _StubThread(),
+            {
+                "code": None,
+                "state": None,
+                "error": None,
+                "error_description": None,
+            },
+            "http://127.0.0.1:56121/callback",
+        ),
+    )
+
+    captured: dict = {"state": None}
+
+    def _raise_timeout(*_a, **_k):
+        raise auth_mod.AuthError(
+            "xAI authorization timed out waiting for the local callback.",
+            provider="xai-oauth",
+            code="xai_callback_timeout",
+        )
+
+    monkeypatch.setattr(auth_mod, "_xai_wait_for_callback", _raise_timeout)
+
+    def _fake_error_paste(_redirect_uri):
+        return {
+            "code": None,
+            "state": captured["state"],
+            "error": "access_denied",
+            "error_description": "user rejected",
+        }
+
+    monkeypatch.setattr(auth_mod, "_prompt_manual_callback_paste", _fake_error_paste)
+    monkeypatch.setattr(
+        auth_mod.sys, "stdin", type("StubStdin", (), {"isatty": lambda self: True})()
+    )
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(auth_mod.AuthError) as exc:
+            auth_mod._xai_oauth_loopback_login(manual_paste=False)
+    assert exc.value.code == "xai_authorization_failed"
+
+
+def test_xai_loopback_login_timeout_paste_wrong_state_raises_state_mismatch(monkeypatch):
+    """Timeout fallback with a paste containing `code` but wrong `state` should
+    NOT re-raise the timeout — it should continue to validation and raise
+    `xai_state_mismatch`."""
+    monkeypatch.setattr(
+        auth_mod, "_xai_oauth_discovery",
+        lambda *_a, **_k: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+
+    class _StubServer:
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    class _StubThread:
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_start_callback_server",
+        lambda: (
+            _StubServer(),
+            _StubThread(),
+            {
+                "code": None,
+                "state": None,
+                "error": None,
+                "error_description": None,
+            },
+            "http://127.0.0.1:56121/callback",
+        ),
+    )
+
+    captured: dict = {"state": None}
+
+    def _raise_timeout(*_a, **_k):
+        raise auth_mod.AuthError(
+            "xAI authorization timed out waiting for the local callback.",
+            provider="xai-oauth",
+            code="xai_callback_timeout",
+        )
+
+    monkeypatch.setattr(auth_mod, "_xai_wait_for_callback", _raise_timeout)
+
+    def _fake_wrong_state_paste(_redirect_uri):
+        return {
+            "code": "some-code",
+            "state": "WRONG-STATE",
+            "error": None,
+            "error_description": None,
+        }
+
+    monkeypatch.setattr(auth_mod, "_prompt_manual_callback_paste", _fake_wrong_state_paste)
+    monkeypatch.setattr(
+        auth_mod.sys, "stdin", type("StubStdin", (), {"isatty": lambda self: True})()
+    )
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(auth_mod.AuthError) as exc:
+            auth_mod._xai_oauth_loopback_login(manual_paste=False)
+    assert exc.value.code == "xai_state_mismatch"
+
+
+def test_xai_loopback_login_timeout_isatty_exception_treated_as_noninteractive(monkeypatch):
+    """When sys.stdin.isatty() raises (pathological stdin), the timeout
+    fallback must be treated as non-interactive — i.e., the original timeout
+    is re-raised and _prompt_manual_callback_paste is never called."""
+
+    monkeypatch.setattr(
+        auth_mod, "_xai_oauth_discovery",
+        lambda *_a, **_k: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+
+    class _StubServer:
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    class _StubThread:
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_start_callback_server",
+        lambda: (
+            _StubServer(),
+            _StubThread(),
+            {
+                "code": None,
+                "state": None,
+                "error": None,
+                "error_description": None,
+            },
+            "http://127.0.0.1:56121/callback",
+        ),
+    )
+
+    def _raise_timeout(*_a, **_k):
+        raise auth_mod.AuthError(
+            "xAI authorization timed out waiting for the local callback.",
+            provider="xai-oauth",
+            code="xai_callback_timeout",
+        )
+
+    monkeypatch.setattr(auth_mod, "_xai_wait_for_callback", _raise_timeout)
+
+    def _fail_if_called(*_a, **_k):
+        pytest.fail("_prompt_manual_callback_paste should not be called when isatty raises")
+
+    monkeypatch.setattr(auth_mod, "_prompt_manual_callback_paste", _fail_if_called)
+
+    class _ExplosiveStdin:
+        def isatty(self):
+            raise RuntimeError("isatty exploded")
+
+    monkeypatch.setattr(auth_mod.sys, "stdin", _ExplosiveStdin())
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(auth_mod.AuthError) as exc:
+            auth_mod._xai_oauth_loopback_login(manual_paste=False)
+    assert exc.value.code == "xai_callback_timeout"
+
+
 # ---------------------------------------------------------------------------
 # _print_loopback_ssh_hint — now also mentions --manual-paste
 # ---------------------------------------------------------------------------

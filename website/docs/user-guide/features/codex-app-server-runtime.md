@@ -139,11 +139,18 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
    npm i -g @openai/codex
    codex --version   # 0.130.0 or newer
    ```
-2. **Codex OAuth login.** The codex subprocess reads `~/.codex/auth.json`. Two ways to populate it:
+2. **Codex authentication.** The codex subprocess can authenticate either from `~/.codex/auth.json` or from OpenAI's non-interactive access-token path:
    ```bash
    codex login                  # writes tokens to ~/.codex/auth.json
+   export CODEX_ACCESS_TOKEN=... # Business/Enterprise automation path
    ```
-   Hermes' own `hermes auth login codex` writes to `~/.hermes/auth.json` — that's a separate session. **Run `codex login` separately** if you haven't.
+   Hermes' own `hermes auth login codex` writes to `~/.hermes/auth.json` — that's a separate session. **Run `codex login` separately** if you rely on OAuth.
+
+   For headless deployments, prefer storing the access token in a secret manager and injecting it at runtime. Hermes can resolve a 1Password reference for this runtime only:
+   ```bash
+   HERMES_CODEX_ACCESS_TOKEN_OP_REF="op://Vault/Item/credential"
+   ```
+   The resolved token is passed only to `codex app-server`; it does not shadow Hermes' direct `chatgpt.com/backend-api/codex` OAuth fallback.
 
 3. **(Optional) Install the Codex plugins you want.** When you enable the runtime, Hermes auto-migrates whichever curated plugins you've already installed via Codex CLI:
    ```bash

@@ -142,6 +142,44 @@ class TestCodexAppServerModule:
         assert "boom" in str(err)
         assert "-32600" in str(err)
 
+    def test_1password_secret_ref_resolves_only_when_token_missing(self, monkeypatch) -> None:
+        from agent.transports import codex_app_server as cas
+
+        calls = []
+
+        class Result:
+            returncode = 0
+            stdout = "secret-token\n"
+            stderr = ""
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return Result()
+
+        monkeypatch.setattr(cas.subprocess, "run", fake_run)
+
+        env = {"HERMES_CODEX_ACCESS_TOKEN_OP_REF": "op://Petra/Codex/credential"}
+        assert cas._resolve_codex_access_token_from_1password(env) == "secret-token"
+        assert calls[0][0] == ["op", "read", "op://Petra/Codex/credential"]
+        assert calls[0][1]["env"] is env
+
+        env_with_token = {
+            "CODEX_ACCESS_TOKEN": "already-present",
+            "HERMES_CODEX_ACCESS_TOKEN_OP_REF": "op://Petra/Codex/credential",
+        }
+        assert cas._resolve_codex_access_token_from_1password(env_with_token) is None
+        assert len(calls) == 1
+
+    def test_1password_secret_ref_ignores_non_op_refs(self, monkeypatch) -> None:
+        from agent.transports import codex_app_server as cas
+
+        def fake_run(*args, **kwargs):  # pragma: no cover - should not execute
+            raise AssertionError("op should not be called for non-op refs")
+
+        monkeypatch.setattr(cas.subprocess, "run", fake_run)
+        env = {"HERMES_CODEX_ACCESS_TOKEN_OP_REF": "plain-secret"}
+        assert cas._resolve_codex_access_token_from_1password(env) is None
+
 
 class TestSpawnEnvIsolation:
     """The codex spawn must NOT rewrite HOME — codex's shell tool spawns

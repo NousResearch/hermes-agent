@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from plugins.memory.honcho.client import get_honcho_client
+from agent.memory_manager import sanitize_context
 
 if TYPE_CHECKING:
     from honcho import Honcho
@@ -655,7 +656,7 @@ class HonchoSessionManager:
             if honcho_session:
                 ctx = honcho_session.context(summary=True)
                 if ctx.summary and getattr(ctx.summary, "content", None):
-                    result["summary"] = ctx.summary.content
+                    result["summary"] = sanitize_context(ctx.summary.content)
         except Exception as e:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
@@ -916,7 +917,7 @@ class HonchoSessionManager:
             except Exception as e:
                 logger.debug("Direct peer card fetch failed for '%s': %s", peer_id, e)
 
-        return {"representation": representation, "card": card}
+        return {"representation": sanitize_context(representation or ""), "card": [sanitize_context(c) for c in (card or [])]}
 
     def get_session_context(self, session_key: str, peer: str = "user") -> dict[str, Any]:
         """Fetch full session context from Honcho including summary.
@@ -948,19 +949,19 @@ class HonchoSessionManager:
 
             # Summary
             if ctx.summary:
-                result["summary"] = ctx.summary.content
+                result["summary"] = sanitize_context(ctx.summary.content or "")
 
             # Peer representation and card
             if ctx.peer_representation:
-                result["representation"] = ctx.peer_representation
+                result["representation"] = sanitize_context(ctx.peer_representation or "")
             if ctx.peer_card:
-                result["card"] = "\n".join(ctx.peer_card)
+                result["card"] = sanitize_context("\n".join(ctx.peer_card))
 
             # Messages (last N for context)
             if ctx.messages:
                 recent = ctx.messages[-10:]  # last 10 messages
                 result["recent_messages"] = [
-                    {"role": getattr(m, "peer_id", "unknown"), "content": (m.content or "")[:500]}
+                    {"role": getattr(m, "peer_id", "unknown"), "content": sanitize_context((m.content or "")[:500])}
                     for m in recent
                 ]
 

@@ -9014,7 +9014,8 @@ class GatewayRunner:
                 # message so the next message can load a transcript that
                 # reflects what was said.  Skip the assistant error text since
                 # it's a gateway-generated hint, not model output. (#7100)
-                _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                from agent.memory_manager import sanitize_context as _sc
+                _user_entry = {"role": "user", "content": _sc(message_text or ""), "timestamp": ts}
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
                 self.session_store.append_to_transcript(
@@ -9027,7 +9028,8 @@ class GatewayRunner:
 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
-                    _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                    from agent.memory_manager import sanitize_context as _sc
+                    _user_entry = {"role": "user", "content": _sc(message_text or ""), "timestamp": ts}
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
                     self.session_store.append_to_transcript(
@@ -9045,6 +9047,7 @@ class GatewayRunner:
                     # to prevent the duplicate-write bug (#860).  We still write
                     # to JSONL for backward compatibility and as a backup.
                     agent_persisted = self._session_db is not None
+                    from agent.memory_manager import sanitize_context as _sc
                     # Attach the inbound platform message_id to the first user
                     # entry written this turn so platform-level quote-resolution
                     # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
@@ -9056,6 +9059,11 @@ class GatewayRunner:
                             continue
                         # Add timestamp to each message for debugging
                         entry = {**msg, "timestamp": ts}
+                        # Defensive sanitize: scrub any <memory-context> blocks
+                        # from user-role content before persisting. Belt-and-
+                        # suspenders against legacy poison or future regressions.
+                        if entry.get("role") == "user" and isinstance(entry.get("content"), str):
+                            entry["content"] = _sc(entry["content"])
                         if (
                             not _user_msg_id_attached
                             and msg.get("role") == "user"

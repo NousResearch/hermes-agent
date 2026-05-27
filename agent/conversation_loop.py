@@ -837,6 +837,19 @@ def run_conversation(
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
                         api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                    # Layer 3: defensive auto-set of the persist_user_message
+                    # override.  Injection here only mutates the API-bound
+                    # api_msg (shallow copy), so the in-memory ``messages``
+                    # entry stays clean today.  But if a future refactor ever
+                    # mutates the wrong dict, the override path in
+                    # ``_apply_persist_user_message_override`` will scrub the
+                    # persisted content back to the clean text.  Idempotent —
+                    # only sets when no override is in effect yet.
+                    if getattr(agent, "_persist_user_message_override", None) is None:
+                        _clean = msg.get("content", "")
+                        if isinstance(_clean, str):
+                            agent._persist_user_message_override = _clean
+                            agent._persist_user_message_idx = current_turn_user_idx
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved

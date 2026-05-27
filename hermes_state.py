@@ -54,7 +54,6 @@ SCHEMA_VERSION = 13
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
-    "disk i/o error",         # Flaky network FS during WAL setup
 )
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
@@ -125,6 +124,27 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
     return f"{prefix}: {cause}{hint}."
 
 
+def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
+    """Read the journal mode from the SQLite DB header on disk.
+
+    Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
+    if the value cannot be determined (new DB, or PRAGMA read failed).
+    """
+    try:
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    mode = row[0]
+    if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
+        try:
+            mode = mode.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    return str(mode).strip().lower() if mode is not None else None
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -147,7 +167,18 @@ def apply_wal_with_fallback(
 
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
+
+    Never downgrades to DELETE if the on-disk DB header reports WAL — see _on_disk_journal_mode.
     """
+    # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
+    # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
+    try:
+        current_mode = conn.execute("PRAGMA journal_mode").fetchone()
+        if current_mode and current_mode[0] == "wal":
+            return "wal"
+    except sqlite3.OperationalError:
+        pass
+
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         return "wal"
@@ -155,6 +186,10 @@ def apply_wal_with_fallback(
         msg = str(exc).lower()
         if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
             # Unrelated OperationalError — don't silently swallow.
+            raise
+        # Don't downgrade if another process already set WAL on disk.
+        existing = _on_disk_journal_mode(conn)
+        if existing == "wal":
             raise
         _log_wal_fallback_once(db_label, exc)
         conn.execute("PRAGMA journal_mode=DELETE")

@@ -35,7 +35,19 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Existing crash-detection tests pre-date the grace window; pin to 0
+    # so they keep their immediate-reclaim semantics.
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Disable the detect_crashed_workers grace period for legacy tests in
+    # this file that claim a task and immediately expect
+    # ``detect_crashed_workers`` to act on it. The grace period (30s by
+    # default, see ``DEFAULT_CRASH_GRACE_SECONDS``) prevents the
+    # multi-dispatcher reap race in production; setting it to 0 here
+    # restores the pre-fix instant-reclaim semantics these tests were
+    # written against. The grace-period itself is covered by dedicated
+    # tests in tests/hermes_cli/test_kanban_db.py.
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
     kb.init_db()
     return home
 
@@ -3655,9 +3667,16 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
         raise sqlite3.DatabaseError("file is not a database")
 
     async def _to_thread(fn, *args, **kwargs):
+        # PR salvage (#32857 commit 7): the dispatcher now reaps zombies at
+        # the top of each tick via ``asyncio.to_thread(_kb.reap_worker_zombies)``
+        # BEFORE the per-board tick work. Each tick now issues 3 ``to_thread``
+        # calls (reaper + ``_tick_once`` + ``_ready_nonempty``) instead of 2,
+        # so this counter must reach 6 to allow the same 2 dispatch ticks the
+        # pre-reaper test expected at 4. Connect counts in the assertion below
+        # are unchanged.
         calls["to_thread"] += 1
         result = fn(*args, **kwargs)
-        if calls["to_thread"] >= 4:
+        if calls["to_thread"] >= 6:
             runner._running = False
         return result
 

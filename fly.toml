@@ -1,23 +1,30 @@
-app = "hermes-agent-q69nmw"
-primary_region = "syd"
+# fly.toml app configuration file generated for hermes-agent-rnadwa on 2026-05-27T17:45:23Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-[http_service]
-auto_start_machines = true
-auto_stop_machines = true
-force_https = true
-internal_port = 8080
-min_machines_running = 0
-processes = [ "app" ]
-
-[[mounts]]
-destination = "/opt/data"
-source = "data"
-
-[[vm]]
-cpu_kind = "shared"
-cpus = 1
-memory = "1gb"
-memory_mb = 1024
+app = 'hermes-agent-rnadwa'
+primary_region = 'nrt'
 
 [experimental]
-cmd = ["/opt/hermes/docker/main-wrapper.sh"]
+  cmd = ['/opt/hermes/docker/main-wrapper.sh']
+
+[build]
+
+[[mounts]]
+  source = 'data'
+  destination = '/opt/data'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 1024

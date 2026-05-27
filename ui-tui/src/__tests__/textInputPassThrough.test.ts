@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldPassThroughToGlobalHandler } from '../components/textInput.js'
+import { rebaseAsyncPasteResult, shouldPassThroughToGlobalHandler } from '../components/textInput.js'
 import { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } from '../lib/platform.js'
 
 const key = (overrides: Record<string, unknown> = {}) =>
@@ -39,5 +39,46 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageDown: true }))).toBe(true)
+  })
+})
+
+describe('rebaseAsyncPasteResult', () => {
+  it('keeps an async paste at its original position when typing continues', () => {
+    expect(
+      rebaseAsyncPasteResult({
+        currentValue: 'typed after paste',
+        result: { cursor: 5, value: 'PATH-' },
+        startCursor: 0,
+        startValue: ''
+      })
+    ).toEqual({
+      cursor: 5,
+      value: 'PATH-typed after paste'
+    })
+  })
+
+  it('rebases transformed paste text before edits made at the same cursor', () => {
+    expect(
+      rebaseAsyncPasteResult({
+        currentValue: 'prefix user suffix',
+        result: { cursor: 18, value: 'prefix [[paste]] suffix' },
+        startCursor: 'prefix '.length,
+        startValue: 'prefix suffix'
+      })
+    ).toEqual({
+      cursor: 'prefix [[paste]] '.length,
+      value: 'prefix [[paste]] user suffix'
+    })
+  })
+
+  it('drops stale async paste results when the original anchor changed', () => {
+    expect(
+      rebaseAsyncPasteResult({
+        currentValue: 'changed suffix',
+        result: { cursor: 18, value: 'prefix [[paste]] suffix' },
+        startCursor: 'prefix '.length,
+        startValue: 'prefix suffix'
+      })
+    ).toBeNull()
   })
 })

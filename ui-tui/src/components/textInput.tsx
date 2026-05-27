@@ -409,6 +409,51 @@ const isPasteResultPromise = (
   value: PasteResult | Promise<PasteResult> | null | undefined
 ): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
 
+export function rebaseAsyncPasteResult({
+  currentValue,
+  result,
+  startCursor,
+  startValue
+}: {
+  currentValue: string
+  result: Exclude<PasteResult, null>
+  startCursor: number
+  startValue: string
+}): { cursor: number; value: string } | null {
+  const cursor = Math.max(0, Math.min(startCursor, startValue.length))
+  const prefix = startValue.slice(0, cursor)
+  const suffix = startValue.slice(cursor)
+
+  if (!result.value.startsWith(prefix) || (suffix && !result.value.endsWith(suffix))) {
+    return null
+  }
+
+  const inserted = suffix
+    ? result.value.slice(prefix.length, result.value.length - suffix.length)
+    : result.value.slice(prefix.length)
+
+  if (!inserted) {
+    return null
+  }
+
+  let insertAt: number | null = null
+
+  if (currentValue.startsWith(startValue)) {
+    insertAt = cursor
+  } else if (currentValue.startsWith(prefix)) {
+    insertAt = prefix.length
+  }
+
+  if (insertAt === null) {
+    return null
+  }
+
+  return {
+    cursor: insertAt + inserted.length,
+    value: currentValue.slice(0, insertAt) + inserted + currentValue.slice(insertAt)
+  }
+}
+
 export function TextInput({
   columns = 80,
   value,
@@ -695,21 +740,29 @@ export function TextInput({
 
   const emitPaste = (e: PasteEvent) => {
     const startVersion = editVersionRef.current
+    const startCursor = e.cursor
+    const startValue = e.value
     const h = cbPaste.current?.(e)
 
     if (isPasteResultPromise(h)) {
-      const fallbackText = e.text
-
       void h
         .then(result => {
           if (result && editVersionRef.current === startVersion) {
             commit(result.value, result.cursor)
-          } else if (result && fallbackText && PRINTABLE.test(fallbackText)) {
-            // User typed while async paste was in-flight — fall back to raw text insert
-            // so the pasted content is not silently lost.
-            const cur = curRef.current
-            const v = vRef.current
-            commit(v.slice(0, cur) + fallbackText + v.slice(cur), cur + fallbackText.length)
+          } else if (result) {
+            // User typed while async paste handling was in-flight. Preserve the
+            // paste at the position where it originally happened instead of
+            // appending stale text at the user's current cursor.
+            const rebased = rebaseAsyncPasteResult({
+              currentValue: vRef.current,
+              result,
+              startCursor,
+              startValue
+            })
+
+            if (rebased) {
+              commit(rebased.value, rebased.cursor)
+            }
           }
         })
         .catch(() => {})

@@ -67,7 +67,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_fork"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
-    assert features["skills_api"] is False
+    assert features["skills_api"] is True
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
     assert data["endpoints"]["session_chat_stream"] == {

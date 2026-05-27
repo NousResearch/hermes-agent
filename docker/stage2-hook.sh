@@ -33,6 +33,14 @@ if [ -n "${HERMES_GID:-}" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
 fi
 
 # --- Fix ownership of data volume ---
+# When HERMES_UID is remapped or the top-level $HERMES_HOME isn't owned by
+# the runtime hermes UID, restore ownership to hermes — but ONLY for the
+# directories hermes actually writes to. The full $HERMES_HOME may be a
+# host-mounted bind containing unrelated user files; `chown -R` would
+# silently destroy host ownership of those (see issue #19788).
+#
+# The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
+# mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
 needs_chown=false
 if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "10000" ]; then
@@ -41,14 +49,29 @@ elif [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; the
     needs_chown=true
 fi
 if [ "$needs_chown" = true ]; then
-    echo "[stage2] Fixing ownership of $HERMES_HOME to hermes ($actual_hermes_uid)"
+    echo "[stage2] Fixing ownership of $HERMES_HOME (targeted) to hermes ($actual_hermes_uid)"
     # In rootless Podman the container's "root" is mapped to an
     # unprivileged host UID — chown will fail. That's fine: the volume
     # is already owned by the mapped user on the host side.
-    chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
-        echo "[stage2] Warning: chown failed (rootless container?) — continuing"
+    #
+    # Top-level $HERMES_HOME: chown the directory itself (not its contents)
+    # so hermes can mkdir new subdirs but bind-mounted host files keep
+    # their existing ownership.
+    chown hermes:hermes "$HERMES_HOME" 2>/dev/null || \
+        echo "[stage2] Warning: chown $HERMES_HOME failed (rootless container?) — continuing"
+    # Hermes-owned subdirs: recursive chown is safe here because these are
+    # created and managed exclusively by hermes (see the s6-setuidgid mkdir
+    # -p block below for the canonical list).
+    for sub in cron sessions logs hooks memories skills skins plans workspace home profiles; do
+        if [ -e "$HERMES_HOME/$sub" ]; then
+            chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
+                echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
+        fi
+    done
     # The .venv must also be re-chowned when UID is remapped, otherwise
     # lazy_deps.py cannot install platform packages (discord.py, etc.).
+    # This is under $INSTALL_DIR, not $HERMES_HOME, so the bind-mount
+    # concern doesn't apply — recursive is fine.
     chown -R hermes:hermes "$INSTALL_DIR/.venv" 2>/dev/null || \
         echo "[stage2] Warning: chown .venv failed (rootless container?) — continuing"
 fi

@@ -1211,6 +1211,12 @@ class MessageEvent:
         # Split on space and get first word, strip the /
         parts = self.text.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
+        # Telegram bot-to-bot dispatch can arrive with whitespace after the bot
+        # command stripped, e.g. /preqstation_dispatchproject_key=PQST...
+        # Treat that as the preqstation dispatch skill command instead of an
+        # unknown slash command.
+        if raw and raw.startswith("preqstation_dispatch") and raw != "preqstation_dispatch":
+            raw = "preqstation_dispatch"
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
         # Reject file paths: valid command names never contain /
@@ -1224,6 +1230,28 @@ class MessageEvent:
             return self.text
         parts = self.text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
+        if self.text.lower().startswith("/preqstation_dispatch"):
+            # Some Telegram bot-to-bot dispatches arrive with the newline/space
+            # after the bot command collapsed, e.g.:
+            #   /preqstation_dispatch@PreqHermesBotproject_key=PQST task_key=...
+            # Recover the structured fields so the preqstation_dispatch skill can run.
+            import re
+            first_token = parts[0] if parts else self.text
+            collapsed = first_token[len("/preqstation_dispatch"):].lstrip()
+            recovered = ""
+            if collapsed:
+                match = re.search(
+                    r"(?i)(project_key|task_key|objective|engine|branch_name|ask_hint|insight_prompt_b64|comment_id|commentId)=",
+                    collapsed,
+                )
+                if match:
+                    recovered = collapsed[match.start():]
+                elif not args and collapsed.startswith("@"):
+                    recovered = collapsed.split(maxsplit=1)[1] if len(collapsed.split(maxsplit=1)) > 1 else ""
+                elif not args:
+                    recovered = collapsed
+            if recovered:
+                args = f"{recovered} {args}".strip()
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args

@@ -1361,91 +1361,125 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_model = agent.model
     old_provider = agent.provider
 
-    # Clear the per-config context_length override so the new model's
-    # actual context window is resolved via get_model_context_length()
-    # instead of inheriting the stale value from the previous model.
-    agent._config_context_length = None
+    # Snapshot the pre-swap state of every field this function mutates
+    # before the client build completes. If the rebuild raises (bad API
+    # key, network error, MiniMax OAuth failure, etc.) we restore these
+    # so the agent stays internally consistent — without this, the swap
+    # below would leave ``agent.model``/``agent.provider`` already
+    # pointing at the new combo while ``agent.client`` (or
+    # ``agent._anthropic_client``) still belongs to the old provider,
+    # producing the torn state reported in #33175 where the next turn
+    # hits a model/provider mismatch (e.g. HTTP 400 "model not supported
+    # on this provider").
+    _rollback = {
+        "model": agent.model,
+        "provider": agent.provider,
+        "base_url": agent.base_url,
+        "api_mode": agent.api_mode,
+        "api_key": agent.api_key,
+        "_config_context_length": getattr(agent, "_config_context_length", None),
+        "client": getattr(agent, "client", None),
+        "_client_kwargs": dict(getattr(agent, "_client_kwargs", {}) or {}),
+        "_anthropic_api_key": getattr(agent, "_anthropic_api_key", None),
+        "_anthropic_base_url": getattr(agent, "_anthropic_base_url", None),
+        "_anthropic_client": getattr(agent, "_anthropic_client", None),
+        "_is_anthropic_oauth": getattr(agent, "_is_anthropic_oauth", False),
+        "_use_prompt_caching": getattr(agent, "_use_prompt_caching", False),
+        "_use_native_cache_layout": getattr(agent, "_use_native_cache_layout", False),
+    }
+    _committed = False
 
-    # ── Swap core runtime fields ──
-    agent.model = new_model
-    agent.provider = new_provider
-    # Use new base_url when provided; only fall back to current when the
-    # new provider genuinely has no endpoint (e.g. native SDK providers).
-    # Without this guard the old provider's URL (e.g. Ollama's localhost
-    # address) would persist silently after switching to a cloud provider
-    # that returns an empty base_url string.
-    if base_url:
-        agent.base_url = base_url
-    agent.api_mode = api_mode
-    # Invalidate transport cache — new api_mode may need a different transport
-    if hasattr(agent, "_transport_cache"):
-        agent._transport_cache.clear()
-    if api_key:
-        agent.api_key = api_key
+    try:
+        # Clear the per-config context_length override so the new model's
+        # actual context window is resolved via get_model_context_length()
+        # instead of inheriting the stale value from the previous model.
+        agent._config_context_length = None
 
-    # ── Build new client ──
-    if api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import (
-            build_anthropic_client,
-            resolve_anthropic_token,
-            _is_oauth_token,
+        # ── Swap core runtime fields ──
+        agent.model = new_model
+        agent.provider = new_provider
+        # Use new base_url when provided; only fall back to current when the
+        # new provider genuinely has no endpoint (e.g. native SDK providers).
+        # Without this guard the old provider's URL (e.g. Ollama's localhost
+        # address) would persist silently after switching to a cloud provider
+        # that returns an empty base_url string.
+        if base_url:
+            agent.base_url = base_url
+        agent.api_mode = api_mode
+        # Invalidate transport cache — new api_mode may need a different transport
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
+        if api_key:
+            agent.api_key = api_key
+
+        # ── Build new client ──
+        if api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import (
+                build_anthropic_client,
+                resolve_anthropic_token,
+                _is_oauth_token,
+            )
+            # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
+            # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
+            # API key — falling back would send Anthropic credentials to third-party endpoints.
+            _is_native_anthropic = new_provider == "anthropic"
+            effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
+
+            # MiniMax OAuth: swap static string for a per-request callable token
+            # provider so the rebuilt client survives 15-min token expiry. See
+            # the matching block in agent_init.py for the full rationale.
+            if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
+                try:
+                    from hermes_cli.auth import build_minimax_oauth_token_provider
+                    effective_key = build_minimax_oauth_token_provider()
+                except Exception as _mm_exc:  # noqa: BLE001
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "MiniMax OAuth: failed to install per-request token provider "
+                        "on switch (%s); using static bearer.",
+                        _mm_exc,
+                    )
+
+            agent.api_key = effective_key
+            agent._anthropic_api_key = effective_key
+            agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+            agent._anthropic_client = build_anthropic_client(
+                effective_key, agent._anthropic_base_url,
+                timeout=get_provider_request_timeout(agent.provider, agent.model),
+            )
+            agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+            agent.client = None
+            agent._client_kwargs = {}
+        else:
+            effective_key = api_key or agent.api_key
+            effective_base = base_url or agent.base_url
+            agent._client_kwargs = {
+                "api_key": effective_key,
+                "base_url": effective_base,
+            }
+            _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
+            if _sm_timeout is not None:
+                agent._client_kwargs["timeout"] = _sm_timeout
+            agent.client = agent._create_openai_client(
+                dict(agent._client_kwargs),
+                reason="switch_model",
+                shared=True,
+            )
+
+        # ── Re-evaluate prompt caching ──
+        agent._use_prompt_caching, agent._use_native_cache_layout = (
+            agent._anthropic_prompt_cache_policy(
+                provider=new_provider,
+                base_url=agent.base_url,
+                api_mode=api_mode,
+                model=new_model,
+            )
         )
-        # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
-        # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own
-        # API key — falling back would send Anthropic credentials to third-party endpoints.
-        _is_native_anthropic = new_provider == "anthropic"
-        effective_key = (api_key or agent.api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or agent.api_key or "")
-
-        # MiniMax OAuth: swap static string for a per-request callable token
-        # provider so the rebuilt client survives 15-min token expiry. See
-        # the matching block in agent_init.py for the full rationale.
-        if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-            try:
-                from hermes_cli.auth import build_minimax_oauth_token_provider
-                effective_key = build_minimax_oauth_token_provider()
-            except Exception as _mm_exc:  # noqa: BLE001
-                import logging as _logging
-                _logging.getLogger(__name__).warning(
-                    "MiniMax OAuth: failed to install per-request token provider "
-                    "on switch (%s); using static bearer.",
-                    _mm_exc,
-                )
-
-        agent.api_key = effective_key
-        agent._anthropic_api_key = effective_key
-        agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-        agent._anthropic_client = build_anthropic_client(
-            effective_key, agent._anthropic_base_url,
-            timeout=get_provider_request_timeout(agent.provider, agent.model),
-        )
-        agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-        agent.client = None
-        agent._client_kwargs = {}
-    else:
-        effective_key = api_key or agent.api_key
-        effective_base = base_url or agent.base_url
-        agent._client_kwargs = {
-            "api_key": effective_key,
-            "base_url": effective_base,
-        }
-        _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
-        if _sm_timeout is not None:
-            agent._client_kwargs["timeout"] = _sm_timeout
-        agent.client = agent._create_openai_client(
-            dict(agent._client_kwargs),
-            reason="switch_model",
-            shared=True,
-        )
-
-    # ── Re-evaluate prompt caching ──
-    agent._use_prompt_caching, agent._use_native_cache_layout = (
-        agent._anthropic_prompt_cache_policy(
-            provider=new_provider,
-            base_url=agent.base_url,
-            api_mode=api_mode,
-            model=new_model,
-        )
-    )
+        _committed = True
+    finally:
+        if not _committed:
+            for _attr, _val in _rollback.items():
+                setattr(agent, _attr, _val)
 
     # ── LM Studio: preload before probing context length ──
     agent._ensure_lmstudio_runtime_loaded()

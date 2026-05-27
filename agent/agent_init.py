@@ -29,6 +29,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -600,7 +601,7 @@ def init_agent(
             agent.client = None
             agent._client_kwargs = {}
             if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+                print(t("agent.init.initialized_bedrock_sdk", model=agent.model, region=_br_region))
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.
@@ -649,18 +650,18 @@ def init_agent(
             agent.client = None
             agent._client_kwargs = {}
             if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
-                # ``effective_key`` may be a callable Entra ID bearer
-                # provider for Azure Foundry anthropic_messages mode.
-                # The Anthropic adapter installs an httpx event hook
-                # that mints a fresh JWT per request — we never
-                # invoke or inspect the callable in the banner.
-                from agent.azure_identity_adapter import is_token_provider
+                print(t("agent.init.initialized_anthropic", model=agent.model))
+            # ``effective_key`` may be a callable Entra ID bearer
+            # provider for Azure Foundry anthropic_messages mode.
+            # The Anthropic adapter installs an httpx event hook
+            # that mints a fresh JWT per request — we never
+            # invoke or inspect the callable in the banner.
+            from agent.azure_identity_adapter import is_token_provider
 
-                if is_token_provider(effective_key):
-                    print("🔑 Using credentials: Microsoft Entra ID")
-                elif isinstance(effective_key, str) and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+            if is_token_provider(effective_key):
+                print(t("agent.init.using_entra"))
+            elif isinstance(effective_key, str) and len(effective_key) > 12:
+                print(t("agent.init.using_token", token=f"{effective_key[:8]}...{effective_key[-4:]}"))
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.
@@ -686,7 +687,7 @@ def init_agent(
         agent._client_kwargs = {}
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+            print(t("agent.init.initialized_bedrock", model=agent.model, region=agent._bedrock_region, guardrails=_gr_label))
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.
@@ -860,9 +861,9 @@ def init_agent(
         try:
             agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
             if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model}")
+                print(t("agent.init.initialized", model=agent.model))
                 if base_url:
-                    print(f"🔗 Using custom base URL: {base_url}")
+                    print(t("agent.init.custom_base_url", url=base_url))
                 # ``api_key`` may be a callable Entra ID bearer
                 # provider (Azure Foundry). The OpenAI SDK mints a
                 # fresh JWT per request internally — the banner
@@ -871,11 +872,11 @@ def init_agent(
 
                 key_used = client_kwargs.get("api_key", "none")
                 if is_token_provider(key_used):
-                    print("🔑 Using credentials: Microsoft Entra ID")
+                    print(t("agent.init.using_entra"))
                 elif isinstance(key_used, str) and key_used and key_used != "dummy-key" and len(key_used) > 12:
-                    print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    print(t("agent.init.using_api_key", key=f"{key_used[:8]}...{key_used[-4:]}"))
                 else:
-                    print("⚠️  Warning: API key appears invalid or missing")
+                    print(t("agent.api_key_warning"))
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
     
@@ -899,9 +900,9 @@ def init_agent(
     if agent._fallback_chain and not agent.quiet_mode:
         if len(agent._fallback_chain) == 1:
             fb = agent._fallback_chain[0]
-            print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
+            print(t("agent.fallback_model", model=fb["model"], provider=fb["provider"]))
         else:
-            print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
+            print(t("agent.fallback_chain", count=len(agent._fallback_chain)) +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
     # Get available tools with filtering
@@ -917,14 +918,14 @@ def init_agent(
         agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools}
         tool_names = sorted(agent.valid_tool_names)
         if not agent.quiet_mode:
-            print(f"🛠️  Loaded {len(agent.tools)} tools: {', '.join(tool_names)}")
+            print(t("agent.init.tools_loaded", count=len(agent.tools), tools=", ".join(tool_names)))
             # Show filtering info if applied
             if enabled_toolsets:
-                print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
+                print(t("agent.init.enabled_toolsets", toolsets=", ".join(enabled_toolsets)))
             if disabled_toolsets:
-                print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
+                print(t("agent.init.disabled_toolsets", toolsets=", ".join(disabled_toolsets)))
     elif not agent.quiet_mode:
-        print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+        print(t("agent.init.no_tools"))
 
     # Kanban worker/orchestrator lifecycle guidance is session-static:
     # the dispatcher decides at spawn time whether this process is a kanban
@@ -942,16 +943,16 @@ def init_agent(
         requirements = _ra().check_toolset_requirements()
         missing_reqs = [name for name, available in requirements.items() if not available]
         if missing_reqs:
-            print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
+            print(t("agent.missing_requirements", missing=missing_reqs))
     
     # Show trajectory saving status
     if agent.save_trajectories and not agent.quiet_mode:
-        print("📝 Trajectory saving enabled")
+        print(t("agent.trajectory_enabled"))
     
     # Show ephemeral system prompt status
     if agent.ephemeral_system_prompt and not agent.quiet_mode:
         prompt_preview = agent.ephemeral_system_prompt[:60] + "..." if len(agent.ephemeral_system_prompt) > 60 else agent.ephemeral_system_prompt
-        print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
+        print(t("agent.init.ephemeral_prompt", prompt=prompt_preview))
     
     # Show prompt caching status
     if agent._use_prompt_caching and not agent.quiet_mode:
@@ -961,7 +962,7 @@ def init_agent(
             source = "Anthropic-compatible endpoint"
         else:
             source = "Claude via OpenRouter"
-        print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
+        print(t("agent.init.prompt_caching", source=source, ttl=agent._cache_ttl))
     
     # Session logging setup - auto-save conversation trajectories for debugging
     agent.session_start = datetime.now()
@@ -1585,9 +1586,9 @@ def init_agent(
 
     if not agent.quiet_mode:
         if compression_enabled:
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
+            print(t("agent.init.context_limit", tokens=f"{agent.context_compressor.context_length:,}", threshold=int(compression_threshold*100), threshold_tokens=f"{agent.context_compressor.threshold_tokens:,}"))
         else:
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
+            print(t("agent.init.context_limit_disabled", tokens=f"{agent.context_compressor.context_length:,}"))
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored

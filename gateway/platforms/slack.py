@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
 
+from agent.i18n import t
+
 try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -2273,26 +2275,26 @@ class SlackAdapter(BasePlatformAdapter):
                     "elements": [
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Once"},
+                            "text": {"type": "plain_text", "text": t("platform.approve_once")},
                             "style": "primary",
                             "action_id": "hermes_approve_once",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Session"},
+                            "text": {"type": "plain_text", "text": t("platform.approve_session")},
                             "action_id": "hermes_approve_session",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
+                            "text": {"type": "plain_text", "text": t("platform.approve_always")},
                             "action_id": "hermes_approve_always",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Deny"},
+                            "text": {"type": "plain_text", "text": t("platform.deny")},
                             "style": "danger",
                             "action_id": "hermes_deny",
                             "value": session_key,
@@ -2303,7 +2305,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
+                "text": t("platform.approval_required", command=cmd_preview[:100]),
                 "blocks": blocks,
             }
             if thread_ts:
@@ -2420,9 +2422,9 @@ class SlackAdapter(BasePlatformAdapter):
         choice = choice_map.get(action_id, "cancel")
 
         label_map = {
-            "once": f"✅ Approved once by {user_name}",
-            "always": f"🔒 Always approved by {user_name}",
-            "cancel": f"❌ Cancelled by {user_name}",
+            "once": f"{t('platform.approved_once')} by {user_name}",
+            "always": f"{t('platform.approve_always')} by {user_name}",
+            "cancel": f"{t('platform.cancelled')} by {user_name}",
         }
         decision_text = label_map.get(choice, f"Resolved by {user_name}")
 
@@ -2521,10 +2523,10 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Update the message to show the decision and remove buttons
         label_map = {
-            "once": f"✅ Approved once by {user_name}",
-            "session": f"✅ Approved for session by {user_name}",
-            "always": f"✅ Approved permanently by {user_name}",
-            "deny": f"❌ Denied by {user_name}",
+            "once": t("platform.approved_once", user=user_name),
+            "session": t("platform.approved_session", user=user_name),
+            "always": t("platform.approved_permanently", user=user_name),
+            "deny": t("platform.denied", user=user_name),
         }
         decision_text = label_map.get(choice, f"Resolved by {user_name}")
 

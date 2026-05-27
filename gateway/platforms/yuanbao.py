@@ -35,6 +35,8 @@ from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
+from agent.i18n import t
+
 import sys
 
 import httpx
@@ -1965,7 +1967,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
                 adapter.name, ctx.chat_id, ctx.from_account, matched_cmd,
             )
             adapter._track_task(asyncio.create_task(
-                adapter.send(ctx.chat_id, f"⚠️ {matched_cmd} is only available to the creator in private chat mode"),
+                adapter.send(ctx.chat_id, t("platform.creator_only", command=matched_cmd)),
                 name=f"yuanbao-owner-cmd-denial-{matched_cmd}",
             ))
             return  # Stop pipeline

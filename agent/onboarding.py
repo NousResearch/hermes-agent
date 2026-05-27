@@ -16,6 +16,8 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,61 +41,27 @@ def busy_input_hint_gateway(mode: str) -> str:
     message matches reality ("I just interrupted…" vs "I just queued…").
     """
     if mode == "queue":
-        return (
-            "💡 First-time tip — I queued your message instead of interrupting. "
-            "Send `/busy interrupt` to make new messages stop the current task "
-            "immediately, or `/busy status` to check. This notice won't appear again."
-        )
+        return t("onboarding.busy_queue")
     if mode == "steer":
-        return (
-            "💡 First-time tip — I steered your message into the current run; "
-            "it will arrive after the next tool call instead of interrupting. "
-            "Send `/busy interrupt` or `/busy queue` to change this, or "
-            "`/busy status` to check. This notice won't appear again."
-        )
-    return (
-        "💡 First-time tip — I just interrupted my current task to answer you. "
-        "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "`/busy steer` to inject them mid-run without interrupting, or "
-        "`/busy status` to check. This notice won't appear again."
-    )
+        return t("onboarding.busy_steer")
+    return t("onboarding.busy_interrupt")
 
 
 def busy_input_hint_cli(mode: str) -> str:
     """CLI version of the busy-input hint (plain text, no markdown)."""
     if mode == "queue":
-        return (
-            "(tip) Your message was queued for the next turn. "
-            "Use /busy interrupt to make Enter stop the current run instead, "
-            "or /busy steer to inject mid-run. This tip only shows once."
-        )
+        return t("onboarding.busy_queue_cli")
     if mode == "steer":
-        return (
-            "(tip) Your message was steered into the current run; it arrives "
-            "after the next tool call. Use /busy interrupt or /busy queue to "
-            "change this. This tip only shows once."
-        )
-    return (
-        "(tip) Your message interrupted the current run. "
-        "Use /busy queue to queue messages for the next turn instead, "
-        "or /busy steer to inject mid-run. This tip only shows once."
-    )
+        return t("onboarding.busy_steer_cli")
+    return t("onboarding.busy_interrupt_cli")
 
 
 def tool_progress_hint_gateway() -> str:
-    return (
-        "💡 First-time tip — that tool took a while and I'm streaming every step. "
-        "If the progress messages feel noisy, send `/verbose` to cycle modes "
-        "(all → new → off). This notice won't appear again."
-    )
+    return t("onboarding.tool_progress_gateway")
 
 
 def tool_progress_hint_cli() -> str:
-    return (
-        "(tip) That tool ran for a while. Use /verbose to cycle tool-progress "
-        "display modes (all -> new -> off -> verbose). This tip only shows once."
-    )
-
+    return t("onboarding.tool_progress_cli")
 
 def openclaw_residue_hint_cli() -> str:
     """Banner shown the first time Hermes starts and finds ``~/.openclaw/``.
@@ -103,15 +71,7 @@ def openclaw_residue_hint_cli() -> str:
     follow-up step for users who have already migrated and want to archive
     the old directory — with a warning that archiving breaks OpenClaw.
     """
-    return (
-        "A legacy OpenClaw directory was detected at ~/.openclaw/.\n"
-        "To port your config, memory, and skills over to Hermes, run "
-        "`hermes claw migrate`.\n"
-        "If you've already migrated and want to archive the old directory, "
-        "run `hermes claw cleanup` (renames it to ~/.openclaw.pre-migration — "
-        "OpenClaw will stop working after this).\n"
-        "This tip only shows once."
-    )
+    return t("onboarding.openclaw_residue")
 
 
 def detect_openclaw_residue(home: Optional[Path] = None) -> bool:

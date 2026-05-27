@@ -1,354 +1,1114 @@
-# Hermes 靜態訊息目錄 -- 繁體中文（台灣／香港）
-# See locales/en.yaml for the source of truth; keep keys in sync.
-
 approval:
-  dangerous_header: "⚠️  危險指令： {description}"
-  choose_long:     "      [o]僅此一次  |  [s]本次工作階段  |  [a]永久允許  |  [d]拒絕"
-  choose_short:    "      [o]僅此一次  |  [s]本次工作階段  |  [d]拒絕"
-  prompt_long:     "      選擇 [o/s/a/D]: "
-  prompt_short:    "      選擇 [o/s/D]: "
-  timeout:         "      ⏱ 逾時 — 已拒絕指令"
-  allowed_once:    "      ✓ 本次允許"
-  allowed_session: "      ✓ 本次工作階段內允許"
-  allowed_always:  "      ✓ 已加入永久允許清單"
-  denied:          "      ✗ 已拒絕"
-  cancelled:       "      ✗ 已取消"
-  blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
+  dangerous_header: ⚠️  危險指令： {description}
+  choose_long: '      [o]僅此一次  |  [s]本次工作階段  |  [a]永久允許  |  [d]拒絕'
+  choose_short: '      [o]僅此一次  |  [s]本次工作階段  |  [d]拒絕'
+  prompt_long: '      選擇 [o/s/a/D]: '
+  prompt_short: '      選擇 [o/s/D]: '
+  timeout: '      ⏱ 逾時 — 已拒絕指令'
+  allowed_once: '      ✓ 本次允許'
+  allowed_session: '      ✓ 本次工作階段內允許'
+  allowed_always: '      ✓ 已加入永久允許清單'
+  denied: '      ✗ 已拒絕'
+  cancelled: '      ✗ 已取消'
+  blocklist_message: 此指令位於無條件封鎖清單中，無法被批准。
+  reason:
+    delete_root_path: delete in root path
+    recursive_delete: recursive delete
+    recursive_delete_long: recursive delete (long flag)
+    world_writable: world/other-writable permissions
+    recursive_world_writable: recursive world/other-writable (long flag)
+    recursive_chown_root: recursive chown to root
+    recursive_chown_root_long: recursive chown to root (long flag)
+    format_filesystem: format filesystem
+    format_filesystem_mkfs: format filesystem (mkfs)
+    disk_copy: disk copy
+    write_block_device: write to block device
+    redirect_block_device: redirect to raw block device
+    dd_block_device: dd to raw block device
+    sql_drop: SQL DROP
+    sql_delete_no_where: SQL DELETE without WHERE
+    sql_truncate: SQL TRUNCATE
+    overwrite_system_config: overwrite system config
+    stop_restart_service: stop/restart system service
+    kill_all_processes: kill all processes
+    force_kill: force kill processes
+    force_kill_killall: force kill processes (killall -KILL)
+    force_kill_killall_s: force kill processes (killall -s KILL)
+    kill_by_regex: kill processes by regex (killall -r)
+    fork_bomb: fork bomb
+    shell_c_flag: shell command via -c/-lc flag
+    script_execution_flag: script execution via -e/-c flag
+    pipe_remote_shell: pipe remote content to shell
+    exec_remote_substitution: execute remote script via process substitution
+    overwrite_system_tee: overwrite system file via tee
+    overwrite_system_redirect: overwrite system file via redirection
+    overwrite_project_tee: overwrite project env/config via tee
+    overwrite_project_redirect: overwrite project env/config via redirection
+    xargs_rm: xargs with rm
+    find_exec_rm: find -exec/-execdir rm
+    find_delete: find -delete
+    stop_restart_gateway: stop/restart hermes gateway (kills running agents)
+    hermes_update: hermes update (restarts gateway, kills running agents)
+    gateway_outside_systemd: start gateway outside systemd (use 'systemctl --user restart hermes-gateway')
+    kill_gateway: kill hermes/gateway process (self-termination)
+    kill_pgrep: kill process via pgrep expansion (self-termination)
+    kill_pgrep_backtick: kill process via backtick pgrep expansion (self-termination)
+    copy_into_system_config: copy/move file into system config path
+    overwrite_project_file: overwrite project env/config file
+    inplace_edit_system: in-place edit of system config
+    inplace_edit_system_long: in-place edit of system config (long flag)
+    script_heredoc: script execution via heredoc
+    git_reset_hard: git reset --hard (destroys uncommitted changes)
+    git_force_push: git force push (rewrites remote history)
+    git_force_push_short: git force push short flag (rewrites remote history)
+    git_clean_force: git clean with force (deletes uncommitted files)
+    git_branch_force_delete: git branch force delete
+    chmod_exec: chmod +x followed by immediate execution
+    recursive_delete_home: recursive delete of home directory
+    recursive_delete_root: recursive delete of root filesystem
+    recursive_delete_system: recursive delete of system directory
+    sudo_privilege_flag: sudo with privilege flag (stdin/askpass/shell/list)
+    sudo_combined_flag: sudo with combined-flag privilege escalation
+    security_scan_prefix: Security scan
+    security_issue_detected: security issue detected
+agent:
+  init:
+    initialized: '🤖 AI Agent initialized with model: {model}'
+    initialized_bedrock_sdk: '🤖 AI Agent initialized with model: {model} (AWS Bedrock + AnthropicBedrock SDK, {region})'
+    initialized_anthropic: '🤖 AI Agent initialized with model: {model} (Anthropic native)'
+    initialized_bedrock: '🤖 AI Agent initialized with model: {model} (AWS Bedrock, {region}{guardrails})'
+    using_entra: '🔑 Using credentials: Microsoft Entra ID'
+    using_token: '🔑 Using token: {token}'
+    custom_base_url: '🔗 Using custom base URL: {url}'
+    using_api_key: '🔑 Using API key: {key}'
+    tools_loaded: '🛠️  Loaded {count} tools: {tools}'
+    enabled_toolsets: '   ✅ Enabled toolsets: {toolsets}'
+    disabled_toolsets: '   ❌ Disabled toolsets: {toolsets}'
+    no_tools: 🛠️  No tools loaded (all tools filtered out or unavailable)
+    ephemeral_prompt: '🔒 Ephemeral system prompt: ''{prompt}'' (not saved to trajectories)'
+    prompt_caching: '💾 Prompt caching: ENABLED ({source}, {ttl} TTL)'
+    context_limit: '📊 Context limit: {tokens} tokens (compress at {threshold}% = {threshold_tokens})'
+    context_limit_disabled: '📊 Context limit: {tokens} tokens (auto-compression disabled)'
+  active_days: 'Active days:'
+  active_days_label: '**Active days:**'
+  active_time_label: '**Active time:**'
+  activity_patterns: 📅 Activity patterns
+  api_key_warning: '⚠️ Warning: API key appears invalid or missing'
+  avg_msgs_session: 'Avg msgs/session:'
+  avg_session_label: '**Avg session:**'
+  best_streak_label: '**Best streak:**'
+  best_streak_term: 'Best streak:'
+  busiest_label: '**📅 Busiest:**'
+  cached_context: '{prefix}💾 Cached context length: {ctx:,} tokens for {model}'
+  context_length_exceeded: Context length exceeded ({tokens} tokens). Cannot compress further.
+  context_length_exceeded_max: 'Context length exceeded: max compression attempts ({max}) reached.'
+  distinct_skills: 'Distinct skills:'
+  empty_after_tools: ⚠️ Model returned empty response after tool calls — prompting to continue
+  empty_response_tools: ↻ Empty response after tool call — using previous reply content
+  empty_responses_fallback: ⚠️ Model consistently returning empty responses — switching to fallback provider...
+  fallback_chain: '🔄 Fallback chain ({count} providers):'
+  fallback_model: '🔄 Fallback model: {model} ({provider})'
+  first_response_truncated: First response truncated due to output length limit
+  input_tokens: 'Input tokens:'
+  iteration_budget_exhausted: '
 
+    ⚠️  Iteration budget exhausted ({used}/{max_total} iterations used)'
+  max_iterations: ⚠️ Max iterations ({max}) reached. Requesting summary...
+  messages: 'Messages:'
+  messages_label: '**Messages:**'
+  missing_requirements: '⚠️ Some tools may not work due to missing requirements: {missing}'
+  models_section: '**🤖 Models:**'
+  models_used: 🤖 Models used
+  more_tools: '... and {count} more tools'
+  no_response_reconnect: '⚠️ Provider no response for {time}s (model: {model}, context: ~{tokens} tokens). Reconnecting...'
+  no_sessions_found: No sessions found in the past {days} days.
+  notable_sessions: 🏆 Notable sessions
+  operation_interrupted_retry: Operation interrupted during retry ({hint}, attempt {attempt}/{max}).
+  operation_interrupted_waiting: 'Operation interrupted: waiting for model response ({elapsed}s elapsed).'
+  output_length_limit: Response truncated due to output length limit
+  output_tokens: 'Output tokens:'
+  overview: 📋 Overview
+  payload_too_large: Request payload too large (413). Cannot compress further.
+  payload_too_large_max: 'Request payload too large: max compression attempts ({max}) reached.'
+  peak_hours: 'Peak hours:'
+  period: 'Period:'
+  platforms_section: '**📱 Platforms:**'
+  platforms_section_term: 📱 Platforms
+  primary_model_failed: '🔄 Primary model failed — switching to fallback: {model} ({provider})'
+  rate_limited_fallback: ⚠️ Rate limited — switching to fallback provider...
+  reasoning_no_content: ⚠️ Model produced reasoning content but no visible reply, all retries exhausted. Returning empty content.
+  response_truncated: Response remained truncated after 3 continuation attempts
+  sessions: 'Sessions:'
+  sessions_label: '**Sessions:**'
+  skills_section: '**🧠 Top skills:**'
+  stale_connections_cleaned: 🔌 Detected stale connections from a previous provider issue — cleaned up automatically. Proceeding
+    with fresh connection.
+  starting_conversation: '💬 Starting conversation: ''{preview}'''
+  stream_interrupted: ↻ Stream interrupted — using received content as final reply
+  stream_retry: ⚠️ {provider} stream {kind} ({error_type}){_suffix} — reconnecting, retry {attempt}/{max}
+  switched_fallback: '↻ Switched to fallback model: {model} ({provider})'
+  thinking_only: ↻ Thinking-only response — prefilling to continue
+  title: 📊 **Hermes Insights** — past {days} days
+  tokens_label: '**Tokens:**'
+  tool_calls: 'Tool calls:'
+  tool_calls_label: '**Tool calls:**'
+  tools_section: '**🔧 Top tools:**'
+  top_skills: 🧠 Top skills
+  top_tools: 🔧 Top tools
+  total_tokens: 'Total tokens:'
+  trajectory_enabled: 📝 Trajectory saving enabled
+  user_messages: 'User messages:'
 gateway:
-  approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
-  draining:         "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
-  goal_cleared:     "✓ 目標已清除。"
-  no_active_goal:   "目前沒有作用中的目標。"
-  config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"
-  config_save_failed: "⚠️ 無法儲存設定：{error}"
-
-  model:
-    error_prefix:           "錯誤：{error}"
-    switched:               "已切換模型為 `{model}`"
-    provider_label:         "提供方：{provider}"
-    context_label:          "上下文：{tokens} tokens"
-    max_output_label:       "最大輸出：{tokens} tokens"
-    cost_label:             "費用：{cost}"
-    capabilities_label:     "能力：{capabilities}"
-    prompt_caching_enabled: "提示快取：已啟用"
-    warning_prefix:         "警告：{warning}"
-    saved_global:           "已儲存到 config.yaml（`--global`）"
-    session_only_hint:      "_（僅本次工作階段有效 — 加上 `--global` 可永久儲存）_"
-    current_label:          "目前：`{model}`（{provider}）"
-    current_tag:            "（目前）"
-    more_models_suffix:     "（還有 {count} 個）"
-    usage_switch_model:     "`/model <name>` — 切換模型"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — 切換提供方"
-    usage_persist:          "`/model <name> --global` — 永久儲存"
-
-  agents:
-    header:                "🤖 **作用中的代理與任務**"
-    active_agents:         "**作用中代理：** {count}"
-    this_chat:             " · 目前聊天"
-    more:                  "... 還有 {count} 個"
-    running_processes:     "**執行中的背景程序：** {count}"
-    async_jobs:            "**閘道非同步任務：** {count}"
-    none:                  "沒有作用中的代理或執行中的任務。"
-    state_starting:        "啟動中"
-    state_running:         "執行中"
-
-  approve:
-    no_pending:            "沒有待批准的指令。"
-    once_singular:         "✅ 指令已批准。代理正在恢復…"
-    once_plural:           "✅ 指令已批准（{count} 條指令）。代理正在恢復…"
-    session_singular:      "✅ 指令已批准（本次工作階段內允許該模式）。代理正在恢復…"
-    session_plural:        "✅ 指令已批准（本次工作階段內允許該模式）（{count} 條指令）。代理正在恢復…"
-    always_singular:       "✅ 指令已批准（永久允許該模式）。代理正在恢復…"
-    always_plural:         "✅ 指令已批准（永久允許該模式）（{count} 條指令）。代理正在恢復…"
-
-  background:
-    usage:                 "用法：/background <提示>\n範例：/background 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
-    started:               "🔄 背景任務已啟動：「{preview}」\n任務 ID：{task_id}\n你可以繼續聊天 — 完成後結果將顯示於此。"
-
-  branch:
-    db_unavailable:        "工作階段資料庫無法使用。"
-    no_conversation:       "沒有可分支的對話 — 請先傳送一則訊息。"
-    create_failed:         "建立分支失敗：{error}"
-    switch_failed:         "分支已建立，但無法切換到該分支。"
-    branched_one:          "⑂ 已分支至 **{title}**（已複製 {count} 則訊息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切換回原始工作階段。"
-    branched_many:         "⑂ 已分支至 **{title}**（已複製 {count} 則訊息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切換回原始工作階段。"
-
-  commands:
-    usage:                 "用法：`/commands [page]`"
-    skill_header:          "⚡ **技能指令**："
-    default_desc:          "技能指令"
-    none:                  "沒有可用的指令。"
-    header:                "📚 **指令**（共 {total} 個，第 {page}/{total_pages} 頁）"
-    nav_prev:              "`/commands {page}` ← 上一頁"
-    nav_next:              "下一頁 → `/commands {page}`"
-    out_of_range:          "_（請求的第 {requested} 頁超出範圍，顯示第 {page} 頁。）_"
-
-  compress:
-    not_enough:            "對話內容不足，無法壓縮（至少需要 4 則訊息）。"
-    no_provider:           "未設定提供方 — 無法壓縮。"
-    nothing_to_do:         "目前沒有可壓縮的內容（對話記錄仍全部為受保護的上下文）。"
-    focus_line:            "聚焦：\"{topic}\""
-    summary_failed:        "⚠️ 摘要產生失敗（{error}）。{count} 則歷史訊息已被移除並以佔位符取代；先前的上下文已無法復原。建議檢查 auxiliary.compression 模型設定。"
-    aborted:               "⚠️ 壓縮已中止 ({error})。未刪除任何訊息 — 對話保持不變。執行 /compress 重試，執行 /reset 開始新工作階段，或檢查你的 auxiliary.compression 模型設定。"
-    aux_failed:            "ℹ️ 設定的壓縮模型 `{model}` 失敗（{error}）。已使用主要模型復原 — 上下文完整 — 但您可能想檢查 config.yaml 中的 `auxiliary.compression.model`。"
-    failed:                "壓縮失敗：{error}"
-
-  debug:
-    upload_failed:         "✗ 無法上傳除錯報告：{error}"
-    header:                "**除錯報告已上傳：**"
-    auto_delete:           "⏱ 貼上的內容將於 6 小時後自動刪除。"
-    full_logs_hint:        "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
-    share_hint:            "請將這些連結分享給 Hermes 團隊以取得支援。"
-
-  deny:
-    stale:                 "❌ 指令已拒絕（批准已過期）。"
-    no_pending:            "沒有待拒絕的指令。"
-    denied_singular:       "❌ 指令已拒絕。"
-    denied_plural:         "❌ 指令已拒絕（{count} 條指令）。"
-
-  fast:
-    not_supported:         "⚡ /fast 僅適用於支援 Priority Processing 的 OpenAI 模型。"
-    status:                "⚡ Priority Processing\n\n目前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 未知參數：`{arg}`\n\n**有效選項：** normal、fast、status"
-    saved:                 "⚡ ✓ Priority Processing：**{label}**（已儲存到設定）\n_（下一則訊息生效）_"
-    session_only:          "⚡ ✓ Priority Processing：**{label}**（僅本次工作階段）"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-
-  footer:
-    status:                "📎 執行階段頁尾：**{state}**\n欄位：`{fields}`\n平台：`{platform}`"
-    usage:                 "用法：`/footer [on|off|status]`"
-    saved:                 "📎 執行階段頁尾：**{state}**{example}\n_（已全域儲存 — 下一則訊息生效）_"
-    example_line:          "\n範例：`{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
-  goal:
-    unavailable:           "此工作階段不支援目標功能。"
-    no_goal_set:           "未設定目標。"
-    paused:                "⏸ 目標已暫停：{goal}"
-    no_resume:             "沒有可恢復的目標。"
-    resumed:               "▶ 目標已恢復：{goal}\n傳送任意訊息繼續，或等待 — 我會在下一輪繼續推進。"
-    invalid:               "無效目標：{error}"
-    set:                   "⊙ 目標已設定（{budget} 輪預算）：{goal}\n我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。\n控制指令：/goal status · /goal pause · /goal resume · /goal clear"
-
-  help:
-    header:                "📖 **Hermes 指令**\n"
-    skill_header:          "\n⚡ **技能指令**（{count} 個作用中）："
-    more_use_commands:     "\n... 還有 {count} 個。使用 `/commands` 檢視完整分頁清單。"
-
-  insights:
-    invalid_days:          "無效的 --days 值：{value}"
-    error:                 "產生洞察時發生錯誤：{error}"
-
-  kanban:
-    error_prefix:          "⚠ kanban 錯誤：{error}"
-    subscribed_suffix:     "（已訂閱 — 當 {task_id} 完成或被封鎖時將通知您）"
-    truncated_suffix:      "…（已截斷；如需完整輸出請在終端機執行 `hermes kanban …`）"
-    no_output:             "（無輸出）"
-
-  personality:
-    none_configured:       "`{path}/config.yaml` 中未設定人格"
-    header:                "🎭 **可用人格**\n"
-    none_option:           "• `none` —（不套用人格覆寫）"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\n用法：`/personality <name>`"
-    save_failed:           "⚠️ 儲存人格變更失敗：{error}"
-    cleared:               "🎭 已清除人格 — 使用基礎代理行為。\n_（下一則訊息生效）_"
-    set_to:                "🎭 人格已設定為 **{name}**\n_（下一則訊息生效）_"
-    unknown:               "未知人格：`{name}`\n\n可用：{available}"
-
-  profile:
-    header:                "👤 **設定檔：** `{profile}`"
-    home:                  "📂 **主目錄：** `{home}`"
-
-  reasoning:
-    level_default:             "medium（預設）"
-    level_disabled:            "none（已停用）"
-    scope_session:             "工作階段覆寫"
-    scope_global:              "全域設定"
-    status:                    "🧠 **推理設定**\n\n**強度：** `{level}`\n**範圍：** {scope}\n**顯示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
-    display_on:                "開啟 ✓"
-    display_off:               "關閉"
-    display_set_on:            "🧠 ✓ 推理顯示：**開啟**\n在 **{platform}** 上每次回應前將顯示模型的思考過程。"
-    display_set_off:           "🧠 ✓ **{platform}** 上的推理顯示：**關閉**"
-    reset_global_unsupported:  "⚠️ 不支援 `/reasoning reset --global`。請使用 `/reasoning <level> --global` 變更全域預設值。"
-    reset_done:                "🧠 ✓ 已清除本工作階段的推理覆寫；回退至全域設定。"
-    unknown_arg:               "⚠️ 未知參數：`{arg}`\n\n**有效級別：** none, minimal, low, medium, high, xhigh\n**顯示：** show, hide\n**持久化：** 加上 `--global` 可跨工作階段儲存"
-    set_global:                "🧠 ✓ 推理強度已設定為 `{effort}`（已儲存到設定）\n_（下一則訊息生效）_"
-    set_global_save_failed:    "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 設定儲存失敗）\n_（下一則訊息生效）_"
-    set_session:               "🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 加上 `--global` 可持久化）\n_（下一則訊息生效）_"
-
-  reload_mcp:
-    cancelled:             "🟡 已取消 /reload-mcp。MCP 工具未變更。"
-    always_followup:       "ℹ️ 後續 `/reload-mcp` 呼叫將不再要求確認。可在 `config.yaml` 中將 `approvals.mcp_reload_confirm: true` 重新啟用。"
-    confirm_prompt:        "⚠️ **確認 /reload-mcp**\n\n重新載入 MCP 伺服器會為本工作階段重建工具集，並**使提供方提示快取失效** — 下一則訊息將重新傳送完整輸入 token。在長上下文或高推理模型上，這可能成本較高。\n\n請選擇：\n• **批准一次** — 立即重新載入\n• **永遠批准** — 立即重新載入並永久關閉此提示\n• **取消** — 保持 MCP 工具不變\n\n_文字備援：回覆 `/approve`、`/always` 或 `/cancel`。_"
-    header:                "🔄 **MCP 伺服器已重新載入**\n"
-    reconnected:           "♻️ 已重新連線：{names}"
-    added:                 "➕ 已新增：{names}"
-    removed:               "➖ 已移除：{names}"
-    none_connected:        "沒有已連線的 MCP 伺服器。"
-    tools_available:       "\n🔧 來自 {servers} 個伺服器的 {tools} 個工具可用"
-    failed:                "❌ MCP 重新載入失敗：{error}"
-
-  reload_skills:
-    header:                "🔄 **技能已重新載入**\n"
-    no_new:                "未偵測到新技能。"
-    total:                 "\n📚 {count} 個技能可用"
-    added_header:          "➕ **新增技能：**"
-    removed_header:        "➖ **移除技能：**"
-    item_with_desc:        "    - {name}：{desc}"
-    item_no_desc:          "    - {name}"
-    failed:                "❌ 技能重新載入失敗：{error}"
-
-  reset:
-    header_default:        "✨ 工作階段已重設！重新開始。"
-    header_new:            "✨ 新工作階段已啟動！"
-    header_titled:         "✨ 新工作階段已啟動：{title}"
-    title_rejected:        "\n⚠️ 標題遭拒絕：{error}"
-    title_error_untitled:  "\n⚠️ {error} — 工作階段以未命名方式啟動。"
-    title_empty_untitled:  "\n⚠️ 清理後標題為空 — 工作階段以未命名方式啟動。"
-    tip:                   "\n✦ 提示：{tip}"
-
-  restart:
-    in_progress:           "⏳ 閘道重新啟動已在進行中……"
-    restarting:            "♻ 正在重新啟動閘道。如果 60 秒內未收到通知，請在主控台執行 `hermes gateway restart` 重新啟動。"
-
-  resume:
-    db_unavailable:        "工作階段資料庫無法使用。"
-    no_named_sessions:     "找不到已命名的工作階段。\n使用 `/title 我的工作階段` 為目前工作階段命名，然後使用 `/resume 我的工作階段` 返回。"
-    list_header:           "📋 **已命名工作階段**\n"
-    list_item:             "• **{title}**{preview_part}"
-    list_item_numbered:    "{index}. **{title}**{preview_part}"
-    list_preview_suffix:   " — _{preview}_"
-    list_footer:           "\n用法：`/resume <工作階段名稱>`"
-    list_footer_numbered:  "\n用法：`/resume <會話名稱>` 或 `/resume <編號>`（例如，`/resume 1` 表示最近的會話）"
-    list_failed:           "無法列出工作階段：{error}"
-    out_of_range:          "恢復索引 {index} 超出範圍。\n請使用不帶參數的 `/resume` 查看可用會話。"
-    not_found:             "找不到符合 '**{name}**' 的工作階段。\n使用不帶參數的 `/resume` 檢視可用的工作階段。"
-    already_on:            "📌 已在工作階段 **{name}** 上。"
-    switch_failed:         "切換工作階段失敗。"
-    resumed_one:           "↻ 已恢復工作階段 **{title}**（{count} 則訊息）。對話已還原。"
-    resumed_many:          "↻ 已恢復工作階段 **{title}**（{count} 則訊息）。對話已還原。"
-    resumed_no_count:      "↻ 已恢復工作階段 **{title}**。對話已還原。"
-
-  retry:
-    no_previous:           "沒有可重試的上一則訊息。"
-
-  rollback:
-    not_enabled:           "檢查點未啟用。\n請在 config.yaml 中啟用：\n```\ncheckpoints:\n  enabled: true\n```"
-    none_found:            "找不到 {cwd} 的檢查點"
-    invalid_number:        "無效的檢查點編號。請使用 1-{max}。"
-    restored:              "✅ 已還原至檢查點 {hash}：{reason}\n已自動儲存回復前的快照。"
-    restore_failed:        "❌ {error}"
-
-  set_home:
-    save_failed:           "無法儲存主頻道：{error}"
-    success:               "✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。\n排程任務和跨平台訊息將傳送至此處。"
-
+  approval_expired: ⚠️ 批准已逾期（代理不再等待）。請讓代理重試。
+  draining: ⏳ 正在等待 {count} 個活躍代理結束後重新啟動...
+  goal_cleared: ✓ 目標已清除。
+  no_active_goal: 目前沒有作用中的目標。
+  config_read_failed: ⚠️ 無法讀取 config.yaml：{error}
+  config_save_failed: ⚠️ 無法儲存設定：{error}
   status:
-    header:                "📊 **Hermes 閘道狀態**"
-    session_id:            "**工作階段 ID：** `{session_id}`"
-    title:                 "**標題：** {title}"
-    created:               "**建立時間：** {timestamp}"
-    last_activity:         "**最近活動：** {timestamp}"
-    tokens:                "**Token 數：** {tokens}"
-    agent_running:         "**代理執行中：** {state}"
-    state_yes:             "是 ⚡"
-    state_no:              "否"
-    queued:                "**排隊中的後續：** {count}"
-    platforms:             "**已連線平台：** {platforms}"
+    elapsed_min: '已運行 {min} 分鐘'
+  model:
+    error_prefix: 錯誤：{error}
+    switched: 已切換模型為 `{model}`
+    provider_label: 提供方：{provider}
+    context_label: 上下文：{tokens} tokens
+    max_output_label: 最大輸出：{tokens} tokens
+    cost_label: 費用：{cost}
+    capabilities_label: 能力：{capabilities}
+    prompt_caching_enabled: 提示快取：已啟用
+    warning_prefix: 警告：{warning}
+    saved_global: 已儲存到 config.yaml（`--global`）
+    session_only_hint: _（僅本次工作階段有效 — 加上 `--global` 可永久儲存）_
+    current_label: 目前：`{model}`（{provider}）
+    current_tag: （目前）
+    more_models_suffix: （還有 {count} 個）
+    usage_switch_model: '`/model <name>` — 切換模型'
+    usage_switch_provider: '`/model <name> --provider <slug>` — 切換提供方'
+    usage_persist: '`/model <name> --global` — 永久儲存'
+  agents:
+    header: 🤖 **作用中的代理與任務**
+    active_agents: '**作用中代理：** {count}'
+    this_chat: ' · 目前聊天'
+    more: '... 還有 {count} 個'
+    running_processes: '**執行中的背景程序：** {count}'
+    async_jobs: '**閘道非同步任務：** {count}'
+    none: 沒有作用中的代理或執行中的任務。
+    state_starting: 啟動中
+    state_running: 執行中
+  approve:
+    no_pending: 沒有待批准的指令。
+    once_singular: ✅ 指令已批准。代理正在恢復…
+    once_plural: ✅ 指令已批准（{count} 條指令）。代理正在恢復…
+    session_singular: ✅ 指令已批准（本次工作階段內允許該模式）。代理正在恢復…
+    session_plural: ✅ 指令已批准（本次工作階段內允許該模式）（{count} 條指令）。代理正在恢復…
+    always_singular: ✅ 指令已批准（永久允許該模式）。代理正在恢復…
+    always_plural: ✅ 指令已批准（永久允許該模式）（{count} 條指令）。代理正在恢復…
+  background:
+    usage: '用法：/background <提示>
 
+      範例：/background 摘要今天 HN 上的熱門故事
+
+
+      在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。'
+    started: '🔄 背景任務已啟動：「{preview}」
+
+      任務 ID：{task_id}
+
+      你可以繼續聊天 — 完成後結果將顯示於此。'
+  branch:
+    db_unavailable: 工作階段資料庫無法使用。
+    no_conversation: 沒有可分支的對話 — 請先傳送一則訊息。
+    create_failed: 建立分支失敗：{error}
+    switch_failed: 分支已建立，但無法切換到該分支。
+    branched_one: '⑂ 已分支至 **{title}**（已複製 {count} 則訊息）
+
+      原始：`{parent}`
+
+      分支：`{new}`
+
+      使用 `/resume` 切換回原始工作階段。'
+    branched_many: '⑂ 已分支至 **{title}**（已複製 {count} 則訊息）
+
+      原始：`{parent}`
+
+      分支：`{new}`
+
+      使用 `/resume` 切換回原始工作階段。'
+  commands:
+    usage: 用法：`/commands [page]`
+    skill_header: ⚡ **技能指令**：
+    default_desc: 技能指令
+    none: 沒有可用的指令。
+    header: 📚 **指令**（共 {total} 個，第 {page}/{total_pages} 頁）
+    nav_prev: '`/commands {page}` ← 上一頁'
+    nav_next: 下一頁 → `/commands {page}`
+    out_of_range: _（請求的第 {requested} 頁超出範圍，顯示第 {page} 頁。）_
+  compress:
+    not_enough: 對話內容不足，無法壓縮（至少需要 4 則訊息）。
+    no_provider: 未設定提供方 — 無法壓縮。
+    nothing_to_do: 目前沒有可壓縮的內容（對話記錄仍全部為受保護的上下文）。
+    focus_line: 聚焦："{topic}"
+    summary_failed: ⚠️ 摘要產生失敗（{error}）。{count} 則歷史訊息已被移除並以佔位符取代；先前的上下文已無法復原。建議檢查 auxiliary.compression 模型設定。
+    aborted: ⚠️ 壓縮已中止 ({error})。未刪除任何訊息 — 對話保持不變。執行 /compress 重試，執行 /reset 開始新工作階段，或檢查你的 auxiliary.compression 模型設定。
+    aux_failed: ℹ️ 設定的壓縮模型 `{model}` 失敗（{error}）。已使用主要模型復原 — 上下文完整 — 但您可能想檢查 config.yaml 中的 `auxiliary.compression.model`。
+    failed: 壓縮失敗：{error}
+  debug:
+    upload_failed: ✗ 無法上傳除錯報告：{error}
+    header: '**除錯報告已上傳：**'
+    auto_delete: ⏱ 貼上的內容將於 6 小時後自動刪除。
+    full_logs_hint: 如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。
+    share_hint: 請將這些連結分享給 Hermes 團隊以取得支援。
+  deny:
+    stale: ❌ 指令已拒絕（批准已過期）。
+    no_pending: 沒有待拒絕的指令。
+    denied_singular: ❌ 指令已拒絕。
+    denied_plural: ❌ 指令已拒絕（{count} 條指令）。
+  fast:
+    not_supported: ⚡ /fast 僅適用於支援 Priority Processing 的 OpenAI 模型。
+    status: '⚡ Priority Processing
+
+
+      目前模式：`{mode}`
+
+
+      _用法：_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ 未知參數：`{arg}`
+
+
+      **有效選項：** normal、fast、status'
+    saved: '⚡ ✓ Priority Processing：**{label}**（已儲存到設定）
+
+      _（下一則訊息生效）_'
+    session_only: ⚡ ✓ Priority Processing：**{label}**（僅本次工作階段）
+    label_fast: FAST
+    label_normal: NORMAL
+    status_fast: fast
+    status_normal: normal
+  footer:
+    status: '📎 執行階段頁尾：**{state}**
+
+      欄位：`{fields}`
+
+      平台：`{platform}`'
+    usage: 用法：`/footer [on|off|status]`
+    saved: '📎 執行階段頁尾：**{state}**{example}
+
+      _（已全域儲存 — 下一則訊息生效）_'
+    example_line: '
+
+      範例：`{preview}`'
+    state_on: 'ON'
+    state_off: 'OFF'
+  goal:
+    unavailable: 此工作階段不支援目標功能。
+    no_goal_set: 未設定目標。
+    paused: ⏸ 目標已暫停：{goal}
+    no_resume: 沒有可恢復的目標。
+    resumed: '▶ 目標已恢復：{goal}
+
+      傳送任意訊息繼續，或等待 — 我會在下一輪繼續推進。'
+    invalid: 無效目標：{error}
+    set: '⊙ 目標已設定（{budget} 輪預算）：{goal}
+
+      我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。
+
+      控制指令：/goal status · /goal pause · /goal resume · /goal clear'
+  help:
+    header: '📖 **Hermes 指令**
+
+      '
+    skill_header: '
+
+      ⚡ **技能指令**（{count} 個作用中）：'
+    more_use_commands: '
+
+      ... 還有 {count} 個。使用 `/commands` 檢視完整分頁清單。'
+  insights:
+    invalid_days: 無效的 --days 值：{value}
+    error: 產生洞察時發生錯誤：{error}
+  kanban:
+    error_prefix: ⚠ kanban 錯誤：{error}
+    subscribed_suffix: （已訂閱 — 當 {task_id} 完成或被封鎖時將通知您）
+    truncated_suffix: …（已截斷；如需完整輸出請在終端機執行 `hermes kanban …`）
+    no_output: （無輸出）
+  personality:
+    none_configured: '`{path}/config.yaml` 中未設定人格'
+    header: '🎭 **可用人格**
+
+      '
+    none_option: • `none` —（不套用人格覆寫）
+    item: • `{name}` — {preview}
+    usage: '
+
+      用法：`/personality <name>`'
+    save_failed: ⚠️ 儲存人格變更失敗：{error}
+    cleared: '🎭 已清除人格 — 使用基礎代理行為。
+
+      _（下一則訊息生效）_'
+    set_to: '🎭 人格已設定為 **{name}**
+
+      _（下一則訊息生效）_'
+    unknown: '未知人格：`{name}`
+
+
+      可用：{available}'
+  profile:
+    header: 👤 **設定檔：** `{profile}`
+    home: 📂 **主目錄：** `{home}`
+  reasoning:
+    level_default: medium（預設）
+    level_disabled: none（已停用）
+    scope_session: 工作階段覆寫
+    scope_global: 全域設定
+    status: '🧠 **推理設定**
+
+
+      **強度：** `{level}`
+
+      **範圍：** {scope}
+
+      **顯示：** {display}
+
+
+      _用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: 開啟 ✓
+    display_off: 關閉
+    display_set_on: '🧠 ✓ 推理顯示：**開啟**
+
+      在 **{platform}** 上每次回應前將顯示模型的思考過程。'
+    display_set_off: 🧠 ✓ **{platform}** 上的推理顯示：**關閉**
+    reset_global_unsupported: ⚠️ 不支援 `/reasoning reset --global`。請使用 `/reasoning <level> --global` 變更全域預設值。
+    reset_done: 🧠 ✓ 已清除本工作階段的推理覆寫；回退至全域設定。
+    unknown_arg: '⚠️ 未知參數：`{arg}`
+
+
+      **有效級別：** none, minimal, low, medium, high, xhigh
+
+      **顯示：** show, hide
+
+      **持久化：** 加上 `--global` 可跨工作階段儲存'
+    set_global: '🧠 ✓ 推理強度已設定為 `{effort}`（已儲存到設定）
+
+      _（下一則訊息生效）_'
+    set_global_save_failed: '🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 設定儲存失敗）
+
+      _（下一則訊息生效）_'
+    set_session: '🧠 ✓ 推理強度已設定為 `{effort}`（僅本工作階段 — 加上 `--global` 可持久化）
+
+      _（下一則訊息生效）_'
+  reload_mcp:
+    cancelled: 🟡 已取消 /reload-mcp。MCP 工具未變更。
+    always_followup: 'ℹ️ 後續 `/reload-mcp` 呼叫將不再要求確認。可在 `config.yaml` 中將 `approvals.mcp_reload_confirm: true` 重新啟用。'
+    confirm_prompt: '⚠️ **確認 /reload-mcp**
+
+
+      重新載入 MCP 伺服器會為本工作階段重建工具集，並**使提供方提示快取失效** — 下一則訊息將重新傳送完整輸入 token。在長上下文或高推理模型上，這可能成本較高。
+
+
+      請選擇：
+
+      • **批准一次** — 立即重新載入
+
+      • **永遠批准** — 立即重新載入並永久關閉此提示
+
+      • **取消** — 保持 MCP 工具不變
+
+
+      _文字備援：回覆 `/approve`、`/always` 或 `/cancel`。_'
+    header: '🔄 **MCP 伺服器已重新載入**
+
+      '
+    reconnected: ♻️ 已重新連線：{names}
+    added: ➕ 已新增：{names}
+    removed: ➖ 已移除：{names}
+    none_connected: 沒有已連線的 MCP 伺服器。
+    tools_available: '
+
+      🔧 來自 {servers} 個伺服器的 {tools} 個工具可用'
+    failed: ❌ MCP 重新載入失敗：{error}
+  reload_skills:
+    header: '🔄 **技能已重新載入**
+
+      '
+    no_new: 未偵測到新技能。
+    total: '
+
+      📚 {count} 個技能可用'
+    added_header: ➕ **新增技能：**
+    removed_header: ➖ **移除技能：**
+    item_with_desc: '    - {name}：{desc}'
+    item_no_desc: '    - {name}'
+    failed: ❌ 技能重新載入失敗：{error}
+  reset:
+    header_default: ✨ 工作階段已重設！重新開始。
+    header_new: ✨ 新工作階段已啟動！
+    header_titled: ✨ 新工作階段已啟動：{title}
+    title_rejected: '
+
+      ⚠️ 標題遭拒絕：{error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — 工作階段以未命名方式啟動。'
+    title_empty_untitled: '
+
+      ⚠️ 清理後標題為空 — 工作階段以未命名方式啟動。'
+    tip: '
+
+      ✦ 提示：{tip}'
+    info_model: '◆ Model: `{model}`'
+    info_provider: '◆ Provider: {provider}'
+    info_context: '◆ Context: {ctx_display} tokens ({ctx_source})'
+    info_endpoint: '◆ Endpoint: {base_url}'
+    ctx_source_default: default — set model.context_length in config to override
+  restart:
+    in_progress: ⏳ 閘道重新啟動已在進行中……
+    restarting: ♻ 正在重新啟動閘道。如果 60 秒內未收到通知，請在主控台執行 `hermes gateway restart` 重新啟動。
+    restarting_hint: ⚠️ Gateway restarting — Your current task will be interrupted. Send any message after restart and I'll
+      try to resume where you left off.
+    shutting_down: ⚠️ Gateway shutting down — Your current task will be interrupted.
+    success: ♻ Gateway restarted successfully. Your session continues.
+  resume:
+    db_unavailable: 工作階段資料庫無法使用。
+    no_named_sessions: '找不到已命名的工作階段。
+
+      使用 `/title 我的工作階段` 為目前工作階段命名，然後使用 `/resume 我的工作階段` 返回。'
+    list_header: '📋 **已命名工作階段**
+
+      '
+    list_item: • **{title}**{preview_part}
+    list_preview_suffix: ' — _{preview}_'
+    list_footer: '
+
+      用法：`/resume <工作階段名稱>`'
+    list_failed: 無法列出工作階段：{error}
+    not_found: '找不到符合 ''**{name}**'' 的工作階段。
+
+      使用不帶參數的 `/resume` 檢視可用的工作階段。'
+    already_on: 📌 已在工作階段 **{name}** 上。
+    switch_failed: 切換工作階段失敗。
+    resumed_one: ↻ 已恢復工作階段 **{title}**（{count} 則訊息）。對話已還原。
+    resumed_many: ↻ 已恢復工作階段 **{title}**（{count} 則訊息）。對話已還原。
+    resumed_no_count: ↻ 已恢復工作階段 **{title}**。對話已還原。
+  retry:
+    no_previous: 沒有可重試的上一則訊息。
+  rollback:
+    not_enabled: "檢查點未啟用。\n請在 config.yaml 中啟用：\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found: 找不到 {cwd} 的檢查點
+    invalid_number: 無效的檢查點編號。請使用 1-{max}。
+    restored: '✅ 已還原至檢查點 {hash}：{reason}
+
+      已自動儲存回復前的快照。'
+    restore_failed: ❌ {error}
+  set_home:
+    save_failed: 無法儲存主頻道：{error}
+    success: '✅ 主頻道已設定為 **{name}**（ID：{chat_id}）。
+
+      排程任務和跨平台訊息將傳送至此處。'
+  status:
+    header: 📊 **Hermes 閘道狀態**
+    session_id: '**工作階段 ID：** `{session_id}`'
+    title: '**標題：** {title}'
+    created: '**建立時間：** {timestamp}'
+    last_activity: '**最近活動：** {timestamp}'
+    tokens: '**Token 數：** {tokens}'
+    agent_running: '**代理執行中：** {state}'
+    state_yes: 是 ⚡
+    state_no: 否
+    queued: '**排隊中的後續：** {count}'
+    platforms: '**已連線平台：** {platforms}'
   stop:
-    stopped_pending:       "⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。"
-    stopped:               "⚡ 已停止。你可以繼續此工作階段。"
-    no_active:             "沒有可停止的作用中任務。"
-
+    stopped_pending: ⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。
+    stopped: ⚡ 已停止。你可以繼續此工作階段。
+    no_active: 沒有可停止的作用中任務。
   title:
-    db_unavailable:        "工作階段資料庫無法使用。"
-    warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ 清理後標題為空。請使用可列印字元。"
-    set_to:                "✏️ 已設定工作階段標題：**{title}**"
-    not_found:             "在資料庫中找不到此工作階段。"
-    current_with_title:    "📌 工作階段：`{session_id}`\n標題：**{title}**"
-    current_no_title:      "📌 工作階段：`{session_id}`\n尚未設定標題。用法：`/title 我的工作階段名稱`"
+    db_unavailable: 工作階段資料庫無法使用。
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ 清理後標題為空。請使用可列印字元。
+    set_to: ✏️ 已設定工作階段標題：**{title}**
+    not_found: 在資料庫中找不到此工作階段。
+    current_with_title: '📌 工作階段：`{session_id}`
 
+      標題：**{title}**'
+    current_no_title: '📌 工作階段：`{session_id}`
+
+      尚未設定標題。用法：`/title 我的工作階段名稱`'
   topic:
-    not_telegram_dm:         "/topic 指令僅在 Telegram 私人聊天中可用。"
-    no_session_db:           "工作階段資料庫無法使用。"
-    unauthorized:            "您無權在此 bot 上使用 /topic。"
-    restore_needs_topic:     "若要恢復工作階段，請先建立或開啟一個 Telegram topic，然後在該 topic 中傳送 /topic <session-id>。若要建立新 topic，請開啟 All Messages 並在其中傳送任意訊息。"
-    topics_disabled:         "此 bot 尚未啟用 Telegram topics。\n\n啟用方法：\n1. 開啟 @BotFather。\n2. 選擇您的 bot。\n3. 開啟 Bot Settings → Threads Settings。\n4. 開啟 Threaded Mode，並確保允許使用者建立新 thread。\n\n然後再次傳送 /topic。"
-    topics_user_disallowed:  "Telegram topics 已啟用，但不允許使用者建立 topics。\n\n開啟 @BotFather → 選擇您的 bot → Bot Settings → Threads Settings，然後關閉 'Disallow users to create new threads'。\n\n然後再次傳送 /topic。"
-    enable_failed:           "啟用 Telegram topic 模式失敗：{error}"
-    bound_status:            "此 topic 已連結至：\n工作階段：{label}\nID：{session_id}\n\n使用 /new 將此 topic 取代為新工作階段。\n如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。"
-    thread_ready:            "Telegram 多工作階段 topics 已啟用。\n\n此 topic 將作為獨立的 Hermes 工作階段使用。使用 /new 取代此 topic 目前的工作階段。如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。"
-    untitled_session:        "未命名工作階段"
+    not_telegram_dm: /topic 指令僅在 Telegram 私人聊天中可用。
+    no_session_db: 工作階段資料庫無法使用。
+    unauthorized: 您無權在此 bot 上使用 /topic。
+    restore_needs_topic: 若要恢復工作階段，請先建立或開啟一個 Telegram topic，然後在該 topic 中傳送 /topic <session-id>。若要建立新 topic，請開啟 All Messages
+      並在其中傳送任意訊息。
+    topics_disabled: '此 bot 尚未啟用 Telegram topics。
 
+
+      啟用方法：
+
+      1. 開啟 @BotFather。
+
+      2. 選擇您的 bot。
+
+      3. 開啟 Bot Settings → Threads Settings。
+
+      4. 開啟 Threaded Mode，並確保允許使用者建立新 thread。
+
+
+      然後再次傳送 /topic。'
+    topics_user_disallowed: 'Telegram topics 已啟用，但不允許使用者建立 topics。
+
+
+      開啟 @BotFather → 選擇您的 bot → Bot Settings → Threads Settings，然後關閉 ''Disallow users to create new threads''。
+
+
+      然後再次傳送 /topic。'
+    enable_failed: 啟用 Telegram topic 模式失敗：{error}
+    bound_status: '此 topic 已連結至：
+
+      工作階段：{label}
+
+      ID：{session_id}
+
+
+      使用 /new 將此 topic 取代為新工作階段。
+
+      如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。'
+    thread_ready: 'Telegram 多工作階段 topics 已啟用。
+
+
+      此 topic 將作為獨立的 Hermes 工作階段使用。使用 /new 取代此 topic 目前的工作階段。如需平行作業，請開啟 All Messages 並在其中傳送訊息以建立另一個 topic。'
+    untitled_session: 未命名工作階段
   undo:
-    nothing:               "沒有可復原的內容。"
-    removed:               "↩️ 已復原 {count} 則訊息。\n已移除：「{preview}」"
+    nothing: 沒有可復原的內容。
+    removed: '↩️ 已復原 {count} 則訊息。
 
+      已移除：「{preview}」'
   update:
-    platform_not_messaging:  "✗ /update 僅在訊息平台上可用。請在終端機執行 `hermes update`。"
-    not_git_repo:            "✗ 不是 git 儲存庫 — 無法更新。"
-    hermes_cmd_not_found:    "✗ 找不到 `hermes` 指令。Hermes 正在執行，但更新指令無法在 PATH 上或透過目前的 Python 解譯器找到執行檔。請嘗試在終端機中手動執行 `hermes update`。"
-    start_failed:            "✗ 啟動更新失敗：{error}"
-    starting:                "⚕ 正在啟動 Hermes 更新…… 進度將在此處顯示。"
-
+    platform_not_messaging: ✗ /update 僅在訊息平台上可用。請在終端機執行 `hermes update`。
+    not_git_repo: ✗ 不是 git 儲存庫 — 無法更新。
+    hermes_cmd_not_found: ✗ 找不到 `hermes` 指令。Hermes 正在執行，但更新指令無法在 PATH 上或透過目前的 Python 解譯器找到執行檔。請嘗試在終端機中手動執行 `hermes update`。
+    start_failed: ✗ 啟動更新失敗：{error}
+    starting: ⚕ 正在啟動 Hermes 更新…… 進度將在此處顯示。
   usage:
-    rate_limits:              "⏱️ **速率限制：** {state}"
-    header_session:           "📊 **工作階段 token 使用情況**"
-    label_model:              "模型：`{model}`"
-    label_input_tokens:       "輸入 token：{count}"
-    label_cache_read:         "快取讀取 token：{count}"
-    label_cache_write:        "快取寫入 token：{count}"
-    label_output_tokens:      "輸出 token：{count}"
-    label_total:              "總計：{count}"
-    label_api_calls:          "API 呼叫次數：{count}"
-    label_cost:               "費用：{prefix}${amount}"
-    label_cost_included:      "費用：已包含"
-    label_context:            "上下文：{used} / {total}（{pct}%）"
-    label_compressions:       "壓縮次數：{count}"
-    header_session_info:      "📊 **工作階段資訊**"
-    label_messages:           "訊息數：{count}"
-    label_estimated_context:  "預估上下文：~{count} 個 token"
-    detailed_after_first:     "_（首次代理回應後可檢視詳細使用情況）_"
-    no_data:                  "此工作階段沒有可用的使用資料。"
-
+    rate_limits: ⏱️ **速率限制：** {state}
+    header_session: 📊 **工作階段 token 使用情況**
+    label_model: 模型：`{model}`
+    label_input_tokens: 輸入 token：{count}
+    label_cache_read: 快取讀取 token：{count}
+    label_cache_write: 快取寫入 token：{count}
+    label_output_tokens: 輸出 token：{count}
+    label_total: 總計：{count}
+    label_api_calls: API 呼叫次數：{count}
+    label_cost: 費用：{prefix}${amount}
+    label_cost_included: 費用：已包含
+    label_context: 上下文：{used} / {total}（{pct}%）
+    label_compressions: 壓縮次數：{count}
+    header_session_info: 📊 **工作階段資訊**
+    label_messages: 訊息數：{count}
+    label_estimated_context: 預估上下文：~{count} 個 token
+    detailed_after_first: _（首次代理回應後可檢視詳細使用情況）_
+    no_data: 此工作階段沒有可用的使用資料。
   verbose:
-    not_enabled:           "`/verbose` 指令未在訊息平台上啟用。\n\n請在 `config.yaml` 中啟用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
-    mode_off:              "⚙️ 工具進度：**OFF** — 不顯示任何工具活動。"
-    mode_new:              "⚙️ 工具進度：**NEW** — 工具變更時顯示（預覽長度：`display.tool_preview_length`，預設 40）。"
-    mode_all:              "⚙️ 工具進度：**ALL** — 顯示每次工具呼叫（預覽長度：`display.tool_preview_length`，預設 40）。"
-    mode_verbose:          "⚙️ 工具進度：**VERBOSE** — 顯示每次工具呼叫及完整參數。"
-    saved_suffix:          "_（已為 **{platform}** 儲存 — 下一則訊息生效）_"
-    save_failed:           "_（無法儲存到設定：{error}）_"
-
+    not_enabled: "`/verbose` 指令未在訊息平台上啟用。\n\n請在 `config.yaml` 中啟用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off: ⚙️ 工具進度：**OFF** — 不顯示任何工具活動。
+    mode_new: ⚙️ 工具進度：**NEW** — 工具變更時顯示（預覽長度：`display.tool_preview_length`，預設 40）。
+    mode_all: ⚙️ 工具進度：**ALL** — 顯示每次工具呼叫（預覽長度：`display.tool_preview_length`，預設 40）。
+    mode_verbose: ⚙️ 工具進度：**VERBOSE** — 顯示每次工具呼叫及完整參數。
+    saved_suffix: _（已為 **{platform}** 儲存 — 下一則訊息生效）_
+    save_failed: _（無法儲存到設定：{error}）_
   voice:
-    enabled_voice_only:    "語音模式已啟用。\n當你傳送語音訊息時，我會以語音回覆。\n使用 /voice tts 讓所有訊息都收到語音回覆。"
-    disabled_text:         "語音模式已停用。僅文字回覆。"
-    tts_enabled:           "自動 TTS 已啟用。\n所有回覆都將包含一則語音訊息。"
-    status_mode:           "語音模式：{label}"
-    status_channel:        "語音頻道：#{channel}"
-    status_participants:   "參與人數：{count}"
-    status_member:         "  - {name}{status}"
-    speaking:              "（正在說話）"
-    enabled_short:         "語音模式已啟用。"
-    disabled_short:        "語音模式已停用。"
-    label_off:             "關閉（僅文字）"
-    label_voice_only:      "開啟（僅對語音訊息進行語音回覆）"
-    label_all:             "TTS（對所有訊息進行語音回覆）"
+    enabled_voice_only: '語音模式已啟用。
 
+      當你傳送語音訊息時，我會以語音回覆。
+
+      使用 /voice tts 讓所有訊息都收到語音回覆。'
+    disabled_text: 語音模式已停用。僅文字回覆。
+    tts_enabled: '自動 TTS 已啟用。
+
+      所有回覆都將包含一則語音訊息。'
+    status_mode: 語音模式：{label}
+    status_channel: 語音頻道：#{channel}
+    status_participants: 參與人數：{count}
+    status_member: '  - {name}{status}'
+    speaking: （正在說話）
+    enabled_short: 語音模式已啟用。
+    disabled_short: 語音模式已停用。
+    label_off: 關閉（僅文字）
+    label_voice_only: 開啟（僅對語音訊息進行語音回覆）
+    label_all: TTS（對所有訊息進行語音回覆）
   yolo:
-    disabled:                   "⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。"
-    enabled:                    "⚡ 本工作階段 YOLO 模式 **已開啟** — 所有指令自動批准。請謹慎使用。"
-
+    disabled: ⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。
+    enabled: ⚡ 本工作階段 YOLO 模式 **已開啟** — 所有指令自動批准。請謹慎使用。
   shared:
-    session_db_unavailable:      "工作階段資料庫無法使用。"
-    session_db_unavailable_prefix: "工作階段資料庫無法使用"
-    session_not_found:           "資料庫中找不到此工作階段。"
-    warn_passthrough:            "⚠️ {error}"
+    session_db_unavailable: 工作階段資料庫無法使用。
+    session_db_unavailable_prefix: 工作階段資料庫無法使用
+    session_not_found: 資料庫中找不到此工作階段。
+    warn_passthrough: ⚠️ {error}
+  action_restarting: restarting
+  action_shutting_down: shutting down
+  admin_only: ⛔ /{command} is admin-only here. {hint}
+  already_running: '
+
+    ❌ Gateway already running (PID {pid}).
+
+    '
+  bg_task_complete: '✅ Background task complete
+
+    Prompt: "{preview}"
+
+
+    '
+  bg_task_complete_empty: '✅ Background task complete
+
+    Prompt: "{preview}"
+
+
+    (No response generated)'
+  bg_task_failed: '❌ Background task {task_id} failed: {error}'
+  bg_task_no_creds: '❌ Background task {task_id} failed: no provider credentials configured.'
+  busy_action_hint: ⚠️ Gateway {action} — {hint}
+  busy_agent_running: ⏳ Agent is running — `/{command}` can't run right now. Try again after the current turn finishes.
+  busy_not_accepting: ⏳ Gateway is {action} and is not accepting new work right now.
+  busy_queued: ⏳ Gateway {action} — queued for the next turn after it comes back.
+  busy_queued_detail: ⏳ Queued for the next turn{detail}.
+  busy_rejecting: ⏳ Gateway is {action} and is not accepting another turn right now.
+  compression_aborted: ⚠️ Context compression aborted ({error}). No messages were dropped — conversation is unchanged.
+  compression_summary: 🗜️ {headline}
+  config_load_error: '❌ Could not load config: {error}'
+  config_load_errors: ❌ {errors}
+  dangerous_confirm: '⚠️ **Confirm /{command}**
+
+
+    {detail}
+
+
+    Choose:
+
+    • **Approve Once** — proceed this time only
+
+    • **Always Approve** — proceed and silence this prompt permanently
+
+    • **Cancel** — keep current conversation
+
+
+    _Text fallback: reply `/approve`, `/always`, or `/cancel`._'
+  hint_interrupt: Your current task will be interrupted.
+  hint_interrupt_resume: Your current task will be interrupted. Send any message after restart and I'll try to resume where
+    you left off.
+  interrupting: ⚡ Interrupting current task{detail}. I'll respond to your message shortly.
+  no_activity_warning: ⚠️ No activity for {minutes} min. The agent may be stuck — try sending a message or use /stop to cancel.
+  no_response_after_tools: ⚠️ The model returned no response after processing tools. This can happen with very long sessions
+    — try sending another message.
+  online: ♻️ Gateway online — Hermes is back and ready.
+  processing_no_response: ⚠️ Processing completed but no response was generated. This sometimes happens with very long sessions
+    — try sending another message.
+  processing_stopped: '⚠️ Processing stopped: {error}. Try again.'
+  provider_auth_failed: ⚠️ Provider authentication failed. Check the configured credentials; raw provider details are in the
+    gateway logs.
+  provider_failed: ⚠️ The model provider failed after retries. I kept raw provider details out of chat; check gateway logs
+    for diagnostics.
+  provider_rate_limited: ⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.
+  provider_rejected: ⚠️ The model provider rejected the request. I kept the raw provider error out of chat; check gateway
+    logs for details or try rephrasing.
+  proxy_connection_error: '⚠️ Proxy connection error: {error}'
+  proxy_error: '⚠️ Proxy error ({status}): {detail}'
+  proxy_no_aiohttp: '⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp'
+  proxy_not_configured: ⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)
+  session_auto_reset: 🔄 Session auto-reset — the conversation exceeded the context limit and has been compressed. I'll continue
+    from where we left off.
+  session_too_large: '⚠️ Session too large for the model''s context window.
+
+
+    You can:
+
+    • `/reset` — start a new session
+
+    • `/compress` — compress earlier messages
+
+    • `/new` — fresh start with optional title'
+  detail_new: '這將開啟一個新會話並丟棄當前對話歷史。'
+  detail_undo: '這將移除最後一組使用者/助手對話。'
+  steer_failed: '⚠️ Steer failed: {error}'
+  still_working: ⏳ Still working... ({elapsed} min elapsed{detail})
+  update_failed: ❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details.
+  update_failed_code: ❌ Hermes update failed (exit code {code}).
+  update_failed_output: '❌ Hermes update failed.
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_finished: ✅ Hermes update finished.
+  update_finished_output: '✅ Hermes update finished.
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_finished_success: ✅ Hermes update finished successfully.
+  update_timed_out: ❌ Hermes update timed out after 30 minutes.
+  queue:
+    usage: 'Usage: /queue <prompt>'
+    queued: Queued for the next turn.
+    queued_depth: Queued for the next turn. ({depth} queued)
+  steer:
+    usage: 'Usage: /steer <prompt>'
+    starting_queued: Agent still starting — /steer queued for the next turn.
+    queued: '⏩ Steer queued — arrives after the next tool call: ''{preview}'''
+    rejected_empty: Steer rejected (empty payload).
+    no_agent_queued: No active agent — /steer queued for the next turn.
+    usage_no_agent: 'Usage: /steer <prompt>  (no agent is running; sending as a normal message)'
+  agent_running:
+    wait_or_stop: Agent is running — wait or /stop first, then switch models.
+    goal_hint: Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal.
+    hook_blocked: Command `/{command}` was blocked by a hook.
+  quick:
+    timed_out: Quick command timed out (30s).
+    error: 'Quick command error: {error}'
+    no_command: Quick command '/{command}' has no command defined.
+    no_target: Quick command '/{command}' has no target defined.
+    unsupported_type: 'Quick command ''/{command}'' has unsupported type (supported: ''exec'', ''alias'').'
+  usage_cmd:
+    platform: 'Usage: /platform {action} <name>'
+    subgoal_remove: 'Usage: /subgoal remove <n>'
+activity:
+  agent_inactive: ⏱️ Agent inactive for {minutes} min — no tool calls or API responses.
+  agent_last_activity: 'Last activity: {desc} ({seconds}s ago, iteration {current}/{max}). The agent may have been waiting
+    on an API response.'
+  agent_stuck_tool: The agent appears stuck on tool `{tool}` ({seconds}s since last activity, iteration {current}/{max}).
+  api_failed_retries: ❌ API failed after {max} retries — {summary}
+  auxiliary_failed: '⚠️ Auxiliary {task} failed: {detail}'
+  compressed: 🗜️ Compressed {original} → {compressed} messages, retrying...
+  connection_failed: ❌ Connection to provider failed after {retries} retries — {detail}
+  context_reduced: 🗜️ Context reduced to {tokens} tokens — retrying...
+  context_too_large: 🗜️ Context too large (~{tokens} tokens) — compressing ({current}/{max})...
+  empty_model_response: ⚠️ Empty response from model — retrying ({current}/3)
+  empty_response: ⚠️ Empty/malformed response — switching to fallback...
+  error_recovery: API error recovery (attempt {current}/{max})
+  error_retry_backoff: error retry backoff ({current}/{max}), {remaining}s remaining
+  executing_concurrent: 'executing {count} tools concurrently: {tools}'
+  executing_tool: 'executing tool: {name}'
+  guardrail_halted: '⚠️ Tool guardrail halted {tool}: {code}'
+  iteration: iteration {current}/{max}
+  iteration_exhausted: ⚠️ Iteration budget exhausted ({current}/{max}) — asking model to summarise
+  iteration_exhausted_cli: ⚠️ Iteration budget exhausted ({current}/{max}) — requesting summary...
+  malformed_stream: ❌ Provider returned malformed streaming data after {retries} retries — {detail}
+  max_retries_exceeded: ❌ Max retries ({max}) exceeded for invalid responses. Giving up.
+  max_retries_exhausted: ⚠️ Max retries ({max}) exhausted — trying fallback...
+  max_retries_invalid: ⚠️ Max retries ({max}) for invalid responses — trying fallback...
+  no_content_retries: ❌ Model returned no content after all retries
+  no_provider_response: ⚠️ No response from provider for {time}s — retrying...
+  no_retryable_error: '❌ Non-retryable error (HTTP {status}): {detail}'
+  non_retryable_error: ⚠️ Non-retryable error (HTTP {status}) — trying fallback...
+  nous_rate_limit: Nous Portal rate limit active — resets in {time}.
+  payload_too_large: ⚠️ Request payload too large (413) — compression attempt {current}/{max}...
+  rate_limited_retries: ❌ Rate limited after {max} retries — {summary}
+  rate_limited_waiting: ⏱️ Rate limited. Waiting {time}s (attempt {current}/{max})...
+  receiving_stream: receiving stream response
+  retry_backoff: retry backoff ({current}/{max}), {remaining}s remaining
+  retrying_in: ⏳ Retrying in {time}s (attempt {current}/{max})...
+  running_tool: 'running: {tool}'
+  starting_api: 'starting API call #{number}'
+  thinking_exhausted: '⚠️ **Thinking Budget Exhausted**
+
+
+    The model used all its output tokens on reasoning and had none left for the actual response.
+
+
+    To fix this:
+
+    → Lower reasoning effort: `/thinkon low` or `/thinkon minimal`
+
+    → Or switch to a larger/non-reasoning model with `/model`'
+  tool_completed: 'tool completed: {name} ({duration}s)'
+  waiting_api: waiting for non-streaming API response
+  waiting_stream: waiting for provider response (streaming)
+cli:
+  command_destroys: ⚠️ /{command} — destroys conversation state
+  compression_count: 🗜️ {count}
+  context_length_warning: ⚠️ Context length is only {length:,} tokens — {detail}
+  copilot_normalized: ⚠️ Normalized Copilot model '{from_model}' to '{to_model}'.
+  model_normalized: ⚠️ Normalized model '{from_model}' to '{to_model}' for {provider}.
+  provider_stripped: ⚠️ Stripped provider prefix from '{from_model}'; using '{to_model}' for {provider}.
+  steered: ⏩ Steered into current run{detail}. Your message arrives after the next tool call.
+onboarding:
+  busy_interrupt: 💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue follow-ups
+    for after the current task instead, `/busy steer` to inject them mid-run without interrupting, or `/busy status` to check.
+    This notice won't appear again.
+  busy_interrupt_cli: (tip) Your message interrupted the current run. Use /busy queue to queue messages for the next turn
+    instead, or /busy steer to inject mid-run. This tip only shows once.
+  busy_queue: 💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages
+    stop the current task immediately, or `/busy status` to check. This notice won't appear again.
+  busy_queue_cli: (tip) Your message was queued for the next turn. Use /busy interrupt to make Enter stop the current run
+    instead, or /busy steer to inject mid-run. This tip only shows once.
+  busy_steer: 💡 First-time tip — I steered your message into the current run; it will arrive after the next tool call instead
+    of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy status` to check. This notice won't
+    appear again.
+  busy_steer_cli: (tip) Your message was steered into the current run; it arrives after the next tool call. Use /busy interrupt
+    or /busy queue to change this. This tip only shows once.
+  openclaw_residue: 'A legacy OpenClaw directory was detected at ~/.openclaw/.
+
+    To port your config, memory, and skills over to Hermes, run `hermes claw migrate`.
+
+    If you''ve already migrated and want to archive the old directory, run `hermes claw cleanup` (renames it to ~/.openclaw.pre-migration
+    — OpenClaw will stop working after this).
+
+    This tip only shows once.'
+  tool_progress_cli: (tip) That tool took a while — I'm streaming every step. Use /verbose to cycle progress modes (all →
+    new → off). This tip only shows once.
+  tool_progress_gateway: 💡 First-time tip — that tool took a while and I'm streaming every step. If the progress messages
+    feel noisy, send `/verbose` to cycle modes (all → new → off). This notice won't appear again.
+platform:
+  approval_prompt: '⚠️ **Dangerous command requires approval**
+
+    ```
+
+    {command}
+
+    ```
+
+    Reason: {reason}
+
+
+    Reply `/approve` to execute, `/approve session` to approve this pattern for this session, `/approve always` to approve
+    permanently, or `/deny` to cancel.
+
+
+    Or click emoji to approve:
+
+    ✅ = /approve
+
+    ❎ = /deny'
+  approval_required: 'Command approval required: {command}'
+  approval_required_title: Command Approval Required
+  approve_always: 🔒 Approve always
+  approve_once: ✅ Approve once
+  approve_session: ✅ Approve for this session
+  approved_always: ✅ Approved permanently
+  approved_once: Approved once by {user}
+  approved_permanently: Approved permanently by {user}
+  approved_session: Approved for session by {user}
+  cancel: ❌ Cancel
+  cancelled: ❌ Cancelled
+  creator_only: '{command} is only available to the creator in private chat mode'
+  denied: Denied by {user}
+  deny: ❌ Deny
+  discord:
+    'False': 'No'
+    'True': 'Yes'
+    allow_once: Allow once
+    allow_session: Allow for this session
+    already_answered: Already answered~
+    already_answered_prompt: This prompt was already answered~
+    already_resolved: Already resolved~
+    already_resolved_approval: This approval was already resolved~
+    always_allow: Always allow
+    always_approved: Approved permanently
+    answered_by: 'Answered by {user}: {choice}'
+    approval_required_title: ⚠️ Command requires approval
+    approve_always: Approve always
+    approve_once: Approve once
+    approved_once: Approved once
+    approved_permanently: Approved permanently
+    approved_session: Approved for this session
+    awaiting_response: Waiting for {user} to respond...
+    back: ◀ Back
+    cancel: Cancel
+    cancel_button: Cancel
+    cancelled: Cancelled
+    channel: Channel
+    choices: Choices
+    choose_model_placeholder: Pick a model from {provider}...
+    choose_provider_placeholder: Pick a provider...
+    command: Command
+    confirm: Confirm
+    current_model: 'Current model:'
+    denied: Denied
+    deny_button: Deny
+    footer_by: '{label} by {user}'
+    guild: Server
+    input_needed: ❓ Hermes needs your input
+    model_config_title: ⚙ Model config
+    model_selection_cancelled: Model selection cancelled.
+    model_switched: ⚙ Model switched
+    more_available_hint: ({count} more available — type `/model <name>` directly)
+    not_authorized: You're not authorized~
+    not_authorized_approve: You're not authorized to approve commands~
+    not_authorized_command: You're not authorized to use this command.
+    not_authorized_prompt: You're not authorized to answer this prompt~
+    other_answer: ✏️ Other (type answer)
+    pick_one: Pick an option below, or click ✏️ Other to enter a custom answer.
+    provider_label: 'Provider: {provider}'
+    reason: Reason
+    reply: Reply
+    reply_instruction: Reply with your answer in this channel.
+    select_model: 'Pick a model:'
+    select_provider: 'Pick a provider:'
+    slash_approve_desc: Approve a pending dangerous command
+    slash_approve_scope_desc: 'Optional: ''all'', ''session'', ''always'', ''all session'', ''all always'''
+    slash_background_desc: Run a prompt in the background
+    slash_background_prompt_desc: Prompt to run in background
+    slash_bg_started: Background task started~
+    slash_compress_desc: Compress conversation context
+    slash_deny_desc: Deny a pending dangerous command
+    slash_deny_scope_desc: 'Optional: ''all'' to deny all pending commands'
+    slash_help_desc: View available commands
+    slash_insights_days_desc: 'Number of days to analyze (default: 7)'
+    slash_insights_desc: View usage insights and analytics
+    slash_model_desc: View or change model
+    slash_model_name_desc: Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current model.
+    slash_new_desc: Start a new session
+    slash_new_started: New session started~
+    slash_personality_desc: Set personality
+    slash_personality_name_desc: Personality name. Leave empty to list available personalities.
+    slash_queue_desc: Queue a prompt for next turn (no interrupt)
+    slash_queue_prompt_desc: Prompt to queue
+    slash_queued: Queued for next turn.
+    slash_reasoning_desc: View or change reasoning effort
+    slash_reasoning_effort_desc: 'Reasoning effort: none, minimal, low, medium, high, or xhigh.'
+    slash_reload_mcp_desc: Reload MCP servers from config
+    slash_reload_skills_desc: Rescan ~/.hermes/skills/ for new or removed skills
+    slash_reset_desc: Reset your Hermes session
+    slash_reset_done: Session reset~
+    slash_restart_desc: Gracefully restart the Hermes gateway
+    slash_restart_requested: Restart requested~
+    slash_resume_desc: Resume a previously named session
+    slash_resume_name_desc: Session name to resume. Leave empty to list sessions.
+    slash_retry_desc: Retry your last message
+    slash_retrying: Retrying~
+    slash_sethome_desc: Set this chat as home channel
+    slash_status_desc: View Hermes session status
+    slash_status_sent: Status sent~
+    slash_steer_desc: Inject a message after next tool call (no interrupt)
+    slash_steer_prompt_desc: Text to inject into agent's next tool result
+    slash_stop_desc: Stop the running Hermes agent
+    slash_stop_requested: Stop requested~
+    slash_thread_archive_desc: Auto-archive time in minutes (60, 1440, 4320, 10080)
+    slash_thread_desc: Create a new thread and start a Hermes session in it
+    slash_thread_msg_desc: Optional first message to send to Hermes in the thread
+    slash_thread_name_desc: Thread name
+    slash_title_desc: Set or view session title
+    slash_title_name_desc: Session title. Leave empty to see current title.
+    slash_undo_desc: Undo last exchange
+    slash_update_desc: Update Hermes Agent to latest version
+    slash_update_initiated: Update initiated~
+    slash_usage_desc: View token usage for this session
+    slash_voice_channel_desc: channel — Join your voice channel (alias)
+    slash_voice_desc: Toggle voice reply mode
+    slash_voice_join_desc: join — Join your voice channel
+    slash_voice_leave_desc: leave — Leave voice channel
+    slash_voice_mode_desc: 'Voice mode: join, channel, leave, on, tts, off, or status'
+    slash_voice_off_desc: off — Text only
+    slash_voice_on_desc: on — Voice replies to voice messages
+    slash_voice_status_desc: status — View current mode
+    slash_voice_tts_desc: tts — Voice replies to all messages
+    switch_error: 'Error switching model: {error}'
+    switching_model: ⚙ Switching model
+    switching_to: Switching to `{model_id}`...
+    thread_create_failed: 'Failed to create thread: {error}'
+    thread_created: Thread created {link}
+    unauthorized_slash: ⚠️ Unauthorized Discord slash command attempt
+    unknown_skill: 'Unknown skill: `{name}`. Start typing for autocomplete suggestions.'
+    update_needs_input: ⚕ Update needs your input
+    user: User
+  feishu:
+    'False': 'No'
+    'True': 'Yes'
+    actions_label: 'Actions: {actions}'
+    answered_by: Answered by **{user}**
+    approved_by: '{label} by {user}'
+    chat_id_label: 'Chat ID: {id}'
+    resolved: Resolved
+    share_chat_label: 'Shared chat: {name}'
+  reject_reason: '{reason}'
+  script_missing: '{name} missing'
+  telegram:
+    approval_resolved: This approval has been resolved.
+    back: ◀ Back
+    cancel: ✗ Cancel
+    current_model: 'Current model: `{model}`'
+    error_switching_model: 'Error switching model: {error}'
+    invalid_approval_data: Invalid approval data.
+    invalid_choice: Invalid choice.
+    invalid_gmail_data: Invalid gmail-triage data.
+    invalid_model_index: Invalid model index.
+    invalid_page: Invalid page.
+    invalid_selection: Invalid selection.
+    model_config_title: ⚙ *Model config*
+    model_selection_cancelled: Model selection cancelled.
+    model_switched: Model switched!
+    more_available: _{count} more available — type `/model <name>` directly_
+    next_page: Next ▶
+    picker_expired: Picker expired — please use /model again.
+    picker_expired_short: Picker expired.
+    prev_page: ◀ Prev
+    prompt_resolved: This prompt has been resolved.
+    provider_label: 'Provider: {label}'
+    provider_not_found: Provider not found.
+    select_model: 'Pick a model: {extra}'
+    select_provider: 'Pick a provider:'
+    sent_to_update: Sent "{answer}" to the update process.
+    unauthorized_approve: ⛔ You're not authorized to approve commands.
+    unauthorized_email: ⛔ You're not authorized to resolve this email.
+    unauthorized_prompt: ⛔ You're not authorized to answer this prompt.
+    unauthorized_update: ⛔ You're not authorized to answer the update prompt.
+  update_prompt_answered: 'Update prompt answered: {label}'
+  verb_error: '{verb} error: {detail}'
+  verb_failed: '{verb} failed: {detail}'
+  verb_timeout: '{verb} timed out'
+run_agent:
+  aux_model_failed: ℹ️ Configured compression model '{model}' failed ({error}). Recovered using main model — check auxiliary.compression.model
+    in config.yaml.
+  compacting_context: 🗜️ Compacting context — summarizing earlier conversation so I can continue...
+  compression_aborted: '⚠️ Compression aborted: {error}. No messages were dropped — conversation continues unchanged. Run
+    /compress to retry, or /new to start a fresh session.'
+  compression_failed: '⚠️ Compression summary failed: {error}. Inserted a fallback context marker.'
+  interrupting: ⚡ Interrupting current task{detail}. I'll respond to your message shortly.
+  preflight_compression: '📦 Preflight compression: ~{tokens} tokens >= {threshold} threshold. This may take a moment.'
+  self_improvement_review: '💾 Self-improvement review: {summary}'
+setup:
+  agent_compression: 'Enable context compression? (y/n):'
+  agent_header: ⚙️ **Agent Settings**
+  agent_max_iterations: 'Max iterations per turn (default: 90):'
+  agent_session_reset: 'Auto-reset session after N messages (0=off):'
+  complete_docs: 'Read the docs: hermes help'
+  complete_gateway: 'Run the gateway: hermes gateway run'
+  complete_header: ✅ **Setup Complete!**
+  complete_next_steps: 'Next steps:'
+  complete_start: 'Start chatting with: hermes'
+  discord_no_allowlist: ⚠️  Discord has no user allowlist - anyone can use your bot!
+  edit_config_hint: '📝 To edit your configuration:'
+  generic_no_allowlist: ⚠️  No allowlist set - anyone who can message the bot can use it!
+  imessage_no_allowlist: ⚠️  No allowlist set — anyone who can iMessage you can use the bot!
+  model_current: 'Current model: {model}'
+  model_enter_api_key: 'Enter your API key:'
+  model_header: 🤖 **Model & Provider Setup**
+  model_key_invalid: ❌ Invalid API key. Please try again.
+  model_key_saved: ✅ API key saved.
+  model_select_model: 'Select a model:'
+  model_select_provider: 'Select your AI provider:'
+  model_test_failed: '❌ Model test failed: {error}'
+  model_test_success: ✅ Model test successful!
+  platform_discord: 💬 Discord
+  platform_slack: 💼 Slack
+  platform_telegram: 📱 Telegram
+  ready_to_go: 🚀 Ready to go!
+  servers_no_allowlist: ⚠️  No allowlist set - anyone in servers with your bot can use it!
+  slack_no_allowlist: ⚠️  No Slack allowlist set - unpaired users will be denied by default.
+  terminal_docker: Docker container
+  terminal_header: 🖥️ **Terminal Backend Setup**
+  terminal_local: Local (this machine)
+  terminal_select: 'Select where your agent runs commands:'
+  terminal_ssh: Remote SSH server
+  tg_no_allowlist: ⚠️  Telegram has no user allowlist - anyone can use your bot!
+  tools_header: 🔧 **Tools Setup**
+  tools_image_gen: 'Enable image generation? (y/n):'
+  tools_tts: 'Enable text-to-speech? (y/n):'
+  tools_web_search: 'Enable web search? (y/n):'
+  run_agent:
+    compending_context: 🗜️ Compacting context — summarizing earlier conversation to continue...
+
+stream:
+  waiting_for_response: 等待串流回應（已等{secs}秒，無資料區塊）

@@ -26,6 +26,7 @@ from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,6 @@ from hermes_cli.cli_output import (  # noqa: E402
     print_success,
     print_warning,
 )
-from hermes_cli.secret_prompt import masked_secret_prompt  # noqa: E402
 
 
 def is_interactive_stdin() -> bool:
@@ -203,7 +203,9 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
 
     try:
         if password:
-            value = masked_secret_prompt(color(display, Colors.YELLOW))
+            import getpass
+
+            value = getpass.getpass(color(display, Colors.YELLOW))
         else:
             value = input(color(display, Colors.YELLOW))
 
@@ -607,7 +609,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
     print(color("─" * 60, Colors.DIM))
     print()
-    print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
+    print(color(t("setup.edit_config_hint"), Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('hermes setup', Colors.GREEN)}          Re-run the full wizard")
     print(f"   {color('hermes setup model', Colors.GREEN)}    Change model/provider")
@@ -629,7 +631,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
     print(color("─" * 60, Colors.DIM))
     print()
-    print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
+    print(color(t("setup.ready_to_go"), Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
     print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
@@ -1093,7 +1095,7 @@ def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are already stored locally.
 
     Lets TTS / STT setup skip the API-key prompt for users who logged in
-    through ``hermes model`` -> xAI Grok OAuth (SuperGrok / Premium+).
+    through ``hermes model`` -> xAI Grok OAuth (SuperGrok Subscription).
     """
     try:
         from hermes_cli.auth import get_xai_oauth_auth_status
@@ -1123,7 +1125,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
 
     open_browser = not _is_remote_session()
     print()
-    print_info("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
+    print_info("Signing in to xAI Grok OAuth (SuperGrok Subscription)...")
     try:
         creds = _xai_oauth_loopback_login(open_browser=open_browser)
         _save_xai_oauth_tokens(
@@ -1258,7 +1260,7 @@ def _setup_tts_provider(config: dict):
 
         if oauth_logged_in:
             print_success(
-                "xAI TTS will use your xAI Grok OAuth (SuperGrok / Premium+) "
+                "xAI TTS will use your xAI Grok OAuth (SuperGrok Subscription) "
                 "credentials"
             )
         elif existing_api_key:
@@ -1268,7 +1270,7 @@ def _setup_tts_provider(config: dict):
             choice_idx = prompt_choice(
                 "How do you want xAI TTS to authenticate?",
                 choices=[
-                    "Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
+                    "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
                     "Paste an xAI API key (console.x.ai)",
                     "Skip → fallback to Edge TTS",
                 ],
@@ -1971,7 +1973,7 @@ def _setup_telegram():
         if not prompt_yes_no("Reconfigure Telegram?", False):
             # Check missing allowlist on existing config
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
-                print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
+                print_info(t("setup.tg_no_allowlist"))
                 if prompt_yes_no("Add allowed users now?", True):
                     print_info("   To find your Telegram user ID: message @userinfobot")
                     allowed_users = prompt("Allowed user IDs (comma-separated)")
@@ -2010,7 +2012,7 @@ def _setup_telegram():
         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("Telegram allowlist configured - only listed users can use the bot")
     else:
-        print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
+        print_info(t("setup.generic_no_allowlist"))
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results,")
@@ -2031,6 +2033,74 @@ def _setup_telegram():
         home_channel = prompt("Home channel ID (leave empty to set later)")
         if home_channel:
             save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
+
+
+def _setup_discord():
+    """Configure Discord bot credentials and allowlist."""
+    print_header("Discord")
+    existing = get_env_value("DISCORD_BOT_TOKEN")
+    if existing:
+        print_info("Discord: already configured")
+        if not prompt_yes_no("Reconfigure Discord?", False):
+            if not get_env_value("DISCORD_ALLOWED_USERS"):
+                print_info(t("setup.discord_no_allowlist"))
+                if prompt_yes_no("Add allowed users now?", True):
+                    print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
+                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                    if allowed_users:
+                        cleaned_ids = _clean_discord_user_ids(allowed_users)
+                        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+                        print_success("Discord allowlist configured")
+            return
+
+    print_info("Create a bot at https://discord.com/developers/applications")
+    token = prompt("Discord bot token", password=True)
+    if not token:
+        return
+    save_env_value("DISCORD_BOT_TOKEN", token)
+    print_success("Discord token saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your Discord user ID:")
+    print_info("   1. Enable Developer Mode in Discord settings")
+    print_info("   2. Right-click your name → Copy ID")
+    print()
+    print_info("   You can also use Discord usernames (resolved on gateway start).")
+    print()
+    allowed_users = prompt(
+        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+    )
+    if allowed_users:
+        cleaned_ids = _clean_discord_user_ids(allowed_users)
+        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+        print_success("Discord allowlist configured")
+    else:
+        print_info(t("setup.servers_no_allowlist"))
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
+    print_info("   (requires Developer Mode in Discord settings)")
+    print_info("   You can also set this later by typing /set-home in a Discord channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("DISCORD_HOME_CHANNEL", home_channel)
+
+
+def _clean_discord_user_ids(raw: str) -> list:
+    """Strip common Discord mention prefixes from a comma-separated ID string."""
+    cleaned = []
+    for uid in raw.replace(" ", "").split(","):
+        uid = uid.strip()
+        if uid.startswith("<@") and uid.endswith(">"):
+            uid = uid.lstrip("<@!").rstrip(">")
+        if uid.lower().startswith("user:"):
+            uid = uid[5:]
+        if uid:
+            cleaned.append(uid)
+    return cleaned
 
 
 def _setup_slack():
@@ -2087,7 +2157,7 @@ def _setup_slack():
         save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("Slack allowlist configured")
     else:
-        print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
+        print_warning(t("setup.slack_no_allowlist"))
         print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
 
     print()
@@ -2187,58 +2257,28 @@ def _setup_matrix():
             print_success("E2EE enabled")
 
         matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
-        # Use the central lazy-deps feature group so we install ALL of
-        # platform.matrix's dependencies (mautrix, Markdown, aiosqlite,
-        # asyncpg, aiohttp-socks) — not just mautrix itself.  The previous
-        # hand-rolled ``pip install mautrix[encryption]`` left asyncpg /
-        # aiosqlite uninstalled and broke E2EE connect with
-        # ``No module named 'asyncpg'`` on every fresh install (#31116).
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
-            _missing_before = feature_missing("platform.matrix")
-            if _missing_before:
-                print_info(
-                    f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)..."
-                )
-                try:
-                    _lazy_ensure("platform.matrix", prompt=False)
-                    print_success(f"{matrix_pkg} installed")
-                except Exception as exc:
-                    print_warning(
-                        f"Install failed — run manually: pip install "
-                        f"'mautrix[encryption]' asyncpg aiosqlite Markdown "
-                        f"aiohttp-socks"
-                    )
-                    print_info(f"  Error: {exc}")
+            __import__("mautrix")
         except ImportError:
-            # tools.lazy_deps unavailable (extreme edge case — partial
-            # install).  Fall back to the legacy single-package install
-            # path so the wizard still does *something*.
-            try:
-                __import__("mautrix")
-            except ImportError:
-                print_info(f"Installing {matrix_pkg}...")
-                import subprocess
-                uv_bin = shutil.which("uv")
-                if uv_bin:
-                    result = subprocess.run(
-                        [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
-                        capture_output=True, text=True,
-                    )
-                else:
-                    result = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", matrix_pkg],
-                        capture_output=True, text=True,
-                    )
-                if result.returncode == 0:
-                    print_success(f"{matrix_pkg} installed")
-                else:
-                    print_warning(
-                        f"Install failed — run manually: pip install "
-                        f"'{matrix_pkg}' asyncpg aiosqlite Markdown aiohttp-socks"
-                    )
-                    if result.stderr:
-                        print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+            print_info(f"Installing {matrix_pkg}...")
+            import subprocess
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
+                    capture_output=True, text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", matrix_pkg],
+                    capture_output=True, text=True,
+                )
+            if result.returncode == 0:
+                print_success(f"{matrix_pkg} installed")
+            else:
+                print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         print()
         print_info("🔒 Security: Restrict who can use your bot")
@@ -2249,7 +2289,7 @@ def _setup_matrix():
             save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
             print_success("Matrix allowlist configured")
         else:
-            print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+            print_info(t("setup.generic_no_allowlist"))
 
         print()
         print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
@@ -2258,6 +2298,50 @@ def _setup_matrix():
         home_room = prompt("Home room ID (leave empty to set later with /set-home)")
         if home_room:
             save_env_value("MATRIX_HOME_ROOM", home_room)
+
+
+def _setup_mattermost():
+    """Configure Mattermost bot credentials."""
+    print_header("Mattermost")
+    existing = get_env_value("MATTERMOST_TOKEN")
+    if existing:
+        print_info("Mattermost: already configured")
+        if not prompt_yes_no("Reconfigure Mattermost?", False):
+            return
+
+    print_info("Works with any self-hosted Mattermost instance.")
+    print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
+    print_info("   2. Copy the bot token")
+    print()
+    mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
+    if mm_url:
+        save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
+    token = prompt("Bot token", password=True)
+    if not token:
+        return
+    save_env_value("MATTERMOST_TOKEN", token)
+    print_success("Mattermost token saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your user ID: click your avatar → Profile")
+    print_info("   or use the API: GET /api/v4/users/me")
+    print()
+    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+    if allowed_users:
+        save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("Mattermost allowlist configured")
+    else:
+        print_info(t("setup.generic_no_allowlist"))
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
+    print_info("   To get a channel ID: click channel name → View Info → copy the ID")
+    print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+    print_info("   Open config in your editor:  hermes config edit")
 
 
 def _setup_bluebubbles():
@@ -2299,7 +2383,7 @@ def _setup_bluebubbles():
         save_env_value("BLUEBUBBLES_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("BlueBubbles allowlist configured")
     else:
-        print_info("⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
+        print_info(t("setup.imessage_no_allowlist"))
 
     print()
     print_info("📬 Home Channel: phone or email for cron job delivery and notifications.")
@@ -3541,9 +3625,9 @@ def _run_quick_setup(config: dict, hermes_home):
 
         platform_labels = [
             {
-                "Telegram": "📱 Telegram",
-                "Discord": "💬 Discord",
-                "Slack": "💼 Slack",
+                "Telegram": t("setup.platform_telegram"),
+                "Discord": t("setup.platform_discord"),
+                "Slack": t("setup.platform_slack"),
             }.get(p, p)
             for p in platform_order
         ]

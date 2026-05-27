@@ -227,9 +227,6 @@ TIPS = [
     "browser_vision with annotate=true overlays numbered labels on interactive elements.",
 
     # --- MCP ---
-    "hermes mcp opens an interactive picker of Nous-approved MCPs you can install in one keystroke.",
-    "hermes mcp catalog lists Nous-approved MCP servers shipped with the repo.",
-    "hermes mcp install <name> installs a catalog entry, prompts for credentials, and lets you pick which of its tools to enable.",
     "MCP servers are configured in config.yaml — both stdio and HTTP transports supported.",
     "Per-server tool filtering: tools.include whitelists and tools.exclude blacklists specific tools.",
     "MCP servers auto-generate toolsets at runtime — hermes tools can toggle them per platform.",
@@ -263,7 +260,7 @@ TIPS = [
     "Custom providers: save named endpoints in config.yaml under custom_providers.",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT injects a system prompt that's never persisted to history.",
     "credential_pool_strategies supports fill_first, round_robin, least_used, and random rotation.",
-    "hermes auth add nous or hermes auth add openai-codex sets up OAuth-based providers.",
+    "hermes login supports OAuth-based auth for Nous and OpenAI Codex providers.",
     "The API server supports both Chat Completions and Responses API with server-side state.",
     "tool_preview_length: 0 in config shows full file paths in the spinner's activity feed.",
     "hermes status --deep runs deeper diagnostic checks across all components.",
@@ -476,13 +473,146 @@ TIPS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Chinese translations for tips
+# ---------------------------------------------------------------------------
+TIPS_ZH = [
+    # --- 斜杠命令 ---
+    "/background <提示>（别名 /bg 或 /btw）在单独的会话中运行任务，当前会话不受影响。",
+    "/branch 分叉当前会话，方便探索不同方向而不丢失进度。",
+    "/compress 在对话变长时手动压缩上下文。",
+    "/rollback 列出文件系统检查点 — 将代理修改的文件恢复到任何先前状态。",
+    "/rollback diff 2 预览检查点 2 以来的更改，不恢复任何内容。",
+    "/rollback 2 src/file.py 从特定检查点恢复单个文件。",
+    '/title "我的项目" 为会话命名 — 之后可用 /resume 或 hermes -c 恢复。',
+    "/resume 从之前命名的会话继续。",
+    "/queue <提示> 将消息排队到下一轮，不中断当前任务。",
+    "/undo 移除最后一组用户/助手交互。",
+    "/retry 重新发送上一条消息 — 当代理回复不太对时很有用。",
+    "/verbose 循环切换工具进度显示：关闭 → 新增 → 全部 → 详细。",
+    "/reasoning high 增加模型的思考深度。/reasoning show 显示推理过程。",
+    "/fast 切换优先处理以获得更快的 API 响应（取决于提供商）。",
+    "/yolo 跳过本次会话剩余的所有危险命令审批提示。",
+    "/model 让你在会话中切换模型 — 试试 /model sonnet 或 /model gpt-5。",
+    "/model --global 永久更改默认模型。",
+    "/personality pirate 设置有趣的个性 — 14 个内置选项，从 kawaii 到 shakespeare。",
+    "/approve 批准待处理的命令 — 在审批模式下代理等待你确认。",
+    "/deny 拒绝待处理的命令 — 代理将跳过该操作。",
+    "/commands 列出所有可用的斜杠命令和已安装的技能命令。",
+    "/stop 立即停止正在运行的代理。",
+    "/status 显示当前会话信息：ID、标题、模型、token 用量和耗时。",
+    "/compact 压缩对话历史以释放上下文空间 — 保留关键信息，删除冗余细节。",
+    "/yolo off 重新启用危险命令审批 — 在 /yolo 之后恢复安全模式。",
+    "/debug 上传支持包（系统信息 + 日志）并返回可分享链接 — 在聊天中也能用。",
+
+    # --- CLI 标志和环境变量 ---
+    'hermes -q "提示" 是最简洁的一次性调用：只有最终答案输出到 stdout，适合脚本管道。',
+    "HERMES_QUIET=1 抑制 CLI 横幅和 spinner — 适合脚本和 CI。",
+    "HERMES_SILENT=1 完全静默 — 不输出任何内容（适合只关心退出码的场景）。",
+    "HERMES_NO_UPDATE_CHECK=1 跳过启动时的更新检查 — 加速启动。",
+    "HERMES_STREAM_RETRIES（默认 3）控制瞬态网络错误时的中流重连尝试次数。",
+    "hermes gateway run --port 9229 在 9229 端口启动网关，与默认实例共存。",
+
+    # --- 配置和模型 ---
+    "config.yaml 中的 model.fallbacks 定义了故障转移链 — 主模型失败时自动尝试下一个。",
+    "config.yaml 中的 custom_providers 允许你添加任何 OpenAI 兼容的 API 端点。",
+    "config.yaml 中的 model.context_length 覆盖自动检测 — 本地模型通常需要手动设置。",
+    "provider_routing.data_collection: deny 排除会存储数据的 OpenRouter 提供商。",
+    "credential_pool_strategies.<provider>: round_robin 均匀轮询密钥，而非默认的 fill_first。",
+    "use_gateway: true 每个工具路由 web、image、tts 或 browser 通过你的 Nous 订阅 — 无需额外密钥。",
+
+    # --- TUI 和面板 ---
+    "HERMES_TUI_RESUME=1 启动时自动附加到最近的 TUI 会话 — SSH 断开后很方便。",
+    "HERMES_TUI_THEME=light|dark|<hex> 在不设置 COLORFGBG 的终端上强制 TUI 主题。",
+    "TUI 中 Ctrl+G 或 Ctrl+X Ctrl+E 在 $EDITOR 中打开输入缓冲区，适合长多行提示。",
+    "TUI 内联渲染 LaTeX — $E=mc^2$ 变成 Unicode 数学而非原始 TeX。",
+    "hermes dashboard 在 127.0.0.1:9119 启动本地 Web UI — 数据不离开本机。",
+
+    # --- 环境变量和配置开关 ---
+    "display.tool_progress_command: true 在消息平台上暴露 /verbose；默认仅 CLI 可用。",
+    "HERMES_BACKGROUND_NOTIFICATIONS=result 仅在后台任务完成时通知（对比 all/error/off）。",
+    "HERMES_WRITE_SAFE_ROOT 限制 write_file 和 patch 到目录前缀；外部写入需要审批。",
+    "HERMES_IGNORE_RULES 跳过自动注入 AGENTS.md、SOUL.md、.cursorrules、memory 和预加载技能。",
+    "auxiliary.goal_judge.model 将 /goal 判定器路由到便宜快速的模型，保持循环成本接近零。",
+    "检查点跳过超过 50,000 个文件的目录，避免在大型 monorepo 上执行慢速 git 操作。",
+
+    # --- TTS ---
+    "tts.provider: piper 在 CPU 上运行 44 种语言的本地 TTS — 语音模型自动下载到 ~/.hermes/cache/piper-voices/。",
+    "tts.providers.<name>.type: command 用 {input_path} 和 {output_path} 占位符连接任何 CLI TTS 引擎。",
+
+    # --- API 服务器和代理 ---
+    "API_SERVER_ENABLED=true 在网关旁运行 OpenAI 兼容端点，供 Open WebUI 和 LibreChat 使用。",
+    "GATEWAY_PROXY_URL 运行拆分设置：本地处理平台 I/O，代理工作委派到远程 API 服务器。",
+
+    # --- 平台特定 ---
+    "MATRIX_DEVICE_ID 固定稳定的设备 ID 用于 E2EE — 否则每次启动密钥都会轮换，历史解密会失败。",
+    "TELEGRAM_WEBHOOK_SECRET 在设置 TELEGRAM_WEBHOOK_URL 时必须 — 用 openssl rand -hex 32 生成。",
+
+    # --- 批量 ---
+    "batch_runner.py --resume 按文本内容匹配已完成的提示，避免数据集重排时重复运行已完成的工作。",
+
+    # --- 不太知名的斜杠命令 ---
+    "/new 在当前位置启动新会话（别名 /reset）— 新会话 ID、干净历史、CLI 保持打开。",
+    "/clear 清除终端屏幕并启动新会话 — 一个快捷键完成视觉重置。",
+    "/history 在 CLI 中内联打印当前对话 — 方便快速回看。",
+    "/save 将当前对话写入磁盘但不结束会话。",
+    "/status 显示会话信息一览：ID、标题、模型、token 用量和耗时。",
+    "/image <路径> 为下一条提示附加本地图片文件，无需粘贴或拖放。",
+    "/platforms 直接在聊天中显示网关和消息平台连接状态。",
+    "/commands 分页显示完整斜杠命令 + 已安装技能列表 — 在没有 Tab 补全的平台上很有用。",
+    "/toolsets 列出所有可用工具集，让你知道 -t/--toolsets 接受什么。",
+    "/voice tts 切换纯 TTS 模式 — 代理回复出声，但你仍然输入提示。",
+    "/reload-skills 重新扫描 ~/.hermes/skills/，无需重启会话即可使用新技能。",
+    "/debug 上传支持包（系统信息 + 日志）并返回可分享链接 — 在聊天中也能用。",
+
+    # --- CLI 子命令和标志 ---
+    'hermes -z "提示" 是最纯粹的一次性调用：最终答案在 stdout，其他全无 — 适合脚本管道。',
+    "hermes chat --pass-session-id 将会话 ID 注入系统提示，让代理可以自引用。",
+    "hermes chat --image path/to/pic.png 将本地图片附加到单个 -q 查询，无需单独上传。",
+    "hermes chat --ignore-user-config 跳过 ~/.hermes/config.yaml — 可复现的 bug 报告和 CI 运行。",
+    'hermes sessions rename <ID> "新标题" 重命名任何过去的会话；hermes sessions delete <ID> 删除一个。',
+    "hermes import 恢复由 sessions export 或 profile export 产生的会话导出或配置文件归档。",
+    "hermes fallback 交互式管理 fallback_model 链 — 无需手动编辑 config.yaml。",
+    "hermes pairing 轮换 DM 配对令牌 — 轮换后第一个发消息的人获得机器人的访问权。",
+    "hermes setup 通过一个交互式流程引导新用户完成提供商、密钥和平台配置。",
+    "hermes status --deep 运行完整的健康检查；普通的 hermes status 是快速查看。",
+
+    # --- 代理行为环境变量 ---
+    "HERMES_AGENT_TIMEOUT=0 禁用网关不活动终止 — 用于长时间研究运行。",
+    "HERMES_ENABLE_PROJECT_PLUGINS=1 自动从 ./.hermes/plugins/ 加载仓库本地插件 — 内置信任门控。",
+    "HERMES_ALLOW_PRIVATE_URL=true 让 web 工具访问 localhost 和私有网络 — 网关模式下默认关闭。",
+    "HERMES_OPTIONAL_SKILLS=name1,name2 在首次运行时自动安装额外的可选目录技能。",
+    "HERMES_DUMP_REQUEST_STDOUT=1 将每个 API 请求负载转储到 stdout 而非日志文件。",
+    "HERMES_STREAM_RETRIES（默认 3）控制瞬态网络错误时的中流重连尝试次数。",
+
+    # --- 安全 ---
+    "security.tirith_fail_open: false 让 Hermes 在 tirith 扫描器本身出错时阻止命令。",
+    "TIRITH_FAIL_OPEN 环境变量覆盖 tirith_fail_open 配置 — 无需编辑 config.yaml 的快速切换。",
+
+    # --- 会话和来源标签 ---
+    "--source tool 聊天默认从 hermes sessions 列表中排除 — 显式设置 --source 以显示。",
+    "会话 ID 以时间戳为前缀（20250305_091523_abcd），排序在 ls 和 jq 中自然生效。",
+
+    # --- 杂项 ---
+    "API_SERVER_MODEL_NAME 自定义 /v1/models 上的模型名称 — 多配置文件 Open WebUI 设置必需。",
+    "仪表板插件从 /dashboard-plugins/<name>/ 提供 — 将文件放入 ~/.hermes/dashboard-plugins/。",
+]
+
+
 def get_random_tip(exclude_recent: int = 0) -> str:
-    """Return a random tip string.
+    """Return a random tip string in the current locale.
 
     Args:
         exclude_recent: not used currently; reserved for future
             deduplication across sessions.
     """
+    try:
+        from agent.i18n import _config_language_cached
+        lang = _config_language_cached()
+        if lang and lang.startswith("zh"):
+            return random.choice(TIPS_ZH)
+    except Exception:
+        pass
     return random.choice(TIPS)
 
 

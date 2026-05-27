@@ -22,6 +22,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Any, Dict, List
 
+from agent.i18n import t
 from agent.usage_pricing import (
     CanonicalUsage,
     DEFAULT_PRICING,
@@ -753,24 +754,24 @@ class InsightsEngine:
         if o.get("date_range_start") and o.get("date_range_end"):
             start_str = datetime.fromtimestamp(o["date_range_start"]).strftime("%b %d, %Y")
             end_str = datetime.fromtimestamp(o["date_range_end"]).strftime("%b %d, %Y")
-            lines.append(f"  Period: {start_str} — {end_str}")
+            lines.append(f"  {t('agent.period')} {start_str} — {end_str}")
             lines.append("")
 
         # Overview
-        lines.append("  📋 Overview")
+        lines.append(f"  {t('agent.overview')}")
         lines.append("  " + "─" * 56)
-        lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
-        lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
-        lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
-        lines.append(f"  Total tokens:      {o['total_tokens']:,}")
+        lines.append(f"  {t('agent.sessions')}          {o['total_sessions']:<12}  {t('agent.messages')}        {o['total_messages']:,}")
+        lines.append(f"  {t('agent.tool_calls')}        {o['total_tool_calls']:<12,}  {t('agent.user_messages')}   {o['user_messages']:,}")
+        lines.append(f"  {t('agent.input_tokens')}      {o['total_input_tokens']:<12,}  {t('agent.output_tokens')}   {o['total_output_tokens']:,}")
+        lines.append(f"  {t('agent.total_tokens')}      {o['total_tokens']:,}")
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{_format_duration(o['total_hours'] * 3600):<11}  Avg session:     ~{_format_duration(o['avg_session_duration'])}")
-        lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
+        lines.append(f"  {t('agent.avg_msgs_session')}  {o['avg_messages_per_session']:.1f}")
         lines.append("")
 
         # Model breakdown
         if report["models"]:
-            lines.append("  🤖 Models Used")
+            lines.append(f"  {t('agent.models_used')}")
             lines.append("  " + "─" * 56)
             lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12}")
             for m in report["models"]:
@@ -780,7 +781,7 @@ class InsightsEngine:
 
         # Platform breakdown
         if len(report["platforms"]) > 1 or (report["platforms"] and report["platforms"][0]["platform"] != "cli"):
-            lines.append("  📱 Platforms")
+            lines.append(f"  {t('agent.platforms_section_term')}")
             lines.append("  " + "─" * 56)
             lines.append(f"  {'Platform':<14} {'Sessions':>8} {'Messages':>10} {'Tokens':>14}")
             for p in report["platforms"]:
@@ -789,20 +790,20 @@ class InsightsEngine:
 
         # Tool usage
         if report["tools"]:
-            lines.append("  🔧 Top Tools")
+            lines.append(f"  {t('agent.top_tools')}")
             lines.append("  " + "─" * 56)
             lines.append(f"  {'Tool':<28} {'Calls':>8} {'%':>8}")
             for t in report["tools"][:15]:  # Top 15
                 lines.append(f"  {t['tool']:<28} {t['count']:>8,} {t['percentage']:>7.1f}%")
             if len(report["tools"]) > 15:
-                lines.append(f"  ... and {len(report['tools']) - 15} more tools")
+                lines.append(f"  {t('agent.more_tools', count=len(report['tools']) - 15)}")
             lines.append("")
 
         # Skill usage
         skills = report.get("skills", {})
         top_skills = skills.get("top_skills", [])
         if top_skills:
-            lines.append("  🧠 Top Skills")
+            lines.append(f"  {t('agent.top_skills')}")
             lines.append("  " + "─" * 56)
             lines.append(f"  {'Skill':<28} {'Loads':>7} {'Edits':>7} {'Last used':>11}")
             for skill in top_skills[:10]:
@@ -814,7 +815,7 @@ class InsightsEngine:
                 )
             summary = skills.get("summary", {})
             lines.append(
-                f"  Distinct skills: {summary.get('distinct_skills_used', 0)}  "
+                f"  {t('agent.distinct_skills')} {summary.get('distinct_skills_used', 0)}  "
                 f"Loads: {summary.get('total_skill_loads', 0):,}  "
                 f"Edits: {summary.get('total_skill_edits', 0):,}"
             )
@@ -823,7 +824,7 @@ class InsightsEngine:
         # Activity patterns
         act = report.get("activity", {})
         if act.get("by_day"):
-            lines.append("  📅 Activity Patterns")
+            lines.append(f"  {t('agent.activity_patterns')}")
             lines.append("  " + "─" * 56)
 
             # Day of week chart
@@ -845,17 +846,17 @@ class InsightsEngine:
                     ampm = "AM" if hr < 12 else "PM"
                     display_hr = hr % 12 or 12
                     hour_strs.append(f"{display_hr}{ampm} ({h['count']})")
-                lines.append(f"  Peak hours: {', '.join(hour_strs)}")
+                lines.append(f"  {t('agent.peak_hours')} {', '.join(hour_strs)}")
 
             if act.get("active_days"):
-                lines.append(f"  Active days: {act['active_days']}")
+                lines.append(f"  {t('agent.active_days')} {act['active_days']}")
             if act.get("max_streak") and act["max_streak"] > 1:
-                lines.append(f"  Best streak: {act['max_streak']} consecutive days")
+                lines.append(f"  {t('agent.best_streak_term')} {act['max_streak']} 天")
             lines.append("")
 
         # Notable sessions
         if report.get("top_sessions"):
-            lines.append("  🏆 Notable Sessions")
+            lines.append(f"  {t('agent.notable_sessions')}")
             lines.append("  " + "─" * 56)
             for ts in report["top_sessions"]:
                 lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
@@ -867,45 +868,45 @@ class InsightsEngine:
         """Format the insights report for gateway/messaging (shorter)."""
         if report.get("empty"):
             days = report.get("days", 30)
-            return f"No sessions found in the last {days} days."
+            return t("agent.no_sessions_found", days=days)
 
         lines = []
         o = report["overview"]
         days = report["days"]
 
-        lines.append(f"📊 **Hermes Insights** — Last {days} days\n")
+        lines.append(t("agent.title", days=days) + "\n")
 
         # Overview
-        lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
-        lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+        lines.append(f"{t('agent.sessions_label')} {o['total_sessions']} | {t('agent.messages_label')} {o['total_messages']:,} | {t('agent.tool_calls_label')} {o['total_tool_calls']:,}")
+        lines.append(f"{t('agent.tokens_label')} {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
         if o["total_hours"] > 0:
-            lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
+            lines.append(f"{t('agent.active_time_label')} ~{_format_duration(o['total_hours'] * 3600)} | {t('agent.avg_session_label')} ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")
 
         # Models (top 5)
         if report["models"]:
-            lines.append("**🤖 Models:**")
+            lines.append(t("agent.models_section"))
             for m in report["models"][:5]:
                 lines.append(f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens")
             lines.append("")
 
         # Platforms (if multi-platform)
         if len(report["platforms"]) > 1:
-            lines.append("**📱 Platforms:**")
+            lines.append(t("agent.platforms_section"))
             for p in report["platforms"]:
                 lines.append(f"  {p['platform']} — {p['sessions']} sessions, {p['messages']:,} msgs")
             lines.append("")
 
         # Tools (top 8)
         if report["tools"]:
-            lines.append("**🔧 Top Tools:**")
+            lines.append(t("agent.tools_section"))
             for t in report["tools"][:8]:
                 lines.append(f"  {t['tool']} — {t['count']:,} calls ({t['percentage']:.1f}%)")
             lines.append("")
 
         skills = report.get("skills", {})
         if skills.get("top_skills"):
-            lines.append("**🧠 Top Skills:**")
+            lines.append(t("agent.skills_section"))
             for skill in skills["top_skills"][:5]:
                 suffix = ""
                 if skill.get("last_used_at"):
@@ -921,10 +922,10 @@ class InsightsEngine:
             hr = act["busiest_hour"]["hour"]
             ampm = "AM" if hr < 12 else "PM"
             display_hr = hr % 12 or 12
-            lines.append(f"**📅 Busiest:** {act['busiest_day']['day']}s ({act['busiest_day']['count']} sessions), {display_hr}{ampm} ({act['busiest_hour']['count']} sessions)")
+            lines.append(f"{t('agent.busiest_label')} {act['busiest_day']['day']} ({act['busiest_day']['count']} sessions), {display_hr}{ampm} ({act['busiest_hour']['count']} sessions)")
             if act.get("active_days"):
-                lines.append(f"**Active days:** {act['active_days']}", )
+                lines.append(f"{t('agent.active_days_label')} {act['active_days']}")
             if act.get("max_streak", 0) > 1:
-                lines.append(f"**Best streak:** {act['max_streak']} consecutive days")
+                lines.append(f"{t('agent.best_streak_label')} {act['max_streak']} 天")
 
         return "\n".join(lines)

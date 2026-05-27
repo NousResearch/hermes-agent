@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -259,8 +260,7 @@ def emit_stream_drop(
             pass
     try:
         agent._emit_status(
-            f"⚠️ {provider} stream {kind} ({type(error).__name__}){_suffix} "
-            f"— reconnecting, retry {attempt}/{max_attempts}"
+            t("agent.stream_retry", provider=provider, kind=kind, error_type=type(error).__name__, _suffix=_suffix, attempt=attempt, max=max_attempts)
         )
         agent._touch_activity(
             f"stream retry {attempt}/{max_attempts} "

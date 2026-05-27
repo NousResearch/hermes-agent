@@ -1,0 +1,1081 @@
+approval:
+  dangerous_header: '⚠️  खतरनाक कमांड: {description}'
+  choose_long: '       [o] बार  |  [s] सत्र  |  [a] हमेशा  |  [d] अस्वीकृत'
+  choose_short: '     [o] बार  |  [s] सत्र  |  [d] अस्वीकृत'
+  prompt_long: 'विकल्प [o/s/a/D]: '
+  prompt_short: 'विकल्प [o/s/D]: '
+  timeout: ⏱ समय समाप्त — अस्वीकृत किया गया
+  allowed_once: ✓ एक बार अनुमत
+  allowed_session: ✓ इस सत्र के लिए अनुमत
+  allowed_always: ✓ स्थायी अनुमति सूची में जोड़ा गया
+  denied: ✗ अस्वीकृत
+  cancelled: ✗ रद्द
+  blocklist_message: यह कमांड बिना शर्त ब्लॉकलिस्ट में है और इसे अनुमत नहीं किया जा सकता।
+  reason:
+    delete_root_path: delete in root path
+    recursive_delete: recursive delete
+    recursive_delete_long: recursive delete (long flag)
+    world_writable: world/other-writable permissions
+    recursive_world_writable: recursive world/other-writable (long flag)
+    recursive_chown_root: recursive chown to root
+    recursive_chown_root_long: recursive chown to root (long flag)
+    format_filesystem: format filesystem
+    format_filesystem_mkfs: format filesystem (mkfs)
+    disk_copy: disk copy
+    write_block_device: write to block device
+    redirect_block_device: redirect to raw block device
+    dd_block_device: dd to raw block device
+    sql_drop: SQL DROP
+    sql_delete_no_where: SQL DELETE without WHERE
+    sql_truncate: SQL TRUNCATE
+    overwrite_system_config: overwrite system config
+    stop_restart_service: stop/restart system service
+    kill_all_processes: kill all processes
+    force_kill: force kill processes
+    force_kill_killall: force kill processes (killall -KILL)
+    force_kill_killall_s: force kill processes (killall -s KILL)
+    kill_by_regex: kill processes by regex (killall -r)
+    fork_bomb: fork bomb
+    shell_c_flag: shell command via -c/-lc flag
+    script_execution_flag: script execution via -e/-c flag
+    pipe_remote_shell: pipe remote content to shell
+    exec_remote_substitution: execute remote script via process substitution
+    overwrite_system_tee: overwrite system file via tee
+    overwrite_system_redirect: overwrite system file via redirection
+    overwrite_project_tee: overwrite project env/config via tee
+    overwrite_project_redirect: overwrite project env/config via redirection
+    xargs_rm: xargs with rm
+    find_exec_rm: find -exec/-execdir rm
+    find_delete: find -delete
+    stop_restart_gateway: stop/restart hermes gateway (kills running agents)
+    hermes_update: hermes update (restarts gateway, kills running agents)
+    gateway_outside_systemd: start gateway outside systemd (use 'systemctl --user restart hermes-gateway')
+    kill_gateway: kill hermes/gateway process (self-termination)
+    kill_pgrep: kill process via pgrep expansion (self-termination)
+    kill_pgrep_backtick: kill process via backtick pgrep expansion (self-termination)
+    copy_into_system_config: copy/move file into system config path
+    overwrite_project_file: overwrite project env/config file
+    inplace_edit_system: in-place edit of system config
+    inplace_edit_system_long: in-place edit of system config (long flag)
+    script_heredoc: script execution via heredoc
+    git_reset_hard: git reset --hard (destroys uncommitted changes)
+    git_force_push: git force push (rewrites remote history)
+    git_force_push_short: git force push short flag (rewrites remote history)
+    git_clean_force: git clean with force (deletes uncommitted files)
+    git_branch_force_delete: git branch force delete
+    chmod_exec: chmod +x followed by immediate execution
+    recursive_delete_home: recursive delete of home directory
+    recursive_delete_root: recursive delete of root filesystem
+    recursive_delete_system: recursive delete of system directory
+    sudo_privilege_flag: sudo with privilege flag (stdin/askpass/shell/list)
+    sudo_combined_flag: sudo with combined-flag privilege escalation
+    security_scan_prefix: Security scan
+    security_issue_detected: security issue detected
+gateway:
+  approval_expired: ⚠️ अनुमति समाप्त हो गई (एजेंट अब प्रतीक्षा नहीं कर रहा)। एजेंट से फिर से प्रयास करने के लिए कहें।
+  draining: ⏳ पुनरारंभ से पहले {count} सक्रिय एजेंट(ओं) को समाप्त किया जा रहा है...
+  goal_cleared: ✓ लक्ष्य साफ़ किया गया।
+  no_active_goal: कोई सक्रिय लक्ष्य नहीं।
+  config_read_failed: '⚠️ config.yaml नहीं पढ़ सका: {error}'
+  config_save_failed: '⚠️ कॉन्फ़िग सेव नहीं कर सका: {error}'
+  status:
+    elapsed_min: '{min} मिनट बीता'
+  busy_queued: ⏳ गेटवे {action} है — अगले मोड़ के लिए कतार में।
+  busy_rejecting: ⏳ गेटवे {action} है और अभी एक और मोड़ स्वीकार नहीं कर रहा।
+  busy_queued_detail: ⏳ अगले मोड़ के लिए कतार में{detail}।
+  busy_action_hint: ⚠️ गेटवे {action} है — {hint}
+  action_restarting: पुनरारंभ हो रहा है
+  action_shutting_down: बंद हो रहा है
+  hint_interrupt_resume: आपका वर्तमान कार्य बाधित होगा। पुनरारंभ के बाद कोई भी संदेश भेजें और मैं जहां छोड़ा था वहां से जारी
+    रखने का प्रयास करूंगा।
+  hint_interrupt: आपका वर्तमान कार्य बाधित होगा।
+  busy_agent_running: ⏳ एजेंट चल रहा है — `/{command}` अभी नहीं चल सकता। वर्तमान मोड़ समाप्त होने के बाद पुनः प्रयास करें।
+  busy_not_accepting: ⏳ गेटवे {action} है और अभी नया कार्य स्वीकार नहीं कर रहा।
+  session_too_large: '⚠️ सत्र मॉडल की संदर्भ विंडो के लिए बहुत बड़ा है।
+
+
+    आप कर सकते हैं:
+
+    • `/reset` — नया सत्र शुरू करें
+
+    • `/compress` — पुराने संदेश संपीड़ित करें
+
+    • `/new` — नया सत्र शीर्षक के साथ'
+  processing_stopped: '⚠️ प्रसंस्करण रुका: {error}। फिर से प्रयास करें।'
+  processing_no_response: ⚠️ प्रसंस्करण पूरा हुआ लेकिन कोई प्रतिक्रिया उत्पन्न नहीं हुई। यह कभी-कभी बहुत लंबे सत्रों में होता
+    है — एक और संदेश भेजकर देखें।
+  compression_aborted: ⚠️ संदर्भ संपीड़न रद्द ({error})। कोई संदेश नहीं हटाया गया — वार्तालाप अपरिवर्तित है।
+  no_response_after_tools: ⚠️ मॉडल ने उपकरणों को संसाधित करने के बाद कोई प्रतिक्रिया नहीं दी। यह बहुत लंबे सत्रों में हो सकता
+    है — एक और संदेश भेजकर देखें।
+  bg_task_no_creds: '❌ पृष्ठभूमि कार्य {task_id} विफल: कोई प्रदाता प्रमाण-पत्र कॉन्फ़िग नहीं।'
+  bg_task_failed: '❌ पृष्ठभूमि कार्य {task_id} विफल: {error}'
+  update_finished: ✅ हर्मेस अपडेट पूरा हुआ।
+  update_failed_code: ❌ हर्मेस अपडेट विफल (एक्ज़िट कोड {code})।
+  update_failed: ❌ हर्मेस अपडेट विफल। गेटवे लॉग जांचें या विवरण के लिए `hermes update` मैन्युअली चलाएं।
+  update_finished_output: '✅ हर्मेस अपडेट पूरा हुआ।
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_failed_output: '❌ हर्मेस अपडेट विफल।
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_finished_success: ✅ हर्मेस अपडेट सफलतापूर्वक पूरा हुआ।
+  update_timed_out: ❌ हर्मेस अपडेट 30 मिनट के बाद समय समाप्त।
+  still_working: ⏳ अभी भी काम कर रहा है... ({elapsed} मिनट बीते{detail})
+  no_activity_warning: ⚠️ {minutes} मिनट से कोई गतिविधि नहीं। एजेंट फंसा हो सकता है — संदेश भेजें या /stop से रद्द करें।
+  proxy_no_aiohttp: '⚠️ प्रॉक्सी मोड के लिए aiohttp आवश्यक है। इंस्टॉल करें: pip install aiohttp'
+  proxy_not_configured: ⚠️ प्रॉक्सी URL कॉन्फ़िग नहीं (GATEWAY_PROXY_URL या gateway.proxy_url)
+  proxy_error: '⚠️ प्रॉक्सी त्रुटि ({status}): {detail}'
+  proxy_connection_error: '⚠️ प्रॉक्सी कनेक्शन त्रुटि: {error}'
+  session_auto_reset: 🔄 सत्र स्वतः रीसेट — वार्तालाप संदर्भ सीमा से अधिक हो गई और संपीड़ित हो गई। मैं जहां छोड़ा था वहां से
+    जारी रखूंगा।
+  bg_task_complete: '✅ पृष्ठभूमि कार्य पूरा
+
+    प्रॉम्प्ट: "{preview}"
+
+
+    '
+  bg_task_complete_empty: '✅ पृष्ठभूमि कार्य पूरा
+
+    प्रॉम्प्ट: "{preview}"
+
+
+    (कोई प्रतिक्रिया उत्पन्न नहीं हुई)'
+  compression_summary: 🗜️ {headline}
+  already_running: '
+
+    ❌ गेटवे पहले से चल रहा है (PID {pid})।
+
+    '
+  admin_only: ⛔ /{command} केवल एडमिन के लिए है। {hint}
+  config_load_errors: ❌ {errors}
+  config_load_error: '❌ कॉन्फ़िग लोड नहीं कर सका: {error}'
+  dangerous_confirm: '⚠️ **/{command} की पुष्टि करें**
+
+
+    {detail}
+
+
+    विकल्प:
+
+    • **एक बार अनुमत करें** — केवल इस बार
+
+    • **हमेशा अनुमत करें** — और इस संकेत को स्थायी रूप से बंद करें
+
+    • **रद्द करें** — वर्तमान वार्तालाप जारी रखें
+
+
+    _पाठ विकल्प: `/approve`, `/always`, या `/cancel` का उत्तर दें।_'
+  detail_new: 'यह एक नया सत्र शुरू करता है और वर्तमान वार्तालाप इतिहास को हटा देता है।'
+  detail_undo: 'यह इतिहास से अंतिम उपयोगकर्ता/सहायक विनिमय को हटा देता है।'
+  steer_failed: '⚠️ मार्गदर्शन विफल: {error}'
+  interrupting: ⚡ वर्तमान कार्य बाधित हो रहा है{detail}। मैं आपके संदेश का शीघ्र उत्तर दूंगा।
+  online: ♻️ गेटवे ऑनलाइन — हर्मेस वापस और तैयार है।
+  provider_auth_failed: ⚠️ प्रदाता प्रमाणीकरण विफल। कॉन्फ़िग किए गए प्रमाण-पत्र जांचें।
+  provider_rejected: ⚠️ मॉडल प्रदाता ने अनुरोध अस्वीकार कर दिया। गेटवे लॉग में विवरण देखें।
+  provider_rate_limited: ⏱️ मॉडल प्रदाता अनुरोधों की दर सीमित कर रहा है। कृपया कुछ देर प्रतीक्षा करें।
+  provider_failed: ⚠️ मॉडल प्रदाता पुनरावृत्तियों के बाद विफल। गेटवे लॉग जांचें।
+  model:
+    error_prefix: 'त्रुटि: {error}'
+    switched: मॉडल बदला गया `{model}`
+    provider_label: 'प्रदाता: {provider}'
+    context_label: 'संदर्भ: {tokens} टोकन'
+    max_output_label: 'अधिकतम आउटपुट: {tokens} टोकन'
+    cost_label: 'लागत: {cost}'
+    capabilities_label: 'क्षमताएं: {capabilities}'
+    prompt_caching_enabled: 'प्रॉम्प्ट कैशिंग: सक्षम'
+    warning_prefix: 'चेतावनी: {warning}'
+    saved_global: config.yaml में सेव किया गया (`--global`)
+    session_only_hint: _(केवल इस सत्र — स्थायी करने के लिए `--global` जोड़ें)_
+    current_label: 'वर्तमान: `{model}` पर {provider}'
+    current_tag: ' (वर्तमान)'
+    more_models_suffix: ' (+{count} और)'
+    usage_switch_model: '`/model <नाम>` — मॉडल बदलें'
+    usage_switch_provider: '`/model <नाम> --provider <slug>` — प्रदाता बदलें'
+    usage_persist: '`/model <नाम> --global` — स्थायी करें'
+  agents:
+    header: 🤖 **सक्रिय एजेंट और कार्य**
+    active_agents: '**सक्रिय एजेंट:** {count}'
+    this_chat: ' · यह चैट'
+    more: '... और {count} और'
+    running_processes: '**चल रहे पृष्ठभूमि प्रक्रियाएं:** {count}'
+    async_jobs: '**गेटवे अतुल्यकालिक कार्य:** {count}'
+    none: कोई सक्रिय एजेंट या चल रहे कार्य नहीं।
+    state_starting: शुरू हो रहा है
+    state_running: चल रहा है
+  approve:
+    no_pending: कोई लंबित कमांड नहीं।
+    once_singular: ✅ कमांड अनुमत। एजेंट जारी है...
+    once_plural: ✅ कमांड अनुमत ({count} कमांड)। एजेंट जारी है...
+    session_singular: ✅ कमांड अनुमत (पैटर्न इस सत्र के लिए अनुमत)। एजेंट जारी है...
+    session_plural: ✅ कमांड अनुमत ({count} कमांड)। एजेंट जारी है...
+    always_singular: ✅ कमांड अनुमत (पैटर्न स्थायी अनुमत)। एजेंट जारी है...
+    always_plural: ✅ कमांड अनुमत ({count} कमांड)। एजेंट जारी है...
+  background:
+    usage: 'उपयोग: /background <प्रॉम्प्ट>
+
+      उदाहरण: /background आज की शीर्ष HN कहानियां संक्षेप में बताएं
+
+
+      एक अलग सत्र में प्रॉम्प्ट चलाता है। आप चैटिंग जारी रख सकते हैं — परिणाम पूरा होने पर यहां दिखाई देगा।'
+    started: '🔄 पृष्ठभूमि कार्य शुरू: "{preview}"
+
+      कार्य ID: {task_id}
+
+      आप चैटिंग जारी रख सकते हैं — परिणाम यहां दिखाई देंगे।'
+  branch:
+    db_unavailable: सत्र डेटाबेस उपलब्ध नहीं।
+    no_conversation: शाखा बनाने के लिए कोई वार्तालाप नहीं — पहले संदेश भेजें।
+    create_failed: 'शाखा बनाने में विफल: {error}'
+    switch_failed: शाखा बनी लेकिन उसमें बदलने में विफल।
+    branched_one: '⑂ **{title}** में शाखित ({count} संदेश कॉपी)
+
+      मूल: `{parent}`
+
+      शाखा: `{new}`
+
+      मूल पर वापस जाने के लिए `/resume` का उपयोग करें।'
+    branched_many: '⑂ **{title}** में शाखित ({count} संदेश कॉपी)
+
+      मूल: `{parent}`
+
+      शाखा: `{new}`
+
+      मूल पर वापस जाने के लिए `/resume` का उपयोग करें।'
+  commands:
+    usage: 'उपयोग: `/commands [पृष्ठ]`'
+    skill_header: ⚡ **स्किल कमांड:**
+    default_desc: स्किल कमांड
+    none: कोई कमांड उपलब्ध नहीं।
+    header: 📚 **कमांड** ({total} कुल, पृष्ठ {page}/{total_pages})
+    nav_prev: '`/commands {page}` ← पिछला'
+    nav_next: अगला → `/commands {page}`
+    out_of_range: _(अनुरोधित पृष्ठ {requested} सीमा से बाहर था, पृष्ठ {page} दिखाया जा रहा है।)_
+  compress:
+    not_enough: संपीड़न के लिए पर्याप्त वार्तालाप नहीं (कम से कम 4 संदेश आवश्यक)।
+    no_provider: कोई प्रदाता कॉन्फ़िग नहीं — संपीड़न नहीं कर सकता।
+    nothing_to_do: अभी संपीड़न के लिए कुछ नहीं (ट्रांसक्रिप्ट अभी सभी सुरक्षित संदर्भ है)।
+    focus_line: 'फोकस: "{topic}"'
+    summary_failed: ⚠️ सारांश उत्पादन विफल ({error})। {count} ऐतिहासिक संदेश हटाए गए।
+    aborted: ⚠️ संपीड़न रद्द ({error})। कोई संदेश नहीं हटाया गया।
+    aux_failed: ℹ️ कॉन्फ़िग किया गया संपीड़न मॉडल `{model}` विफल ({error})।
+    failed: 'संपीड़न विफल: {error}'
+  debug:
+    upload_failed: '✗ डीबग रिपोर्ट अपलोड करने में विफल: {error}'
+    header: '**डीबग रिपोर्ट अपलोड की गई:**'
+    auto_delete: ⏱ पेस्ट 6 घंटे में स्वतः मिट जाएंगे।
+    full_logs_hint: पूर्ण लॉग अपलोड के लिए CLI से `hermes debug share` का उपयोग करें।
+    share_hint: समर्थन के लिए ये लिंक हर्मेस टीम के साथ साझा करें।
+  deny:
+    stale: ❌ कमांड अस्वीकृत (अनुमति समय सीमा पार)।
+    no_pending: कोई लंबित कमांड नहीं।
+    denied_singular: ❌ कमांड अस्वीकृत।
+    denied_plural: ❌ कमांड अस्वीकृत ({count} कमांड)।
+  fast:
+    not_supported: ⚡ /fast केवल उन OpenAI मॉडल्स के लिए उपलब्ध है जो प्राथमिकता प्रसंस्करण का समर्थन करते हैं।
+    status: '⚡ प्राथमिकता प्रसंस्करण
+
+
+      वर्तमान मोड: `{mode}`
+
+
+      _उपयोग:_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ अज्ञात तर्क: `{arg}`
+
+
+      **मान्य विकल्प:** normal, fast, status'
+    saved: '⚡ ✓ प्राथमिकता प्रसंस्करण: **{label}** (कॉन्फ़िग में सेव)
+
+      _(अगले संदेश से प्रभावी)_'
+    session_only: '⚡ ✓ प्राथमिकता प्रसंस्करण: **{label}** (केवल यह सत्र)'
+    label_fast: FAST
+    label_normal: NORMAL
+    status_fast: fast
+    status_normal: normal
+  footer:
+    status: '📎 रनटाइम फ़ुटर: **{state}**
+
+      फ़ील्ड्स: `{fields}`
+
+      प्लेटफ़ॉर्म: `{platform}`'
+    usage: 'उपयोग: `/footer [on|off|status]`'
+    saved: '📎 रनटाइम फ़ुटर: **{state}**{example}
+
+      _(कॉन्फ़िग में सेव — अगले संदेश से प्रभावी)_'
+    example_line: '
+
+      उदाहरण: `{preview}`'
+    state_on: चालू
+    state_off: बंद
+  goal:
+    unavailable: इस सत्र पर लक्ष्य अनुपलब्ध।
+    no_goal_set: कोई लक्ष्य निर्धारित नहीं।
+    paused: '⏸ लक्ष्य रोका गया: {goal}'
+    no_resume: कोई लक्ष्य नहीं जारी करने के लिए।
+    resumed: '▶ लक्ष्य जारी: {goal}
+
+      जारी रखने के लिए कोई संदेश भेजें, या प्रतीक्षा करें।'
+    invalid: 'अमान्य लक्ष्य: {error}'
+    set: '⊙ लक्ष्य निर्धारित ({budget}-मोड़ बजट): {goal}
+
+      नियंत्रण: /goal status · /goal pause · /goal resume · /goal clear'
+  help:
+    header: '📖 **हर्मेस कमांड**
+
+      '
+    skill_header: '
+
+      ⚡ **स्किल कमांड** ({count} सक्रिय):'
+    more_use_commands: '
+
+      ... और {count} और। पूरी सूची के लिए `/commands` का उपयोग करें।'
+  insights:
+    invalid_days: 'अमान्य --days मान: {value}'
+    error: 'अंतर्दृष्टि उत्पन्न करने में त्रुटि: {error}'
+  kanban:
+    error_prefix: '⚠ कैनबैन त्रुटि: {error}'
+    subscribed_suffix: (सदस्यता ली — जब {task_id} पूरा होगा या रुकेगा तो सूचित किया जाएगा)
+    truncated_suffix: … (छोटा किया गया; पूरा आउटपुट के लिए `hermes kanban …` चलाएं)
+    no_output: (कोई आउटपुट नहीं)
+  personality:
+    none_configured: '`{path}/config.yaml` में कोई व्यक्तित्व कॉन्फ़िग नहीं'
+    header: '🎭 **उपलब्ध व्यक्तित्व**
+
+      '
+    none_option: • `none` — (कोई व्यक्तित्व ओवरले नहीं)
+    item: • `{name}` — {preview}
+    usage: '
+
+      उपयोग: `/personality <नाम>`'
+    save_failed: '⚠️ व्यक्तित्व परिवर्तन सेव करने में विफल: {error}'
+    cleared: '🎭 व्यक्तित्व साफ़ — बेस एजेंट व्यवहार का उपयोग हो रहा है।
+
+      _(अगले संदेश से प्रभावी)_'
+    set_to: '🎭 व्यक्तित्व **{name}** पर सेट
+
+      _(अगले संदेश से प्रभावी)_'
+    unknown: 'अज्ञात व्यक्तित्व: `{name}`
+
+
+      उपलब्ध: {available}'
+  profile:
+    header: 👤 **प्रोफ़ाइल:** `{profile}`
+    home: 📂 **होम:** `{home}`
+  reasoning:
+    level_default: मध्यम (डिफ़ॉल्ट)
+    level_disabled: बंद (अक्षम)
+    scope_session: सत्र ओवरराइड
+    scope_global: वैश्विक कॉन्फ़िग
+    status: '🧠 **तर्क सेटिंग्स**
+
+
+      **प्रयास:** `{level}`
+
+      **सीमा:** {scope}
+
+      **प्रदर्शन:** {display}
+
+
+      _उपयोग:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: चालू ✓
+    display_off: बंद
+    display_set_on: '🧠 ✓ तर्क प्रदर्शन: **चालू**
+
+      **{platform}** पर प्रत्येक उत्तर से पहले मॉडल सोच दिखाई जाएगी।'
+    display_set_off: '🧠 ✓ तर्क प्रदर्शन: **बंद** **{platform}** के लिए'
+    reset_global_unsupported: ⚠️ `/reasoning reset --global` समर्थित नहीं।
+    reset_done: 🧠 ✓ सत्र तर्क ओवरराइड साफ़; वैश्विक कॉन्फ़िग पर वापस।
+    unknown_arg: '⚠️ अज्ञात तर्क: `{arg}`
+
+
+      **मान्य स्तर:** none, minimal, low, medium, high, xhigh
+
+      **प्रदर्शन:** show, hide
+
+      **स्थायी:** `--global` जोड़ें'
+    set_global: '🧠 ✓ तर्क प्रयास `{effort}` पर सेट (कॉन्फ़िग में सेव)
+
+      _(अगले संदेश से प्रभावी)_'
+    set_global_save_failed: '🧠 ✓ तर्क प्रयास `{effort}` पर सेट (केवल सत्र — कॉन्फ़िग सेव विफल)
+
+      _(अगले संदेश से प्रभावी)_'
+    set_session: '🧠 ✓ तर्क प्रयास `{effort}` पर सेट (केवल यह सत्र)
+
+      _(अगले संदेश से प्रभावी)_'
+  reload_mcp:
+    cancelled: 🟡 /reload-mcp रद्द। MCP उपकरण अपरिवर्तित।
+    always_followup: ℹ️ भविष्य में `/reload-mcp` बिना पुष्टि के चलेगा।
+    confirm_prompt: '⚠️ **/reload-mcp की पुष्टि करें**
+
+
+      MCP सर्वर पुनः लोड करने से इस सत्र का उपकरण सेट पुनर्निर्मित होता है।
+
+
+      विकल्प:
+
+      • **एक बार अनुमत करें** — अभी पुनः लोड करें
+
+      • **हमेशा अनुमत करें** — और इस संकेत को स्थायी रूप से बंद करें
+
+      • **रद्द करें** — MCP उपकरण अपरिवर्तित रखें
+
+
+      _पाठ विकल्प: `/approve`, `/always`, या `/cancel` का उत्तर दें।_'
+    header: '🔄 **MCP सर्वर पुनः लोड किए गए**
+
+      '
+    reconnected: '♻️ पुनः कनेक्ट: {names}'
+    added: '➕ जोड़े गए: {names}'
+    removed: '➖ हटाए गए: {names}'
+    none_connected: कोई MCP सर्वर कनेक्ट नहीं।
+    tools_available: '
+
+      🔧 {servers} सर्वरों से {tools} उपकरण उपलब्ध'
+    failed: '❌ MCP पुनः लोड विफल: {error}'
+  reload_skills:
+    header: '🔄 **स्किल्स पुनः लोड किए गए**
+
+      '
+    no_new: कोई नई स्किल नहीं मिली।
+    total: '
+
+      📚 {count} स्किल उपलब्ध'
+    added_header: ➕ **नई स्किल्स:**
+    removed_header: ➖ **हटाई गई स्किल्स:**
+    item_with_desc: '    - {name}: {desc}'
+    item_no_desc: '    - {name}'
+    failed: '❌ स्किल्स पुनः लोड विफल: {error}'
+  reset:
+    header_default: ✨ सत्र रीसेट! नया शुरू।
+    header_new: ✨ नया सत्र शुरू!
+    header_titled: '✨ नया सत्र शुरू: {title}'
+    title_rejected: '
+
+      ⚠️ शीर्षक अस्वीकृत: {error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — सत्र बिना शीर्षक शुरू।'
+    title_empty_untitled: '
+
+      ⚠️ सफ़ाई के बाद शीर्षक खाली — सत्र बिना शीर्षक शुरू।'
+    tip: '
+
+      ✦ सुझाव: {tip}'
+    info_model: '◆ Model: `{model}`'
+    info_provider: '◆ Provider: {provider}'
+    info_context: '◆ Context: {ctx_display} tokens ({ctx_source})'
+    info_endpoint: '◆ Endpoint: {base_url}'
+    ctx_source_default: default — set model.context_length in config to override
+  restart:
+    in_progress: ⏳ गेटवे पुनरारंभ पहले से चल रहा है...
+    restarting: ♻ गेटवे पुनरारंभ। यदि 60 सेकंड में सूचित नहीं होते, तो कंसोल से `hermes gateway restart` चलाएं।
+    success: ♻ गेटवे सफलतापूर्वक पुनरारंभ। आपका सत्र जारी है।
+    shutting_down: ⚠️ गेटवे बंद हो रहा है — आपका वर्तमान कार्य बाधित होगा।
+    restarting_hint: ⚠️ गेटवे पुनरारंभ हो रहा है — आपका वर्तमान कार्य बाधित होगा। पुनरारंभ के बाद कोई संदेश भेजें।
+  resume:
+    db_unavailable: सत्र डेटाबेस उपलब्ध नहीं।
+    no_named_sessions: 'कोई नामित सत्र नहीं मिला।
+
+      अपने वर्तमान सत्र का नाम देने के लिए `/title मेरा सत्र` का उपयोग करें।'
+    list_header: '📋 **नामित सत्र**
+
+      '
+    list_item: • **{title}**{preview_part}
+    list_preview_suffix: ' — _{preview}_'
+    list_footer: '
+
+      उपयोग: `/resume <सत्र नाम>`'
+    list_failed: 'सत्र सूची नहीं बना सका: {error}'
+    not_found: '''**{name}**'' से मेल खाता कोई सत्र नहीं।
+
+      उपलब्ध सत्र देखने के लिए `/resume` का उपयोग करें।'
+    already_on: 📌 पहले से सत्र **{name}** पर।
+    switch_failed: सत्र बदलने में विफल।
+    resumed_one: ↻ सत्र **{title}** जारी ({count} संदेश)। वार्तालाप पुनर्स्थापित।
+    resumed_many: ↻ सत्र **{title}** जारी ({count} संदेश)। वार्तालाप पुनर्स्थापित।
+    resumed_no_count: ↻ सत्र **{title}** जारी। वार्तालाप पुनर्स्थापित।
+  retry:
+    no_previous: रीट्राई के लिए कोई पिछला संदेश नहीं।
+  rollback:
+    not_enabled: "चेकपॉइंट सक्षम नहीं।\nconfig.yaml में सक्षम करें:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found: '{cwd} के लिए कोई चेकपॉइंट नहीं मिला'
+    invalid_number: अमान्य चेकपॉइंट नंबर। 1-{max} का उपयोग करें।
+    restored: '✅ चेकपॉइंट {hash} पर पुनर्स्थापित: {reason}
+
+      प्री-रोलबैक स्नैपशॉट स्वचालित रूप से सेव किया गया।'
+    restore_failed: ❌ {error}
+  set_home:
+    save_failed: 'होम चैनल सेव करने में विफल: {error}'
+    success: '✅ होम चैनल **{name}** पर सेट (ID: {chat_id})।
+
+      क्रॉन जॉब और क्रॉस-प्लेटफ़ॉर्म संदेश यहां डिलीवर होंगे।'
+  status:
+    header: 📊 **हर्मेस गेटवे स्थिति**
+    session_id: '**सत्र ID:** `{session_id}`'
+    title: '**शीर्षक:** {title}'
+    created: '**बनाया:** {timestamp}'
+    last_activity: '**अंतिम गतिविधि:** {timestamp}'
+    tokens: '**टोकन:** {tokens}'
+    agent_running: '**एजेंट चल रहा:** {state}'
+    state_yes: हाँ ⚡
+    state_no: नहीं
+    queued: '**कतार में अनुसरण:** {count}'
+    platforms: '**कनेक्टेड प्लेटफ़ॉर्म:** {platforms}'
+  stop:
+    stopped_pending: ⚡ रुका। एजेंट अभी शुरू नहीं हुआ था — आप यह सत्र जारी रख सकते हैं।
+    stopped: ⚡ रुका। आप यह सत्र जारी रख सकते हैं।
+    no_active: रोकने के लिए कोई सक्रिय कार्य नहीं।
+  title:
+    db_unavailable: सत्र डेटाबेस उपलब्ध नहीं।
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ सफ़ाई के बाद शीर्षक खाली। कृपया मुद्रण योग्य अक्षरों का उपयोग करें।
+    set_to: '✏️ सत्र शीर्षक सेट: **{title}**'
+    not_found: सत्र डेटाबेस में नहीं मिला।
+    current_with_title: '📌 सत्र: `{session_id}`
+
+      शीर्षक: **{title}**'
+    current_no_title: '📌 सत्र: `{session_id}`
+
+      कोई शीर्षक नहीं। उपयोग: `/title मेरा सत्र नाम`'
+  topic:
+    not_telegram_dm: /topic कमांड केवल Telegram प्राइवेट चैट में उपलब्ध है।
+    no_session_db: सत्र डेटाबेस उपलब्ध नहीं।
+    unauthorized: आपको इस बॉट पर /topic का उपयोग करने का अधिकार नहीं है।
+    restore_needs_topic: सत्र पुनर्स्थापित करने के लिए, पहले Telegram टॉपिक बनाएं, फिर उसमें /topic <session-id> भेजें।
+    topics_disabled: 'Telegram टॉपिक अभी इस बॉट के लिए सक्षम नहीं हैं।
+
+
+      सक्षम करने के लिए:
+
+      1. @BotFather खोलें।
+
+      2. अपना बॉट चुनें।
+
+      3. Bot Settings → Threads Settings खोलें।
+
+      4. Threaded Mode चालू करें।
+
+
+      फिर /topic फिर से भेजें।'
+    topics_user_disallowed: Telegram टॉपिक सक्षम हैं, लेकिन उपयोगकर्ताओं को टॉपिक बनाने की अनुमति नहीं है।
+    enable_failed: 'Telegram टॉपिक मोड सक्षम करने में विफल: {error}'
+    bound_status: 'यह टॉपिक जुड़ा हुआ है:
+
+      सत्र: {label}
+
+      ID: {session_id}
+
+
+      इस टॉपिक को नए सत्र से बदलने के लिए /new का उपयोग करें।'
+    thread_ready: 'Telegram मल्टी-सत्र टॉपिक सक्षम हैं।
+
+
+      यह टॉपिक एक स्वतंत्र हर्मेस सत्र के रूप में उपयोग होगा।'
+    untitled_session: बिना शीर्षक वाला सत्र
+  undo:
+    nothing: पूर्ववत करने के लिए कुछ नहीं।
+    removed: '↩️ {count} संदेश पूर्ववत।
+
+      हटाया: "{preview}"'
+  update:
+    platform_not_messaging: ✗ /update केवल मैसेजिंग प्लेटफ़ॉर्म से उपलब्ध है। टर्मिनल से `hermes update` चलाएं।
+    not_git_repo: ✗ गिट रिपॉज़िटरी नहीं — अपडेट नहीं कर सकता।
+    hermes_cmd_not_found: ✗ `hermes` कमांड नहीं मिला। मैन्युअली `hermes update` चलाएं।
+    start_failed: '✗ अपडेट शुरू करने में विफल: {error}'
+    starting: ⚕ हर्मेस अपडेट शुरू हो रहा है…
+  usage:
+    rate_limits: ⏱️ **दर सीमाएं:** {state}
+    header_session: 📊 **सत्र टोकन उपयोग**
+    label_model: 'मॉडल: `{model}`'
+    label_input_tokens: 'इनपुट टोकन: {count}'
+    label_cache_read: 'कैश रीड टोकन: {count}'
+    label_cache_write: 'कैश राइट टोकन: {count}'
+    label_output_tokens: 'आउटपुट टोकन: {count}'
+    label_total: 'कुल: {count}'
+    label_api_calls: 'API कॉल: {count}'
+    label_cost: 'लागत: {prefix}${amount}'
+    label_cost_included: 'लागत: शामिल'
+    label_context: 'संदर्भ: {used} / {total} ({pct}%)'
+    label_compressions: 'संपीड़न: {count}'
+    header_session_info: 📊 **सत्र जानकारी**
+    label_messages: 'संदेश: {count}'
+    label_estimated_context: 'अनुमानित संदर्भ: ~{count} टोकन'
+    detailed_after_first: _(पहले एजेंट उत्तर के बाद विस्तृत उपयोग उपलब्ध)_
+    no_data: इस सत्र के लिए कोई उपयोग डेटा उपलब्ध नहीं।
+  verbose:
+    not_enabled: "`/verbose` कमांड मैसेजिंग प्लेटफ़ॉर्म के लिए सक्षम नहीं।\n\n`config.yaml` में सक्षम करें:\n```yaml\ndisplay:\n\
+      \  tool_progress_command: true\n```"
+    mode_off: '⚙️ उपकरण प्रगति: **बंद** — कोई गतिविधि नहीं दिखाई।'
+    mode_new: '⚙️ उपकरण प्रगति: **नया** — बदलाव पर दिखाया।'
+    mode_all: '⚙️ उपकरण प्रगति: **सभी** — प्रत्येक कॉल दिखाया।'
+    mode_verbose: '⚙️ उपकरण प्रगति: **विस्तृत** — पूर्ण तर्क सहित।'
+    saved_suffix: _(**{platform}** के लिए सेव — अगले संदेश से प्रभावी)_
+    save_failed: '_(कॉन्फ़िग में सेव नहीं कर सका: {error})_'
+  voice:
+    enabled_voice_only: 'वॉइस मोड सक्षम।
+
+      आप वॉइस संदेश भेजेंगे तो वॉइस में उत्तर दूंगा।'
+    disabled_text: वॉइस मोड अक्षम। केवल पाठ उत्तर।
+    tts_enabled: 'स्वतः-TTS सक्षम।
+
+      सभी उत्तरों में वॉइस संदेश शामिल होगा।'
+    status_mode: 'वॉइस मोड: {label}'
+    status_channel: 'वॉइस चैनल: #{channel}'
+    status_participants: 'सहभागी: {count}'
+    status_member: '  - {name}{status}'
+    speaking: ' (बोल रहा है)'
+    enabled_short: वॉइस मोड सक्षम।
+    disabled_short: वॉइस मोड अक्षम।
+    label_off: बंद (केवल पाठ)
+    label_voice_only: चालू (वॉइस संदेश का वॉइस उत्तर)
+    label_all: TTS (सभी संदेशों का वॉइस उत्तर)
+  yolo:
+    disabled: ⚠️ योलो मोड इस सत्र के लिए **बंद** — खतरनाक कमांड को अनुमति की आवश्यकता होगी।
+    enabled: ⚡ योलो मोड इस सत्र के लिए **चालू** — सभी कमांड स्वतः अनुमत। सावधानी से उपयोग करें।
+  shared:
+    session_db_unavailable: सत्र डेटाबेस उपलब्ध नहीं।
+    session_db_unavailable_prefix: सत्र डेटाबेस उपलब्ध नहीं
+    session_not_found: सत्र डेटाबेस में नहीं मिला।
+    warn_passthrough: ⚠️ {error}
+  queue:
+    usage: 'Usage: /queue <prompt>'
+    queued: Queued for the next turn.
+    queued_depth: Queued for the next turn. ({depth} queued)
+  steer:
+    usage: 'Usage: /steer <prompt>'
+    starting_queued: Agent still starting — /steer queued for the next turn.
+    queued: '⏩ Steer queued — arrives after the next tool call: ''{preview}'''
+    rejected_empty: Steer rejected (empty payload).
+    no_agent_queued: No active agent — /steer queued for the next turn.
+    usage_no_agent: 'Usage: /steer <prompt>  (no agent is running; sending as a normal message)'
+  agent_running:
+    wait_or_stop: Agent is running — wait or /stop first, then switch models.
+    goal_hint: Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal.
+    hook_blocked: Command `/{command}` was blocked by a hook.
+  quick:
+    timed_out: Quick command timed out (30s).
+    error: 'Quick command error: {error}'
+    no_command: Quick command '/{command}' has no command defined.
+    no_target: Quick command '/{command}' has no target defined.
+    unsupported_type: 'Quick command ''/{command}'' has unsupported type (supported: ''exec'', ''alias'').'
+  usage_cmd:
+    platform: 'Usage: /platform {action} <name>'
+    subgoal_remove: 'Usage: /subgoal remove <n>'
+platform:
+  update_prompt_answered: 'अपडेट संकेत का उत्तर दिया: {label}'
+  approval_required: 'कमांड अनुमति आवश्यक: {command}'
+  approved_once: '{user} द्वारा एक बार अनुमत'
+  approved_session: '{user} द्वारा सत्र के लिए अनुमत'
+  approved_permanently: '{user} द्वारा स्थायी अनुमत'
+  denied: '{user} द्वारा अस्वीकृत'
+  approval_required_title: कमांड अनुमति आवश्यक
+  script_missing: '{name} गायब है'
+  verb_failed: '{verb} विफल: {detail}'
+  verb_timeout: '{verb} का समय समाप्त'
+  verb_error: '{verb} त्रुटि: {detail}'
+  reject_reason: '{reason}'
+  creator_only: '{command} केवल प्राइवेट चैट मोड में निर्माता के लिए उपलब्ध है'
+  approval_prompt: '⚠️ **खतरनाक कमांड को अनुमति आवश्यक**
+
+    ```
+
+    {command}
+
+    ```
+
+    कारण: {reason}
+
+
+    अनुमति के लिए `/approve` उत्तर दें, या `/deny` से रद्द करें।
+
+
+    या इमोजी से अनुमत करें:
+
+    ✅ = /approve
+
+    ❎ = /deny'
+  approve_always: 🔒 हमेशा अनुमत करें
+  approve_once: ✅ एक बार अनुमत करें
+  approve_session: ✅ इस सत्र के लिए अनुमत करें
+  approved_always: ✅ स्थायी अनुमत
+  cancel: ❌ रद्द करें
+  cancelled: ❌ रद्द
+  deny: ❌ अस्वीकृत करें
+  discord:
+    'False': नहीं
+    'True': हाँ
+    allow_once: एक बार अनुमत
+    allow_session: इस सत्र के लिए अनुमत
+    already_answered: पहले उत्तर दिया गया~
+    already_answered_prompt: यह संकेत पहले उत्तर दिया गया~
+    already_resolved: पहले हल हो गया~
+    already_resolved_approval: यह अनुमति पहले हल हो गई~
+    always_allow: हमेशा अनुमत
+    always_approved: स्थायी अनुमत
+    answered_by: '{user} ने उत्तर दिया: {choice}'
+    approval_required_title: ⚠️ कमांड को अनुमति आवश्यक
+    approve_always: हमेशा अनुमत करें
+    approve_once: एक बार अनुमत करें
+    approved_once: एक बार अनुमत
+    approved_permanently: स्थायी अनुमत
+    approved_session: इस सत्र के लिए अनुमत
+    awaiting_response: '{user} की प्रतीक्षा में...'
+    back: ◀ पीछे
+    cancel: रद्द
+    cancel_button: रद्द
+    cancelled: रद्द
+    channel: चैनल
+    choices: विकल्प
+    choose_model_placeholder: '{provider} से मॉडल चुनें...'
+    choose_provider_placeholder: प्रदाता चुनें...
+    command: कमांड
+    confirm: पुष्टि
+    current_model: 'वर्तमान मॉडल:'
+    denied: अस्वीकृत
+    deny_button: अस्वीकृत
+    footer_by: '{label} {user} द्वारा'
+    guild: सर्वर
+    input_needed: ❓ हर्मेस को आपके इनपुट की आवश्यकता है
+    model_config_title: ⚙ मॉडल कॉन्फ़िग
+    model_selection_cancelled: मॉडल चयन रद्द।
+    model_switched: ⚙ मॉडल बदला
+    more_available_hint: ({count} और उपलब्ध — सीधे `/model <नाम>` टाइप करें)
+    not_authorized: आपको अधिकार नहीं है~
+    not_authorized_approve: आपको कमांड अनुमत करने का अधिकार नहीं है~
+    not_authorized_command: आपको इस कमांड का उपयोग करने का अधिकार नहीं है।
+    not_authorized_prompt: आपको इस संकेत का उत्तर देने का अधिकार नहीं है~
+    other_answer: ✏️ अन्य (उत्तर टाइप करें)
+    pick_one: नीचे विकल्प चुनें, या ✏️ अन्य पर क्लिक करके कस्टम उत्तर दर्ज करें।
+    provider_label: 'प्रदाता: {provider}'
+    reason: कारण
+    reply: उत्तर
+    reply_instruction: इस चैनल में अपना उत्तर भेजें।
+    select_model: 'मॉडल चुनें:'
+    select_provider: 'प्रदाता चुनें:'
+    slash_approve_desc: लंबित खतरनाक कमांड अनुमत करें
+    slash_approve_scope_desc: 'वैकल्पिक: ''all'', ''session'', ''always'''
+    slash_background_desc: पृष्ठभूमि में प्रॉम्प्ट चलाएं
+    slash_background_prompt_desc: पृष्ठभूमि में चलाने के लिए प्रॉम्प्ट
+    slash_bg_started: पृष्ठभूमि कार्य शुरू~
+    slash_compress_desc: वार्तालाप संदर्भ संपीड़ित करें
+    slash_deny_desc: लंबित खतरनाक कमांड अस्वीकृत करें
+    slash_deny_scope_desc: 'वैकल्पिक: ''all'' सभी लंबित अस्वीकृत करने के लिए'
+    slash_help_desc: उपलब्ध कमांड देखें
+    slash_insights_days_desc: 'विश्लेषण के लिए दिन (डिफ़ॉल्ट: 7)'
+    slash_insights_desc: उपयोग अंतर्दृष्टि देखें
+    slash_model_desc: मॉडल देखें या बदलें
+    slash_model_name_desc: मॉडल नाम (जैसे anthropic/claude-sonnet-4)। वर्तमान देखने के लिए खाली छोड़ें।
+    slash_new_desc: नया सत्र शुरू करें
+    slash_new_started: नया सत्र शुरू~
+    slash_personality_desc: व्यक्तित्व सेट करें
+    slash_personality_name_desc: व्यक्तित्व नाम। सूची देखने के लिए खाली छोड़ें।
+    slash_queue_desc: अगले मोड़ के लिए प्रॉम्प्ट कतारबद्ध करें (बिना बाधा)
+    slash_queue_prompt_desc: कतार में रखने के लिए प्रॉम्प्ट
+    slash_queued: अगले मोड़ के लिए कतारबद्ध।
+    slash_reasoning_desc: तर्क प्रयास देखें या बदलें
+    slash_reasoning_effort_desc: 'तर्क प्रयास: none, minimal, low, medium, high, या xhigh।'
+    slash_reload_mcp_desc: MCP सर्वर पुनः लोड करें
+    slash_reload_skills_desc: नई स्किल्स के लिए ~/.hermes/skills/ पुनः स्कैन करें
+    slash_reset_desc: अपना हर्मेस सत्र रीसेट करें
+    slash_reset_done: सत्र रीसेट~
+    slash_restart_desc: गेटवे को विनम्रतापूर्वक पुनरारंभ करें
+    slash_restart_requested: पुनरारंभ अनुरोधित~
+    slash_resume_desc: पहले नामित सत्र जारी करें
+    slash_resume_name_desc: जारी करने के लिए सत्र नाम। सूची के लिए खाली छोड़ें।
+    slash_retry_desc: अपना पिछला संदेश पुनः प्रयास करें
+    slash_retrying: पुनः प्रयास~
+    slash_sethome_desc: इस चैट को होम चैनल सेट करें
+    slash_status_desc: हर्मेस सत्र स्थिति देखें
+    slash_status_sent: स्थिति भेजी गई~
+    slash_steer_desc: अगले उपकरण कॉल के बाद संदेश जोड़ें (बिना बाधा)
+    slash_steer_prompt_desc: एजेंट के अगले उपकरण परिणाम में डालने के लिए पाठ
+    slash_stop_desc: चल रहे एजेंट को रोकें
+    slash_stop_requested: रोकने का अनुरोध~
+    slash_thread_archive_desc: मिनटों में स्वतः संग्रह समय (60, 1440, 4320, 10080)
+    slash_thread_desc: नया थ्रेड बनाएं और हर्मेस सत्र शुरू करें
+    slash_thread_msg_desc: वैकल्पिक पहला संदेश
+    slash_thread_name_desc: थ्रेड नाम
+    slash_title_desc: सत्र शीर्षक सेट या देखें
+    slash_title_name_desc: सत्र शीर्षक। वर्तमान देखने के लिए खाली छोड़ें।
+    slash_undo_desc: अंतिम विनिमय पूर्ववत करें
+    slash_update_desc: हर्मेस एजेंट नवीनतम संस्करण में अपडेट करें
+    slash_update_initiated: अपडेट शुरू~
+    slash_usage_desc: इस सत्र का टोकन उपयोग देखें
+    slash_voice_channel_desc: channel — वॉइस चैनल में शामिल हों
+    slash_voice_desc: वॉइस उत्तर मोड टॉगल करें
+    slash_voice_join_desc: join — वॉइस चैनल में शामिल हों
+    slash_voice_leave_desc: leave — वॉइस चैनल छोड़ें
+    slash_voice_mode_desc: 'वॉइस मोड: join, channel, leave, on, tts, off, या status'
+    slash_voice_off_desc: off — केवल पाठ
+    slash_voice_on_desc: on — वॉइस संदेशों का वॉइस उत्तर
+    slash_voice_status_desc: status — वर्तमान मोड देखें
+    slash_voice_tts_desc: tts — सभी संदेशों का वॉइस उत्तर
+    switch_error: 'मॉडल बदलने में त्रुटि: {error}'
+    switching_model: ⚙ मॉडल बदल रहा है
+    switching_to: '`{model_id}` में बदल रहा है...'
+    thread_create_failed: 'थ्रेड बनाने में विफल: {error}'
+    thread_created: थ्रेड बनाया {link}
+    unauthorized_slash: ⚠️ अनधिकृत Discord slash कमांड प्रयास
+    unknown_skill: 'अज्ञात स्किल: `{name}`। ऑटोकम्प्लीट सुझावों के लिए टाइपिंग शुरू करें।'
+    update_needs_input: ⚕ अपडेट को आपके इनपुट की आवश्यकता है
+    user: उपयोगकर्ता
+  feishu:
+    'False': नहीं
+    'True': हाँ
+    actions_label: 'कार्य: {actions}'
+    answered_by: '**{user}** ने उत्तर दिया'
+    approved_by: '{label} {user} द्वारा'
+    chat_id_label: 'चैट ID: {id}'
+    resolved: हल
+    share_chat_label: 'साझा चैट: {name}'
+  telegram:
+    approval_resolved: यह अनुमति हल हो गई है।
+    back: ◀ पीछे
+    cancel: ✗ रद्द
+    current_model: 'वर्तमान मॉडल: `{model}`'
+    error_switching_model: 'मॉडल बदलने में त्रुटि: {error}'
+    invalid_approval_data: अमान्य अनुमति डेटा।
+    invalid_choice: अमान्य विकल्प।
+    invalid_gmail_data: अमान्य gmail-triage डेटा।
+    invalid_model_index: अमान्य मॉडल इंडेक्स।
+    invalid_page: अमान्य पृष्ठ।
+    invalid_selection: अमान्य चयन।
+    model_config_title: ⚙ *मॉडल कॉन्फ़िग*
+    model_selection_cancelled: मॉडल चयन रद्द।
+    model_switched: मॉडल बदला!
+    more_available: _{count} और उपलब्ध — सीधे `/model <नाम>` टाइप करें_
+    next_page: अगला ▶
+    picker_expired: पिकर समाप्त — कृपया /model फिर से उपयोग करें।
+    picker_expired_short: पिकर समाप्त।
+    prev_page: ◀ पिछला
+    prompt_resolved: यह संकेत हल हो गया।
+    provider_label: 'प्रदाता: {label}'
+    provider_not_found: प्रदाता नहीं मिला।
+    select_model: 'मॉडल चुनें: {extra}'
+    select_provider: 'प्रदाता चुनें:'
+    sent_to_update: '"{answer}" अपडेट प्रक्रिया को भेजा।'
+    unauthorized_approve: ⛔ आपको कमांड अनुमत करने का अधिकार नहीं।
+    unauthorized_email: ⛔ आपको इस ईमेल को हल करने का अधिकार नहीं।
+    unauthorized_prompt: ⛔ आपको इस संकेत का उत्तर देने का अधिकार नहीं।
+    unauthorized_update: ⛔ आपको अपडेट संकेत का उत्तर देने का अधिकार नहीं।
+agent:
+  stale_connections_cleaned: 🔌 पिछले प्रदाता समस्या से पुराने कनेक्शन का पता चला — स्वचालित रूप से साफ़। ताज़ा कनेक्शन से
+    जारी।
+  starting_conversation: '💬 वार्तालाप शुरू: ''{preview}'''
+  iteration_budget_exhausted: '
+
+    ⚠️  पुनरावृत्ति बजट समाप्त ({used}/{max_total} पुनरावृत्तियां उपयोग)'
+  cached_context: '{prefix}💾 कैश किया गया संदर्भ: {ctx:,} टोकन {model} के लिए'
+  operation_interrupted_retry: पुनः प्रयास के दौरान ऑपरेशन बाधित ({hint}, प्रयास {attempt}/{max})।
+  response_truncated: 3 निरंतरता प्रयासों के बाद भी प्रतिक्रिया ट्रंकेटेड
+  output_length_limit: आउटपुट लंबाई सीमा के कारण प्रतिक्रिया ट्रंकेटेड
+  first_response_truncated: पहली प्रतिक्रिया आउटपुट लंबाई सीमा के कारण ट्रंकेटेड
+  operation_interrupted_waiting: 'ऑपरेशन बाधित: मॉडल प्रतिक्रिया की प्रतीक्षा ({elapsed}s बीते)।'
+  payload_too_large_max: 'अनुरोध पेलोड बहुत बड़ा: अधिकतम संपीड़न प्रयास ({max}) पहुँचे।'
+  payload_too_large: अनुरोध पेलोड बहुत बड़ा (413)। आगे संपीड़न नहीं।
+  context_length_exceeded_max: 'संदर्भ लंबाई अधिक: अधिकतम संपीड़न प्रयास ({max}) पहुँचे।'
+  context_length_exceeded: संदर्भ लंबाई अधिक ({tokens} टोकन)। आगे संपीड़न नहीं।
+  empty_after_tools: ⚠️ उपकरण कॉल के बाद मॉडल ने खाली प्रतिक्रिया दी
+  empty_response_tools: ↻ उपकरण कॉल के बाद खाली प्रतिक्रिया
+  empty_responses_fallback: ⚠️ मॉडल लगातार खाली प्रतिक्रिया दे रहा — फ़ॉलबैक प्रदाता पर स्विच...
+  fallback_chain: '🔄 फ़ॉलबैक श्रृंखला ({count} प्रदाता):'
+  fallback_model: '🔄 फ़ॉलबैक मॉडल: {model} ({provider})'
+  init:
+    context_limit: '📊 संदर्भ सीमा: {tokens} टोकन ({threshold}% पर संपीड़न = {threshold_tokens})'
+    context_limit_disabled: '📊 संदर्भ सीमा: {tokens} टोकन (स्वतः संपीड़न अक्षम)'
+    custom_base_url: '🔗 कस्टम बेस URL: {url}'
+    disabled_toolsets: '   ❌ अक्षम उपकरण सेट: {toolsets}'
+    enabled_toolsets: '   ✅ सक्षम उपकरण सेट: {toolsets}'
+    ephemeral_prompt: '🔒 अस्थायी सिस्टम प्रॉम्प्ट: ''{prompt}'''
+    initialized: '🤖 AI एजेंट इनिशियलाइज़: मॉडल {model}'
+    initialized_anthropic: '🤖 AI एजेंट इनिशियलाइज़: मॉडल {model} (Anthropic नेटिव)'
+    initialized_bedrock: '🤖 AI एजेंट इनिशियलाइज़: मॉडल {model} (AWS Bedrock, {region}{guardrails})'
+    initialized_bedrock_sdk: '🤖 AI एजेंट इनिशियलाइज़: मॉडल {model} (AWS Bedrock + AnthropicBedrock SDK, {region})'
+    no_tools: 🛠️  कोई उपकरण लोड नहीं
+    prompt_caching: '💾 प्रॉम्प्ट कैशिंग: सक्षम ({source}, {ttl} TTL)'
+    tools_loaded: 🛠️  {tools} उपकरण लोड ({count})
+    using_api_key: '🔑 API कुंजी: {key}'
+    using_entra: '🔑 प्रमाण-पत्र: Microsoft Entra ID'
+    using_token: '🔑 टोकन: {token}'
+  api_key_warning: '⚠️ चेतावनी: API कुंजी अमान्य या गायब'
+  primary_model_failed: '🔄 प्राथमिक मॉडल विफल — फ़ॉलबैक पर स्विच: {model} ({provider})'
+  rate_limited_fallback: ⚠️ दर सीमित — फ़ॉलबैक प्रदाता पर स्विच...
+  reasoning_no_content: ⚠️ मॉडल ने तर्क सामग्री बनाई लेकिन कोई उत्तर नहीं।
+  stream_interrupted: ↻ स्ट्रीम बाधित — प्राप्त सामग्री अंतिम उत्तर के रूप में
+  stream_retry: ⚠️ {provider} स्ट्रीम {kind} ({error_type}){_suffix} — पुनः कनेक्ट, प्रयास {attempt}/{max}
+  switched_fallback: '↻ फ़ॉलबैक मॉडल पर स्विच: {model} ({provider})'
+  thinking_only: ↻ केवल थिंकिंग प्रतिक्रिया
+  no_response_reconnect: '⚠️ {time}s से प्रदाता से कोई प्रतिक्रिया नहीं (मॉडल: {model}, संदर्भ: ~{tokens} टोकन)। पुनः कनेक्ट...'
+  missing_requirements: '⚠️ कुछ उपकरण आवश्यकताओं के अभाव में काम नहीं कर सकते: {missing}'
+  active_days: 'सक्रिय दिन:'
+  active_days_label: '**सक्रिय दिन:**'
+  active_time_label: '**सक्रिय समय:**'
+  activity_patterns: 📅 गतिविधि पैटर्न
+  avg_msgs_session: 'औसत संदेश/सत्र:'
+  avg_session_label: '**औसत सत्र:**'
+  best_streak_label: '**सर्वश्रेष्ठ स्ट्रीक:**'
+  best_streak_term: 'सर्वश्रेष्ठ स्ट्रीक:'
+  busiest_label: '**📅 सबसे व्यस्त:**'
+  distinct_skills: 'विभिन्न स्किल्स:'
+  input_tokens: 'इनपुट टोकन:'
+  max_iterations: ⚠️ अधिकतम पुनरावृत्ति ({max}) पहुँची। सारांश अनुरोध...
+  messages: 'संदेश:'
+  messages_label: '**संदेश:**'
+  models_section: '**🤖 मॉडल:**'
+  models_used: 🤖 उपयोग किए गए मॉडल
+  more_tools: '... और {count} और उपकरण'
+  no_sessions_found: पिछले {days} दिनों में कोई सत्र नहीं मिला।
+  notable_sessions: 🏆 उल्लेखनीय सत्र
+  output_tokens: 'आउटपुट टोकन:'
+  overview: 📋 अवलोकन
+  peak_hours: 'पीक घंटे:'
+  period: 'अवधि:'
+  platforms_section: '**📱 प्लेटफ़ॉर्म:**'
+  platforms_section_term: 📱 प्लेटफ़ॉर्म
+  sessions: 'सत्र:'
+  sessions_label: '**सत्र:**'
+  skills_section: '**🧠 शीर्ष स्किल्स:**'
+  title: 📊 **हर्मेस अंतर्दृष्टि** — पिछले {days} दिन
+  tokens_label: '**टोकन:**'
+  tool_calls: 'उपकरण कॉल:'
+  tool_calls_label: '**उपकरण कॉल:**'
+  tools_section: '**🔧 शीर्ष उपकरण:**'
+  top_skills: 🧠 शीर्ष स्किल्स
+  top_tools: 🔧 शीर्ष उपकरण
+  total_tokens: 'कुल टोकन:'
+  trajectory_enabled: 📝 ट्रेजेक्टरी सेव सक्षम
+  user_messages: 'उपयोगकर्ता संदेश:'
+run_agent:
+  self_improvement_review: '💾 स्व-सुधार समीक्षा: {summary}'
+  compacting_context: 🗜️ संदर्भ संपीड़ित — पुराने वार्तालाप का सारांश बना रहा हूं...
+  preflight_compression: '📦 पूर्व-उड़ान संपीड़न: ~{tokens} टोकन >= {threshold} सीमा। इसमें समय लग सकता है।'
+  compression_aborted: '⚠️ संपीड़न रद्द: {error}। कोई संदेश नहीं हटाया गया। /compress से पुनः प्रयास करें।'
+  compression_failed: '⚠️ संपीड़न सारांश विफल: {error}। फ़ॉलबैक संदर्भ चिन्ह डाला गया।'
+  aux_model_failed: ℹ️ कॉन्फ़िग किया गया संपीड़न मॉडल '{model}' विफल ({error})। मुख्य मॉडल से पुनर्प्राप्त।
+  interrupting: ⚡ वर्तमान कार्य बाधित{detail}। आपके संदेश का शीघ्र उत्तर दूंगा।
+onboarding:
+  busy_queue: 💡 पहली बार सुझाव — मैंने आपका संदेश बाधित किए बिना कतार में रखा। /busy interrupt से तुरंत रोकें।
+  busy_steer: 💡 पहली बार सुझाव — मैंने आपका संदेश वर्तमान रन में जोड़ा। /busy interrupt या /busy queue से बदलें।
+  busy_interrupt: 💡 पहली बार सुझाव — मैंने वर्तमान कार्य बाधित किया। /busy queue से अगले मोड़ के लिए कतारबद्ध करें।
+  busy_queue_cli: (सुझाव) आपका संदेश अगले मोड़ के लिए कतारबद्ध। /busy interrupt से तुरंत रोकें।
+  busy_steer_cli: (सुझाव) आपका संदेश वर्तमान रन में जोड़ा गया। /busy interrupt या /busy queue से बदलें।
+  busy_interrupt_cli: (सुझाव) आपके संदेश ने वर्तमान रन बाधित किया। /busy queue से कतारबद्ध करें।
+  tool_progress_gateway: 💡 पहली बार सुझाव — /verbose से प्रगति मोड बदलें।
+  tool_progress_cli: (सुझाव) वह उपकरण समय ले रहा था। /verbose से प्रगति मोड बदलें।
+  openclaw_residue: 'पुरानी OpenClaw निर्देशिका ~/.openclaw/ पर मिली।
+
+    पोर्ट करने के लिए `hermes claw migrate` चलाएं।
+
+    साफ़ करने के लिए `hermes claw cleanup` चलाएं।'
+activity:
+  iteration: पुनरावृत्ति {current}/{max}
+  running_tool: 'चल रहा: {tool}'
+  waiting_stream: प्रदाता प्रतिक्रिया की प्रतीक्षा (स्ट्रीमिंग)
+  waiting_api: गैर-स्ट्रीमिंग API प्रतिक्रिया की प्रतीक्षा
+  receiving_stream: स्ट्रीम प्रतिक्रिया प्राप्त
+  executing_tool: 'उपकरण चला रहा: {name}'
+  executing_concurrent: '{tools} उपकरण एक साथ चला रहा'
+  tool_completed: 'उपकरण पूरा: {name} ({duration}s)'
+  starting_api: 'API कॉल #{number} शुरू'
+  retry_backoff: पुनः प्रयास बैकऑफ ({current}/{max}), {remaining}s शेष
+  error_recovery: API त्रुटि पुनर्प्राप्ति (प्रयास {current}/{max})
+  error_retry_backoff: त्रुटि पुनः प्रयास बैकऑफ ({current}/{max}), {remaining}s शेष
+  max_retries_invalid: ⚠️ अमान्य उत्तरों के लिए अधिकतम पुनरावृत्ति ({max}) — फ़ॉलबैक...
+  max_retries_exceeded: ❌ अमान्य उत्तरों के लिए अधिकतम पुनरावृत्ति ({max}) पार। छोड़ रहा।
+  payload_too_large: ⚠️ अनुरोध पेलोड बहुत बड़ा (413) — संपीड़न प्रयास {current}/{max}...
+  compressed: 🗜️ {original} → {compressed} संदेश संपीड़ित, पुनः प्रयास...
+  context_too_large: 🗜️ संदर्भ बहुत बड़ा (~{tokens} टोकन) — संपीड़ित ({current}/{max})...
+  non_retryable_error: ⚠️ गैर-पुनरावृत्ति त्रुटि (HTTP {status}) — फ़ॉलबैक...
+  max_retries_exhausted: ⚠️ अधिकतम पुनरावृत्ति ({max}) समाप्त — फ़ॉलबैक...
+  rate_limited_retries: ❌ {max} पुनरावृत्ति के बाद दर सीमित — {summary}
+  api_failed_retries: ❌ {max} पुनरावृत्ति के बाद API विफल — {summary}
+  rate_limited_waiting: ⏱️ दर सीमित। {time}s प्रतीक्षा (प्रयास {current}/{max})...
+  retrying_in: ⏳ {time}s में पुनः प्रयास (प्रयास {current}/{max})...
+  auxiliary_failed: '⚠️ सहायक {task} विफल: {detail}'
+  nous_rate_limit: Nous Portal दर सीमा सक्रिय — {time} में रीसेट।
+  empty_response: ⚠️ खाली/विकृत प्रतिक्रिया — फ़ॉलबैक पर स्विच...
+  thinking_exhausted: '⚠️ **थिंकिंग बजट समाप्त**
+
+
+    मॉडल ने सभी आउटपुट टोकन तर्क में उपयोग किए।
+
+
+    समाधान:
+
+    → तर्क प्रयास कम करें: `/thinkon low` या `/thinkon minimal`
+
+    → या `/model` से बड़ा मॉडल चुनें'
+  no_retryable_error: '❌ गैर-पुनरावृत्ति त्रुटि (HTTP {status}): {detail}'
+  no_content_retries: ❌ सभी पुनरावृत्तियों के बाद मॉडल ने कोई सामग्री नहीं दी
+  context_reduced: 🗜️ संदर्भ {tokens} टोकन तक कम — पुनः प्रयास...
+  no_provider_response: ⚠️ {time}s से प्रदाता से कोई प्रतिक्रिया नहीं — पुनः प्रयास...
+  malformed_stream: ❌ प्रदाता ने {retries} पुनरावृत्तियों के बाद विकृत स्ट्रीमिंग डेटा दिया — {detail}
+  connection_failed: ❌ प्रदाता से कनेक्शन विफल ({retries} पुनरावृत्ति) — {detail}
+  guardrail_halted: '⚠️ उपकरण गार्डरेल ने {tool} रोका: {code}'
+  empty_model_response: ⚠️ मॉडल से खाली प्रतिक्रिया — पुनः प्रयास ({current}/3)
+  iteration_exhausted: ⚠️ पुनरावृत्ति बजट समाप्त ({current}/{max}) — मॉडल से सारांश अनुरोध
+  iteration_exhausted_cli: ⚠️ पुनरावृत्ति बजट समाप्त ({current}/{max}) — सारांश अनुरोध...
+  agent_inactive: ⏱️ एजेंट {minutes} मिनट से निष्क्रिय।
+  agent_stuck_tool: एजेंट उपकरण `{tool}` पर फंसा लगता है ({seconds}s पिछली गतिविधि, पुनरावृत्ति {current}/{max})।
+  agent_last_activity: 'अंतिम गतिविधि: {desc} ({seconds}s पहले, पुनरावृत्ति {current}/{max})।'
+cli:
+  compression_count: 🗜️ {count}
+  model_normalized: ⚠️ मॉडल '{from_model}' को '{to_model}' में सामान्य {provider} के लिए।
+  copilot_normalized: ⚠️ कॉपिलॉट मॉडल '{from_model}' को '{to_model}' में सामान्य।
+  provider_stripped: ⚠️ प्रदाता उपसर्ग '{from_model}' से हटाया; {provider} के लिए '{to_model}'।
+  context_length_warning: ⚠️ संदर्भ लंबाई केवल {length:,} टोकन — {detail}
+  command_destroys: ⚠️ /{command} — वार्तालाप स्थिति नष्ट करता है
+  steered: ⏩ वर्तमान रन में जोड़ा{detail}।
+setup:
+  edit_config_hint: '📝 कॉन्फ़िग संपादित करने के लिए:'
+  ready_to_go: 🚀 तैयार!
+  tg_no_allowlist: ⚠️  Telegram में कोई उपयोगकर्ता अनुमति सूची नहीं — कोई भी आपके बॉट का उपयोग कर सकता है!
+  discord_no_allowlist: ⚠️  Discord में कोई उपयोगकर्ता अनुमति सूची नहीं — कोई भी आपके बॉट का उपयोग कर सकता है!
+  slack_no_allowlist: ⚠️  कोई Slack अनुमति सूची नहीं — अपेयर न हुए उपयोगकर्ता डिफ़ॉल्ट रूप से अस्वीकृत।
+  generic_no_allowlist: ⚠️  कोई अनुमति सूची नहीं — जो कोई भी बॉट को संदेश भेज सकता है वह उपयोग कर सकता है!
+  imessage_no_allowlist: ⚠️  कोई अनुमति सूची नहीं — जो कोई भी iMessage कर सकता है वह उपयोग कर सकता है!
+  servers_no_allowlist: ⚠️  कोई अनुमति सूची नहीं — आपके बॉट वाले सर्वर में कोई भी!
+  platform_telegram: 📱 Telegram
+  platform_discord: 💬 Discord
+  platform_slack: 💼 Slack
+  model_header: 🤖 **मॉडल और प्रदाता सेटअप**
+  model_select_provider: 'अपना AI प्रदाता चुनें:'
+  model_select_model: 'मॉडल चुनें:'
+  model_enter_api_key: 'API कुंजी दर्ज करें:'
+  model_key_saved: ✅ API कुंजी सेव।
+  model_key_invalid: ❌ अमान्य API कुंजी। कृपया पुनः प्रयास करें।
+  model_test_success: ✅ मॉडल परीक्षण सफल!
+  model_test_failed: '❌ मॉडल परीक्षण विफल: {error}'
+  model_current: 'वर्तमान मॉडल: {model}'
+  terminal_header: 🖥️ **टर्मिनल बैकएंड सेटअप**
+  terminal_select: 'चुनें कि आपका एजेंट कहां कमांड चलाता है:'
+  terminal_local: स्थानीय (इस मशीन)
+  terminal_docker: Docker कंटेनर
+  terminal_ssh: रिमोट SSH सर्वर
+  agent_header: ⚙️ **एजेंट सेटिंग्स**
+  agent_max_iterations: 'प्रति मोड़ अधिकतम पुनरावृत्ति (डिफ़ॉल्ट: 90):'
+  agent_compression: 'संदर्भ संपीड़न सक्षम करें? (y/n):'
+  agent_session_reset: 'N संदेशों के बाद सत्र स्वतः रीसेट (0=बंद):'
+  tools_header: 🔧 **उपकरण सेटअप**
+  tools_tts: 'टेक्स्ट-टू-स्पीच सक्षम करें? (y/n):'
+  tools_web_search: 'वेब खोज सक्षम करें? (y/n):'
+  tools_image_gen: 'इमेज जनरेशन सक्षम करें? (y/n):'
+  complete_header: ✅ **सेटअप पूरा!**
+  complete_next_steps: 'अगले कदम:'
+  complete_start: 'चैटिंग शुरू करें: hermes'
+  complete_gateway: 'गेटवे चलाएं: hermes gateway run'
+  complete_docs: 'दस्तावेज़ पढ़ें: hermes help'
+  run_agent:
+    compending_context: 🗜️ Compacting context — summarizing earlier conversation to continue...
+
+stream:
+  waiting_for_response: स्ट्रीम प्रतिक्रिया की प्रतीक्षा ({secs}s, कोई डेटा ब्लॉक नहीं)

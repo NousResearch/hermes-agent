@@ -48,6 +48,7 @@ from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
+from agent.i18n import t as _t
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # Touch activity before launching workers so the gateway knows
     # we're executing tools (not stuck).
     agent._current_tool = tool_names_str
-    agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+    agent._touch_activity(_t("activity.executing_concurrent", count=num_tools, tools=tool_names_str))
 
     # Capture CLI callbacks from the agent thread so worker threads can
     # register them locally.  Without this, _get_approval_callback() in
@@ -411,7 +412,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
         agent._current_tool = None
-        agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
+        agent._touch_activity(_t("activity.tool_completed", name=name, duration=tool_duration))
 
         if not blocked and agent.tool_complete_callback:
             try:
@@ -536,7 +537,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked:
             agent._current_tool = function_name
-            agent._touch_activity(f"executing tool: {function_name}")
+            agent._touch_activity(_t("activity.executing_tool", name=function_name))
 
         # Set activity callback for long-running tool execution (terminal
         # commands, etc.) so the gateway's inactivity monitor doesn't kill
@@ -829,7 +830,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
         agent._current_tool = None
-        agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
+        agent._touch_activity(_t("activity.tool_completed", name=function_name, duration=tool_duration))
 
         if agent.verbose_logging:
             logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")

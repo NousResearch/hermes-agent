@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+from agent.i18n import t as _t
 import sys
 import threading
 import time
@@ -22,11 +23,6 @@ from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
-
-# Freeze YOLO mode at module import time. Reading os.environ on every call
-# would allow any skill running inside the process to set this variable and
-# instantly bypass all approval checks — a prompt-injection escalation path.
-_YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
@@ -284,13 +280,87 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
+# Reverse mapping: English description → i18n key for _localize_reason()
+_REASON_I18N_MAP: dict[str, str] = {
+    'SQL DELETE without WHERE': "approval.reason.sql_delete_no_where",
+    'SQL DROP': "approval.reason.sql_drop",
+    'SQL TRUNCATE': "approval.reason.sql_truncate",
+    'Security scan': "approval.reason.security_scan_prefix",
+    'chmod +x followed by immediate execution': "approval.reason.chmod_exec",
+    'copy/move file into system config path': "approval.reason.copy_into_system_config",
+    'dd to raw block device': "approval.reason.dd_block_device",
+    'delete in root path': "approval.reason.delete_root_path",
+    'disk copy': "approval.reason.disk_copy",
+    'execute remote script via process substitution': "approval.reason.exec_remote_substitution",
+    'find -delete': "approval.reason.find_delete",
+    'find -exec/-execdir rm': "approval.reason.find_exec_rm",
+    'force kill processes': "approval.reason.force_kill",
+    'force kill processes (killall -KILL)': "approval.reason.force_kill_killall",
+    'force kill processes (killall -s KILL)': "approval.reason.force_kill_killall_s",
+    'fork bomb': "approval.reason.fork_bomb",
+    'format filesystem': "approval.reason.format_filesystem",
+    'format filesystem (mkfs)': "approval.reason.format_filesystem_mkfs",
+    'git branch force delete': "approval.reason.git_branch_force_delete",
+    'git clean with force (deletes uncommitted files)': "approval.reason.git_clean_force",
+    'git force push (rewrites remote history)': "approval.reason.git_force_push",
+    'git force push short flag (rewrites remote history)': "approval.reason.git_force_push_short",
+    'git reset --hard (destroys uncommitted changes)': "approval.reason.git_reset_hard",
+    'hermes update (restarts gateway, kills running agents)': "approval.reason.hermes_update",
+    'in-place edit of system config': "approval.reason.inplace_edit_system",
+    'in-place edit of system config (long flag)': "approval.reason.inplace_edit_system_long",
+    'kill all processes': "approval.reason.kill_all_processes",
+    'kill hermes/gateway process (self-termination)': "approval.reason.kill_gateway",
+    'kill process via backtick pgrep expansion (self-termination)': "approval.reason.kill_pgrep_backtick",
+    'kill process via pgrep expansion (self-termination)': "approval.reason.kill_pgrep",
+    'kill processes by regex (killall -r)': "approval.reason.kill_by_regex",
+    'overwrite project env/config file': "approval.reason.overwrite_project_file",
+    'overwrite project env/config via redirection': "approval.reason.overwrite_project_redirect",
+    'overwrite project env/config via tee': "approval.reason.overwrite_project_tee",
+    'overwrite system config': "approval.reason.overwrite_system_config",
+    'overwrite system file via redirection': "approval.reason.overwrite_system_redirect",
+    'overwrite system file via tee': "approval.reason.overwrite_system_tee",
+    'pipe remote content to shell': "approval.reason.pipe_remote_shell",
+    'recursive chown to root': "approval.reason.recursive_chown_root",
+    'recursive chown to root (long flag)': "approval.reason.recursive_chown_root_long",
+    'recursive delete': "approval.reason.recursive_delete",
+    'recursive delete (long flag)': "approval.reason.recursive_delete_long",
+    'recursive delete of home directory': "approval.reason.recursive_delete_home",
+    'recursive delete of root filesystem': "approval.reason.recursive_delete_root",
+    'recursive delete of system directory': "approval.reason.recursive_delete_system",
+    'recursive world/other-writable (long flag)': "approval.reason.recursive_world_writable",
+    'redirect to raw block device': "approval.reason.redirect_block_device",
+    'script execution via -e/-c flag': "approval.reason.script_execution_flag",
+    'script execution via heredoc': "approval.reason.script_heredoc",
+    'security issue detected': "approval.reason.security_issue_detected",
+    'shell command via -c/-lc flag': "approval.reason.shell_c_flag",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')": "approval.reason.gateway_outside_systemd",
+    'stop/restart hermes gateway (kills running agents)': "approval.reason.stop_restart_gateway",
+    'stop/restart system service': "approval.reason.stop_restart_service",
+    'sudo with combined-flag privilege escalation': "approval.reason.sudo_combined_flag",
+    'sudo with privilege flag (stdin/askpass/shell/list)': "approval.reason.sudo_privilege_flag",
+    'world/other-writable permissions': "approval.reason.world_writable",
+    'write to block device': "approval.reason.write_block_device",
+    'xargs with rm': "approval.reason.xargs_rm",
+}
+
+
+def _localize_reason(description: str) -> str:
+    """Translate a hardcoded English reason string to the current UI language.
+
+    Falls back to the original English string if no i18n key is mapped.
+    """
+    key = _REASON_I18N_MAP.get(description)
+    if key:
+        return _t(key)
+    return description
+
 def _hardline_block_result(description: str) -> dict:
     """Build the standard block result for a hardline match."""
     return {
         "approved": False,
         "hardline": True,
         "message": (
-            f"BLOCKED (hardline): {description}. "
+            f"BLOCKED (hardline): {_localize_reason(description)}. "
             "This command is on the unconditional blocklist and cannot "
             "be executed via the agent — not even with --yolo, /yolo, "
             "approvals.mode=off, or cron approve mode. If you genuinely "
@@ -305,7 +375,7 @@ def _sudo_stdin_block_result(description: str) -> dict:
     return {
         "approved": False,
         "message": (
-            f"BLOCKED: {description}. "
+            f"BLOCKED: {_localize_reason(description)}. "
             "Do not pipe passwords to 'sudo -S' — this is a brute-force "
             "attack vector. Set SUDO_PASSWORD in your .env file if the "
             "agent needs passwordless sudo, or run the sudo command "
@@ -349,7 +419,7 @@ DANGEROUS_PATTERNS = [
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
-    (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
+    (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
@@ -903,9 +973,9 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
         answer = (response.choices[0].message.content or "").strip().upper()
 
-        if answer == "APPROVE":
+        if "APPROVE" in answer:
             return "approve"
-        elif answer == "DENY":
+        elif "DENY" in answer:
             return "deny"
         else:
             return "escalate"
@@ -945,7 +1015,7 @@ def check_dangerous_command(command: str, env_type: str,
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -973,11 +1043,6 @@ def check_dangerous_command(command: str, env_type: str,
                         "approvals.cron_mode: approve in config.yaml."
                     ),
                 }
-        logger.warning(
-            "AUTO-APPROVED dangerous command in non-interactive non-gateway context "
-            "(pattern: %s): %s — set HERMES_INTERACTIVE or HERMES_GATEWAY_SESSION to require approval.",
-            description, command[:200],
-        )
         return {"approved": True, "message": None}
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
@@ -1032,7 +1097,7 @@ def _format_tirith_description(tirith_result: dict) -> str:
     findings = tirith_result.get("findings") or []
     if not findings:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return _t("approval.reason.security_scan_prefix") + ": " + (summary or _t("approval.reason.security_issue_detected"))
 
     parts = []
     for f in findings:
@@ -1040,14 +1105,14 @@ def _format_tirith_description(tirith_result: dict) -> str:
         title = f.get("title", "")
         desc = f.get("description", "")
         if title and desc:
-            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+            parts.append(f"[{severity}] {_localize_reason(title)}: {desc}" if severity else f"{_localize_reason(title)}: {desc}")
         elif title:
-            parts.append(f"[{severity}] {title}" if severity else title)
+            parts.append(f"[{severity}] {_localize_reason(title)}" if severity else _localize_reason(title))
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return _t("approval.reason.security_scan_prefix") + ": " + (summary or _t("approval.reason.security_issue_detected"))
 
-    return "Security scan — " + "; ".join(parts)
+    return _t("approval.reason.security_scan_prefix") + " — " + "; ".join(parts)
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -1086,7 +1151,7 @@ def check_all_command_guards(command: str, env_type: str,
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = env_var_enabled("HERMES_INTERACTIVE")

@@ -18,6 +18,8 @@ import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -240,7 +242,7 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
     first_data_row = _split_markdown_table_row(table_block[2]) if len(table_block) > 2 else []
     has_row_label_col = len(first_data_row) == len(headers) + 1
 
-    rendered_groups: list[str] = []
+    rendered_rows: list[str] = []
     for index, row in enumerate(table_block[2:], start=1):
         cells = _split_markdown_table_row(row)
         if has_row_label_col:
@@ -258,24 +260,12 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
         elif len(data_cells) > len(headers):
             data_cells = data_cells[: len(headers)]
 
-        # Build the bulleted lines for this row.  Skip any bullet whose value
-        # duplicates the heading text -- when has_row_label_col is False the
-        # heading IS the first data cell, and emitting it twice (once as the
-        # bold heading, once as the first bullet) is visual noise.
-        bullets: list[str] = []
-        for header, value in zip(headers, data_cells):
-            if not has_row_label_col and value == heading:
-                continue
-            bullets.append(f"• {header}: {value}")
+        rendered_rows.append(f"**{heading}**")
+        rendered_rows.extend(
+            f"• {header}: {value}" for header, value in zip(headers, data_cells)
+        )
 
-        # Within a row-group: single newline between heading and its bullets,
-        # and between successive bullets.  This keeps the row visually tight
-        # on Telegram instead of stretching each bullet into its own paragraph.
-        group_lines = [f"**{heading}**", *bullets]
-        rendered_groups.append("\n".join(group_lines))
-
-    # Between row-groups: blank line so each group reads as a distinct block.
-    return "\n\n".join(rendered_groups)
+    return "\n\n".join(rendered_rows)
 
 
 def _wrap_markdown_tables(text: str) -> str:
@@ -441,13 +431,6 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
-        # After sustained reconnect storms the PTB httpx pool can return
-        # SendResult(success=True) for sends that never actually transmit.
-        # _handle_polling_network_error sets this; _verify_polling_after_reconnect
-        # clears it once getMe() confirms the Bot client is healthy.
-        # While True, send() short-circuits to a failure so callers
-        # (cron live-adapter branch) fall through to standalone delivery.
-        self._send_path_degraded: bool = False
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # Track forum chats where we've already registered bot commands
@@ -579,36 +562,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
-
-    @staticmethod
-    def _looks_like_private_chat_id(chat_id: str) -> bool:
-        try:
-            return int(chat_id) > 0
-        except (TypeError, ValueError):
-            return False
-
-    @classmethod
-    def _is_private_dm_topic_send(
-        cls,
-        chat_id: str,
-        thread_id: Optional[str],
-        metadata: Optional[Dict[str, Any]],
-    ) -> bool:
-        if cls._metadata_direct_messages_topic_id(metadata) is not None:
-            return False
-        if metadata and metadata.get("telegram_dm_topic_created_for_send"):
-            return False
-        return bool(
-            thread_id
-            and (
-                metadata and metadata.get("telegram_dm_topic_reply_fallback")
-                or cls._looks_like_private_chat_id(chat_id)
-            )
-        )
-
-    @staticmethod
-    def _dm_topic_missing_anchor_error() -> str:
-        return "Telegram DM topic delivery requires a reply anchor; refusing to send outside the requested topic"
 
     @classmethod
     def _reply_to_message_id_for_send(
@@ -923,7 +876,6 @@ class TelegramAdapter(BasePlatformAdapter):
         MAX_DELAY = 60
 
         self._polling_network_error_count += 1
-        self._send_path_degraded = True
         attempt = self._polling_network_error_count
 
         if attempt > MAX_NETWORK_RETRIES:
@@ -1021,7 +973,6 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
-            self._send_path_degraded = False
         except Exception as probe_err:
             logger.warning(
                 "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
@@ -1204,59 +1155,6 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = await self._create_dm_topic(chat_id_int, name=name)
         return str(thread_id) if thread_id else None
 
-    async def ensure_dm_topic(self, chat_id: str, topic_name: str, force_create: bool = False) -> Optional[str]:
-        """Return a private DM topic thread id, creating and persisting it if needed."""
-        name = str(topic_name or "").strip()
-        if not name:
-            return None
-        try:
-            chat_id_int = int(chat_id)
-        except (TypeError, ValueError):
-            return None
-
-        cache_key = f"{chat_id_int}:{name}"
-        cached = self._dm_topics.get(cache_key)
-        if cached and not force_create:
-            return str(cached)
-
-        topic_conf: Optional[Dict[str, Any]] = None
-        chat_entry: Optional[Dict[str, Any]] = None
-        for entry in self._dm_topics_config:
-            if str(entry.get("chat_id")) != str(chat_id_int):
-                continue
-            chat_entry = entry
-            for candidate in entry.get("topics", []):
-                if candidate.get("name") == name:
-                    topic_conf = candidate
-                    break
-            break
-
-        if topic_conf and topic_conf.get("thread_id") and not force_create:
-            thread_id = int(topic_conf["thread_id"])
-            self._dm_topics[cache_key] = thread_id
-            return str(thread_id)
-
-        if chat_entry is None:
-            chat_entry = {"chat_id": chat_id_int, "topics": []}
-            self._dm_topics_config.append(chat_entry)
-        if topic_conf is None:
-            topic_conf = {"name": name}
-            chat_entry.setdefault("topics", []).append(topic_conf)
-
-        thread_id = await self._create_dm_topic(
-            chat_id_int,
-            name=name,
-            icon_color=topic_conf.get("icon_color"),
-            icon_custom_emoji_id=topic_conf.get("icon_custom_emoji_id"),
-        )
-        if not thread_id:
-            return None
-
-        topic_conf["thread_id"] = thread_id
-        self._dm_topics[cache_key] = int(thread_id)
-        self._persist_dm_topic_thread_id(chat_id_int, name, int(thread_id), replace_existing=force_create)
-        return str(thread_id)
-
     async def rename_dm_topic(
         self,
         chat_id: int,
@@ -1280,13 +1178,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self.name, chat_id, thread_id, name,
         )
 
-    def _persist_dm_topic_thread_id(
-        self,
-        chat_id: int,
-        topic_name: str,
-        thread_id: int,
-        replace_existing: bool = False,
-    ) -> None:
+    def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:
             from hermes_constants import get_hermes_home
@@ -1299,44 +1191,25 @@ class TelegramAdapter(BasePlatformAdapter):
             with open(config_path, "r", encoding="utf-8") as f:
                 config = _yaml.safe_load(f) or {}
 
-            # Navigate to platforms.telegram.extra.dm_topics, creating the path
-            # when a named delivery target asks us to create a topic that was
-            # not predeclared in config.yaml.
-            platforms = config.setdefault("platforms", {})
-            telegram_config = platforms.setdefault("telegram", {})
-            extra = telegram_config.setdefault("extra", {})
-            dm_topics = extra.setdefault("dm_topics", [])
+            # Navigate to platforms.telegram.extra.dm_topics
+            dm_topics = (
+                config.get("platforms", {})
+                .get("telegram", {})
+                .get("extra", {})
+                .get("dm_topics", [])
+            )
+            if not dm_topics:
+                return
 
             changed = False
-            matching_chat_entry = None
             for chat_entry in dm_topics:
-                try:
-                    chat_matches = int(chat_entry.get("chat_id", 0)) == int(chat_id)
-                except (TypeError, ValueError):
-                    chat_matches = False
-                if not chat_matches:
+                if int(chat_entry.get("chat_id", 0)) != int(chat_id):
                     continue
-                matching_chat_entry = chat_entry
-                for t in chat_entry.setdefault("topics", []):
-                    if t.get("name") == topic_name:
-                        if replace_existing or not t.get("thread_id"):
-                            if t.get("thread_id") != thread_id:
-                                t["thread_id"] = thread_id
-                                changed = True
+                for t in chat_entry.get("topics", []):
+                    if t.get("name") == topic_name and not t.get("thread_id"):
+                        t["thread_id"] = thread_id
+                        changed = True
                         break
-                else:
-                    chat_entry.setdefault("topics", []).append(
-                        {"name": topic_name, "thread_id": thread_id}
-                    )
-                    changed = True
-                break
-
-            if matching_chat_entry is None:
-                dm_topics.append({
-                    "chat_id": chat_id,
-                    "topics": [{"name": topic_name, "thread_id": thread_id}],
-                })
-                changed = True
 
             if changed:
                 fd, tmp_path = tempfile.mkstemp(
@@ -1812,11 +1685,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a message to a Telegram chat."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-
-        # getattr() — tests build adapters via object.__new__() (no __init__).
-        if getattr(self, "_send_path_degraded", False):
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
-
+        
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
@@ -1859,21 +1728,11 @@ class TelegramAdapter(BasePlatformAdapter):
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
-                private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
-                # reply_to_mode="off" on the existing telegram_dm_topic_reply_fallback path
-                # is an explicit user opt-in to "message_thread_id alone is enough" (PR #23994
-                # / commit 21a15b671). Honor it — don't fail loud just because the anchor was
-                # suppressed by config. The new fail-loud contract only applies when the caller
-                # didn't ask for the anchor to be dropped.
-                dm_topic_reply_to_off = (
-                    private_dm_topic_send
-                    and self._reply_to_mode == "off"
-                    and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
-                )
                 reply_to_source = reply_to or (
-                    str(metadata_reply_to) if private_dm_topic_send and metadata_reply_to is not None else None
+                    str(metadata_reply_to)
+                    if metadata and metadata.get("telegram_dm_topic_reply_fallback") and metadata_reply_to is not None else None
                 )
-                if private_dm_topic_send:
+                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
                     should_thread = (
                         reply_to_source is not None
                         and self._reply_to_mode != "off"
@@ -1881,12 +1740,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 else:
                     should_thread = self._should_thread_reply(reply_to_source, i)
                 reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
-                if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
-                    return SendResult(
-                        success=False,
-                        error=self._dm_topic_missing_anchor_error(),
-                        retryable=False,
-                    )
                 thread_kwargs = self._thread_kwargs_for_send(
                     chat_id,
                     thread_id,
@@ -1937,12 +1790,6 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
-                                if private_dm_topic_send or (metadata and metadata.get("telegram_dm_topic_created_for_send")):
-                                    return SendResult(
-                                        success=False,
-                                        error=str(send_err),
-                                        retryable=False,
-                                    )
                                 # Telegram has been observed to return a
                                 # one-off "thread not found" that recovers on
                                 # an immediate retry (transient flake — see
@@ -1969,12 +1816,6 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
-                                if private_dm_topic_send:
-                                    return SendResult(
-                                        success=False,
-                                        error=str(send_err),
-                                        retryable=False,
-                                    )
                                 # Original message was deleted before we
                                 # could reply. For private-topic fallback
                                 # sends, message_thread_id is only valid with
@@ -2594,7 +2435,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
             text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
+                t("platform.approval_required_title") + "\\n\\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )
@@ -2612,12 +2453,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                    InlineKeyboardButton(t("platform.approve_once"), callback_data=f"ea:once:{approval_id}"),
+                    InlineKeyboardButton(t("platform.approve_session"), callback_data=f"ea:session:{approval_id}"),
                 ],
                 [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    InlineKeyboardButton(t("platform.approve_always"), callback_data=f"ea:always:{approval_id}"),
+                    InlineKeyboardButton(t("platform.deny"), callback_data=f"ea:deny:{approval_id}"),
                 ],
             ])
 
@@ -2663,11 +2504,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                    InlineKeyboardButton(t("platform.approve_once"), callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton(t("platform.approve_always"), callback_data=f"sc:always:{confirm_id}"),
                 ],
                 [
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                    InlineKeyboardButton(t("platform.cancel"), callback_data=f"sc:cancel:{confirm_id}"),
                 ],
             ])
 
@@ -2818,16 +2659,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
             rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            rows.append([InlineKeyboardButton(t("platform.telegram.cancel"), callback_data="mx")])
             keyboard = InlineKeyboardMarkup(rows)
 
             provider_label = get_label(current_provider)
             text = self.format_message(
                 (
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Current model: `{current_model or 'unknown'}`\n"
-                    f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                    f"{t('platform.telegram.model_config_title')}\n\n"
+                    f"{t('platform.telegram.current_model', model=current_model or 'unknown')}\n"
+                    f"{t('platform.telegram.provider_label', label=provider_label)}\n\n"
+                    f"{t('platform.telegram.select_provider')}"
                 )
             )
 
@@ -2893,15 +2734,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if total_pages > 1:
             nav: list = []
             if page > 0:
-                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mg:{page - 1}"))
+                nav.append(InlineKeyboardButton(t("platform.telegram.prev_page"), callback_data=f"mg:{page - 1}"))
             nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
             if page < total_pages - 1:
-                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mg:{page + 1}"))
+                nav.append(InlineKeyboardButton(t("platform.telegram.next_page"), callback_data=f"mg:{page + 1}"))
             rows.append(nav)
 
         rows.append([
-            InlineKeyboardButton("◀ Back", callback_data="mb"),
-            InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+            InlineKeyboardButton(t("platform.telegram.back"), callback_data="mb"),
+            InlineKeyboardButton(t("platform.telegram.cancel"), callback_data="mx"),
         ])
 
         page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
@@ -2913,7 +2754,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
-            await query.answer(text="Picker expired — use /model again.")
+            await query.answer(text=t("platform.telegram.picker_expired"))
             return
 
         try:
@@ -2930,7 +2771,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 None,
             )
             if not provider:
-                await query.answer(text="Provider not found.")
+                await query.answer(text=t("platform.telegram.provider_not_found"))
                 return
 
             models = provider.get("models", [])
@@ -2944,14 +2785,14 @@ class TelegramAdapter(BasePlatformAdapter):
             pname = provider.get("name", provider_slug)
             total = provider.get("total_models", len(models))
             shown = len(models)
-            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+            extra = f"\n{t('platform.telegram.more_available', count=total - shown)}" if total > shown else ""
 
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
-                        f"Provider: *{pname}*{page_info}\n"
-                        f"Select a model:{extra}"
+                        f"{t('platform.telegram.model_config_title')}\n\n"
+                        f"{t('platform.telegram.provider_label', label=f'*{pname}*')}{page_info}\n"
+                        f"{t('platform.telegram.select_model', extra=extra)}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -2964,7 +2805,7 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 page = int(data[3:])
             except ValueError:
-                await query.answer(text="Invalid page.")
+                await query.answer(text=t("platform.telegram.invalid_page"))
                 return
 
             models = state.get("model_list", [])
@@ -2980,14 +2821,14 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             total = provider.get("total_models", len(models)) if provider else len(models)
             shown = len(models)
-            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+            extra = f"\n{t('platform.telegram.more_available', count=total - shown)}" if total > shown else ""
 
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
-                        f"Provider: *{pname}*{page_info}\n"
-                        f"Select a model:{extra}"
+                        f"{t('platform.telegram.model_config_title')}\n\n"
+                        f"{t('platform.telegram.provider_label', label=f'*{pname}*')}{page_info}\n"
+                        f"{t('platform.telegram.select_model', extra=extra)}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -3000,12 +2841,12 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 idx = int(data[3:])
             except ValueError:
-                await query.answer(text="Invalid selection.")
+                await query.answer(text=t("platform.telegram.invalid_selection"))
                 return
 
             model_list = state.get("model_list", [])
             if idx < 0 or idx >= len(model_list):
-                await query.answer(text="Invalid model index.")
+                await query.answer(text=t("platform.telegram.invalid_model_index"))
                 return
 
             model_id = model_list[idx]
@@ -3013,14 +2854,14 @@ class TelegramAdapter(BasePlatformAdapter):
             callback = state.get("on_model_selected")
 
             if not callback:
-                await query.answer(text="Picker expired.")
+                await query.answer(text=t("platform.telegram.picker_expired_short"))
                 return
 
             try:
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
-                result_text = f"Error switching model: {exc}"
+                result_text = t('platform.telegram.error_switching_model', error=exc)
 
             # Edit message to show confirmation, remove buttons
             try:
@@ -3039,7 +2880,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-            await query.answer(text="Model switched!")
+            await query.answer(text=t("platform.telegram.model_switched"))
 
             # Clean up state
             self._model_picker_state.pop(chat_id, None)
@@ -3057,7 +2898,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
             rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            rows.append([InlineKeyboardButton(t("platform.telegram.cancel"), callback_data="mx")])
             keyboard = InlineKeyboardMarkup(rows)
 
             try:
@@ -3068,10 +2909,10 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
-                        f"Current model: `{state['current_model'] or 'unknown'}`\n"
-                        f"Provider: {provider_label}\n\n"
-                        f"Select a provider:"
+                        f"{t('platform.telegram.model_config_title')}\n\n"
+                        f"{t('platform.telegram.current_model', model=state['current_model'] or 'unknown')}\n"
+                        f"{t('platform.telegram.provider_label', label=provider_label)}\n\n"
+                        f"{t('platform.telegram.select_provider')}"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -3083,7 +2924,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # --- Cancel ---
             self._model_picker_state.pop(chat_id, None)
             await query.edit_message_text(
-                text="Model selection cancelled.",
+                text=t("platform.telegram.model_selection_cancelled"),
                 reply_markup=None,
             )
             await query.answer()
@@ -3134,7 +2975,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     approval_id = int(parts[2])
                 except (ValueError, IndexError):
-                    await query.answer(text="Invalid approval data.")
+                    await query.answer(text=t("platform.telegram.invalid_approval_data"))
                     return
 
                 # Only authorized users may click approval buttons.
@@ -3146,20 +2987,20 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
-                    await query.answer(text="⛔ You are not authorized to approve commands.")
+                    await query.answer(text=t("platform.telegram.unauthorized_approve"))
                     return
 
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
-                    await query.answer(text="This approval has already been resolved.")
+                    await query.answer(text=t("platform.telegram.approval_resolved"))
                     return
 
                 # Map choice to human-readable label
                 label_map = {
-                    "once": "✅ Approved once",
-                    "session": "✅ Approved for session",
-                    "always": "✅ Approved permanently",
-                    "deny": "❌ Denied",
+                    "once": t("platform.approved_once"),
+                    "session": t("platform.approved_session"),
+                    "always": t("platform.approved_always"),
+                    "deny": t("platform.denied"),
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
@@ -3212,18 +3053,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
-                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    await query.answer(text=t("platform.telegram.unauthorized_prompt"))
                     return
 
                 session_key = self._slash_confirm_state.pop(confirm_id, None)
                 if not session_key:
-                    await query.answer(text="This prompt has already been resolved.")
+                    await query.answer(text=t("platform.telegram.prompt_resolved"))
                     return
 
                 label_map = {
-                    "once": "✅ Approved once",
-                    "always": "🔒 Always approve",
-                    "cancel": "❌ Cancelled",
+                    "once": t("platform.approved_once"),
+                    "always": t("platform.approve_always"),
+                    "cancel": t("platform.cancelled"),
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
@@ -3312,12 +3153,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
-                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    await query.answer(text=t("platform.telegram.unauthorized_prompt"))
                     return
 
                 session_key = self._clarify_state.get(clarify_id)
                 if not session_key:
-                    await query.answer(text="This prompt has already been resolved.")
+                    await query.answer(text=t("platform.telegram.prompt_resolved"))
                     return
 
                 user_display = getattr(query.from_user, "first_name", "User")
@@ -3350,7 +3191,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     idx = int(choice_token)
                 except (ValueError, TypeError):
-                    await query.answer(text="Invalid choice.")
+                    await query.answer(text=t("platform.telegram.invalid_choice"))
                     return
 
                 # Look up the choice text from the entry registered in the
@@ -3414,9 +3255,9 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
-            await query.answer(text="⛔ You are not authorized to answer update prompts.")
+            await query.answer(text=t("platform.telegram.unauthorized_update"))
             return
-        await query.answer(text=f"Sent '{answer}' to the update process.")
+        await query.answer(text=t('platform.telegram.sent_to_update', answer=answer))
         # Edit the message to show the choice and remove buttons
         label = "Yes" if answer == "y" else "No"
         try:
@@ -3473,7 +3314,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Dispatch a gmail-triage inline-button callback (gt:verb:arg)."""
         parts = data.split(":", 2)
         if len(parts) != 3:
-            await query.answer(text="Invalid gmail-triage data.")
+            await query.answer(text=t("platform.telegram.invalid_gmail_data"))
             return
         verb, arg = parts[1], parts[2]
 
@@ -3485,7 +3326,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
-            await query.answer(text="⛔ You are not authorized to act on this email.")
+            await query.answer(text=t("platform.telegram.unauthorized_email"))
             return
 
         entry = self._GT_VERB_DISPATCH.get(verb)
@@ -3496,7 +3337,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
-            await query.answer(text=f"❌ {script_name} missing")
+            await query.answer(text=t("platform.script_missing", name=script_name))
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
             return
 
@@ -3521,16 +3362,16 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
                 last_line = stderr_text.splitlines()[-1] if stderr_text else f"exit {proc.returncode}"
-                label = f"❌ {verb} failed: {last_line[:80]}"
+                label = t("platform.verb_failed", verb=verb, detail=last_line[:80])
                 logger.error(
                     "[%s] gmail-triage callback failed: verb=%s arg=%s rc=%s stderr=%s",
                     self.name, verb, arg, proc.returncode, stderr_text,
                 )
         except asyncio.TimeoutError:
-            label = f"❌ {verb} timed out"
+            label = t("platform.verb_timeout", verb=verb)
             logger.error("[%s] gmail-triage callback timed out: verb=%s arg=%s", self.name, verb, arg)
         except Exception as exc:
-            label = f"❌ {verb} error: {exc}"
+            label = t("platform.verb_error", verb=verb, detail=str(exc))
             logger.error(
                 "[%s] gmail-triage callback exception: verb=%s arg=%s err=%s",
                 self.name, verb, arg, exc, exc_info=True,

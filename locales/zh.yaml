@@ -1,354 +1,1090 @@
-# Hermes 静态消息目录 -- 中文（简体）
-# See locales/en.yaml for the source of truth; keep keys in sync.
-
 approval:
-  dangerous_header: "⚠️  危险命令： {description}"
-  choose_long:     "      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝"
-  choose_short:    "      [o]仅此一次  |  [s]本次会话  |  [d]拒绝"
-  prompt_long:     "      选择 [o/s/a/D]: "
-  prompt_short:    "      选择 [o/s/D]: "
-  timeout:         "      ⏱ 超时 — 已拒绝命令"
-  allowed_once:    "      ✓ 本次允许"
-  allowed_session: "      ✓ 本次会话内允许"
-  allowed_always:  "      ✓ 已加入永久允许列表"
-  denied:          "      ✗ 已拒绝"
-  cancelled:       "      ✗ 已取消"
-  blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
+  dangerous_header: ⚠️  危险命令： {description}
+  choose_long: '      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝'
+  choose_short: '      [o]仅此一次  |  [s]本次会话  |  [d]拒绝'
+  prompt_long: '      选择 [o/s/a/D]: '
+  prompt_short: '      选择 [o/s/D]: '
+  timeout: '      ⏱ 超时 — 已拒绝命令'
+  allowed_once: '      ✓ 本次允许'
+  allowed_session: '      ✓ 本次会话内允许'
+  allowed_always: '      ✓ 已加入永久允许列表'
+  denied: '      ✗ 已拒绝'
+  cancelled: '      ✗ 已取消'
+  blocklist_message: 此命令位于无条件拦截列表中，无法被批准。
+  reason:
+    delete_root_path: 删除根路径文件
+    recursive_delete: 递归删除
+    recursive_delete_long: 递归删除（长参数）
+    world_writable: 全局可写权限
+    recursive_world_writable: 递归全局可写（长参数）
+    recursive_chown_root: 递归 chown 到 root
+    recursive_chown_root_long: 递归 chown 到 root（长参数）
+    format_filesystem: 格式化文件系统
+    format_filesystem_mkfs: 格式化文件系统（mkfs）
+    disk_copy: 磁盘复制
+    write_block_device: 写入块设备
+    redirect_block_device: 重定向到原始块设备
+    dd_block_device: dd 写入原始块设备
+    sql_drop: SQL DROP 删除表/库
+    sql_delete_no_where: SQL DELETE 无 WHERE 条件
+    sql_truncate: SQL TRUNCATE 清空表
+    overwrite_system_config: 覆盖系统配置
+    stop_restart_service: 停止/重启系统服务
+    kill_all_processes: 杀死所有进程
+    force_kill: 强制杀死进程
+    force_kill_killall: 强制杀死进程（killall -KILL）
+    force_kill_killall_s: 强制杀死进程（killall -s KILL）
+    kill_by_regex: 按正则杀死进程（killall -r）
+    fork_bomb: fork 炸弹
+    shell_c_flag: 通过 -c/-lc 标志执行 shell 命令
+    script_execution_flag: 通过 -e/-c 标志执行脚本
+    pipe_remote_shell: 管道远程内容到 shell
+    exec_remote_substitution: 通过进程替换执行远程脚本
+    overwrite_system_tee: 通过 tee 覆盖系统文件
+    overwrite_system_redirect: 通过重定向覆盖系统文件
+    overwrite_project_tee: 通过 tee 覆盖项目配置
+    overwrite_project_redirect: 通过重定向覆盖项目配置
+    xargs_rm: xargs 配合 rm
+    find_exec_rm: find -exec/-execdir rm
+    find_delete: find -delete
+    stop_restart_gateway: 停止/重启 Hermes 网关（会终止运行中的代理）
+    hermes_update: Hermes 更新（会重启网关，终止运行中的代理）
+    gateway_outside_systemd: 在 systemd 外启动网关（应使用 systemctl --user restart hermes-gateway）
+    kill_gateway: 杀死 Hermes/网关进程（自终止）
+    kill_pgrep: 通过 pgrep 扩展杀死进程（自终止）
+    kill_pgrep_backtick: 通过反引号 pgrep 扩展杀死进程（自终止）
+    copy_into_system_config: 复制/移动文件到系统配置路径
+    overwrite_project_file: 覆盖项目配置文件
+    inplace_edit_system: 就地编辑系统配置
+    inplace_edit_system_long: 就地编辑系统配置（长参数）
+    script_heredoc: 通过 heredoc 执行脚本
+    git_reset_hard: git reset --hard（丢失未提交的更改）
+    git_force_push: git force push（重写远程历史）
+    git_force_push_short: git force push 短参数（重写远程历史）
+    git_clean_force: git clean -f（删除未跟踪文件）
+    git_branch_force_delete: git branch 强制删除分支
+    chmod_exec: chmod +x 后立即执行
+    recursive_delete_home: 递归删除主目录
+    recursive_delete_root: 递归删除根文件系统
+    recursive_delete_system: 递归删除系统目录
+    sudo_privilege_flag: sudo 特权标志（stdin/askpass/shell/list）
+    sudo_combined_flag: sudo 组合标志提权
+    security_scan_prefix: 安全扫描
+    security_issue_detected: 检测到安全问题
+agent:
+  rate_limited_fallback: ⚠️ 请求频率受限 — 正在切换到备用提供方...
+  stream_interrupted: ↻ 流式传输中断 — 使用已传输内容作为最终回复
+  empty_response_tools: ↻ 工具调用后收到空响应 — 使用之前的回复内容
+  empty_after_tools: ⚠️ 模型在工具调用后返回空响应 — 提示继续
+  thinking_only: ↻ 仅思考响应 — 预填充以继续
+  empty_responses_fallback: ⚠️ 模型持续返回空响应 — 正在切换到备用提供方...
+  switched_fallback: '↻ 已切换到备用模型: {model} ({provider})'
+  reasoning_no_content: ⚠️ 模型产生了推理内容但无可见回复，所有重试已耗尽。返回空内容。
+  primary_model_failed: '🔄 主模型失败 — 正在切换到备用: {model} ({provider})'
+  max_iterations: ⚠️ 已达到最大迭代次数 ({max})。正在请求摘要...
+  no_response_reconnect: '⚠️ 提供方 {time} 秒无响应（模型: {model}, 上下文: ~{tokens} tokens）。正在重连...'
+  api_key_warning: '⚠️ 警告: API 密钥似乎无效或缺失'
+  fallback_model: '🔄 备用模型: {model} ({provider})'
+  fallback_chain: '🔄 备用链 ({count} 个提供方):'
+  missing_requirements: '⚠️ 部分工具可能因缺少依赖而无法工作: {missing}'
+  trajectory_enabled: 📝 轨迹保存已启用
+  init:
+    initialized: '🤖 AI Agent 已初始化，模型: {model}'
+    initialized_bedrock_sdk: '🤖 AI Agent 已初始化，模型: {model} (AWS Bedrock + AnthropicBedrock SDK, {region})'
+    initialized_anthropic: '🤖 AI Agent 已初始化，模型: {model} (Anthropic 原生)'
+    initialized_bedrock: '🤖 AI Agent 已初始化，模型: {model} (AWS Bedrock, {region}{guardrails})'
+    using_entra: '🔑 使用凭据: Microsoft Entra ID'
+    using_token: '🔑 使用令牌: {token}'
+    custom_base_url: '🔗 使用自定义基础 URL: {url}'
+    using_api_key: '🔑 使用 API 密钥: {key}'
+    tools_loaded: '🛠️  已加载 {count} 个工具: {tools}'
+    enabled_toolsets: '   ✅ 已启用的工具集: {toolsets}'
+    disabled_toolsets: '   ❌ 已禁用的工具集: {toolsets}'
+    no_tools: 🛠️  未加载工具（所有工具已被过滤或不可用）
+    ephemeral_prompt: '🔒 临时系统提示词: ''{prompt}''（不保存到轨迹）'
+    prompt_caching: '💾 提示词缓存: 已启用 ({source}, {ttl} TTL)'
+    context_limit: '📊 上下文限制: {tokens} 个令牌（在 {threshold}% = {threshold_tokens} 处压缩）'
+    context_limit_disabled: '📊 上下文限制: {tokens} 个令牌（自动压缩已禁用）'
+  stream_retry: ⚠️ {provider} 流 {kind} ({error_type}){_suffix} — 正在重连，重试 {attempt}/{max}
+  stale_connections_cleaned: 🔌 检测到之前提供方的过期连接 — 已自动清理。使用新连接继续。
+  starting_conversation: '💬 开始对话: ''{preview}'''
+  iteration_budget_exhausted: '
 
+    ⚠️ 迭代预算已用尽（{used}/{max_total} 次迭代已使用）'
+  cached_context: '{prefix}💾 已缓存上下文长度: {ctx:,} 个 token（模型: {model}）'
+  operation_interrupted_retry: 重试期间操作被中断（{hint}，尝试 {attempt}/{max}）。
+  response_truncated: 在 3 次续写尝试后响应仍然被截断
+  output_length_limit: 响应因输出长度限制而被截断
+  first_response_truncated: 首次响应因输出长度限制而被截断
+  operation_interrupted_waiting: '操作被中断: 等待模型响应（已过 {elapsed} 秒）。'
+  payload_too_large_max: '请求载荷过大: 已达到最大压缩尝试次数 ({max})。'
+  payload_too_large: 请求载荷过大（413）。无法进一步压缩。
+  context_length_exceeded_max: '上下文长度超限: 已达到最大压缩尝试次数 ({max})。'
+  context_length_exceeded: 上下文长度超限（{tokens} 个 token）。无法进一步压缩。
+  no_sessions_found: 过去 {days} 天内没有找到会话记录。
+  title: 📊 **Hermes Insights** — 过去 {days} 天
+  sessions_label: '**会话数:**'
+  messages_label: '**消息数:**'
+  tool_calls_label: '**工具调用:**'
+  tokens_label: '**Token:**'
+  active_time_label: '**活跃时间:**'
+  avg_session_label: '**平均会话:**'
+  models_section: '**🤖 模型:**'
+  platforms_section: '**📱 平台:**'
+  tools_section: '**🔧 常用工具:**'
+  skills_section: '**🧠 常用技能:**'
+  busiest_label: '**📅 最活跃:**'
+  active_days_label: '**活跃天数:**'
+  best_streak_label: '**最佳连续:**'
+  overview: 📋 概览
+  period: '时间段:'
+  sessions: '会话数:'
+  messages: '消息数:'
+  tool_calls: '工具调用:'
+  user_messages: '用户消息:'
+  input_tokens: '输入 Token:'
+  output_tokens: '输出 Token:'
+  total_tokens: '总 Token:'
+  avg_msgs_session: '平均消息/会话:'
+  models_used: 🤖 使用的模型
+  platforms_section_term: 📱 平台
+  top_tools: 🔧 常用工具
+  top_skills: 🧠 常用技能
+  activity_patterns: 📅 活动模式
+  peak_hours: '高峰时段:'
+  active_days: '活跃天数:'
+  best_streak_term: '最佳连续:'
+  notable_sessions: 🏆 重要会话
+  more_tools: '... 还有 {count} 个工具'
+  distinct_skills: '不同技能:'
 gateway:
-  approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
-  draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
-  goal_cleared:     "✓ 目标已清除。"
-  no_active_goal:   "当前没有活跃的目标。"
-  config_read_failed: "⚠️ 无法读取 config.yaml：{error}"
-  config_save_failed: "⚠️ 无法保存配置：{error}"
-
-  model:
-    error_prefix:           "错误：{error}"
-    switched:               "已切换模型为 `{model}`"
-    provider_label:         "提供方：{provider}"
-    context_label:          "上下文：{tokens} tokens"
-    max_output_label:       "最大输出：{tokens} tokens"
-    cost_label:             "费用：{cost}"
-    capabilities_label:     "能力：{capabilities}"
-    prompt_caching_enabled: "提示词缓存：已启用"
-    warning_prefix:         "警告：{warning}"
-    saved_global:           "已保存到 config.yaml（`--global`）"
-    session_only_hint:      "_（仅本次会话有效 — 添加 `--global` 可永久保存）_"
-    current_label:          "当前：`{model}`（{provider}）"
-    current_tag:            "（当前）"
-    more_models_suffix:     "（还有 {count} 个）"
-    usage_switch_model:     "`/model <name>` — 切换模型"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — 切换提供方"
-    usage_persist:          "`/model <name> --global` — 永久保存"
-
-  agents:
-    header:                "🤖 **活跃代理与任务**"
-    active_agents:         "**活跃代理：** {count}"
-    this_chat:             " · 当前聊天"
-    more:                  "... 还有 {count} 个"
-    running_processes:     "**运行中的后台进程：** {count}"
-    async_jobs:            "**网关异步任务：** {count}"
-    none:                  "没有活跃的代理或运行中的任务。"
-    state_starting:        "启动中"
-    state_running:         "运行中"
-
-  approve:
-    no_pending:            "没有待批准的命令。"
-    once_singular:         "✅ 命令已批准。代理正在恢复…"
-    once_plural:           "✅ 命令已批准（{count} 条命令）。代理正在恢复…"
-    session_singular:      "✅ 命令已批准（本次会话内允许该模式）。代理正在恢复…"
-    session_plural:        "✅ 命令已批准（本次会话内允许该模式）（{count} 条命令）。代理正在恢复…"
-    always_singular:       "✅ 命令已批准（永久允许该模式）。代理正在恢复…"
-    always_plural:         "✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…"
-
-  background:
-    usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
-    started:               "🔄 后台任务已启动：「{preview}」\n任务 ID：{task_id}\n你可以继续聊天 — 完成后结果将在此显示。"
-
-  branch:
-    db_unavailable:        "会话数据库不可用。"
-    no_conversation:       "没有可分支的对话 — 请先发送一条消息。"
-    create_failed:         "创建分支失败：{error}"
-    switch_failed:         "分支已创建，但无法切换到它。"
-    branched_one:          "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
-    branched_many:         "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
-
-  commands:
-    usage:                 "用法：`/commands [page]`"
-    skill_header:          "⚡ **技能命令**："
-    default_desc:          "技能命令"
-    none:                  "没有可用的命令。"
-    header:                "📚 **命令**（共 {total} 个，第 {page}/{total_pages} 页）"
-    nav_prev:              "`/commands {page}` ← 上一页"
-    nav_next:              "下一页 → `/commands {page}`"
-    out_of_range:          "_（请求的第 {requested} 页超出范围，显示第 {page} 页。）_"
-
-  compress:
-    not_enough:            "对话内容不足，无法压缩（至少需要 4 条消息）。"
-    no_provider:           "未配置提供方 — 无法压缩。"
-    nothing_to_do:         "暂无可压缩内容（对话记录仍全部为受保护上下文）。"
-    focus_line:            "聚焦：\"{topic}\""
-    summary_failed:        "⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression 模型配置。"
-    aborted:               "⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的 auxiliary.compression 模型配置。"
-    aux_failed:            "ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml 中的 `auxiliary.compression.model`。"
-    failed:                "压缩失败：{error}"
-
-  debug:
-    upload_failed:         "✗ 无法上传调试报告：{error}"
-    header:                "**调试报告已上传：**"
-    auto_delete:           "⏱ 粘贴内容将在 6 小时后自动删除。"
-    full_logs_hint:        "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
-    share_hint:            "请将这些链接分享给 Hermes 团队以获得支持。"
-
-  deny:
-    stale:                 "❌ 命令已拒绝（批准已过期）。"
-    no_pending:            "没有待拒绝的命令。"
-    denied_singular:       "❌ 命令已拒绝。"
-    denied_plural:         "❌ 命令已拒绝（{count} 条命令）。"
-
-  fast:
-    not_supported:         "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
-    status:                "⚡ 优先处理\n\n当前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 未知参数：`{arg}`\n\n**有效选项：** normal、fast、status"
-    saved:                 "⚡ ✓ 优先处理：**{label}**（已保存到配置）\n_（下一条消息生效）_"
-    session_only:          "⚡ ✓ 优先处理：**{label}**（仅本次会话）"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-
-  footer:
-    status:                "📎 运行时页脚：**{state}**\n字段：`{fields}`\n平台：`{platform}`"
-    usage:                 "用法：`/footer [on|off|status]`"
-    saved:                 "📎 运行时页脚：**{state}**{example}\n_（已全局保存 — 下一条消息生效）_"
-    example_line:          "\n示例：`{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
-  goal:
-    unavailable:           "此会话不支持目标功能。"
-    no_goal_set:           "未设置目标。"
-    paused:                "⏸ 目标已暂停：{goal}"
-    no_resume:             "没有可恢复的目标。"
-    resumed:               "▶ 目标已恢复：{goal}\n发送任意消息继续，或等待 — 我会在下一轮继续推进。"
-    invalid:               "无效目标：{error}"
-    set:                   "⊙ 目标已设置（{budget} 轮预算）：{goal}\n我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。\n控制命令：/goal status · /goal pause · /goal resume · /goal clear"
-
-  help:
-    header:                "📖 **Hermes 命令**\n"
-    skill_header:          "\n⚡ **技能命令**（{count} 个活跃）："
-    more_use_commands:     "\n... 还有 {count} 个。使用 `/commands` 查看完整分页列表。"
-
-  insights:
-    invalid_days:          "无效的 --days 值：{value}"
-    error:                 "生成洞察时出错：{error}"
-
-  kanban:
-    error_prefix:          "⚠ kanban 错误：{error}"
-    subscribed_suffix:     "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
-    truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
-    no_output:             "（无输出）"
-
-  personality:
-    none_configured:       "`{path}/config.yaml` 中未配置人格设定"
-    header:                "🎭 **可用人格**\n"
-    none_option:           "• `none` — （不应用人格覆盖）"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\n用法：`/personality <name>`"
-    save_failed:           "⚠️ 保存人格变更失败：{error}"
-    cleared:               "🎭 已清除人格 — 使用基础代理行为。\n_（在下一条消息时生效）_"
-    set_to:                "🎭 人格已设置为 **{name}**\n_（在下一条消息时生效）_"
-    unknown:               "未知人格：`{name}`\n\n可用：{available}"
-
-  profile:
-    header:                "👤 **配置文件：** `{profile}`"
-    home:                  "📂 **主目录：** `{home}`"
-
-  reasoning:
-    level_default:             "medium（默认）"
-    level_disabled:            "none（已禁用）"
-    scope_session:             "会话覆盖"
-    scope_global:              "全局配置"
-    status:                    "🧠 **推理设置**\n\n**强度：** `{level}`\n**作用域：** {scope}\n**显示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
-    display_on:                "开 ✓"
-    display_off:               "关"
-    display_set_on:            "🧠 ✓ 推理显示：**开启**\n在 **{platform}** 上每次响应前将显示模型的思考过程。"
-    display_set_off:           "🧠 ✓ **{platform}** 上的推理显示：**关闭**"
-    reset_global_unsupported:  "⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。"
-    reset_done:                "🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。"
-    unknown_arg:               "⚠️ 未知参数：`{arg}`\n\n**有效级别：** none, minimal, low, medium, high, xhigh\n**显示：** show, hide\n**持久化：** 添加 `--global` 以跨会话保存"
-    set_global:                "🧠 ✓ 推理强度已设置为 `{effort}`（已保存到配置）\n_（下一条消息生效）_"
-    set_global_save_failed:    "🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 配置保存失败）\n_（下一条消息生效）_"
-    set_session:               "🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 添加 `--global` 以持久化）\n_（下一条消息生效）_"
-
-  reload_mcp:
-    cancelled:             "🟡 已取消 /reload-mcp。MCP 工具未更改。"
-    always_followup:       "ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。"
-    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。\n\n请选择：\n• **批准一次** — 立即重新加载\n• **始终批准** — 立即重新加载并永久静默此提示\n• **取消** — 保持 MCP 工具不变\n\n_文本备用：回复 `/approve`、`/always` 或 `/cancel`。_"
-    header:                "🔄 **MCP 服务器已重新加载**\n"
-    reconnected:           "♻️ 已重新连接：{names}"
-    added:                 "➕ 已添加：{names}"
-    removed:               "➖ 已移除：{names}"
-    none_connected:        "没有连接的 MCP 服务器。"
-    tools_available:       "\n🔧 来自 {servers} 个服务器的 {tools} 个工具可用"
-    failed:                "❌ MCP 重新加载失败：{error}"
-
-  reload_skills:
-    header:                "🔄 **技能已重新加载**\n"
-    no_new:                "未检测到新技能。"
-    total:                 "\n📚 {count} 个技能可用"
-    added_header:          "➕ **新增技能：**"
-    removed_header:        "➖ **移除技能：**"
-    item_with_desc:        "    - {name}：{desc}"
-    item_no_desc:          "    - {name}"
-    failed:                "❌ 技能重新加载失败：{error}"
-
-  reset:
-    header_default:        "✨ 会话已重置！重新开始。"
-    header_new:            "✨ 新会话已启动！"
-    header_titled:         "✨ 新会话已启动：{title}"
-    title_rejected:        "\n⚠️ 标题被拒绝：{error}"
-    title_error_untitled:  "\n⚠️ {error} — 会话以未命名方式启动。"
-    title_empty_untitled:  "\n⚠️ 清理后标题为空 — 会话以未命名方式启动。"
-    tip:                   "\n✦ 提示：{tip}"
-
-  restart:
-    in_progress:           "⏳ 网关重启已在进行中……"
-    restarting:            "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。"
-
-  resume:
-    db_unavailable:        "会话数据库不可用。"
-    no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
-    list_header:           "📋 **已命名会话**\n"
-    list_item:             "• **{title}**{preview_part}"
-    list_item_numbered:    "{index}. **{title}**{preview_part}"
-    list_preview_suffix:   " — _{preview}_"
-    list_footer:           "\n用法：`/resume <会话名称>`"
-    list_footer_numbered:  "\n用法：`/resume <会话名称>` 或 `/resume <编号>`（例如，`/resume 1` 表示最近的会话）"
-    list_failed:           "无法列出会话：{error}"
-    out_of_range:          "恢复索引 {index} 超出范围。\n请使用不带参数的 `/resume` 查看可用会话。"
-    not_found:             "未找到匹配 '**{name}**' 的会话。\n使用不带参数的 `/resume` 查看可用会话。"
-    already_on:            "📌 已在会话 **{name}** 上。"
-    switch_failed:         "切换会话失败。"
-    resumed_one:           "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
-    resumed_many:          "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
-    resumed_no_count:      "↻ 已恢复会话 **{title}**。对话已还原。"
-
-  retry:
-    no_previous:           "没有可重试的上一条消息。"
-
-  rollback:
-    not_enabled:           "检查点未启用。\n请在 config.yaml 中启用：\n```\ncheckpoints:\n  enabled: true\n```"
-    none_found:            "未找到 {cwd} 的检查点"
-    invalid_number:        "无效的检查点编号。请使用 1-{max}。"
-    restored:              "✅ 已恢复到检查点 {hash}：{reason}\n已自动保存回滚前的快照。"
-    restore_failed:        "❌ {error}"
-
-  set_home:
-    save_failed:           "无法保存主频道：{error}"
-    success:               "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
-
+  approval_expired: ⚠️ 批准已过期（代理不再等待）。请让代理重试。
+  draining: ⏳ 正在等待 {count} 个活跃代理结束后重启...
+  goal_cleared: ✓ 目标已清除。
+  no_active_goal: 当前没有活跃的目标。
+  config_read_failed: ⚠️ 无法读取 config.yaml：{error}
+  config_save_failed: ⚠️ 无法保存配置：{error}
   status:
-    header:                "📊 **Hermes 网关状态**"
-    session_id:            "**会话 ID：** `{session_id}`"
-    title:                 "**标题：** {title}"
-    created:               "**创建时间：** {timestamp}"
-    last_activity:         "**最近活动：** {timestamp}"
-    tokens:                "**Token 数：** {tokens}"
-    agent_running:         "**代理运行中：** {state}"
-    state_yes:             "是 ⚡"
-    state_no:              "否"
-    queued:                "**排队的后续：** {count}"
-    platforms:             "**已连接平台：** {platforms}"
+    elapsed_min: '已运行 {min} 分钟'
+  interrupting: ⚡ 正在中断当前任务{detail}。我很快会回复你的消息。
+  model:
+    error_prefix: 错误：{error}
+    switched: 已切换模型为 `{model}`
+    provider_label: 提供方：{provider}
+    context_label: 上下文：{tokens} tokens
+    max_output_label: 最大输出：{tokens} tokens
+    cost_label: 费用：{cost}
+    capabilities_label: 能力：{capabilities}
+    prompt_caching_enabled: 提示词缓存：已启用
+    warning_prefix: 警告：{warning}
+    saved_global: 已保存到 config.yaml（`--global`）
+    session_only_hint: _（仅本次会话有效 — 添加 `--global` 可永久保存）_
+    current_label: 当前：`{model}`（{provider}）
+    current_tag: （当前）
+    more_models_suffix: （还有 {count} 个）
+    usage_switch_model: '`/model <name>` — 切换模型'
+    usage_switch_provider: '`/model <name> --provider <slug>` — 切换提供方'
+    usage_persist: '`/model <name> --global` — 永久保存'
+  agents:
+    header: 🤖 **活跃代理与任务**
+    active_agents: '**活跃代理：** {count}'
+    this_chat: ' · 当前聊天'
+    more: '... 还有 {count} 个'
+    running_processes: '**运行中的后台进程：** {count}'
+    async_jobs: '**网关异步任务：** {count}'
+    none: 没有活跃的代理或运行中的任务。
+    state_starting: 启动中
+    state_running: 运行中
+  approve:
+    no_pending: 没有待批准的命令。
+    once_singular: ✅ 命令已批准。代理正在恢复…
+    once_plural: ✅ 命令已批准（{count} 条命令）。代理正在恢复…
+    session_singular: ✅ 命令已批准（本次会话内允许该模式）。代理正在恢复…
+    session_plural: ✅ 命令已批准（本次会话内允许该模式）（{count} 条命令）。代理正在恢复…
+    always_singular: ✅ 命令已批准（永久允许该模式）。代理正在恢复…
+    always_plural: ✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…
+  background:
+    usage: '用法：/background <提示>
 
+      示例：/background 总结今天 HN 上热门的故事
+
+
+      在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。'
+    started: '🔄 后台任务已启动：「{preview}」
+
+      任务 ID：{task_id}
+
+      你可以继续聊天 — 完成后结果将在此显示。'
+  branch:
+    db_unavailable: 会话数据库不可用。
+    no_conversation: 没有可分支的对话 — 请先发送一条消息。
+    create_failed: 创建分支失败：{error}
+    switch_failed: 分支已创建，但无法切换到它。
+    branched_one: '⑂ 已分支到 **{title}**（已复制 {count} 条消息）
+
+      原始：`{parent}`
+
+      分支：`{new}`
+
+      使用 `/resume` 切换回原始会话。'
+    branched_many: '⑂ 已分支到 **{title}**（已复制 {count} 条消息）
+
+      原始：`{parent}`
+
+      分支：`{new}`
+
+      使用 `/resume` 切换回原始会话。'
+  commands:
+    usage: 用法：`/commands [page]`
+    skill_header: ⚡ **技能命令**：
+    default_desc: 技能命令
+    none: 没有可用的命令。
+    header: 📚 **命令**（共 {total} 个，第 {page}/{total_pages} 页）
+    nav_prev: '`/commands {page}` ← 上一页'
+    nav_next: 下一页 → `/commands {page}`
+    out_of_range: _（请求的第 {requested} 页超出范围，显示第 {page} 页。）_
+  compress:
+    not_enough: 对话内容不足，无法压缩（至少需要 4 条消息）。
+    no_provider: 未配置提供方 — 无法压缩。
+    nothing_to_do: 暂无可压缩内容（对话记录仍全部为受保护上下文）。
+    focus_line: 聚焦："{topic}"
+    summary_failed: ⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression 模型配置。
+    aborted: ⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的 auxiliary.compression 模型配置。
+    aux_failed: ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml 中的 `auxiliary.compression.model`。
+    failed: 压缩失败：{error}
+  debug:
+    upload_failed: ✗ 无法上传调试报告：{error}
+    header: '**调试报告已上传：**'
+    auto_delete: ⏱ 粘贴内容将在 6 小时后自动删除。
+    full_logs_hint: 如需上传完整日志，请在 CLI 中使用 `hermes debug share`。
+    share_hint: 请将这些链接分享给 Hermes 团队以获得支持。
+  deny:
+    stale: ❌ 命令已拒绝（批准已过期）。
+    no_pending: 没有待拒绝的命令。
+    denied_singular: ❌ 命令已拒绝。
+    denied_plural: ❌ 命令已拒绝（{count} 条命令）。
+  fast:
+    not_supported: ⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。
+    status: '⚡ 优先处理
+
+
+      当前模式：`{mode}`
+
+
+      _用法：_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ 未知参数：`{arg}`
+
+
+      **有效选项：** normal、fast、status'
+    saved: '⚡ ✓ 优先处理：**{label}**（已保存到配置）
+
+      _（下一条消息生效）_'
+    session_only: ⚡ ✓ 优先处理：**{label}**（仅本次会话）
+    label_fast: ⚡ 快速模式
+    label_normal: 🔄 正常模式
+    status_fast: 快速模式已启用
+    status_normal: 正常模式
+  footer:
+    status: '📎 运行时页脚：**{state}**
+
+      字段：`{fields}`
+
+      平台：`{platform}`'
+    usage: 用法：`/footer [on|off|status]`
+    saved: '📎 运行时页脚：**{state}**{example}
+
+      _（已全局保存 — 下一条消息生效）_'
+    example_line: '
+
+      示例：`{preview}`'
+    state_on: 已启用
+    state_off: 已禁用
+  goal:
+    unavailable: 此会话不支持目标功能。
+    no_goal_set: 未设置目标。
+    paused: ⏸ 目标已暂停：{goal}
+    no_resume: 没有可恢复的目标。
+    resumed: '▶ 目标已恢复：{goal}
+
+      发送任意消息继续，或等待 — 我会在下一轮继续推进。'
+    invalid: 无效目标：{error}
+    set: '⊙ 目标已设置（{budget} 轮预算）：{goal}
+
+      我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。
+
+      控制命令：/goal status · /goal pause · /goal resume · /goal clear'
+  help:
+    header: '📖 **Hermes 命令**
+
+      '
+    skill_header: '
+
+      ⚡ **技能命令**（{count} 个活跃）：'
+    more_use_commands: '
+
+      ... 还有 {count} 个。使用 `/commands` 查看完整分页列表。'
+  insights:
+    invalid_days: 无效的 --days 值：{value}
+    error: 生成洞察时出错：{error}
+  kanban:
+    error_prefix: ⚠ kanban 错误：{error}
+    subscribed_suffix: （已订阅 — 当 {task_id} 完成或被阻塞时将通知您）
+    truncated_suffix: …（已截断；如需完整输出请在终端运行 `hermes kanban …`）
+    no_output: （无输出）
+  personality:
+    none_configured: '`{path}/config.yaml` 中未配置人格设定'
+    header: '🎭 **可用人格**
+
+      '
+    none_option: • `none` — （不应用人格覆盖）
+    item: '人格: {name}
+
+      {preview}'
+    usage: '
+
+      用法：`/personality <name>`'
+    save_failed: ⚠️ 保存人格变更失败：{error}
+    cleared: '🎭 已清除人格 — 使用基础代理行为。
+
+      _（在下一条消息时生效）_'
+    set_to: '🎭 人格已设置为 **{name}**
+
+      _（在下一条消息时生效）_'
+    unknown: '未知人格：`{name}`
+
+
+      可用：{available}'
+  profile:
+    header: 👤 **配置文件：** `{profile}`
+    home: 📂 **主目录：** `{home}`
+  reasoning:
+    level_default: medium（默认）
+    level_disabled: none（已禁用）
+    scope_session: 会话覆盖
+    scope_global: 全局配置
+    status: '🧠 **推理设置**
+
+
+      **强度：** `{level}`
+
+      **作用域：** {scope}
+
+      **显示：** {display}
+
+
+      _用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: 开 ✓
+    display_off: 关
+    display_set_on: '🧠 ✓ 推理显示：**开启**
+
+      在 **{platform}** 上每次响应前将显示模型的思考过程。'
+    display_set_off: 🧠 ✓ **{platform}** 上的推理显示：**关闭**
+    reset_global_unsupported: ⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。
+    reset_done: 🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。
+    unknown_arg: '⚠️ 未知参数：`{arg}`
+
+
+      **有效级别：** none, minimal, low, medium, high, xhigh
+
+      **显示：** show, hide
+
+      **持久化：** 添加 `--global` 以跨会话保存'
+    set_global: '🧠 ✓ 推理强度已设置为 `{effort}`（已保存到配置）
+
+      _（下一条消息生效）_'
+    set_global_save_failed: '🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 配置保存失败）
+
+      _（下一条消息生效）_'
+    set_session: '🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 添加 `--global` 以持久化）
+
+      _（下一条消息生效）_'
+  reload_mcp:
+    cancelled: 🟡 已取消 /reload-mcp。MCP 工具未更改。
+    always_followup: 'ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。'
+    confirm_prompt: '⚠️ **确认 /reload-mcp**
+
+
+      重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。
+
+
+      请选择：
+
+      • **批准一次** — 立即重新加载
+
+      • **始终批准** — 立即重新加载并永久静默此提示
+
+      • **取消** — 保持 MCP 工具不变
+
+
+      _文本备用：回复 `/approve`、`/always` 或 `/cancel`。_'
+    header: '🔄 **MCP 服务器已重新加载**
+
+      '
+    reconnected: ♻️ 已重新连接：{names}
+    added: ➕ 已添加：{names}
+    removed: ➖ 已移除：{names}
+    none_connected: 没有连接的 MCP 服务器。
+    tools_available: '
+
+      🔧 来自 {servers} 个服务器的 {tools} 个工具可用'
+    failed: ❌ MCP 重新加载失败：{error}
+  reload_skills:
+    header: '🔄 **技能已重新加载**
+
+      '
+    no_new: 未检测到新技能。
+    total: '
+
+      📚 {count} 个技能可用'
+    added_header: ➕ **新增技能：**
+    removed_header: ➖ **移除技能：**
+    item_with_desc: '    - {name}：{desc}'
+    item_no_desc: '{name}（无描述）'
+    failed: ❌ 技能重新加载失败：{error}
+  reset:
+    header_default: ✨ 会话已重置！重新开始。
+    header_new: ✨ 新会话已启动！
+    header_titled: ✨ 新会话已启动：{title}
+    title_rejected: '
+
+      ⚠️ 标题被拒绝：{error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — 会话以未命名方式启动。'
+    title_empty_untitled: '
+
+      ⚠️ 清理后标题为空 — 会话以未命名方式启动。'
+    tip: '
+
+      ✦ 提示：{tip}'
+    info_model: ◆ 模型：`{model}`
+    info_provider: ◆ 提供商：{provider}
+    info_context: ◆ 上下文：{ctx_display} tokens（{ctx_source}）
+    info_endpoint: ◆ 端点：{base_url}
+    ctx_source_default: 默认值 — 在 config 中设置 model.context_length 覆盖
+  restart:
+    in_progress: ⏳ 网关重启已在进行中……
+    restarting: ♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。
+    success: ♻ 网关重启成功，会话继续。
+    shutting_down: ⚠️ 网关正在关闭 — 当前任务将被中断。
+    restarting_hint: ⚠️ 网关正在重启 — 当前任务将被中断。重启后发送任意消息，我会尝试继续之前的工作。
+  online: ♻️ 网关已上线 — Hermes 准备就绪。
+  provider_auth_failed: ⚠️ Provider 认证失败。请检查已配置的凭据；原始 provider 详情请查看网关日志。
+  provider_rejected: ⚠️ 模型 provider 拒绝了请求。我已将原始 provider 错误信息排除在聊天之外；详情请查看网关日志或尝试换个说法。
+  provider_rate_limited: ⏱️ 模型 provider 正在限流。请稍等片刻后重试。
+  provider_failed: ⚠️ 模型 provider 在多次重试后失败。我已将原始 provider 详情排除在聊天之外；诊断信息请查看网关日志。
+  busy_queued: ⏳ 网关{action} — 已排队，等待下一轮次处理。
+  busy_rejecting: ⏳ 网关正在{action}，当前不接受新的对话轮次。
+  busy_queued_detail: ⏳ 已排队等待下一轮次{detail}。
+  busy_action_hint: ⚠️ 网关{action} — {hint}
+  action_restarting: 正在重启
+  action_shutting_down: 正在关闭
+  hint_interrupt_resume: 你的当前任务将被中断。重启后发送任何消息，我会尝试从上次中断处继续。
+  hint_interrupt: 你的当前任务将被中断。
+  busy_agent_running: ⏳ Agent 正在运行中 — `/{command}` 当前无法执行。请在当前轮次完成后重试。
+  busy_not_accepting: ⏳ 网关正在{action}，当前不接受新的工作。
+  session_too_large: '⚠️ 会话内容超出了模型的上下文窗口限制。
+
+
+    你可以：
+
+    • `/reset` — 开始新会话
+
+    • `/compress` — 压缩早期消息
+
+    • `/new` — 全新开始，可设置标题'
+  processing_stopped: ⚠️ 处理已停止：{error}。请重试。
+  processing_no_response: ⚠️ 处理已完成但未生成响应。这有时发生在非常长的会话中 — 请尝试发送另一条消息。
+  compression_aborted: ⚠️ 上下文压缩已中止（{error}）。没有消息被删除 — 对话内容未变。
+  no_response_after_tools: ⚠️ 模型在处理工具后未返回响应。这可能发生在非常长的会话中 — 请尝试发送另一条消息。
+  bg_task_no_creds: ❌ 后台任务 {task_id} 失败：未配置 provider 凭据。
+  bg_task_failed: ❌ 后台任务 {task_id} 失败：{error}
+  update_finished: ✅ Hermes 更新完成。
+  update_failed_code: ❌ Hermes 更新失败（退出码 {code}）。
+  update_failed: ❌ Hermes 更新失败。请查看网关日志或手动运行 `hermes update` 获取详情。
+  update_finished_output: '✅ Hermes 更新完成。
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_failed_output: '❌ Hermes 更新失败。
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_finished_success: ✅ Hermes 更新成功完成。
+  update_timed_out: ❌ Hermes 更新超时（30 分钟）。
+  still_working: ⏳ 仍在处理中...（已过 {elapsed} 分钟{detail}）
+  no_activity_warning: ⚠️ 已无活动 {minutes} 分钟。Agent 可能已卡住 — 请尝试发送消息或使用 /stop 取消。
+  proxy_no_aiohttp: ⚠️ 代理模式需要 aiohttp。请安装：pip install aiohttp
+  proxy_not_configured: ⚠️ 代理 URL 未配置（GATEWAY_PROXY_URL 或 gateway.proxy_url）
+  proxy_error: ⚠️ 代理错误（{status}）：{detail}
+  proxy_connection_error: ⚠️ 代理连接错误：{error}
+  session_auto_reset: 🔄 会话自动重置 — 对话超出上下文限制已被压缩。我将从上次中断的地方继续。
+  bg_task_complete: '✅ 后台任务完成
+
+    提示词："{preview}"
+
+
+    '
+  bg_task_complete_empty: '✅ 后台任务完成
+
+    提示词："{preview}"
+
+
+    （无响应生成）'
+  compression_summary: 🗜️ 上下文已压缩 — {headline}
+  already_running: '
+
+    ❌ Gateway 已在运行（PID {pid}）。
+
+    '
+  admin_only: ⛔ /{command} 仅限管理员使用。{hint}
+  config_load_errors: ⚠️ 配置加载错误：{errors}
+  config_load_error: ❌ 无法加载配置：{error}
+  dangerous_confirm: '⚠️ **确认 /{command}**
+
+
+    {detail}
+
+
+    请选择：
+
+    • **仅批准一次** — 仅本次执行
+
+    • **始终批准** — 执行并永久取消此提示
+
+    • **取消** — 保持当前对话
+
+
+    _文字回复方式：回复 `/approve`、`/always` 或 `/cancel`。_'
+  detail_new: '这将开启一个新会话并丢弃当前对话历史。'
+  detail_undo: '这将移除最后一组用户/助手对话。'
+  steer_failed: ⚠️ Steer 失败：{error}
+  resume:
+    db_unavailable: 会话数据库不可用。
+    no_named_sessions: '未找到已命名的会话。
+
+      使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。'
+    list_header: '📋 **已命名会话**
+
+      '
+    list_item: • **{title}**{preview_part}
+    list_preview_suffix: ' ...{preview}'
+    list_footer: '
+
+      用法：`/resume <会话名称>`'
+    list_failed: 无法列出会话：{error}
+    not_found: '未找到匹配 ''**{name}**'' 的会话。
+
+      使用不带参数的 `/resume` 查看可用会话。'
+    already_on: 📌 已在会话 **{name}** 上。
+    switch_failed: 切换会话失败。
+    resumed_one: ↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。
+    resumed_many: ↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。
+    resumed_no_count: ↻ 已恢复会话 **{title}**。对话已还原。
+  retry:
+    no_previous: 没有可重试的上一条消息。
+  rollback:
+    not_enabled: "检查点未启用。\n请在 config.yaml 中启用：\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found: 未找到 {cwd} 的检查点
+    invalid_number: 无效的检查点编号。请使用 1-{max}。
+    restored: '✅ 已恢复到检查点 {hash}：{reason}
+
+      已自动保存回滚前的快照。'
+    restore_failed: '❌ 回滚失败: {error}'
+  set_home:
+    save_failed: 无法保存主频道：{error}
+    success: '✅ 主频道已设置为 **{name}**（ID：{chat_id}）。
+
+      定时任务和跨平台消息将发送到此处。'
+  status:
+    header: 📊 **Hermes 网关状态**
+    session_id: '**会话 ID：** `{session_id}`'
+    title: '**标题：** {title}'
+    created: '**创建时间：** {timestamp}'
+    last_activity: '**最近活动：** {timestamp}'
+    tokens: '**Token 数：** {tokens}'
+    agent_running: '**代理运行中：** {state}'
+    state_yes: 是 ⚡
+    state_no: 否
+    queued: '**排队的后续：** {count}'
+    platforms: '**已连接平台：** {platforms}'
   stop:
-    stopped_pending:       "⚡ 已停止。代理尚未启动 — 你可以继续此会话。"
-    stopped:               "⚡ 已停止。你可以继续此会话。"
-    no_active:             "没有可停止的活跃任务。"
-
+    stopped_pending: ⚡ 已停止。代理尚未启动 — 你可以继续此会话。
+    stopped: ⚡ 已停止。你可以继续此会话。
+    no_active: 没有可停止的活跃任务。
   title:
-    db_unavailable:        "会话数据库不可用。"
-    warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ 清理后标题为空。请使用可打印字符。"
-    set_to:                "✏️ 已设置会话标题：**{title}**"
-    not_found:             "未在数据库中找到该会话。"
-    current_with_title:    "📌 会话：`{session_id}`\n标题：**{title}**"
-    current_no_title:      "📌 会话：`{session_id}`\n尚未设置标题。用法：`/title 我的会话名称`"
+    db_unavailable: 会话数据库不可用。
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ 清理后标题为空。请使用可打印字符。
+    set_to: ✏️ 已设置会话标题：**{title}**
+    not_found: 未在数据库中找到该会话。
+    current_with_title: '📌 会话：`{session_id}`
 
+      标题：**{title}**'
+    current_no_title: '📌 会话：`{session_id}`
+
+      尚未设置标题。用法：`/title 我的会话名称`'
   topic:
-    not_telegram_dm:         "/topic 命令仅在 Telegram 私聊中可用。"
-    no_session_db:           "会话数据库不可用。"
-    unauthorized:            "您无权在此 bot 上使用 /topic。"
-    restore_needs_topic:     "若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新 topic，请打开 All Messages 并在其中发送任意消息。"
-    topics_disabled:         "此 bot 尚未启用 Telegram topics。\n\n启用方法：\n1. 打开 @BotFather。\n2. 选择您的 bot。\n3. 打开 Bot Settings → Threads Settings。\n4. 开启 Threaded Mode，并确保允许用户创建新线程。\n\n然后再次发送 /topic。"
-    topics_user_disallowed:  "Telegram topics 已启用，但不允许用户创建 topics。\n\n打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 'Disallow users to create new threads'。\n\n然后再次发送 /topic。"
-    enable_failed:           "启用 Telegram topic 模式失败：{error}"
-    bound_status:            "此 topic 已关联到：\n会话：{label}\nID：{session_id}\n\n使用 /new 将此 topic 替换为新会话。\n如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    thread_ready:            "Telegram 多会话 topics 已启用。\n\n此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    untitled_session:        "未命名会话"
+    not_telegram_dm: /topic 命令仅在 Telegram 私聊中可用。
+    no_session_db: 会话数据库不可用。
+    unauthorized: 您无权在此 bot 上使用 /topic。
+    restore_needs_topic: 若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新 topic，请打开 All Messages 并在其中发送任意消息。
+    topics_disabled: '此 bot 尚未启用 Telegram topics。
 
+
+      启用方法：
+
+      1. 打开 @BotFather。
+
+      2. 选择您的 bot。
+
+      3. 打开 Bot Settings → Threads Settings。
+
+      4. 开启 Threaded Mode，并确保允许用户创建新线程。
+
+
+      然后再次发送 /topic。'
+    topics_user_disallowed: 'Telegram topics 已启用，但不允许用户创建 topics。
+
+
+      打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 ''Disallow users to create new threads''。
+
+
+      然后再次发送 /topic。'
+    enable_failed: 启用 Telegram topic 模式失败：{error}
+    bound_status: '此 topic 已关联到：
+
+      会话：{label}
+
+      ID：{session_id}
+
+
+      使用 /new 将此 topic 替换为新会话。
+
+      如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。'
+    thread_ready: 'Telegram 多会话 topics 已启用。
+
+
+      此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。'
+    untitled_session: 未命名会话
   undo:
-    nothing:               "没有可撤销的内容。"
-    removed:               "↩️ 已撤销 {count} 条消息。\n已移除：「{preview}」"
+    nothing: 没有可撤销的内容。
+    removed: '↩️ 已撤销 {count} 条消息。
 
+      已移除：「{preview}」'
   update:
-    platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"
-    not_git_repo:            "✗ 不是 git 仓库 — 无法更新。"
-    hermes_cmd_not_found:    "✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。"
-    start_failed:            "✗ 启动更新失败：{error}"
-    starting:                "⚕ 正在启动 Hermes 更新…… 进度将在此处显示。"
-
+    platform_not_messaging: ✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。
+    not_git_repo: ✗ 不是 git 仓库 — 无法更新。
+    hermes_cmd_not_found: ✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。
+    start_failed: ✗ 启动更新失败：{error}
+    starting: ⚕ 正在启动 Hermes 更新…… 进度将在此处显示。
   usage:
-    rate_limits:              "⏱️ **速率限制：** {state}"
-    header_session:           "📊 **会话令牌使用情况**"
-    label_model:              "模型：`{model}`"
-    label_input_tokens:       "输入令牌：{count}"
-    label_cache_read:         "缓存读取令牌：{count}"
-    label_cache_write:        "缓存写入令牌：{count}"
-    label_output_tokens:      "输出令牌：{count}"
-    label_total:              "总计：{count}"
-    label_api_calls:          "API 调用次数：{count}"
-    label_cost:               "费用：{prefix}${amount}"
-    label_cost_included:      "费用：已包含"
-    label_context:            "上下文：{used} / {total}（{pct}%）"
-    label_compressions:       "压缩次数：{count}"
-    header_session_info:      "📊 **会话信息**"
-    label_messages:           "消息数：{count}"
-    label_estimated_context:  "估计上下文：~{count} 个令牌"
-    detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
-    no_data:                  "此会话暂无使用数据。"
-
+    rate_limits: ⏱️ **速率限制：** {state}
+    header_session: 📊 **会话令牌使用情况**
+    label_model: 模型：`{model}`
+    label_input_tokens: 输入令牌：{count}
+    label_cache_read: 缓存读取令牌：{count}
+    label_cache_write: 缓存写入令牌：{count}
+    label_output_tokens: 输出令牌：{count}
+    label_total: 总计：{count}
+    label_api_calls: API 调用次数：{count}
+    label_cost: 费用：{prefix}${amount}
+    label_cost_included: 费用：已包含
+    label_context: 上下文：{used} / {total}（{pct}%）
+    label_compressions: 压缩次数：{count}
+    header_session_info: 📊 **会话信息**
+    label_messages: 消息数：{count}
+    label_estimated_context: 估计上下文：~{count} 个令牌
+    detailed_after_first: _（首次代理响应后可查看详细使用情况）_
+    no_data: 此会话暂无使用数据。
   verbose:
-    not_enabled:           "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
-    mode_off:              "⚙️ 工具进度：**OFF** — 不显示任何工具活动。"
-    mode_new:              "⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。"
-    mode_all:              "⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。"
-    mode_verbose:          "⚙️ 工具进度：**VERBOSE** — 显示每次工具调用及完整参数。"
-    saved_suffix:          "_（已为 **{platform}** 保存 — 下一条消息生效）_"
-    save_failed:           "_（无法保存到配置：{error}）_"
-
+    not_enabled: "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off: ⚙️ 工具进度：**OFF** — 不显示任何工具活动。
+    mode_new: ⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。
+    mode_all: ⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。
+    mode_verbose: ⚙️ 工具进度：**VERBOSE** — 显示每次工具调用及完整参数。
+    saved_suffix: _（已为 **{platform}** 保存 — 下一条消息生效）_
+    save_failed: _（无法保存到配置：{error}）_
   voice:
-    enabled_voice_only:    "语音模式已启用。\n当你发送语音消息时，我会用语音回复。\n使用 /voice tts 让所有消息都收到语音回复。"
-    disabled_text:         "语音模式已禁用。仅文本回复。"
-    tts_enabled:           "自动 TTS 已启用。\n所有回复都将包含一条语音消息。"
-    status_mode:           "语音模式：{label}"
-    status_channel:        "语音频道：#{channel}"
-    status_participants:   "参与人数：{count}"
-    status_member:         "  - {name}{status}"
-    speaking:              "（正在说话）"
-    enabled_short:         "语音模式已启用。"
-    disabled_short:        "语音模式已禁用。"
-    label_off:             "关闭（仅文本）"
-    label_voice_only:      "开启（仅对语音消息进行语音回复）"
-    label_all:             "TTS（对所有消息进行语音回复）"
+    enabled_voice_only: '语音模式已启用。
 
+      当你发送语音消息时，我会用语音回复。
+
+      使用 /voice tts 让所有消息都收到语音回复。'
+    disabled_text: 语音模式已禁用。仅文本回复。
+    tts_enabled: '自动 TTS 已启用。
+
+      所有回复都将包含一条语音消息。'
+    status_mode: 语音模式：{label}
+    status_channel: 语音频道：#{channel}
+    status_participants: 参与人数：{count}
+    status_member: '语音成员: {name} ({status})'
+    speaking: （正在说话）
+    enabled_short: 语音模式已启用。
+    disabled_short: 语音模式已禁用。
+    label_off: 关闭（仅文本）
+    label_voice_only: 开启（仅对语音消息进行语音回复）
+    label_all: TTS（对所有消息进行语音回复）
   yolo:
-    disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
-    enabled:                    "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"
-
+    disabled: ⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。
+    enabled: ⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。
   shared:
-    session_db_unavailable:      "会话数据库不可用。"
-    session_db_unavailable_prefix: "会话数据库不可用"
-    session_not_found:           "数据库中未找到该会话。"
-    warn_passthrough:            "⚠️ {error}"
+    session_db_unavailable: 会话数据库不可用。
+    session_db_unavailable_prefix: 会话数据库不可用
+    session_not_found: 数据库中未找到该会话。
+    warn_passthrough: '⚠️ 直通模式: {error}'
+  queue:
+    usage: 用法：/queue <提示>
+    queued: 已排队等待下一轮。
+    queued_depth: 已排队等待下一轮。（{depth} 条排队中）
+  steer:
+    usage: 用法：/steer <提示>
+    starting_queued: 代理仍在启动 — /steer 已排队等待下一轮。
+    queued: ⏩ 已引导 — 将在下一次工具调用后到达：'{preview}'
+    rejected_empty: 引导被拒绝（内容为空）。
+    no_agent_queued: 没有活跃代理 — /steer 已排队等待下一轮。
+    usage_no_agent: 用法：/steer <提示>（没有运行中的代理；将作为普通消息发送）
+  agent_running:
+    wait_or_stop: 代理正在运行 — 请先等待或 /stop，然后再切换模型。
+    goal_hint: 代理正在运行 — 使用 /goal status / pause / clear 在运行中管理目标，或 /stop 后再设置新目标。
+    hook_blocked: 命令 `/{command}` 被钩子拦截。
+  quick:
+    timed_out: 快捷命令超时（30秒）。
+    error: 快捷命令错误：{error}
+    no_command: 快捷命令 '/{command}' 未定义命令。
+    no_target: 快捷命令 '/{command}' 未定义目标。
+    unsupported_type: 快捷命令 '/{command}' 不支持的类型（支持：'exec'、'alias'）。
+  usage_cmd:
+    platform: 用法：/platform {action} <名称>
+    subgoal_remove: 用法：/subgoal remove <n>
+run_agent:
+  self_improvement_review: 💾 自我改进审查：{summary}
+  compacting_context: 🗜️ 压缩上下文 — 正在总结早期对话以便继续……
+  preflight_compression: 📦 预检压缩：约 {tokens} 个 token >= {threshold} 阈值，可能需要一些时间。
+  compression_aborted: ⚠️ 压缩已中止：{error}。未丢失任何消息 — 对话继续不变。运行 /compress 重试，或 /new 开始新会话。
+  compression_failed: ⚠️ 压缩摘要失败：{error}。已插入回退上下文标记。
+  aux_model_failed: ℹ️ 配置的压缩模型 '{model}' 失败（{error}）。已使用主模型恢复 — 请检查 config.yaml 中的 auxiliary.compression.model。
+  interrupting: ⚡ 正在中断当前任务{detail}。我很快会回复你的消息。
+onboarding:
+  busy_queue: 💡 首次提示 — 我将你的消息排队而非中断当前任务。发送 `/busy interrupt` 让新消息立即停止当前任务，或 `/busy status` 查看状态。此提示不再显示。
+  busy_steer: 💡 首次提示 — 我将你的消息引导至当前运行；它将在下一次工具调用后到达而非中断。发送 `/busy interrupt` 或 `/busy queue` 更改此设置，或 `/busy status` 查看状态。此提示不再显示。
+  busy_interrupt: 💡 首次提示 — 我刚刚中断了当前任务来回复你。发送 `/busy queue` 将后续消息排队到当前任务之后，`/busy steer` 在不中断的情况下注入运行中，或 `/busy status` 查看状态。此提示不再显示。
+  busy_queue_cli: （提示）你的消息已排队等待下一轮。使用 /busy interrupt 让 Enter 键停止当前运行，或 /busy steer 在运行中注入。此提示仅显示一次。
+  busy_steer_cli: （提示）你的消息已引导至当前运行；它将在下一次工具调用后到达。使用 /busy interrupt 或 /busy queue 更改此设置。此提示仅显示一次。
+  busy_interrupt_cli: （提示）你的消息中断了当前运行。使用 /busy queue 将消息排队到下一轮，或 /busy steer 在运行中注入。此提示仅显示一次。
+  tool_progress_gateway: 💡 首次提示 — 该工具运行较久，我正在流式输出每一步。如果进度消息太嘈杂，发送 `/verbose` 循环切换模式（全部→仅新→关闭）。此提示不再显示。
+  tool_progress_cli: （提示）该工具运行较久 — 我正在流式输出每一步。使用 /verbose 循环切换进度模式（全部→仅新→关闭）。此提示仅显示一次。
+  openclaw_residue: '在 ~/.openclaw/ 检测到旧版 OpenClaw 目录。
+
+    要将配置、记忆和技能迁移到 Hermes，请运行 `hermes claw migrate`。
+
+    如果已迁移并想归档旧目录，请运行 `hermes claw cleanup`（重命名为 ~/.openclaw.pre-migration — 之后 OpenClaw 将停止工作）。
+
+    此提示仅显示一次。'
+activity:
+  iteration: 迭代 {current}/{max}
+  running_tool: '正在运行: {tool}'
+  waiting_stream: 等待提供商响应（流式传输）
+  waiting_api: 等待非流式 API 响应
+  receiving_stream: 接收流式响应
+  executing_tool: '正在执行工具: {name}'
+  executing_concurrent: '正在并发执行 {count} 个工具: {tools}'
+  tool_completed: '工具完成: {name}（{duration}秒）'
+  starting_api: '开始 API 调用 #{number}'
+  retry_backoff: 重试退避（{current}/{max}），剩余 {remaining} 秒
+  error_recovery: API 错误恢复（尝试 {current}/{max}）
+  error_retry_backoff: 错误重试退避（{current}/{max}），剩余 {remaining} 秒
+  max_retries_invalid: ⚠️ 无效响应已达最大重试次数（{max}）— 尝试备用方案...
+  max_retries_exceeded: ❌ 无效响应重试次数（{max}）已用尽。放弃。
+  payload_too_large: ⚠️ 请求载荷过大（413）— 压缩尝试 {current}/{max}...
+  compressed: 🗜️ 已压缩 {original} → {compressed} 条消息，重试中...
+  context_too_large: 🗜️ 上下文过大（约 {tokens} 个 token）— 压缩中（{current}/{max}）...
+  non_retryable_error: ⚠️ 不可重试错误（HTTP {status}）— 尝试备用方案...
+  max_retries_exhausted: ⚠️ 重试次数（{max}）已耗尽 — 尝试备用方案...
+  rate_limited_retries: ❌ 速率限制，已重试 {max} 次 — {summary}
+  api_failed_retries: ❌ API 失败，已重试 {max} 次 — {summary}
+  rate_limited_waiting: ⏱️ 速率限制。等待 {time} 秒（尝试 {current}/{max}）...
+  retrying_in: ⏳ {time} 秒后重试（尝试 {current}/{max}）...
+  auxiliary_failed: ⚠️ 辅助 {task} 失败：{detail}
+  nous_rate_limit: Nous Portal 速率限制生效 — {time} 后重置。
+  empty_response: ⚠️ 空/格式错误的响应 — 切换到备用方案...
+  thinking_exhausted: '⚠️ **思考预算已用尽**
+
+
+    模型将所有输出 token 用于推理，没有剩余 token 用于实际响应。
+
+
+    解决方法：
+
+    → 降低推理强度：`/thinkon low` 或 `/thinkon minimal`
+
+    → 或使用 `/model` 切换到更大/非推理模型'
+  no_retryable_error: ❌ 不可重试错误（HTTP {status}）：{detail}
+  no_content_retries: ❌ 模型在所有重试后未返回内容
+  context_reduced: 🗜️ 上下文已缩减至 {tokens} 个 token — 重试中...
+  no_provider_response: ⚠️ 提供商 {time} 秒无响应 — 重试中...
+  malformed_stream: ❌ 提供商在 {retries} 次重试后返回了格式错误的流式数据 — {detail}
+  connection_failed: ❌ 连接提供商失败，已重试 {retries} 次 — {detail}
+  guardrail_halted: ⚠️ 工具护栏已阻止 {tool}：{code}
+  empty_model_response: ⚠️ 模型返回空响应 — 重试中（{current}/3）
+  iteration_exhausted: ⚠️ 迭代预算已用尽（{current}/{max}）— 请求模型总结
+  iteration_exhausted_cli: ⚠️ 迭代预算已用尽（{current}/{max}）— 正在请求摘要...
+  agent_inactive: ⏱️ 智能体已空闲 {minutes} 分钟 — 无工具调用或 API 响应。
+  agent_stuck_tool: 智能体似乎卡在工具 `{tool}` 上（距上次活动 {seconds} 秒，迭代 {current}/{max}）。
+  agent_last_activity: 上次活动：{desc}（{seconds} 秒前，迭代 {current}/{max}）。智能体可能正在等待 API 响应。
+platform:
+  approve_once: ✅ 批准一次
+  approve_session: ✅ 本次会话批准
+  approve_always: 🔒 永久批准
+  deny: ❌ 拒绝
+  cancel: ❌ 取消
+  cancelled: ❌ 已取消
+  approved_always: ✅ 已永久批准
+  approval_prompt: '⚠️ **危险命令需要批准**
+
+    ```
+
+    {command}
+
+    ```
+
+    原因：{reason}
+
+
+    回复 `/approve` 执行，`/approve session` 为本次会话批准此模式，`/approve always` 永久批准，或 `/deny` 取消。
+
+
+    也可以点击表情符号来批准：
+
+    ✅ = /approve
+
+    ❎ = /deny'
+  update_prompt_answered: 更新提示已回答：{label}
+  approval_required: 需要命令审批：{command}
+  approved_once: 已由 {user} 批准一次
+  approved_session: 已由 {user} 批准会话
+  approved_permanently: 已由 {user} 永久批准
+  denied: 已由 {user} 拒绝
+  approval_required_title: 需要命令审批
+  script_missing: '{name} 缺失'
+  verb_failed: '{verb} 失败：{detail}'
+  verb_timeout: '{verb} 超时'
+  verb_error: '{verb} 错误：{detail}'
+  reject_reason: 原因：{reason}
+  creator_only: '{command} 仅在私聊模式下对创建者可用'
+  discord:
+    approval_required_title: ⚠️ 命令需要审批
+    reason: 原因
+    confirm: 确认
+    input_needed: ❓ Hermes 需要您的输入
+    choices: 选项
+    pick_one: 请选择下方选项，或点击 ✏️ 其他 来输入自定义回答。
+    reply: 回复
+    reply_instruction: 请在此频道回复您的答案。
+    update_needs_input: ⚕ 更新需要您的输入
+    model_config_title: ⚙ 模型配置
+    current_model: 当前模型：
+    provider_label: 提供方：{provider}
+    select_provider: 选择一个提供方：
+    select_model: 选择一个模型：
+    switching_model: ⚙ 正在切换模型
+    switching_to: 正在切换到 `{model_id}`...
+    switch_error: 切换模型出错：{error}
+    model_switched: ⚙ 模型已切换
+    model_selection_cancelled: 模型选择已取消。
+    choose_provider_placeholder: 选择一个提供方...
+    choose_model_placeholder: 从 {provider} 中选择一个模型...
+    back: ◀ 返回
+    cancel: 取消
+    already_resolved_approval: 此审批已经处理过了~
+    not_authorized_approve: 您没有权限审批命令~
+    not_authorized_command: 您没有权限使用此命令。
+    allow_once: 允许一次
+    allow_session: 本次会话允许
+    always_allow: 始终允许
+    deny_button: 拒绝
+    approved_once: 已批准一次
+    approved_session: 本次会话已批准
+    approved_permanently: 已永久批准
+    denied: 已拒绝
+    already_resolved: 已经处理过了~
+    not_authorized_prompt: 您没有权限回答此提示~
+    approve_once: 批准一次
+    approve_always: 始终批准
+    cancel_button: 取消
+    always_approved: 已永久批准
+    cancelled: 已取消
+    already_answered: 已经回答过了~
+    not_authorized: 您没有权限~
+    true: 是
+    false: 否
+    other_answer: ✏️ 其他（输入答案）
+    already_answered_prompt: 此提示已经回答过了~
+    unauthorized_slash: ⚠️ 未授权的 Discord 斜杠命令尝试
+    user: 用户
+    channel: 频道
+    guild: 服务器
+    command: 命令
+    thread_create_failed: 创建线程失败：{error}
+    thread_created: 已创建线程 {link}
+    unknown_skill: 未知技能：`{name}`。开始输入以获取自动补全建议。
+    footer_by: '{label} 由 {user} 执行'
+    answered_by: 由 {user} 回答：{choice}
+    awaiting_response: 等待 {user} 输入回复…
+    slash_new_started: 新会话已开始~
+    slash_reset_done: 会话已重置~
+    slash_retrying: 正在重试~
+    slash_status_sent: 状态已发送~
+    slash_stop_requested: 已请求停止~
+    slash_update_initiated: 更新已启动~
+    slash_restart_requested: 已请求重启~
+    slash_queued: 已排队等待下一轮。
+    slash_bg_started: 后台任务已启动~
+    slash_new_desc: 开始新会话
+    slash_reset_desc: 重置您的 Hermes 会话
+    slash_model_desc: 查看或更改模型
+    slash_model_name_desc: 模型名称（例如 anthropic/claude-sonnet-4）。留空以查看当前模型。
+    slash_reasoning_desc: 查看或更改推理强度
+    slash_reasoning_effort_desc: 推理强度：none、minimal、low、medium、high 或 xhigh。
+    slash_personality_desc: 设置人格
+    slash_personality_name_desc: 人格名称。留空以列出可用人格。
+    slash_retry_desc: 重试您最后一条消息
+    slash_undo_desc: 撤回上次对话
+    slash_status_desc: 查看 Hermes 会话状态
+    slash_sethome_desc: 将此聊天设为主频道
+    slash_stop_desc: 停止正在运行的 Hermes 智能体
+    slash_steer_desc: 在下次工具调用后注入消息（不中断）
+    slash_steer_prompt_desc: 要注入到智能体下次工具结果中的文本
+    slash_compress_desc: 压缩对话上下文
+    slash_title_desc: 设置或查看会话标题
+    slash_title_name_desc: 会话标题。留空以查看当前标题。
+    slash_resume_desc: 恢复之前命名的会话
+    slash_resume_name_desc: 要恢复的会话名称。留空以列出会话。
+    slash_usage_desc: 查看此会话的令牌使用情况
+    slash_help_desc: 查看可用命令
+    slash_insights_desc: 查看使用洞察和分析
+    slash_insights_days_desc: 要分析的天数（默认：7）
+    slash_reload_mcp_desc: 从配置重新加载 MCP 服务器
+    slash_reload_skills_desc: 重新扫描 ~/.hermes/skills/ 以查找新增或删除的技能
+    slash_voice_desc: 切换语音回复模式
+    slash_voice_mode_desc: 语音模式：join、channel、leave、on、tts、off 或 status
+    slash_voice_join_desc: join — 加入您的语音频道
+    slash_voice_channel_desc: channel — 加入您的语音频道（别名）
+    slash_voice_leave_desc: leave — 离开语音频道
+    slash_voice_on_desc: on — 对语音消息进行语音回复
+    slash_voice_tts_desc: tts — 对所有消息进行语音回复
+    slash_voice_off_desc: off — 仅文本
+    slash_voice_status_desc: status — 查看当前模式
+    slash_update_desc: 将 Hermes Agent 更新到最新版本
+    slash_restart_desc: 优雅地重启 Hermes 网关
+    slash_approve_desc: 批准待处理的危险命令
+    slash_approve_scope_desc: 可选：'all'、'session'、'always'、'all session'、'all always'
+    slash_deny_desc: 拒绝待处理的危险命令
+    slash_deny_scope_desc: 可选：'all' 以拒绝所有待处理命令
+    slash_thread_desc: 创建新线程并在其中启动 Hermes 会话
+    slash_thread_name_desc: 线程名称
+    slash_thread_msg_desc: 可选的发送到线程中 Hermes 的第一条消息
+    slash_thread_archive_desc: 自动归档时间（分钟）（60、1440、4320、10080）
+    slash_queue_desc: 为下一轮排队一个提示（不中断）
+    slash_queue_prompt_desc: 要排队的提示
+    slash_background_desc: 在后台运行提示
+    slash_background_prompt_desc: 要在后台运行的提示
+    more_available_hint: （还有 {count} 个可用 — 直接输入 `/model <名称>`）
+  feishu:
+    true: 是
+    false: 否
+    resolved: 已处理
+    answered_by: 由 **{user}** 回答
+    approved_by: '{label} 由 {user} 执行'
+    share_chat_label: 共享群聊：{name}
+    chat_id_label: 群聊 ID：{id}
+    actions_label: 操作：{actions}
+  telegram:
+    cancel: ✗ 取消
+    back: ◀ 返回
+    prev_page: ◀ 上一页
+    next_page: 下一页 ▶
+    model_config_title: ⚙ *模型配置*
+    current_model: 当前模型：`{model}`
+    provider_label: 提供方：{label}
+    select_provider: 选择提供方：
+    select_model: 选择模型：{extra}
+    more_available: _还有 {count} 个可用 — 直接输入 `/model <名称>`_
+    picker_expired: 选择器已过期 — 请重新使用 /model。
+    picker_expired_short: 选择器已过期。
+    provider_not_found: 提供方未找到。
+    invalid_page: 无效页面。
+    invalid_selection: 无效选择。
+    invalid_model_index: 无效模型索引。
+    error_switching_model: 切换模型时出错：{error}
+    model_switched: 模型已切换！
+    model_selection_cancelled: 模型选择已取消。
+    invalid_approval_data: 无效的审批数据。
+    unauthorized_approve: ⛔ 您无权批准命令。
+    approval_resolved: 此审批已被处理。
+    unauthorized_prompt: ⛔ 您无权回答此提示。
+    prompt_resolved: 此提示已被处理。
+    invalid_choice: 无效选择。
+    unauthorized_update: ⛔ 您无权回答更新提示。
+    sent_to_update: 已向更新进程发送「{answer}」。
+    invalid_gmail_data: 无效的 gmail-triage 数据。
+    unauthorized_email: ⛔ 您无权处理此邮件。
+cli:
+  compression_count: 🗜️ {count}
+  model_normalized: ⚠️ 已将模型 '{from_model}' 标准化为 '{to_model}'（{provider}）。
+  copilot_normalized: ⚠️ 已将 Copilot 模型 '{from_model}' 标准化为 '{to_model}'。
+  provider_stripped: ⚠️ 已从 '{from_model}' 中移除提供商前缀；对 {provider} 使用 '{to_model}'。
+  context_length_warning: ⚠️ 上下文长度仅 {length:,} 个 token — {detail}
+  command_destroys: ⚠️ /{command} — 将销毁对话状态
+  steered: ⏩ 已将消息引导至当前运行{detail}。你的消息将在下一次工具调用后到达。
+setup:
+  edit_config_hint: 📝 编辑您的配置：
+  ready_to_go: 🚀 准备就绪！
+  tg_no_allowlist: ⚠️  Telegram 未设置用户白名单 — 任何人都可以使用您的 bot！
+  discord_no_allowlist: ⚠️  Discord 未设置用户白名单 — 任何人都可以使用您的 bot！
+  slack_no_allowlist: ⚠️  未设置 Slack 白名单 — 未配对的用户将被默认拒绝。
+  generic_no_allowlist: ⚠️  未设置白名单 — 任何能向 bot 发送消息的人都可以使用它！
+  imessage_no_allowlist: ⚠️  未设置白名单 — 任何能向您发送 iMessage 的人都可以使用 bot！
+  servers_no_allowlist: ⚠️  未设置白名单 — 任何拥有您的 bot 的服务器中的人都可以使用它！
+  platform_telegram: 📱 Telegram
+  platform_discord: 💬 Discord
+  platform_slack: 💼 Slack
+  model_header: 🤖 **模型与提供方设置**
+  model_select_provider: 选择您的 AI 提供方：
+  model_select_model: 选择模型：
+  model_enter_api_key: 输入您的 API 密钥：
+  model_key_saved: ✅ API 密钥已保存。
+  model_key_invalid: ❌ 无效的 API 密钥。请重试。
+  model_test_success: ✅ 模型测试成功！
+  model_test_failed: ❌ 模型测试失败：{error}
+  model_current: 当前模型：{model}
+  terminal_header: 🖥️ **终端后端设置**
+  terminal_select: 选择代理运行命令的位置：
+  terminal_local: 本地（本机）
+  terminal_docker: Docker 容器
+  terminal_ssh: 远程 SSH 服务器
+  agent_header: ⚙️ **代理设置**
+  agent_max_iterations: 每轮最大迭代次数（默认：90）：
+  agent_compression: 启用上下文压缩？（y/n）：
+  agent_session_reset: N 条消息后自动重置会话（0=关闭）：
+  tools_header: 🔧 **工具设置**
+  tools_tts: 启用文字转语音？（y/n）：
+  tools_web_search: 启用网络搜索？（y/n）：
+  tools_image_gen: 启用图片生成？（y/n）：
+  complete_header: ✅ **设置完成！**
+  complete_next_steps: 下一步：
+  complete_start: 开始聊天：hermes
+  complete_gateway: 运行网关：hermes gateway run
+  complete_docs: 查看文档：hermes help
+  run_agent.compending_context: 🗜️ 正在压缩上下文——总结之前的对话以便继续...
+
+stream:
+  waiting_for_response: 等待流式响应（已等{secs}秒，无数据块）

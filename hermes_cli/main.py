@@ -6599,6 +6599,101 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     return True
 
 
+def _get_parent_pid(pid: int) -> int | None:
+    """Return the parent PID for ``pid``, or ``None`` when unavailable.
+
+    Dashboard status/stop scans run from short-lived CLI wrapper processes.
+    Excluding only ``os.getpid()`` is not enough — the invoking shell or
+    parent ``hermes`` process can also contain ``hermes dashboard`` in its
+    command line and be mistaken for a live dashboard. We therefore need the
+    full ancestor chain, not just self.
+    """
+    if pid <= 1:
+        return None
+    try:
+        import psutil  # type: ignore
+        return psutil.Process(pid).ppid() or None
+    except ImportError:
+        pass
+    except Exception:
+        return None
+
+    if not shutil.which("ps"):
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    try:
+        parent_pid = int(raw.splitlines()[-1].strip())
+    except ValueError:
+        return None
+    return parent_pid if parent_pid > 0 else None
+
+
+def _get_ancestor_pids() -> set[int]:
+    """Return the current process plus its ancestor chain.
+
+    This matches the gateway status behavior: process-table scans must exclude
+    the calling CLI process AND any parent shell/wrapper that launched it.
+    Otherwise ``hermes dashboard --status`` can report a non-dashboard shell as
+    a running dashboard purely because its command line contains that phrase.
+    """
+    ancestors: set[int] = set()
+    pid = os.getpid()
+    for _ in range(64):
+        ancestors.add(pid)
+        parent = _get_parent_pid(pid)
+        if parent is None or parent <= 0 or parent in ancestors:
+            break
+        pid = parent
+    return ancestors
+
+
+def _get_process_cmdline(pid: int) -> str:
+    """Best-effort full command line for ``pid``.
+
+    Linux exposes ``/proc/<pid>/cmdline``; on macOS and other POSIX hosts, fall
+    back to ``ps`` so dashboard status can still disambiguate PIDs.
+    """
+    try:
+        if sys.platform != "win32":
+            cmdline_path = f"/proc/{pid}/cmdline"
+            if os.path.exists(cmdline_path):
+                with open(cmdline_path, "rb") as f:
+                    return (
+                        f.read()
+                        .replace(b"\x00", b" ")
+                        .decode("utf-8", errors="replace")
+                        .strip()
+                    )
+    except (OSError, ValueError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
 def _find_stale_dashboard_pids() -> list[int]:
     """Return PIDs of ``hermes dashboard`` processes other than ourselves.
 
@@ -6621,7 +6716,7 @@ def _find_stale_dashboard_pids() -> list[int]:
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
     ]
-    self_pid = os.getpid()
+    exclude_pids = _get_ancestor_pids()
     dashboard_pids: list[int] = []
 
     try:
@@ -6650,14 +6745,13 @@ def _find_stale_dashboard_pids() -> list[int]:
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
-                    if (
-                        any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
-                    ):
+                    if any(p in current_cmd for p in patterns):
                         try:
-                            dashboard_pids.append(int(pid_str))
+                            pid = int(pid_str)
                         except ValueError:
-                            pass
+                            continue
+                        if pid not in exclude_pids:
+                            dashboard_pids.append(pid)
         else:
             # Linux / macOS: scan the process table via ps and match against
             # the same explicit patterns list used on Windows.  Using ps
@@ -6684,7 +6778,7 @@ def _find_stale_dashboard_pids() -> list[int]:
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if any(p in command for p in patterns) and pid not in exclude_pids:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
@@ -10661,20 +10755,7 @@ def _report_dashboard_status() -> int:
     print(f"{len(pids)} hermes dashboard process(es) running:")
     for pid in pids:
         # Best-effort: show the full cmdline so users can tell profiles apart.
-        cmdline = ""
-        try:
-            if sys.platform != "win32":
-                cmdline_path = f"/proc/{pid}/cmdline"
-                if os.path.exists(cmdline_path):
-                    with open(cmdline_path, "rb") as f:
-                        cmdline = (
-                            f.read()
-                            .replace(b"\x00", b" ")
-                            .decode("utf-8", errors="replace")
-                            .strip()
-                        )
-        except (OSError, ValueError):
-            pass
+        cmdline = _get_process_cmdline(pid)
         if cmdline:
             print(f"    PID {pid}: {cmdline}")
         else:

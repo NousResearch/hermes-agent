@@ -352,3 +352,45 @@ gateway:
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+  approval_text_prompt: "⚠️ **危险命令需要批准：**\n```\n{command}\n```\n原因：{reason}\n\n回复 `/approve` 执行，`/approve session` 本次会话批准此模式，`/approve always` 永久批准，或 `/deny` 取消。"
+  queued_next_turn: ⏳ 已排队等待下一轮{status_detail}。当前任务完成后我会回复。
+  interrupting_current_task: ⚡ 正在中断当前任务{status_detail}。我会尽快回复你的消息。
+  model_no_response: ⚠️ 模型在处理工具结果后未返回响应。某些模型可能出现此情况 — 请重试或换个方式提问。
+  still_working: ⏳ 仍在工作中... (已运行 {elapsed} 分钟{status_detail})
+  status_elapsed: '已运行 {elapsed_min} 分钟'
+  status_iteration: '第 {iteration}/{max_iter} 轮'
+  status_running: '正在运行: {tool}'
+  shutdown_notice: ⚠️ 网关正在关闭 — 当前任务将被中断。
+  restart_notice: ⚠️ 网关正在重启 — 当前任务将被中断。重启后发送任意消息，我将尝试从中断处恢复。
+run_agent:
+  compacting_context: 🗜️ 正在压缩上下文 — 总结之前的对话以便继续...
+  preflight_compression: '📦 预检压缩: ~{tokens} tokens >= {threshold} 阈值。可能需要一些时间。'
+  stream_reconnect: ⚠️ {provider} 流 {kind} ({error_type}){suffix} — 重新连接中, 重试 {attempt}/{max_attempts}
+  auxiliary_failed: '⚠ 辅助任务 {task} 失败: {detail}'
+  aux_task_background_review: 后台审核
+  aux_task_title_generation: 标题生成
+  self_improvement_review: '💾 自我改进审查: {summary}'
+  empty_malformed_response: ⚠️ 空/格式异常响应 — 切换到备用提供商...
+  max_retries_invalid_try_fallback: ⚠️ 已达最大重试次数({max_retries})，响应无效 — 尝试备用提供商...
+  max_retries_invalid_giving_up: ❌ 已达最大重试次数({max_retries})，响应无效。放弃。
+  retrying_in: ⏳ {wait_time}秒后重试 ({hint})...
+  response_truncated: ⚠️ 响应被截断 (finish_reason='length') - 模型达到最大输出 token 限制
+  max_retries_exhausted_try_fallback: ⚠️ 已达最大重试次数({max_retries}) — 尝试备用提供商...
+  rate_limited_after_retries: ❌ {max_retries}次重试后被限流 — {summary}
+  api_failed_after_retries: ❌ {max_retries}次重试后 API 调用失败 — {summary}
+  rate_limited_waiting: ⏱️ 被限流。等待 {wait_time}秒 (第 {attempt}/{max_retries} 次)...
+  retrying_in_attempt: ⏳ {wait_time}秒后重试 (第 {attempt}/{max_retries} 次)...
+  empty_response_after_tool_calls: ↻ 工具调用后响应为空 — 使用之前的内容作为最终答案
+  empty_after_tool_calls_nudge: ⚠️ 模型在工具调用后返回空响应 — 催促继续处理
+  thinking_only_prefilling: ↻ 仅推理响应 — 预填充以继续 ({attempt}/2)
+  empty_response_retrying: ⚠️ 模型返回空响应 — 重试中 ({attempt}/3)
+  empty_response_switch_fallback: ⚠️ 模型持续返回空响应 — 切换到备用提供商...
+  switched_to_fallback: '↻ 已切换到备用: {model} ({provider})'
+  reasoning_no_visible: ⚠️ 模型产生了推理但无可见响应，所有重试已用完。返回空。
+  no_content_after_retries: ❌ 模型在所有重试后未返回任何内容{suffix}
+  rate_limited_switch_fallback: ⚠️ 被限流 — 切换到备用提供商...
+  payload_too_large: ⚠️ 请求负载过大 (413) — 压缩尝试 {attempt}/{max_attempts}...
+  compressed_retrying: 🗜️ 已压缩 {original} → {compressed} 条消息，重试中...
+  context_too_large: 🗜️ 上下文过大 (~{tokens} tokens) — 压缩中 ({attempt}/{max_attempts})...
+  non_retryable_error_try_fallback: ⚠️ 不可重试的错误 (HTTP {status_code}) — 尝试备用提供商...
+  non_retryable_error: '❌ 不可重试的错误 (HTTP {status_code}): {error}'

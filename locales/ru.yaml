@@ -352,3 +352,44 @@ gateway:
     session_db_unavailable_prefix: "База данных сеансов недоступна"
     session_not_found:           "Сеанс не найден в базе данных."
     warn_passthrough:            "⚠️ {error}"
+  queued_next_turn: ⏳ Queued for the next turn{status_detail}. I'll respond once the current task finishes.
+  interrupting_current_task: ⚡ Interrupting current task{status_detail}. I'll respond to your message shortly.
+  model_no_response: ⚠️ The model returned no response after processing tool results. This can happen with some models — try again or rephrase your question.
+  still_working: ⏳ Still working... ({elapsed} min elapsed{status_detail})
+  status_elapsed: '{elapsed_min} min elapsed'
+  status_iteration: 'iteration {iteration}/{max_iter}'
+  status_running: 'running: {tool}'
+  shutdown_notice: ⚠️ Gateway shutting down — Your current task will be interrupted.
+  restart_notice: ⚠️ Gateway restarting — Your current task will be interrupted. Send any message after restart and I'll try to resume where you left off.
+run_agent:
+  compacting_context: 🗜️ Compacting context — summarizing earlier conversation so I can continue...
+  preflight_compression: '📦 Preflight compression: ~{tokens} tokens >= {threshold} threshold. This may take a moment.'
+  stream_reconnect: ⚠️ {provider} stream {kind} ({error_type}){suffix} — reconnecting, retry {attempt}/{max_attempts}
+  auxiliary_failed: '⚠ Auxiliary {task} failed: {detail}'
+  aux_task_background_review: background review
+  aux_task_title_generation: title generation
+  self_improvement_review: '💾 Self-improvement review: {summary}'
+  empty_malformed_response: ⚠️ Empty/malformed response — switching to fallback...
+  max_retries_invalid_try_fallback: ⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...
+  max_retries_invalid_giving_up: ❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.
+  retrying_in: ⏳ Retrying in {wait_time}s ({hint})...
+  response_truncated: ⚠️ Response truncated (finish_reason='length') - model hit max output tokens
+  max_retries_exhausted_try_fallback: ⚠️ Max retries ({max_retries}) exhausted — trying fallback...
+  rate_limited_after_retries: ❌ Rate limited after {max_retries} retries — {summary}
+  api_failed_after_retries: ❌ API failed after {max_retries} retries — {summary}
+  rate_limited_waiting: ⏱️ Rate limited. Waiting {wait_time}s (attempt {attempt}/{max_retries})...
+  retrying_in_attempt: ⏳ Retrying in {wait_time}s (attempt {attempt}/{max_retries})...
+  empty_response_after_tool_calls: ↻ Empty response after tool calls — using earlier content as final answer
+  empty_after_tool_calls_nudge: ⚠️ Model returned empty after tool calls — nudging to continue
+  thinking_only_prefilling: ↻ Thinking-only response — prefilling to continue ({attempt}/2)
+  empty_response_retrying: ⚠️ Empty response from model — retrying ({attempt}/3)
+  empty_response_switch_fallback: ⚠️ Model returning empty responses — switching to fallback provider...
+  switched_to_fallback: '↻ Switched to fallback: {model} ({provider})'
+  reasoning_no_visible: ⚠️ Model produced reasoning but no visible response after all retries. Returning empty.
+  no_content_after_retries: ❌ Model returned no content after all retries{suffix}
+  rate_limited_switch_fallback: ⚠️ Rate limited — switching to fallback provider...
+  payload_too_large: ⚠️ Request payload too large (413) — compression attempt {attempt}/{max_attempts}...
+  compressed_retrying: 🗜️ Compressed {original} → {compressed} messages, retrying...
+  context_too_large: 🗜️ Context too large (~{tokens} tokens) — compressing ({attempt}/{max_attempts})...
+  non_retryable_error_try_fallback: ⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...
+  non_retryable_error: '❌ Non-retryable error (HTTP {status_code}): {error}'

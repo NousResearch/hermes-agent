@@ -4081,6 +4081,16 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    parked_scheduled: list[str] = field(default_factory=list)
+    """Assigned, unclaimed tasks parked in ``scheduled``. Scheduled is a
+    non-dispatchable hold state: the dispatcher will not claim these until
+    an operator/automation calls ``unblock``. Surfacing them in dispatch
+    output prevents the false impression that the watchdog ignored work."""
+    blocked_by_parent: list[tuple[str, str, str]] = field(default_factory=list)
+    """Child tasks waiting on a blocked parent, as
+    ``(child_id, parent_id, parent_status)``. Normal todo dependencies are
+    fine, but a child created to repair/unblock its blocked parent must not
+    be linked under that parent or it can never run."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -5174,6 +5184,34 @@ def dispatch_once(
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
+
+    # Make non-dispatchable "why didn't the watchdog pick this up?" states
+    # visible in the normal dispatch result. These are read-only diagnostics:
+    # scheduled tasks remain parked by design, and todo children still wait for
+    # their parents, but operators get a concrete explanation instead of an
+    # empty spawned=[] result.
+    result.parked_scheduled = [
+        str(r["id"])
+        for r in conn.execute(
+            "SELECT id FROM tasks "
+            "WHERE status = 'scheduled' "
+            "  AND assignee IS NOT NULL "
+            "  AND claim_lock IS NULL "
+            "ORDER BY priority DESC, created_at ASC"
+        ).fetchall()
+    ]
+    result.blocked_by_parent = [
+        (str(r["child_id"]), str(r["parent_id"]), str(r["parent_status"]))
+        for r in conn.execute(
+            "SELECT c.id AS child_id, p.id AS parent_id, p.status AS parent_status "
+            "FROM tasks c "
+            "JOIN task_links l ON l.child_id = c.id "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE c.status IN ('todo', 'scheduled') "
+            "  AND p.status = 'blocked' "
+            "ORDER BY c.priority DESC, c.created_at ASC"
+        ).fetchall()
+    ]
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

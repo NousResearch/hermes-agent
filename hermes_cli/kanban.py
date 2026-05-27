@@ -1969,7 +1969,11 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 print(f"cannot schedule {tid}", file=sys.stderr)
             else:
-                print(f"Scheduled {tid}" + (f": {reason}" if reason else ""))
+                print(
+                    f"Scheduled {tid}" + (f": {reason}" if reason else "")
+                    + "\n  note: scheduled is a parked/non-dispatchable state; "
+                    + "run `hermes kanban unblock " + tid + "` when it should be picked up."
+                )
     return 0 if not failed else 1
 
 
@@ -2108,6 +2112,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "parked_scheduled": res.parked_scheduled,
+            "blocked_by_parent": [
+                {"task_id": child, "parent_id": parent, "parent_status": status}
+                for (child, parent, status) in res.blocked_by_parent
+            ],
         }, indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -2134,6 +2143,21 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
+        )
+    if res.parked_scheduled:
+        print(
+            "Parked scheduled (not dispatchable; run `hermes kanban unblock <id>` "
+            f"when it should run): {', '.join(res.parked_scheduled)}"
+        )
+    if res.blocked_by_parent:
+        formatted = ", ".join(
+            f"{child} waits on {parent} ({status})"
+            for child, parent, status in res.blocked_by_parent
+        )
+        print(
+            "Blocked by parent dependency: " + formatted + "\n"
+            "  If one of these is a rescue/unblock/remediation task for its "
+            "blocked parent, unlink the dependency before unblocking it."
         )
     return 0
 

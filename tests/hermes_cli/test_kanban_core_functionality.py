@@ -4419,3 +4419,45 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         )
         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
         assert kb.get_task(conn, t).status == "running"
+
+
+def test_dispatch_reports_scheduled_tasks_as_parked(kanban_home, all_assignees_spawnable):
+    """Scheduled is a parked state, not a dispatcher queue. Dispatch output
+    must make that visible so operators don't mistake spawned=[] for a dead
+    watchdog.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="later", assignee="worker")
+        assert kb.schedule_task(conn, tid, reason="wait for window")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert tid in res.parked_scheduled
+        assert res.spawned == []
+    finally:
+        conn.close()
+
+
+def test_dispatch_reports_children_waiting_on_blocked_parent(kanban_home, all_assignees_spawnable):
+    """A rescue/remediation ticket linked under the blocked task it should fix
+    is a deadlock. The dispatcher can't infer intent safely, but it should
+    report the blocked-parent dependency in its normal result.
+    """
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="blocked parent", assignee="worker")
+        child = kb.create_task(
+            conn,
+            title="rescue blocked parent",
+            assignee="worker",
+            parents=[parent],
+        )
+        assert kb.block_task(conn, parent, reason="needs rescue")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert (child, parent, "blocked") in res.blocked_by_parent
+        assert child not in [tid for tid, _who, _ws in res.spawned]
+    finally:
+        conn.close()

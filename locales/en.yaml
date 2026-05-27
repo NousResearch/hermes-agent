@@ -10,7 +10,8 @@ approval:
   allowed_always: '      ✓ Added to permanent allowlist'
   denied: '      ✗ Denied'
   cancelled: '      ✗ Cancelled'
-  blocklist_message: This command is on the unconditional blocklist and cannot be approved.
+  blocklist_message: This command is on the unconditional blocklist and cannot be
+    approved.
   reason:
     delete_root_path: delete in root path
     recursive_delete: recursive delete
@@ -49,7 +50,8 @@ approval:
     find_delete: find -delete
     stop_restart_gateway: stop/restart hermes gateway (kills running agents)
     hermes_update: hermes update (restarts gateway, kills running agents)
-    gateway_outside_systemd: start gateway outside systemd (use 'systemctl --user restart hermes-gateway')
+    gateway_outside_systemd: start gateway outside systemd (use 'systemctl --user
+      restart hermes-gateway')
     kill_gateway: kill hermes/gateway process (self-termination)
     kill_pgrep: kill process via pgrep expansion (self-termination)
     kill_pgrep_backtick: kill process via backtick pgrep expansion (self-termination)
@@ -72,14 +74,25 @@ approval:
     security_scan_prefix: Security scan
     security_issue_detected: security issue detected
 gateway:
-  approval_expired: ⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again.
+  approval_expired: ⚠️ Approval expired (agent is no longer waiting). Ask the agent
+    to try again.
   draining: ⏳ Draining {count} active agent(s) before restart...
   goal_cleared: ✓ Goal cleared.
   no_active_goal: No active goal.
   config_read_failed: '⚠️ Could not read config.yaml: {error}'
   config_save_failed: '⚠️ Could not save config: {error}'
   status:
-    elapsed_min: '{min} min elapsed'
+    header: 📊 **Hermes Gateway Status**
+    session_id: '**Session ID:** `{session_id}`'
+    title: '**Title:** {title}'
+    created: '**Created:** {timestamp}'
+    last_activity: '**Last Activity:** {timestamp}'
+    tokens: '**Tokens:** {tokens}'
+    agent_running: '**Agent Running:** {state}'
+    state_yes: Yes ⚡
+    state_no: 'No'
+    queued: '**Queued follow-ups:** {count}'
+    platforms: '**Connected Platforms:** {platforms}'
   model:
     error_prefix: 'Error: {error}'
     switched: Model switched to `{model}`
@@ -112,17 +125,22 @@ gateway:
     no_pending: No pending command to approve.
     once_singular: ✅ Command approved. The agent is resuming...
     once_plural: ✅ Commands approved ({count} commands). The agent is resuming...
-    session_singular: ✅ Command approved (pattern approved for this session). The agent is resuming...
-    session_plural: ✅ Commands approved (pattern approved for this session) ({count} commands). The agent is resuming...
-    always_singular: ✅ Command approved (pattern approved permanently). The agent is resuming...
-    always_plural: ✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming...
+    session_singular: ✅ Command approved (pattern approved for this session). The
+      agent is resuming...
+    session_plural: ✅ Commands approved (pattern approved for this session) ({count}
+      commands). The agent is resuming...
+    always_singular: ✅ Command approved (pattern approved permanently). The agent
+      is resuming...
+    always_plural: ✅ Commands approved (pattern approved permanently) ({count} commands).
+      The agent is resuming...
   background:
     usage: 'Usage: /background <prompt>
 
       Example: /background Summarize the top HN stories today
 
 
-      Runs the prompt in a separate session. You can keep chatting — the result will appear here when done.'
+      Runs the prompt in a separate session. You can keep chatting — the result will
+      appear here when done.'
     started: '🔄 Background task started: "{preview}"
 
       Task ID: {task_id}
@@ -159,14 +177,18 @@ gateway:
   compress:
     not_enough: Not enough conversation to compress (need at least 4 messages).
     no_provider: No provider configured -- cannot compress.
-    nothing_to_do: Nothing to compress yet (the transcript is still all protected context).
+    nothing_to_do: Nothing to compress yet (the transcript is still all protected
+      context).
     focus_line: 'Focus: "{topic}"'
-    summary_failed: ⚠️ Summary generation failed ({error}). {count} historical message(s) were removed and replaced with a
-      placeholder; earlier context is no longer recoverable. Consider checking your auxiliary.compression model configuration.
-    aborted: ⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry,
-      /reset for a clean session, or check your auxiliary.compression model configuration.
-    aux_failed: ℹ️ Configured compression model `{model}` failed ({error}). Recovered using your main model — context is intact
-      — but you may want to check `auxiliary.compression.model` in config.yaml.
+    summary_failed: ⚠️ Summary generation failed ({error}). {count} historical message(s)
+      were removed and replaced with a placeholder; earlier context is no longer recoverable.
+      Consider checking your auxiliary.compression model configuration.
+    aborted: ⚠️ Compression aborted ({error}). No messages were dropped — conversation
+      is unchanged. Run /compress to retry, /reset for a clean session, or check your
+      auxiliary.compression model configuration.
+    aux_failed: ℹ️ Configured compression model `{model}` failed ({error}). Recovered
+      using your main model — context is intact — but you may want to check `auxiliary.compression.model`
+      in config.yaml.
     failed: 'Compression failed: {error}'
   debug:
     upload_failed: '✗ Failed to upload debug report: {error}'
@@ -180,7 +202,8 @@ gateway:
     denied_singular: ❌ Command denied.
     denied_plural: ❌ Commands denied ({count} commands).
   fast:
-    not_supported: ⚡ /fast is only available for OpenAI models that support Priority Processing.
+    not_supported: ⚡ /fast is only available for OpenAI models that support Priority
+      Processing.
     status: '⚡ Priority Processing
 
 
@@ -222,11 +245,13 @@ gateway:
     no_resume: No goal to resume.
     resumed: '▶ Goal resumed: {goal}
 
-      Send any message to continue, or wait — I''ll take the next step on the next turn.'
+      Send any message to continue, or wait — I''ll take the next step on the next
+      turn.'
     invalid: 'Invalid goal: {error}'
     set: '⊙ Goal set ({budget}-turn budget): {goal}
 
-      I''ll keep working until the goal is done, you pause/clear it, or the budget is exhausted.
+      I''ll keep working until the goal is done, you pause/clear it, or the budget
+      is exhausted.
 
       Controls: /goal status · /goal pause · /goal resume · /goal clear'
   help:
@@ -244,8 +269,10 @@ gateway:
     error: 'Error generating insights: {error}'
   kanban:
     error_prefix: '⚠ kanban error: {error}'
-    subscribed_suffix: (subscribed — you'll be notified when {task_id} completes or blocks)
-    truncated_suffix: … (truncated; use `hermes kanban …` in your terminal for full output)
+    subscribed_suffix: (subscribed — you'll be notified when {task_id} completes or
+      blocks)
+    truncated_suffix: … (truncated; use `hermes kanban …` in your terminal for full
+      output)
     no_output: (no output)
   personality:
     none_configured: No personalities configured in `{path}/config.yaml`
@@ -293,8 +320,8 @@ gateway:
 
       Model thinking will be shown before each response on **{platform}**.'
     display_set_off: '🧠 ✓ Reasoning display: **OFF** for **{platform}**'
-    reset_global_unsupported: ⚠️ `/reasoning reset --global` is not supported. Use `/reasoning <level> --global` to change
-      the global default.
+    reset_global_unsupported: ⚠️ `/reasoning reset --global` is not supported. Use
+      `/reasoning <level> --global` to change the global default.
     reset_done: 🧠 ✓ Session reasoning override cleared; falling back to global config.
     unknown_arg: '⚠️ Unknown argument: `{arg}`
 
@@ -307,21 +334,24 @@ gateway:
     set_global: '🧠 ✓ Reasoning effort set to `{effort}` (saved to config)
 
       _(takes effect on next message)_'
-    set_global_save_failed: '🧠 ✓ Reasoning effort set to `{effort}` (session only — config save failed)
+    set_global_save_failed: '🧠 ✓ Reasoning effort set to `{effort}` (session only
+      — config save failed)
 
       _(takes effect on next message)_'
-    set_session: '🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global` to persist)
+    set_session: '🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global`
+      to persist)
 
       _(takes effect on next message)_'
   reload_mcp:
     cancelled: 🟡 /reload-mcp cancelled. MCP tools unchanged.
-    always_followup: 'ℹ️ Future `/reload-mcp` calls will run without confirmation. Re-enable via `approvals.mcp_reload_confirm:
-      true` in config.yaml.'
+    always_followup: 'ℹ️ Future `/reload-mcp` calls will run without confirmation.
+      Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.'
     confirm_prompt: '⚠️ **Confirm /reload-mcp**
 
 
-      Reloading MCP servers rebuilds the tool set for this session and **invalidates the provider prompt cache** — the next
-      message will re-send full input tokens.  On long-context or high-reasoning models this can be expensive.
+      Reloading MCP servers rebuilds the tool set for this session and **invalidates
+      the provider prompt cache** — the next message will re-send full input tokens.  On
+      long-context or high-reasoning models this can be expensive.
 
 
       Choose:
@@ -381,30 +411,32 @@ gateway:
     ctx_source_default: default — set model.context_length in config to override
   restart:
     in_progress: ⏳ Gateway restart already in progress...
-    restarting: ♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway
-      restart`.
+    restarting: ♻ Restarting gateway. If you aren't notified within 60 seconds, restart
+      from the console with `hermes gateway restart`.
     success: ♻ Gateway restarted successfully. Your session continues.
     shutting_down: ⚠️ Gateway shutting down — Your current task will be interrupted.
-    restarting_hint: ⚠️ Gateway restarting — Your current task will be interrupted. Send any message after restart and I'll
-      try to resume where you left off.
+    restarting_hint: ⚠️ Gateway restarting — Your current task will be interrupted.
+      Send any message after restart and I'll try to resume where you left off.
   online: ♻️ Gateway online — Hermes is back and ready.
-  provider_auth_failed: ⚠️ Provider authentication failed. Check the configured credentials; raw provider details are in the
-    gateway logs.
-  provider_rejected: ⚠️ The model provider rejected the request. I kept the raw provider error out of chat; check gateway
-    logs for details or try rephrasing.
-  provider_rate_limited: ⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.
-  provider_failed: ⚠️ The model provider failed after retries. I kept raw provider details out of chat; check gateway logs
-    for diagnostics.
+  provider_auth_failed: ⚠️ Provider authentication failed. Check the configured credentials;
+    raw provider details are in the gateway logs.
+  provider_rejected: ⚠️ The model provider rejected the request. I kept the raw provider
+    error out of chat; check gateway logs for details or try rephrasing.
+  provider_rate_limited: ⏱️ The model provider is rate-limiting requests. Please wait
+    a moment and try again.
+  provider_failed: ⚠️ The model provider failed after retries. I kept raw provider
+    details out of chat; check gateway logs for diagnostics.
   busy_queued: ⏳ Gateway {action} — queued for the next turn after it comes back.
   busy_rejecting: ⏳ Gateway is {action} and is not accepting another turn right now.
   busy_queued_detail: ⏳ Queued for the next turn{detail}.
   busy_action_hint: ⚠️ Gateway {action} — {hint}
   action_restarting: restarting
   action_shutting_down: shutting down
-  hint_interrupt_resume: Your current task will be interrupted. Send any message after restart and I'll try to resume where
-    you left off.
+  hint_interrupt_resume: Your current task will be interrupted. Send any message after
+    restart and I'll try to resume where you left off.
   hint_interrupt: Your current task will be interrupted.
-  busy_agent_running: ⏳ Agent is running — `/{command}` can't run right now. Try again after the current turn finishes.
+  busy_agent_running: ⏳ Agent is running — `/{command}` can't run right now. Try again
+    after the current turn finishes.
   busy_not_accepting: ⏳ Gateway is {action} and is not accepting new work right now.
   session_too_large: '⚠️ Session too large for the model''s context window.
 
@@ -417,16 +449,18 @@ gateway:
 
     • `/new` — fresh start with optional title'
   processing_stopped: '⚠️ Processing stopped: {error}. Try again.'
-  processing_no_response: ⚠️ Processing completed but no response was generated. This sometimes happens with very long sessions
-    — try sending another message.
-  compression_aborted: ⚠️ Context compression aborted ({error}). No messages were dropped — conversation is unchanged.
-  no_response_after_tools: ⚠️ The model returned no response after processing tools. This can happen with very long sessions
-    — try sending another message.
+  processing_no_response: ⚠️ Processing completed but no response was generated. This
+    sometimes happens with very long sessions — try sending another message.
+  compression_aborted: ⚠️ Context compression aborted ({error}). No messages were
+    dropped — conversation is unchanged.
+  no_response_after_tools: ⚠️ The model returned no response after processing tools.
+    This can happen with very long sessions — try sending another message.
   bg_task_no_creds: '❌ Background task {task_id} failed: no provider credentials configured.'
   bg_task_failed: '❌ Background task {task_id} failed: {error}'
   update_finished: ✅ Hermes update finished.
   update_failed_code: ❌ Hermes update failed (exit code {code}).
-  update_failed: ❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details.
+  update_failed: ❌ Hermes update failed. Check the gateway logs or run `hermes update`
+    manually for details.
   update_finished_output: '✅ Hermes update finished.
 
 
@@ -446,13 +480,14 @@ gateway:
   update_finished_success: ✅ Hermes update finished successfully.
   update_timed_out: ❌ Hermes update timed out after 30 minutes.
   still_working: ⏳ Still working... ({elapsed} min elapsed{detail})
-  no_activity_warning: ⚠️ No activity for {minutes} min. The agent may be stuck — try sending a message or use /stop to cancel.
+  no_activity_warning: ⚠️ No activity for {minutes} min. The agent may be stuck —
+    try sending a message or use /stop to cancel.
   proxy_no_aiohttp: '⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp'
   proxy_not_configured: ⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)
   proxy_error: '⚠️ Proxy error ({status}): {detail}'
   proxy_connection_error: '⚠️ Proxy connection error: {error}'
-  session_auto_reset: 🔄 Session auto-reset — the conversation exceeded the context limit and has been compressed. I'll continue
-    from where we left off.
+  session_auto_reset: 🔄 Session auto-reset — the conversation exceeded the context
+    limit and has been compressed. I'll continue from where we left off.
   bg_task_complete: '✅ Background task complete
 
     Prompt: "{preview}"
@@ -490,14 +525,15 @@ gateway:
 
 
     _Text fallback: reply `/approve`, `/always`, or `/cancel`._'
-  detail_new: 'This starts a fresh session and discards the current conversation history.'
-  detail_undo: 'This removes the last user/assistant exchange from history.'
+  detail_new: This starts a fresh session and discards the current conversation history.
+  detail_undo: This removes the last user/assistant exchange from history.
   steer_failed: '⚠️ Steer failed: {error}'
   resume:
     db_unavailable: Session database not available.
     no_named_sessions: 'No named sessions found.
 
-      Use `/title My Session` to name your current session, then `/resume My Session` to return to it later.'
+      Use `/title My Session` to name your current session, then `/resume My Session`
+      to return to it later.'
     list_header: '📋 **Named Sessions**
 
       '
@@ -518,7 +554,8 @@ gateway:
   retry:
     no_previous: No previous message to retry.
   rollback:
-    not_enabled: "Checkpoints are not enabled.\nEnable in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    not_enabled: "Checkpoints are not enabled.\nEnable in config.yaml:\n```\ncheckpoints:\n\
+      \  enabled: true\n```"
     none_found: No checkpoints found for {cwd}
     invalid_number: Invalid checkpoint number. Use 1-{max}.
     restored: '✅ Restored to checkpoint {hash}: {reason}
@@ -530,20 +567,9 @@ gateway:
     success: '✅ Home channel set to **{name}** (ID: {chat_id}).
 
       Cron jobs and cross-platform messages will be delivered here.'
-  status:
-    header: 📊 **Hermes Gateway Status**
-    session_id: '**Session ID:** `{session_id}`'
-    title: '**Title:** {title}'
-    created: '**Created:** {timestamp}'
-    last_activity: '**Last Activity:** {timestamp}'
-    tokens: '**Tokens:** {tokens}'
-    agent_running: '**Agent Running:** {state}'
-    state_yes: Yes ⚡
-    state_no: 'No'
-    queued: '**Queued follow-ups:** {count}'
-    platforms: '**Connected Platforms:** {platforms}'
   stop:
-    stopped_pending: ⚡ Stopped. The agent hadn't started yet — you can continue this session.
+    stopped_pending: ⚡ Stopped. The agent hadn't started yet — you can continue this
+      session.
     stopped: ⚡ Stopped. You can continue this session.
     no_active: No active task to stop.
   title:
@@ -562,8 +588,9 @@ gateway:
     not_telegram_dm: The /topic command is only available in Telegram private chats.
     no_session_db: Session database not available.
     unauthorized: You are not authorized to use /topic on this bot.
-    restore_needs_topic: To restore a session, first create or open a Telegram topic, then send /topic <session-id> inside
-      that topic. To create a new topic, open All Messages and send any message there.
+    restore_needs_topic: To restore a session, first create or open a Telegram topic,
+      then send /topic <session-id> inside that topic. To create a new topic, open
+      All Messages and send any message there.
     topics_disabled: 'Telegram topics are not enabled for this bot yet.
 
 
@@ -579,10 +606,12 @@ gateway:
 
 
       Then send /topic again.'
-    topics_user_disallowed: 'Telegram topics are enabled, but users are not allowed to create topics.
+    topics_user_disallowed: 'Telegram topics are enabled, but users are not allowed
+      to create topics.
 
 
-      Open @BotFather → choose your bot → Bot Settings → Threads Settings, then turn off ''Disallow users to create new threads''.
+      Open @BotFather → choose your bot → Bot Settings → Threads Settings, then turn
+      off ''Disallow users to create new threads''.
 
 
       Then send /topic again.'
@@ -596,12 +625,14 @@ gateway:
 
       Use /new to replace this topic with a fresh session.
 
-      For parallel work, open All Messages and send a message there to create another topic.'
+      For parallel work, open All Messages and send a message there to create another
+      topic.'
     thread_ready: 'Telegram multi-session topics are enabled.
 
 
-      This topic will be used as an independent Hermes session. Use /new to replace this topic''s current session. For parallel
-      work, open All Messages and send a message there to create another topic.'
+      This topic will be used as an independent Hermes session. Use /new to replace
+      this topic''s current session. For parallel work, open All Messages and send
+      a message there to create another topic.'
     untitled_session: Untitled session
   undo:
     nothing: Nothing to undo.
@@ -609,10 +640,12 @@ gateway:
 
       Removed: "{preview}"'
   update:
-    platform_not_messaging: ✗ /update is only available from messaging platforms. Run `hermes update` from the terminal.
+    platform_not_messaging: ✗ /update is only available from messaging platforms.
+      Run `hermes update` from the terminal.
     not_git_repo: ✗ Not a git repository — cannot update.
-    hermes_cmd_not_found: ✗ Could not locate the `hermes` command. Hermes is running, but the update command could not find
-      the executable on PATH or via the current Python interpreter. Try running `hermes update` manually in your terminal.
+    hermes_cmd_not_found: ✗ Could not locate the `hermes` command. Hermes is running,
+      but the update command could not find the executable on PATH or via the current
+      Python interpreter. Try running `hermes update` manually in your terminal.
     start_failed: '✗ Failed to start update: {error}'
     starting: ⚕ Starting Hermes update… I'll stream progress here.
   usage:
@@ -635,12 +668,14 @@ gateway:
     detailed_after_first: _(Detailed usage available after the first agent response)_
     no_data: No usage data available for this session.
   verbose:
-    not_enabled: "The `/verbose` command is not enabled for messaging platforms.\n\nEnable it in `config.yaml`:\n```yaml\n\
-      display:\n  tool_progress_command: true\n```"
+    not_enabled: "The `/verbose` command is not enabled for messaging platforms.\n\
+      \nEnable it in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n\
+      ```"
     mode_off: '⚙️ Tool progress: **OFF** — no tool activity shown.'
-    mode_new: '⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default
-      40).'
-    mode_all: '⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40).'
+    mode_new: '⚙️ Tool progress: **NEW** — shown when tool changes (preview length:
+      `display.tool_preview_length`, default 40).'
+    mode_all: '⚙️ Tool progress: **ALL** — every tool call shown (preview length:
+      `display.tool_preview_length`, default 40).'
     mode_verbose: '⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.'
     saved_suffix: _(saved for **{platform}** — takes effect on next message)_
     save_failed: '_(could not save to config: {error})_'
@@ -665,14 +700,17 @@ gateway:
     label_voice_only: On (voice reply to voice messages)
     label_all: TTS (voice reply to all messages)
   yolo:
-    disabled: ⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval.
-    enabled: ⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution.
+    disabled: ⚠️ YOLO mode **OFF** for this session — dangerous commands will require
+      approval.
+    enabled: ⚡ YOLO mode **ON** for this session — all commands auto-approved. Use
+      with caution.
   shared:
     session_db_unavailable: Session database not available.
     session_db_unavailable_prefix: Session database not available
     session_not_found: Session not found in database.
     warn_passthrough: ⚠️ {error}
-  interrupting: ⚡ Interrupting current task{detail}. I'll respond to your message shortly.
+  interrupting: ⚡ Interrupting current task{detail}. I'll respond to your message
+    shortly.
   queue:
     usage: 'Usage: /queue <prompt>'
     queued: Queued for the next turn.
@@ -683,17 +721,20 @@ gateway:
     queued: '⏩ Steer queued — arrives after the next tool call: ''{preview}'''
     rejected_empty: Steer rejected (empty payload).
     no_agent_queued: No active agent — /steer queued for the next turn.
-    usage_no_agent: 'Usage: /steer <prompt>  (no agent is running; sending as a normal message)'
+    usage_no_agent: 'Usage: /steer <prompt>  (no agent is running; sending as a normal
+      message)'
   agent_running:
     wait_or_stop: Agent is running — wait or /stop first, then switch models.
-    goal_hint: Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal.
+    goal_hint: Agent is running — use /goal status / pause / clear mid-run, or /stop
+      before setting a new goal.
     hook_blocked: Command `/{command}` was blocked by a hook.
   quick:
     timed_out: Quick command timed out (30s).
     error: 'Quick command error: {error}'
     no_command: Quick command '/{command}' has no command defined.
     no_target: Quick command '/{command}' has no target defined.
-    unsupported_type: 'Quick command ''/{command}'' has unsupported type (supported: ''exec'', ''alias'').'
+    unsupported_type: 'Quick command ''/{command}'' has unsupported type (supported:
+      ''exec'', ''alias'').'
   usage_cmd:
     platform: 'Usage: /platform {action} <name>'
     subgoal_remove: 'Usage: /subgoal remove <n>'
@@ -722,8 +763,8 @@ platform:
     Reason: {reason}
 
 
-    Reply `/approve` to execute, `/approve session` to approve this pattern for this session, `/approve always` to approve
-    permanently, or `/deny` to cancel.
+    Reply `/approve` to execute, `/approve session` to approve this pattern for this
+    session, `/approve always` to approve permanently, or `/deny` to cancel.
 
 
     Or click emoji to approve:
@@ -790,7 +831,8 @@ platform:
     select_model: 'Pick a model:'
     select_provider: 'Pick a provider:'
     slash_approve_desc: Approve a pending dangerous command
-    slash_approve_scope_desc: 'Optional: ''all'', ''session'', ''always'', ''all session'', ''all always'''
+    slash_approve_scope_desc: 'Optional: ''all'', ''session'', ''always'', ''all session'',
+      ''all always'''
     slash_background_desc: Run a prompt in the background
     slash_background_prompt_desc: Prompt to run in background
     slash_bg_started: Background task started~
@@ -801,7 +843,8 @@ platform:
     slash_insights_days_desc: 'Number of days to analyze (default: 7)'
     slash_insights_desc: View usage insights and analytics
     slash_model_desc: View or change model
-    slash_model_name_desc: Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current model.
+    slash_model_name_desc: Model name (e.g. anthropic/claude-sonnet-4). Leave empty
+      to see current model.
     slash_new_desc: Start a new session
     slash_new_started: New session started~
     slash_personality_desc: Set personality
@@ -810,7 +853,8 @@ platform:
     slash_queue_prompt_desc: Prompt to queue
     slash_queued: Queued for next turn.
     slash_reasoning_desc: View or change reasoning effort
-    slash_reasoning_effort_desc: 'Reasoning effort: none, minimal, low, medium, high, or xhigh.'
+    slash_reasoning_effort_desc: 'Reasoning effort: none, minimal, low, medium, high,
+      or xhigh.'
     slash_reload_mcp_desc: Reload MCP servers from config
     slash_reload_skills_desc: Rescan ~/.hermes/skills/ for new or removed skills
     slash_reset_desc: Reset your Hermes session
@@ -896,22 +940,27 @@ platform:
     unauthorized_prompt: ⛔ You're not authorized to answer this prompt.
     unauthorized_update: ⛔ You're not authorized to answer the update prompt.
 agent:
-  stale_connections_cleaned: 🔌 Detected stale connections from a previous provider issue — cleaned up automatically. Proceeding
-    with fresh connection.
+  stale_connections_cleaned: 🔌 Detected stale connections from a previous provider
+    issue — cleaned up automatically. Proceeding with fresh connection.
   starting_conversation: '💬 Starting conversation: ''{preview}'''
   iteration_budget_exhausted: '
 
     ⚠️  Iteration budget exhausted ({used}/{max_total} iterations used)'
   cached_context: '{prefix}💾 Cached context length: {ctx:,} tokens for {model}'
-  operation_interrupted_retry: Operation interrupted during retry ({hint}, attempt {attempt}/{max}).
+  operation_interrupted_retry: Operation interrupted during retry ({hint}, attempt
+    {attempt}/{max}).
   response_truncated: Response remained truncated after 3 continuation attempts
   output_length_limit: Response truncated due to output length limit
   first_response_truncated: First response truncated due to output length limit
-  operation_interrupted_waiting: 'Operation interrupted: waiting for model response ({elapsed}s elapsed).'
-  payload_too_large_max: 'Request payload too large: max compression attempts ({max}) reached.'
+  operation_interrupted_waiting: 'Operation interrupted: waiting for model response
+    ({elapsed}s elapsed).'
+  payload_too_large_max: 'Request payload too large: max compression attempts ({max})
+    reached.'
   payload_too_large: Request payload too large (413). Cannot compress further.
-  context_length_exceeded_max: 'Context length exceeded: max compression attempts ({max}) reached.'
-  context_length_exceeded: Context length exceeded ({tokens} tokens). Cannot compress further.
+  context_length_exceeded_max: 'Context length exceeded: max compression attempts
+    ({max}) reached.'
+  context_length_exceeded: Context length exceeded ({tokens} tokens). Cannot compress
+    further.
   active_days: 'Active days:'
   active_days_label: '**Active days:**'
   active_time_label: '**Active time:**'
@@ -923,9 +972,11 @@ agent:
   best_streak_term: 'Best streak:'
   busiest_label: '**📅 Busiest:**'
   distinct_skills: 'Distinct skills:'
-  empty_after_tools: ⚠️ Model returned empty response after tool calls — prompting to continue
+  empty_after_tools: ⚠️ Model returned empty response after tool calls — prompting
+    to continue
   empty_response_tools: ↻ Empty response after tool call — using previous reply content
-  empty_responses_fallback: ⚠️ Model consistently returning empty responses — switching to fallback provider...
+  empty_responses_fallback: ⚠️ Model consistently returning empty responses — switching
+    to fallback provider...
   fallback_chain: '🔄 Fallback chain ({count} providers):'
   fallback_model: '🔄 Fallback model: {model} ({provider})'
   init:
@@ -936,9 +987,12 @@ agent:
     enabled_toolsets: '   ✅ Enabled toolsets: {toolsets}'
     ephemeral_prompt: '🔒 Ephemeral system prompt: ''{prompt}'' (not saved to trajectories)'
     initialized: '🤖 AI Agent initialized with model: {model}'
-    initialized_anthropic: '🤖 AI Agent initialized with model: {model} (Anthropic native)'
-    initialized_bedrock: '🤖 AI Agent initialized with model: {model} (AWS Bedrock, {region}{guardrails})'
-    initialized_bedrock_sdk: '🤖 AI Agent initialized with model: {model} (AWS Bedrock + AnthropicBedrock SDK, {region})'
+    initialized_anthropic: '🤖 AI Agent initialized with model: {model} (Anthropic
+      native)'
+    initialized_bedrock: '🤖 AI Agent initialized with model: {model} (AWS Bedrock,
+      {region}{guardrails})'
+    initialized_bedrock_sdk: '🤖 AI Agent initialized with model: {model} (AWS Bedrock
+      + AnthropicBedrock SDK, {region})'
     no_tools: 🛠️  No tools loaded (all tools filtered out or unavailable)
     prompt_caching: '💾 Prompt caching: ENABLED ({source}, {ttl} TTL)'
     tools_loaded: '🛠️  Loaded {count} tools: {tools}'
@@ -953,7 +1007,8 @@ agent:
   models_section: '**🤖 Models:**'
   models_used: 🤖 Models used
   more_tools: '... and {count} more tools'
-  no_response_reconnect: '⚠️ Provider no response for {time}s (model: {model}, context: ~{tokens} tokens). Reconnecting...'
+  no_response_reconnect: '⚠️ Provider no response for {time}s (model: {model}, context:
+    ~{tokens} tokens). Reconnecting...'
   no_sessions_found: No sessions found in the past {days} days.
   notable_sessions: 🏆 Notable sessions
   output_tokens: 'Output tokens:'
@@ -964,12 +1019,14 @@ agent:
   platforms_section_term: 📱 Platforms
   primary_model_failed: '🔄 Primary model failed — switching to fallback: {model} ({provider})'
   rate_limited_fallback: ⚠️ Rate limited — switching to fallback provider...
-  reasoning_no_content: ⚠️ Model produced reasoning content but no visible reply, all retries exhausted. Returning empty content.
+  reasoning_no_content: ⚠️ Model produced reasoning content but no visible reply,
+    all retries exhausted. Returning empty content.
   sessions: 'Sessions:'
   sessions_label: '**Sessions:**'
   skills_section: '**🧠 Top skills:**'
   stream_interrupted: ↻ Stream interrupted — using received content as final reply
-  stream_retry: ⚠️ {provider} stream {kind} ({error_type}){_suffix} — reconnecting, retry {attempt}/{max}
+  stream_retry: ⚠️ {provider} stream {kind} ({error_type}){_suffix} — reconnecting,
+    retry {attempt}/{max}
   switched_fallback: '↻ Switched to fallback model: {model} ({provider})'
   thinking_only: ↻ Thinking-only response — prefilling to continue
   title: 📊 **Hermes Insights** — past {days} days
@@ -984,39 +1041,52 @@ agent:
   user_messages: 'User messages:'
 run_agent:
   self_improvement_review: '💾 Self-improvement review: {summary}'
-  compacting_context: 🗜️ Compacting context — summarizing earlier conversation so I can continue...
-  preflight_compression: '📦 Preflight compression: ~{tokens} tokens >= {threshold} threshold. This may take a moment.'
-  compression_aborted: '⚠️ Compression aborted: {error}. No messages were dropped — conversation continues unchanged. Run
-    /compress to retry, or /new to start a fresh session.'
-  compression_failed: '⚠️ Compression summary failed: {error}. Inserted a fallback context marker.'
-  aux_model_failed: ℹ️ Configured compression model '{model}' failed ({error}). Recovered using main model — check auxiliary.compression.model
-    in config.yaml.
-  interrupting: ⚡ Interrupting current task{detail}. I'll respond to your message shortly.
+  compacting_context: 🗜️ Compacting context — summarizing earlier conversation so
+    I can continue...
+  preflight_compression: '📦 Preflight compression: ~{tokens} tokens >= {threshold}
+    threshold. This may take a moment.'
+  compression_aborted: '⚠️ Compression aborted: {error}. No messages were dropped
+    — conversation continues unchanged. Run /compress to retry, or /new to start a
+    fresh session.'
+  compression_failed: '⚠️ Compression summary failed: {error}. Inserted a fallback
+    context marker.'
+  aux_model_failed: ℹ️ Configured compression model '{model}' failed ({error}). Recovered
+    using main model — check auxiliary.compression.model in config.yaml.
+  interrupting: ⚡ Interrupting current task{detail}. I'll respond to your message
+    shortly.
 onboarding:
-  busy_queue: 💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages
-    stop the current task immediately, or `/busy status` to check. This notice won't appear again.
-  busy_steer: 💡 First-time tip — I steered your message into the current run; it will arrive after the next tool call instead
-    of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy status` to check. This notice won't
+  busy_queue: 💡 First-time tip — I queued your message instead of interrupting. Send
+    `/busy interrupt` to make new messages stop the current task immediately, or `/busy
+    status` to check. This notice won't appear again.
+  busy_steer: 💡 First-time tip — I steered your message into the current run; it will
+    arrive after the next tool call instead of interrupting. Send `/busy interrupt`
+    or `/busy queue` to change this, or `/busy status` to check. This notice won't
     appear again.
-  busy_interrupt: 💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue follow-ups
-    for after the current task instead, `/busy steer` to inject them mid-run without interrupting, or `/busy status` to check.
-    This notice won't appear again.
-  busy_queue_cli: (tip) Your message was queued for the next turn. Use /busy interrupt to make Enter stop the current run
-    instead, or /busy steer to inject mid-run. This tip only shows once.
-  busy_steer_cli: (tip) Your message was steered into the current run; it arrives after the next tool call. Use /busy interrupt
-    or /busy queue to change this. This tip only shows once.
-  busy_interrupt_cli: (tip) Your message interrupted the current run. Use /busy queue to queue messages for the next turn
-    instead, or /busy steer to inject mid-run. This tip only shows once.
-  tool_progress_gateway: 💡 First-time tip — that tool took a while and I'm streaming every step. If the progress messages
-    feel noisy, send `/verbose` to cycle modes (all → new → off). This notice won't appear again.
-  tool_progress_cli: (tip) That tool took a while — I'm streaming every step. Use /verbose to cycle progress modes (all →
-    new → off). This tip only shows once.
+  busy_interrupt: 💡 First-time tip — I just interrupted my current task to answer
+    you. Send `/busy queue` to queue follow-ups for after the current task instead,
+    `/busy steer` to inject them mid-run without interrupting, or `/busy status` to
+    check. This notice won't appear again.
+  busy_queue_cli: (tip) Your message was queued for the next turn. Use /busy interrupt
+    to make Enter stop the current run instead, or /busy steer to inject mid-run.
+    This tip only shows once.
+  busy_steer_cli: (tip) Your message was steered into the current run; it arrives
+    after the next tool call. Use /busy interrupt or /busy queue to change this. This
+    tip only shows once.
+  busy_interrupt_cli: (tip) Your message interrupted the current run. Use /busy queue
+    to queue messages for the next turn instead, or /busy steer to inject mid-run.
+    This tip only shows once.
+  tool_progress_gateway: 💡 First-time tip — that tool took a while and I'm streaming
+    every step. If the progress messages feel noisy, send `/verbose` to cycle modes
+    (all → new → off). This notice won't appear again.
+  tool_progress_cli: (tip) That tool took a while — I'm streaming every step. Use
+    /verbose to cycle progress modes (all → new → off). This tip only shows once.
   openclaw_residue: 'A legacy OpenClaw directory was detected at ~/.openclaw/.
 
     To port your config, memory, and skills over to Hermes, run `hermes claw migrate`.
 
-    If you''ve already migrated and want to archive the old directory, run `hermes claw cleanup` (renames it to ~/.openclaw.pre-migration
-    — OpenClaw will stop working after this).
+    If you''ve already migrated and want to archive the old directory, run `hermes
+    claw cleanup` (renames it to ~/.openclaw.pre-migration — OpenClaw will stop working
+    after this).
 
     This tip only shows once.'
 activity:
@@ -1033,7 +1103,8 @@ activity:
   error_recovery: API error recovery (attempt {current}/{max})
   error_retry_backoff: error retry backoff ({current}/{max}), {remaining}s remaining
   max_retries_invalid: ⚠️ Max retries ({max}) for invalid responses — trying fallback...
-  max_retries_exceeded: ❌ Max retries ({max}) exceeded for invalid responses. Giving up.
+  max_retries_exceeded: ❌ Max retries ({max}) exceeded for invalid responses. Giving
+    up.
   payload_too_large: ⚠️ Request payload too large (413) — compression attempt {current}/{max}...
   compressed: 🗜️ Compressed {original} → {compressed} messages, retrying...
   context_too_large: 🗜️ Context too large (~{tokens} tokens) — compressing ({current}/{max})...
@@ -1049,7 +1120,8 @@ activity:
   thinking_exhausted: '⚠️ **Thinking Budget Exhausted**
 
 
-    The model used all its output tokens on reasoning and had none left for the actual response.
+    The model used all its output tokens on reasoning and had none left for the actual
+    response.
 
 
     To fix this:
@@ -1061,33 +1133,43 @@ activity:
   no_content_retries: ❌ Model returned no content after all retries
   context_reduced: 🗜️ Context reduced to {tokens} tokens — retrying...
   no_provider_response: ⚠️ No response from provider for {time}s — retrying...
-  malformed_stream: ❌ Provider returned malformed streaming data after {retries} retries — {detail}
+  malformed_stream: ❌ Provider returned malformed streaming data after {retries} retries
+    — {detail}
   connection_failed: ❌ Connection to provider failed after {retries} retries — {detail}
   guardrail_halted: '⚠️ Tool guardrail halted {tool}: {code}'
   empty_model_response: ⚠️ Empty response from model — retrying ({current}/3)
-  iteration_exhausted: ⚠️ Iteration budget exhausted ({current}/{max}) — asking model to summarise
-  iteration_exhausted_cli: ⚠️ Iteration budget exhausted ({current}/{max}) — requesting summary...
+  iteration_exhausted: ⚠️ Iteration budget exhausted ({current}/{max}) — asking model
+    to summarise
+  iteration_exhausted_cli: ⚠️ Iteration budget exhausted ({current}/{max}) — requesting
+    summary...
   agent_inactive: ⏱️ Agent inactive for {minutes} min — no tool calls or API responses.
-  agent_stuck_tool: The agent appears stuck on tool `{tool}` ({seconds}s since last activity, iteration {current}/{max}).
-  agent_last_activity: 'Last activity: {desc} ({seconds}s ago, iteration {current}/{max}). The agent may have been waiting
-    on an API response.'
+  agent_stuck_tool: The agent appears stuck on tool `{tool}` ({seconds}s since last
+    activity, iteration {current}/{max}).
+  agent_last_activity: 'Last activity: {desc} ({seconds}s ago, iteration {current}/{max}).
+    The agent may have been waiting on an API response.'
 cli:
   compression_count: 🗜️ {count}
   model_normalized: ⚠️ Normalized model '{from_model}' to '{to_model}' for {provider}.
   copilot_normalized: ⚠️ Normalized Copilot model '{from_model}' to '{to_model}'.
-  provider_stripped: ⚠️ Stripped provider prefix from '{from_model}'; using '{to_model}' for {provider}.
+  provider_stripped: ⚠️ Stripped provider prefix from '{from_model}'; using '{to_model}'
+    for {provider}.
   context_length_warning: ⚠️ Context length is only {length:,} tokens — {detail}
   command_destroys: ⚠️ /{command} — destroys conversation state
-  steered: ⏩ Steered into current run{detail}. Your message arrives after the next tool call.
+  steered: ⏩ Steered into current run{detail}. Your message arrives after the next
+    tool call.
 setup:
   edit_config_hint: '📝 To edit your configuration:'
   ready_to_go: 🚀 Ready to go!
   tg_no_allowlist: ⚠️  Telegram has no user allowlist - anyone can use your bot!
   discord_no_allowlist: ⚠️  Discord has no user allowlist - anyone can use your bot!
-  slack_no_allowlist: ⚠️  No Slack allowlist set - unpaired users will be denied by default.
-  generic_no_allowlist: ⚠️  No allowlist set - anyone who can message the bot can use it!
-  imessage_no_allowlist: ⚠️  No allowlist set — anyone who can iMessage you can use the bot!
-  servers_no_allowlist: ⚠️  No allowlist set - anyone in servers with your bot can use it!
+  slack_no_allowlist: ⚠️  No Slack allowlist set - unpaired users will be denied by
+    default.
+  generic_no_allowlist: ⚠️  No allowlist set - anyone who can message the bot can
+    use it!
+  imessage_no_allowlist: ⚠️  No allowlist set — anyone who can iMessage you can use
+    the bot!
+  servers_no_allowlist: ⚠️  No allowlist set - anyone in servers with your bot can
+    use it!
   platform_telegram: 📱 Telegram
   platform_discord: 💬 Discord
   platform_slack: 💼 Slack
@@ -1118,7 +1200,1542 @@ setup:
   complete_start: 'Start chatting with: hermes'
   complete_gateway: 'Run the gateway: hermes gateway run'
   complete_docs: 'Read the docs: hermes help'
-  run_agent.compending_context: 🗜️ Compacting context — summarizing earlier conversation so I can continue...
-
+  run_agent.compending_context: 🗜️ Compacting context — summarizing earlier conversation
+    so I can continue...
 stream:
   waiting_for_response: waiting for stream response ({secs}s, no chunks yet)
+gateway.return.normalized.gateway.platform: Return a normalized gateway platform value
+  for enums or raw strings.
+error.gateway.swallowed.transient.network: 'Gateway swallowed transient network error
+  from %s: %s: %s'
+gateway.besteffort.secret.redaction.before: Best-effort secret redaction before text
+  can leave the gateway.
+error.map.raw.providerapi.errors: Map raw provider/API errors to a short user-safe
+  Telegram reply.
+gateway.provider.authentication.failed.check: '⚠️ Provider authentication failed.
+  Check the configured credentials; '
+log.raw.provider.details.gateway: raw provider details are in the gateway logs.
+gateway.model.provider.rejected.request: '⚠️ The model provider rejected the request.
+  I kept the raw provider '
+log.error.out.chat.check: error out of chat; check gateway logs for details or try
+  rephrasing.
+gateway.model.provider.ratelimiting.requests: ⏱️ The model provider is rate-limiting
+  requests. Please wait a moment and try again.
+gateway.model.provider.failed.after: '⚠️ The model provider failed after retries.
+  I kept raw provider details '
+log.out.chat.check.gateway: out of chat; check gateway logs for diagnostics.
+gateway.http.404.means: 'HTTP 404 means '
+gateway.filtersanitize.agent.status.callbacks: Filter/sanitize agent status callbacks
+  before platform delivery.
+gateway.observed.telegram.group.context: observed Telegram group context
+gateway.observed.telegram.group.context_1: '[Observed Telegram group context - context
+  only, not requests]'
+gateway.current.addressed.message.answer: '[Current addressed message - answer only
+  this unless it explicitly asks you to use the observed context]'
+gateway.delivered.mirrorsrc.content: '[Delivered from {mirror_src}] {content}'
+gateway.prepend.observed.telegram.context: Prepend observed Telegram context to the
+  API-only current user turn.
+gateway.set.sslcertfile.system.doesn: Set SSL_CERT_FILE if the system doesn
+gateway.return.optional.threadtopic.env: Return the optional thread/topic env var
+  for a platform home target.
+gateway.return.true.when.restart: Return True when a /restart completion marker is
+  waiting to be delivered.
+warn.warning.configyaml.env.bridge: '  Warning: config.yaml → env bridge failed: '
+gateway.typebridgeerrname.bridgeerr: '{type(_bridge_err).__name__}: {_bridge_err}'
+gateway.gateway.fall.back.env: '  Gateway will fall back to .env values, which may
+  not match '
+gateway.current.configyaml.run.hermes: your current config.yaml. Run `hermes doctor`
+  to investigate.
+warn.warning.ipv4.preference.application: '  Warning: IPv4 preference application
+  failed: {_bootstrap_exc}'
+warn.warning.config.validation.failed: '  Warning: config validation failed: {_bootstrap_exc}'
+warn.warning.deprecation.check.failed: '  Warning: deprecation check failed: {_bootstrap_exc}'
+log.primary.provider.auth.failed: 'Primary provider auth failed: %s — trying fallback'
+gateway.attempt.resolve.credentials.fallbackmodelfallbackproviders: Attempt to resolve
+  credentials from the fallback_model/fallback_providers config.
+gateway.fallback.provider.resolved.models: 'Fallback provider resolved: %s model=%s'
+log.fallback.entry.failed: 'Fallback entry %s failed: %s'
+gateway.build.text.placeholder.mediaonly: Build a text placeholder for media-only
+  events so they aren
+gateway.user.sent.image.url: '[User sent an image: {url}]'
+gateway.user.sent.audio.url: '[User sent audio: {url}]'
+gateway.user.sent.file.url: '[User sent a file: {url}]'
+gateway.besteffort.duration.probe.returns: Best-effort duration probe. Returns formatted
+  MM:SS / HH:MM:SS, or None on failure.
+gateway.stop.requested: Stop requested
+gateway.session.reset.requested: Session reset requested
+gateway.execution.timed.out.inactivity: Execution timed out (inactivity)
+gateway.sse.client.disconnected: SSE client disconnected
+gateway.gateway.shutting.down: Gateway shutting down
+gateway.gateway.restarting: Gateway restarting
+gateway.return.true.when.interrupt: Return True when an interrupt message is internal
+  control flow.
+gateway.commandname.skill.installed.disabledn: The **{command_name}** skill is installed
+  but disabled.\n
+gateway.enable.hermes.skills.config: 'Enable it with: `hermes skills config`'
+gateway.commandname.skill.available.installedn: The **{command_name}** skill is available
+  but not installed.\n
+gateway.install.hermes.skills.install: 'Install it with: `hermes skills install {install_path}`'
+gateway.map.platform.enum.configyaml: Map a Platform enum to its config.yaml key (LOCAL→
+gateway.restenum.value: ', rest→enum value).'
+gateway.return.true.when.standalone: Return True when the standalone Teams pipeline
+  plugin is enabled.
+log.load.gateway.config: Could not load gateway config from %s
+gateway.dict.none: dict | None
+gateway.format.watch.pattern.event: Format a watch pattern event from completion_queue
+  into a [IMPORTANT:] message.
+gateway.important.evtget: '[IMPORTANT: {evt.get('
+gateway.important.background.process.sid: '[IMPORTANT: Background process {_sid} matched '
+gateway.command.cmdn: 'Command: {_cmd}\n'
+gateway.matched.outputnout: Matched output:\n{_out}
+gateway.session.too.large.model: ⚠️ Session too large for the model
+gateway.use.compact.compress.conversation: 'Use /compact to compress the conversation,
+  or '
+gateway.reset.start.fresh: /reset to start fresh.
+error.request.failed.strerrordetail300n: 'The request failed: {str(error_detail)[:300]}\n'
+gateway.try.again.use.reset: Try again or use /reset to start a fresh session.
+gateway.ordereddictstr.sessionsource: OrderedDict[str, SessionSource]
+gateway.ordereddictstr.tuple: OrderedDict[str, tuple]
+log.sqlite.session.store.available: 'SQLite session store not available: %s'
+log.statedb.automaintenance.skipped: 'state.db auto-maintenance skipped: %s'
+log.checkpoint.automaintenance.skipped: 'checkpoint auto-maintenance skipped: %s'
+log.teams.pipeline.plugin.disabled: Teams pipeline plugin is disabled; skipping runtime
+  wiring
+log.teams.pipeline.runtime.import: 'Teams pipeline runtime import failed: %s'
+log.teams.pipeline.runtime.wiring: 'Teams pipeline runtime wiring failed: %s'
+log.teams.pipeline.runtime.bound: Teams pipeline runtime bound to msgraph webhook
+  ingress
+gateway.teams.pipeline.runtime.unavailable: 'Teams pipeline runtime unavailable: %s'
+gateway.striplower: ').strip().lower() != '
+log.parse.terminaldockervolumes.gateway.media: Could not parse TERMINAL_DOCKER_VOLUMES
+  for gateway media warning
+gateway.docker.backend.enabled.messaging: 'Docker backend is enabled for the messaging
+  gateway but no explicit host-visible '
+gateway.is.configured: ') is configured. '
+gateway.fine.model.already.emits: 'This is fine if the model already emits host-visible
+  paths, but MEDIA file delivery can fail '
+gateway.check.hermesagentsetup.skill.installed: Check if the hermes-agent-setup skill
+  is installed.
+gateway.return.platformnamespaced.key.voice: Return a platform-namespaced key for
+  voice mode state.
+gateway.skipping.legacy.unprefixed.voice: 'Skipping legacy unprefixed voice mode key
+  %r during migration. '
+gateway.reenable.voice.mode.chat: Re-enable voice mode on that chat to rebuild the
+  prefixed key.
+log.failed.save.voice.modes: 'Failed to save voice modes: %s'
+gateway.update.adapter: Update an adapter
+gateway.update.adapter_1: Update an adapter
+warn.unclosed.client.session: Unclosed client session
+gateway.timed.out.after.1fs: Timed out after %.1fs while disconnecting %s adapter;
+  continuing shutdown
+gateway.defensive.disconnect.after.failed: 'Defensive %s disconnect after failed connect
+  raised: %s'
+gateway.return.peradapter.disconnect.timeout: Return the per-adapter disconnect timeout
+  used during shutdown.
+gateway.ignoring.invalid.hermesgatewayadapterdisconnecttimeoutr: Ignoring invalid
+  HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT=%r
+gateway.return.perplatform.connect.timeout: Return the per-platform connect timeout
+  used during startup/retry.
+gateway.ignoring.invalid.hermesgatewayplatformconnecttimeoutr: Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r
+gateway.connect.adapter.without.allowing: Connect an adapter without allowing one
+  platform to block others.
+gateway.platformvalue.connect.timed.out: '{platform.value} connect timed out after
+  {timeout:g}s'
+gateway.resolve.current.session.key: Resolve the current session key for a source,
+  honoring gateway config when available.
+gateway.return.whether.telegram.topic: Return whether Telegram DM topic mode is active
+  for this chat.
+log.failed.read.telegram.topic: Failed to read Telegram topic mode state
+gateway.true.main.telegram.general: True for the main Telegram DM (or General topic)
+  when topic mode has made it a lobby.
+gateway.true.usercreated.telegram.privatechat: True for a user-created Telegram private-chat
+  topic lane.
+gateway.main.chat.reserved.system: This main chat is reserved for system commands.\n\n
+gateway.start.new.hermes.chat: 'To start a new Hermes chat, open the All Messages
+  topic at the top '
+gateway.bot.interface.send.any: 'of this bot interface and send any message there.
+  Telegram will '
+gateway.create.new.topic.message: 'create a new topic for that message; each topic
+  works as an '
+gateway.independent.hermes.session: independent Hermes session.
+gateway.start.new.parallel.hermes: 'To start a new parallel Hermes chat, open the
+  All Messages topic '
+gateway.top.bot.interface.send: 'at the top of this bot interface and send any message
+  there. '
+gateway.telegram.create.new.topic: Telegram will create a new topic for it.\n\n
+gateway.each.topic.independent.hermes: 'Each topic is an independent Hermes session.
+  Use /new inside an '
+gateway.started.new.hermes.session: Started a new Hermes session in this topic.\n\n
+gateway.tip.parallel.work.open: 'Tip: for parallel work, open All Messages and send
+  a message there '
+gateway.create.separate.topic.instead: 'to create a separate topic instead of using
+  /new here. /new replaces '
+gateway.session.attached.current.topic: the session attached to the current topic.
+gateway.persist.telegram.topic.hermes: Persist the Telegram topic -> Hermes session
+  binding for topic lanes.
+gateway.pin.dmtopic.routing.user: Pin DM-topic routing to the user
+log.topicrecover.read.failed: 'topic-recover: read failed'
+gateway.session.model.override.fast: 'Session model override (fast): session=%s config_model=%s
+  -> override_model=%s provider=%s'
+gateway.session.model.override.apikey: 'Session model override (no api_key, fallback):
+  session=%s config_model=%s override_model=%s'
+gateway.session.model.override.sessions: 'No session model override: session=%s config_model=%s
+  override_keys=%s'
+gateway.runtime.provider.supplied.explicit: 'Runtime provider supplied explicit model
+  override: %s -> %s'
+gateway.model.configured.defaulting.provider: No model configured — defaulting to
+  %s for provider %s
+error.fatal.adapter.error: 'Fatal %s adapter error (%s): %s'
+error.all.messaging.adapters.disconnected: All messaging adapters disconnected
+log.connected.messaging.platforms.remain: No connected messaging platforms remain.
+  Shutting down gateway for service restart.
+log.connected.messaging.platforms.remain_1: No connected messaging platforms remain.
+  Shutting down gateway cleanly.
+gateway.connected.messaging.platforms.remain: 'No connected messaging platforms remain,
+  but %d platform(s) '
+gateway.queued.reconnection.gateway.staying: 'queued for reconnection — gateway staying
+  alive, watcher will '
+gateway.retry.background: retry in background.
+gateway.append.queue.event.fifo: Append a /queue event to the FIFO chain for a session.
+gateway.total.pending.queue.items: Total pending /queue items for a session — slot
+  + overflow.
+gateway.continuing.toward.standing.goalngoal: '[Continuing toward your standing goal]\nGoal:'
+gateway.besteffort.fresh.check.before: Best-effort fresh DB check before running a
+  queued continuation.
+log.goal.continuation.activestate.recheck: 'goal continuation: active-state recheck
+  failed: %s'
+gateway.retry.hermes.gateway.restart: to retry, or `hermes gateway restart` to restart
+  the gateway.
+log.prefill.messages.file.found: 'Prefill messages file not found: %s'
+log.prefill.messages.file.contain: 'Prefill messages file must contain a JSON array:
+  %s'
+log.failed.load.prefill.messages: 'Failed to load prefill messages from %s: %s'
+log.unknown.reasoningeffort: 'Unknown reasoning_effort '
+log.using.default.medium: ', using default (medium)'
+gateway.resolve.reasoning.effort.session: Resolve reasoning effort for a session,
+  honoring session overrides.
+gateway.set.clear.sessionscoped.reasoning: Set or clear the session-scoped reasoning
+  override.
+log.unknown.servicetier: 'Unknown service_tier '
+gateway.load.showreasoning.toggle.configyaml: Load show_reasoning toggle from config.yaml
+  display section.
+gateway.load.gateway.draintime.busyinput: Load gateway drain-time busy-input behavior
+  from config/env.
+gateway.load.normal.busy.text: Load normal busy TEXT follow-up behavior from config/env.
+gateway.load.graceful.gateway.restartstop: Load graceful gateway restart/stop drain
+  timeout in seconds.
+gateway.invalid.restartdraintimeout: 'Invalid restart_drain_timeout '
+gateway.using.default.0fs: ', using default %.0fs'
+gateway.unknown.backgroundprocessnotifications: 'Unknown background_process_notifications '
+gateway.defaulting.to: ', defaulting to '
+gateway.load.openrouter.provider.routing: Load OpenRouter provider routing preferences
+  from config.yaml.
+gateway.dropping.message.unauthorized.user: 'Dropping message from unauthorized user
+  in active session: '
+gateway.users.platforms.sessions: user=%s (%s), platform=%s, session=%s
+gateway.demoting.busyinputmode: 'Demoting busy_input_mode '
+log.gateway.steer.failed.session: 'Gateway steer failed for session %s: %s'
+log.busy.ack.suppressed.session: Busy ack suppressed for session %s
+gateway.running.currenttool: 'running: {current_tool}'
+gateway.interrupting.current.taskstatusdetail: '⚡ Interrupting current task{status_detail}. '
+log.failed.apply.busyinput.onboarding: 'Failed to apply busy-input onboarding hint:
+  %s'
+log.failed.send.busyack: 'Failed to send busy-ack: %s'
+log.interrupted.running.agent.session: Interrupted running agent for session %s during
+  shutdown
+log.failed.interrupting.agent.during: 'Failed interrupting agent during shutdown:
+  %s'
+gateway.current.task.interrupted: 'Your current task will be interrupted. '
+gateway.send.any.message.after: Send any message after restart and I
+gateway.current.task.interrupted_1: Your current task will be interrupted.
+gateway.failed.load.session.origin: 'Failed to load session origin for shutdown notification
+  %s: %s'
+gateway.shutdown.notification.suppressed.active: 'Shutdown notification suppressed
+  for active session: %s has gateway_restart_notification=false'
+gateway.failed.send.shutdown.notification: 'Failed to send shutdown notification to
+  %s:%s: %s'
+error.send.returned.successfalse: send returned success=False
+gateway.sent.shutdown.notification.active: Sent shutdown notification to active chat
+  %s:%s
+gateway.failed.send.shutdown.notification_1: 'Failed to send shutdown notification
+  to %s:%s: %s'
+gateway.shutdown.notification.suppressed.home: 'Shutdown notification suppressed for
+  home channel: %s has gateway_restart_notification=false'
+gateway.failed.send.shutdown.notification_2: 'Failed to send shutdown notification
+  to home channel %s:%s: %s'
+error.send.returned.successfalse_1: send returned success=False
+gateway.sent.shutdown.notification.home: Sent shutdown notification to home channel
+  %s:%s
+gateway.failed.send.shutdown.notification_3: 'Failed to send shutdown notification
+  to home channel %s:%s: %s'
+gateway.besteffort.cleanup.temporary.cached: Best-effort cleanup for temporary or
+  cached agent instances.
+gateway.autosuspended.stuck.session.active: 'Auto-suspended stuck session %s (active
+  across %d '
+log.locate.hermes.binary.detached: Could not locate hermes binary for detached /restart
+gateway.while.kill.currentpid.2devnull: 'while kill -0 {current_pid} 2>/dev/null;
+  do sleep 0.2; done; '
+log.failed.enumerate.resumepending.sessions: 'Failed to enumerate resume-pending sessions:
+  %s'
+gateway.skipping.autoresume.adapter.ready: 'Skipping auto-resume for %s: adapter not
+  ready for %s'
+gateway.scheduled.autoresume.restartinterrupted.sessions: Scheduled auto-resume for
+  %d restart-interrupted session(s)
+log.starting.hermes.gateway: Starting Hermes Gateway...
+log.session.storage: 'Session storage: %s'
+gateway.stale.systemd.unit.detected: 'Stale systemd unit detected: %s has TimeoutStopSec=%.0fs
+  but '
+gateway.draintimeout0fs.expected.0fs.systemd: 'drain_timeout=%.0fs (expected >=%.0fs).
+  systemd may SIGKILL the '
+gateway.gateway.middrain.run.hermes: 'gateway mid-drain. Run `hermes gateway service
+  install --replace` '
+gateway.regenerate.unit.shorten.agentrestartdraintimeout: to regenerate the unit,
+  or shorten agent.restart_drain_timeout.
+log.checksystemdtimingalignment.failed: 'check_systemd_timing_alignment failed: %s'
+gateway.agent.budget.maxiterationsd.agentmaxturns: 'Agent budget: max_iterations=%d
+  (agent.max_turns from config.yaml, '
+gateway.hermesmaxiterations.env.default: or HERMES_MAX_ITERATIONS from .env, or default
+  90)
+log.secret.redaction.enabled.tool: 'Secret redaction: ENABLED (tool output, logs,
+  and chat '
+gateway.secret.redaction.disabled.hermesredactsecretss: 'Secret redaction: DISABLED
+  (HERMES_REDACT_SECRETS=%s). '
+gateway.api.keys.tokens.appear: 'API keys and tokens may appear verbatim in chat output, '
+log.session.jsons.logs.set: 'session JSONs, and logs. Set security.redact_secrets:
+  true '
+gateway.configyaml.reenable: in config.yaml to re-enable.
+log.active.profile: 'Active profile: %s'
+gateway.run.hermes.doctor.gateway: 'Run `hermes doctor` on the gateway host for full '
+gateway.remediation.steps: remediation steps.
+gateway.lower.in: ).lower() in {
+gateway.lower.in_1: ).lower() in {
+gateway.user.allowlists.configured.all: 'No user allowlists configured. All unauthorized
+  users will be denied. '
+gateway.set.gatewayallowalluserstrue.hermesenv.allow: 'Set GATEWAY_ALLOW_ALL_USERS=true
+  in ~/.hermes/.env to allow open access, '
+gateway.configure.platform.allowlists.telegramallowedusersyourid: or configure platform
+  allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id).
+log.recovered.background.processes.previous: Recovered %s background process(es) from
+  previous run
+log.process.checkpoint.recovery: 'Process checkpoint recovery: %s'
+log.previous.gateway.exited.cleanly: Previous gateway exited cleanly — skipping session
+  suspension
+log.marked.inflight.sessions.resumable: Marked %d in-flight session(s) as resumable
+  from previous run
+log.session.suspension.startup.failed: 'Session suspension on startup failed: %s'
+log.autosuspended.stuckloop.sessions: Auto-suspended %d stuck-loop session(s)
+log.stuckloop.detection.failed: 'Stuck-loop detection failed: %s'
+gateway.no.adapter.for: 'No adapter for '
+gateway.plugin.installed: ' — is the plugin installed? '
+gateway.platform.enabled.configyaml.plugin: (platform is enabled in config.yaml but
+  no plugin registered it)
+log.adapter.available: No adapter available for %s
+log.connecting.to.s: Connecting to %s...
+error.platformvalue.adapterfatalerrormessage: '{platform.value}: {adapter.fatal_error_message}'
+gateway.platformvalue.failed.connect: '{platform.value}: failed to connect'
+log.s.error.s: '✗ %s error: %s'
+error.platformvalue.e: '{platform.value}: {e}'
+log.gateway.hit.nonretryable.startup: 'Gateway hit a non-retryable startup conflict:
+  %s'
+gateway.gateway.started.connected.platforms: 'Gateway started with no connected platforms
+  — '
+gateway.platforms.queued.retry: '%d platform(s) queued for retry: %s'
+gateway.adapter.created.any.configured: 'No adapter could be created for any of the
+  %d configured platform(s). '
+gateway.check.required.dependencies.installed: 'Check that required dependencies are
+  installed and credentials are set. '
+gateway.gateway.continue.cron.job: Gateway will continue for cron job execution.
+log.messaging.platforms.enabled: No messaging platforms enabled.
+log.gateway.continue.running.cron: Gateway will continue running for cron job execution.
+log.gateway.running.platforms: Gateway running with %s platform(s)
+log.channel.directory.built.targets: 'Channel directory built: %d target(s)'
+log.channel.directory.build.failed: 'Channel directory build failed: %s'
+log.resumed.watcher.recovered.process: Resumed watcher for recovered process %s
+log.recovered.watcher.setup.error: 'Recovered watcher setup error: %s'
+gateway.starting.reconnection.watcher.failed: 'Starting reconnection watcher for %d
+  failed platform(s): %s'
+log.press.ctrlc.stop: Press Ctrl+C to stop
+gateway.handoff.session.failed: 'Handoff for session %s failed: %s'
+log.handoff.watcher.tick.error: 'Handoff watcher tick error: %s'
+gateway.execute.one.handoff.row: Execute one handoff row. Raises on failure (caller
+  marks failed).
+gateway.home.channel.configured.platformname: 'no home channel configured for {platform_name}; '
+gateway.hermes.clititle: Hermes — {cli_title}
+gateway.handoff.createhandoffthread.raised: 'Handoff: create_handoff_thread raised
+  on %s: %s'
+gateway.session.just.handed.off: '[Session was just handed off from CLI (\'
+gateway.channel.full.prior.conversation: 'channel. The full prior conversation history
+  is loaded above. '
+gateway.briefly.confirm: Briefly confirm you
+gateway.working.user.can.continue: working on, so the user can continue from this
+  device.]
+gateway.handoff.dispatching.synthetic.turn: 'Handoff: dispatching synthetic turn for
+  CLI session %s → %s '
+gateway.homes.threads.sessionkeys: (home=%s, thread=%s, session_key=%s)
+error.adaptersend.failed.exc: 'adapter.send failed: {exc}'
+error.send.returned.successfalse_2: send returned success=False
+error.adaptersend.failed.err: 'adapter.send failed: {err}'
+gateway.session.expiry.sessions.finalize: 'Session expiry: %d sessions to finalize
+  (%s)'
+gateway.session.expiry.finalized: Session expiry finalized for %s
+gateway.session.finalize.gave.after: 'Session finalize gave up after %d attempts for
+  %s: %s. '
+gateway.marking.finalized.prevent.infinite: Marking as finalized to prevent infinite
+  retry loop.
+gateway.session.finalize.failed: 'Session finalize failed (%d/%d) for %s: %s'
+gateway.session.expiry.done.finalized: 'Session expiry done: %d finalized, %d pending
+  retry'
+gateway.session.expiry.done.finalized_1: 'Session expiry done: %d finalized'
+gateway.agent.cache.idle.sweep: 'Agent cache idle sweep: evicted %d agent(s)'
+log.idle.agent.sweep.failed: 'Idle agent sweep failed: %s'
+gateway.sessionstore.prune.dropped.stale: 'SessionStore prune: dropped %d stale entries'
+log.sessionstore.prune.failed: 'SessionStore prune failed: %s'
+log.session.expiry.watcher.error: 'Session expiry watcher error: %s'
+gateway.return.profile.name.gateway: Return the profile name this gateway represents.
+log.kanban.notifier.kanbandb.importable: 'kanban notifier: kanban_db not importable;
+  notifier disabled'
+log.kanban.notifier.connected.adapters: 'kanban notifier: no connected adapters; skipping
+  tick'
+gateway.kanban.notifier.skipping.duplicate: 'kanban notifier: skipping duplicate board
+  slug %s for DB %s'
+log.kanban.notifier.cannot.open: 'kanban notifier: cannot open board %s: %s'
+log.kanban.notifier.board.subscriptions: 'kanban notifier: board %s has no subscriptions'
+gateway.kanban.notifier.subscription.owned: 'kanban notifier: subscription for %s
+  owned by profile %s; current profile %s skipping'
+gateway.kanban.notifier.subscription.skipped: 'kanban notifier: subscription for %s
+  on %s skipped; adapter not connected'
+gateway.kanban.notifier.claimed.events: 'kanban notifier: claimed %d event(s) for
+  %s on board %s cursor %s→%s'
+gateway.kanban.notifier.adapter.disconnected: 'kanban notifier: adapter %s disconnected
+  before delivery for %s; rewinding claim'
+gateway.tagkanban.sub: ✔ {tag}Kanban {sub[
+gateway.strevpayload: ': {str(ev.payload['
+gateway.tagkanban.sub_1: ⏸ {tag}Kanban {sub[
+gateway.tagkanban.sub_2: ✖ {tag}Kanban {sub[
+gateway.tagkanban.sub_3: ✖ {tag}Kanban {sub[
+gateway.pid.gone.dispatcher.retry: (pid gone); dispatcher will retry
+gateway.tagkanban.sub_4: ⏱ {tag}Kanban {sub[
+gateway.maxruntimelimits.retry: (max_runtime={limit}s); will retry
+gateway.kanban.notifier.delivered.event: 'kanban notifier: delivered %s event for
+  %s to %s/%s on board %s'
+gateway.kanban.notifier.artifact.delivery: 'kanban notifier: artifact delivery for
+  %s failed: %s'
+gateway.kanban.notifier.send.failed: 'kanban notifier: send failed for %s on %s '
+gateway.attempt.dd.s: '(attempt %d/%d): %s'
+gateway.kanban.notifier.dropping.subscription: 'kanban notifier: dropping subscription '
+log.kanban.notifier.tick.failed: 'kanban notifier tick failed: %s'
+gateway.sync.helper.advance.subscription: 'Sync helper: advance a subscription'
+gateway.sync.helper.undo.claimed: 'Sync helper: undo a claimed notification cursor
+  after send failure.'
+gateway.kanban.notifier.image.batch: 'kanban notifier: image batch upload failed:
+  %s'
+gateway.kanban.notifier.artifact.upload: 'kanban notifier: artifact upload (%s) failed:
+  %s'
+log.kanban.dispatcher.config.loader: 'kanban dispatcher: config loader unavailable;
+  disabled'
+log.kanban.dispatcher.disabled.via: 'kanban dispatcher: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY
+  env'
+log.kanban.dispatcher.cannot.load: 'kanban dispatcher: cannot load config (%s); disabled'
+gateway.kanban.dispatcher.disabled.via: 'kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false'
+log.kanban.dispatcher.kanbandb.importable: 'kanban dispatcher: kanban_db not importable;
+  dispatcher disabled'
+log.kanban.dispatcher.maxspawnmaxspawn: 'kanban dispatcher: max_spawn={max_spawn}'
+gateway.kanban.dispatcher.invalid.kanbanmaxinprogressr: 'kanban dispatcher: invalid
+  kanban.max_in_progress=%r; ignoring'
+gateway.kanban.dispatcher.kanbanmaxinprogressr.below: 'kanban dispatcher: kanban.max_in_progress=%r
+  is below 1; ignoring'
+log.kanban.dispatcher.maxinprogressmaxinprogress: 'kanban dispatcher: max_in_progress={max_in_progress}'
+gateway.kanban.dispatcher.invalid.kanbanfailurelimitr: 'kanban dispatcher: invalid
+  kanban.failure_limit=%r; using default %d'
+gateway.kanban.dispatcher.kanbanfailurelimitr.below: 'kanban dispatcher: kanban.failure_limit=%r
+  is below 1; using default %d'
+gateway.kanban.dispatcher.invalid.kanbandispatchstaletimeoutsecondsr: 'kanban dispatcher:
+  invalid kanban.dispatch_stale_timeout_seconds=%r; '
+gateway.kanban.dispatcher.board.database: 'kanban dispatcher: board %s database changed;
+  retrying dispatch'
+gateway.kanban.dispatcher.board.database_1: 'kanban dispatcher: board %s database
+  %s is not a valid '
+gateway.sqlite.database.disabling.dispatch: 'SQLite database; disabling dispatch for
+  this board '
+gateway.until.file.changes.gateway: 'until the file changes or the gateway restarts.
+  Move '
+gateway.restore.file.then.run: 'or restore the file, then run `hermes kanban init`
+  if '
+gateway.need.fresh.board: you need a fresh board.
+log.kanban.dispatcher.tick.failed: 'kanban dispatcher: tick failed on board %s'
+log.kanban.dispatcher.tick.failed_1: 'kanban dispatcher: tick failed on board %s'
+gateway.listtuplestr.optionalobject: list[tuple[str, Optional[object]]]
+gateway.kanban.autodecompose.import.failed: 'kanban auto-decompose: import failed
+  (%s); skipping'
+gateway.kanban.autodecompose.listtriageids.failed: 'kanban auto-decompose: list_triage_ids
+  failed on board %s (%s)'
+gateway.kanban.autodecompose.decomposetask.crashed: 'kanban auto-decompose: decompose_task
+  crashed on %s'
+gateway.kanban.autodecompose.children: 'kanban auto-decompose [%s]: %s → %d children'
+gateway.kanban.autodecompose.single.task: 'kanban auto-decompose [%s]: %s → single
+  task (no fanout)'
+gateway.kanban.autodecompose.skipped: 'kanban auto-decompose [%s]: %s skipped: %s'
+gateway.kanban.dispatcher.embedded.gateway: 'kanban dispatcher: embedded in gateway
+  (interval=%.1fs)'
+gateway.kanban.dispatcher.spawnedd.reclaimedd: 'kanban dispatcher [%s]: spawned=%d
+  reclaimed=%d '
+gateway.kanban.dispatcher.stuck.ready: 'kanban dispatcher stuck: ready queue non-empty
+  for '
+gateway.consecutive.ticks.workers.spawned: '%d consecutive ticks but 0 workers spawned.
+  Check '
+gateway.profile.health.venv.path: 'profile health (venv, PATH, credentials) and '
+gateway.hermes.kanban.list.status: '`hermes kanban list --status ready`.'
+log.kanban.dispatcher.cancelled: 'kanban dispatcher: cancelled'
+log.kanban.dispatcher.unexpected.watcher: 'kanban dispatcher: unexpected watcher error'
+gateway.reconnecting.attempt: Reconnecting %s (attempt %d)...
+gateway.reconnect.adapter.creation.returned: 'Reconnect %s: adapter creation returned
+  None, removing from retry queue'
+error.reconnect.nonretryable.error.removing: 'Reconnect %s: non-retryable error (%s),
+  removing from retry queue'
+gateway.reconnect.failed.next.retry: Reconnect %s failed, next retry in %ds
+error.reconnect.error.next.retry: 'Reconnect %s error: %s, next retry in %ds'
+gateway.stop.gateway.disconnect.all: Stop the gateway and disconnect all adapters.
+gateway.shutdown.killed.tool.subprocesses: 'Shutdown (%s): killed %d tool subprocess(es)'
+log.processregistrykillall.error: 'process_registry.kill_all (%s) error: %s'
+log.cleanupallenvironments.error: 'cleanup_all_environments (%s) error: %s'
+log.cleanupallbrowsers.error: 'cleanup_all_browsers (%s) error: %s'
+gateway.stopping.gateways: Stopping gateway%s...
+gateway.shutdown.phase.notifyactivesessions.done: 'Shutdown phase: notify_active_sessions
+  done at +%.2fs'
+log.predrain.markresumepending.failed: 'pre-drain mark_resume_pending failed for %s:
+  %s'
+gateway.shutdown.phase.drain.done: 'Shutdown phase: drain done at +%.2fs (drain took
+  %.2fs, '
+gateway.timedouts.activeatstartd.activenowd: timed_out=%s, active_at_start=%d, active_now=%d)
+gateway.clearresumepending.after.drain.failed: 'clear_resume_pending after drain failed
+  for %s: %s'
+gateway.gateway.drain.timed.out: Gateway drain timed out after %.1fs with %d active
+  agent(s); interrupting remaining work.
+gateway.markresumepending.failed: 'mark_resume_pending failed for %s: %s'
+gateway.shutdown.phase.postinterrupt.tool: 'Shutdown phase: post-interrupt tool kill
+  done at +%.2fs'
+log.failed.launch.detached.gateway: 'Failed to launch detached gateway restart: %s'
+log.backgroundtask.cancel.error: '✗ %s background-task cancel error: %s'
+gateway.disconnected.2fs: ✓ %s disconnected (%.2fs)
+error.disconnect.error.after.2fs: '✗ %s disconnect error after %.2fs: %s'
+gateway.shutdown.phase.all.adapters: 'Shutdown phase: all adapters disconnected at
+  +%.2fs'
+gateway.shutdown.phase.finalcleanup.tool: 'Shutdown phase: final-cleanup tool kill
+  done at +%.2fs'
+log.shutdowncachedclients.error: 'shutdown_cached_clients error: %s'
+log.sessiondb.close.error: 'SessionDB close error: %s'
+gateway.shutdown.phase.sessiondb.close: 'Shutdown phase: SessionDB close done at +%.2fs'
+gateway.skipping.cleanshutdown.marker.drain: 'Skipping .clean_shutdown marker — drain
+  timed out with '
+gateway.interrupted.agents.next.startup: 'interrupted agents; next startup will suspend
+  recently '
+gateway.active.sessions: active sessions.
+gateway.gateway.restart.requested: Gateway restart requested
+log.gateway.stopped.total.teardown: Gateway stopped (total teardown %.2fs)
+gateway.wait.shutdown.signal: Wait for shutdown signal.
+log.platform.registry.lookup: 'Platform registry lookup for '
+log.failed.s: ' failed: %s'
+log.telegram.pythontelegrambot.installed: 'Telegram: python-telegram-bot not installed'
+gateway.unknown.telegram.notifications.mode: 'Unknown telegram notifications mode '
+gateway.valid.all.important: ' (valid: all, important)'
+log.whatsapp.nodejs.installed.bridge: 'WhatsApp: Node.js not installed or bridge not
+  configured'
+log.slack.slackbolt.installed.run: 'Slack: slack-bolt not installed. Run: pip install '
+log.signal.signalhttpurl.signalaccount.configured: 'Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT
+  not configured'
+log.homeassistant.aiohttp.installed.hasstoken: 'HomeAssistant: aiohttp not installed
+  or HASS_TOKEN not set'
+log.email.emailaddress.emailpassword.emailimaphost: 'Email: EMAIL_ADDRESS, EMAIL_PASSWORD,
+  EMAIL_IMAP_HOST, or EMAIL_SMTP_HOST not set'
+log.sms.aiohttp.installed.twilioaccountsidtwilioauthtoken: 'SMS: aiohttp not installed
+  or TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN not set'
+log.dingtalk.dingtalkstream.installed.dingtalkclientidsecret: 'DingTalk: dingtalk-stream
+  not installed or DINGTALK_CLIENT_ID/SECRET not set'
+log.feishu.larkoapi.installed.feishuappidsecret: 'Feishu: lark-oapi not installed
+  or FEISHU_APP_ID/SECRET not set'
+log.wecomcallback.aiohttphttpxdefusedxml.installed: 'WeComCallback: aiohttp/httpx/defusedxml
+  not installed'
+log.wecom.aiohttp.installed.wecombotidsecret: 'WeCom: aiohttp not installed or WECOM_BOT_ID/SECRET
+  not set'
+log.weixin.aiohttpcryptography.installed: 'Weixin: aiohttp/cryptography not installed'
+log.matrix.mautrix.installed.credentials: 'Matrix: mautrix not installed or credentials
+  not set. Run: pip install '
+log.api.server.aiohttp.installed: 'API Server: aiohttp not installed'
+log.webhook.aiohttp.installed: 'Webhook: aiohttp not installed'
+log.msgraph.webhook.aiohttp.installed: 'MSGraph webhook: aiohttp not installed'
+log.bluebubbles.aiohttphttpx.missing.bluebubblesserverurlbluebubblespassword: 'BlueBubbles:
+  aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured'
+log.qqbot.aiohttphttpx.missing.qqappidqqclientsecret: 'QQBot: aiohttp/httpx missing
+  or QQ_APP_ID/QQ_CLIENT_SECRET not configured'
+log.yuanbao.websockets.installed.run: 'Yuanbao: websockets not installed. Run: pip
+  install websockets'
+gateway.lower.in_2: ).lower() in {
+gateway.lower.in_3: ).lower() in {
+gateway.telegramgroupallowedusers.contains.chatidshaped.values: 'TELEGRAM_GROUP_ALLOWED_USERS
+  contains chat-ID-shaped values '
+gateway.treating.chat.ids.backward: '(%s). Treating them as chat IDs for backward
+  compatibility. '
+gateway.move.chat.ids.telegramgroupallowedchats: 'Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS
+  — the _USERS var '
+gateway.now.sender.user.ids: is now for sender user IDs.
+gateway.deliver.setupoperational.notice.using: Deliver a setup/operational notice
+  using platform-specific privacy rules.
+gateway.sendprivatenotice.failed.falling.back: '[%s] send_private_notice failed, falling
+  back to public'
+log.pregatewaydispatch.invocation.failed: 'pre_gateway_dispatch invocation failed:
+  %s'
+gateway.pregatewaydispatch.skip.reasons.platforms: 'pre_gateway_dispatch skip: reason=%s
+  platform=%s chat=%s'
+log.ignoring.message.userid: Ignoring message with no user_id from %s
+log.unauthorized.user: 'Unauthorized user: %s (%s) on %s'
+gateway.ask.bot.owner.runn: Ask the bot owner to run:\n
+gateway.too.many.pairing.requests: 'Too many pairing requests right now~ '
+gateway.please.try.again.later: Please try again later!
+log.failed.write.update.response: 'Failed to write update response: %s'
+gateway.failed.send.response.update: '✗ Failed to send response to update process:
+  {e}'
+gateway.sent.label.update.process: ✓ Sent `{label}` to the update process.
+gateway.recognized.during.pending.update: 'Recognized /%s during pending update prompt
+  for %s; '
+gateway.failed.write.cancel.response: 'Failed to write cancel response for pending
+  update prompt: %s'
+gateway.gateway.intercepted.clarify.text: Gateway intercepted clarify text response
+  (session=%s, id=%s)
+gateway.lastactivitysaget: ' | last_activity={_sa.get('
+gateway.staleidle0fs.ago: '({_stale_idle:.0f}s ago) '
+gateway.iterationsaget: '| iteration={_sa.get('
+gateway.0saget: ', 0)}/{_sa.get('
+gateway.evicting.stale.runningagents.entry: 'Evicting stale _running_agents entry
+  for %s '
+gateway.age.0fs.idle.0fs: '(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s'
+log.stop.session.agent.interrupted: STOP for session %s — agent interrupted, session
+  lock released
+gateway.usage.queue.prompt: 'Usage: /queue <prompt>'
+gateway.queued.next.turn: Queued for the next turn.
+gateway.queued.next.turn.depth: Queued for the next turn. ({depth} queued)
+gateway.usage.steer.prompt: 'Usage: /steer <prompt>'
+gateway.agent.still.starting.steer: Agent still starting — /steer queued for the next
+  turn.
+log.steer.failed.session: 'Steer failed for session %s: %s'
+gateway.steer.queued.arrives.after: '⏩ Steer queued — arrives after the next tool
+  call: '
+gateway.steer.rejected.empty.payload: Steer rejected (empty payload).
+gateway.active.agent.steer.queued: No active agent — /steer queued for the next turn.
+gateway.agent.running.wait.stop: Agent is running — wait or /stop first, then switch
+  models.
+gateway.agent.running.wait.stop_1: 'Agent is running — wait or /stop first, then '
+gateway.change.runtime: change runtime.
+gateway.agent.running.use.goal: Agent is running — use /goal status / pause / clear
+  mid-run, or /stop before setting a new goal.
+gateway.agent.running.cmddefinnername.can: ⏳ Agent is running — `/{_cmd_def_inner.name}`
+  can
+gateway.midturn.wait.current.response: mid-turn. Wait for the current response or
+  `/stop` first.
+log.priority.photo.followup.session: PRIORITY photo follow-up for session %s — queueing
+  without interrupt
+gateway.telegram.followup.arrived.2fs: Telegram follow-up arrived %.2fs after run
+  start for %s — queueing without interrupt
+log.hard.stop.pending.session: HARD STOP (pending) for session %s — sentinel cleared
+gateway.forcestopped.agent.still.starting: ⚡ Force-stopped. The agent was still starting
+  — session unlocked.
+log.priority.queue.followup.session: PRIORITY queue follow-up for session %s
+log.priority.steer.failed.session: 'PRIORITY steer failed for session %s: %s'
+log.priority.steer.session: PRIORITY steer for session %s
+log.priority.steerfallbacktoqueue.session: PRIORITY steer-fallback-to-queue for session
+  %s
+gateway.priority.interrupt.demoted.queue: 'PRIORITY interrupt demoted to queue for
+  session %s '
+log.priority.interrupt.session: PRIORITY interrupt for session %s
+gateway.commands.hook.dispatch.failed: 'command:%s hook dispatch failed (non-fatal):
+  %s'
+gateway.command.command.blocked.hook: Command `/{command}` was blocked by a hook.
+gateway.starts.fresh.session.discards: 'This starts a fresh session and discards the
+  current '
+gateway.conversation.history: conversation history.
+gateway.removes.last.userassistant.exchange: This removes the last user/assistant
+  exchange from history.
+gateway.usage.steer.prompt.agent: 'Usage: /steer <prompt>  (no agent is running; sending
+  as a normal message)'
+gateway.command.returned.output: Command returned no output.
+gateway.quick.command.timed.out: Quick command timed out (30s).
+error.quick.command.error: 'Quick command error: {e}'
+gateway.quick.command: 'Quick command '
+gateway.command.defined: ' has no command defined.'
+gateway.quick.command_1: 'Quick command '
+gateway.target.defined: ' has no target defined.'
+gateway.quick.command_2: 'Quick command '
+gateway.unsupported.type.supported: ' has unsupported type (supported: '
+log.plugin.command.dispatch.failed: 'Plugin command dispatch failed (non-fatal): %s'
+gateway.bundle.skipped.missing.skills: 'Bundle %s skipped missing skills: %s'
+log.bundle.dispatch.failed.nonfatal: 'Bundle dispatch failed (non-fatal): %s'
+gateway.skillname.skill.disabled.platn: The **{_skill_name}** skill is disabled for
+  {_plat}.\n
+gateway.enable.hermes.skills.config_1: 'Enable it with: `hermes skills config`'
+gateway.unrecognized.slash.command: 'Unrecognized slash command /%s from %s — '
+gateway.unknown.command.command: 'Unknown command `/{command}`. '
+gateway.type.commands.see.what: Type /commands to see what
+gateway.regular.message: as a regular message.
+log.skill.command.check.failed: 'Skill command check failed (non-fatal): %s'
+log.goal.continuation.hook.failed: 'goal continuation hook failed: %s'
+gateway.sourceusername.messagetext: '[{source.user_name}] {message_text}'
+gateway.eventchannelcontextnnnew.messagenmessagetext: '{event.channel_context}\n\n[New
+  message]\n{message_text}'
+gateway.image.routing.native.model: 'Image routing: native (model supports vision).
+  %d image(s) will be attached inline.'
+gateway.image.routing.text.modes: 'Image routing: text (mode=%s). Pre-analyzing %d
+  image(s) via vision_analyze.'
+gateway.stt.provider: No STT provider
+gateway.stt.disabled: STT is disabled
+gateway.received.voice.message.can: 🎤 I received your voice message but can
+gateway.speechtotext.provider.configurednn: no speech-to-text provider is configured.\n\n
+gateway.enable.voice.install.fasterwhisper: 'To enable voice: install faster-whisper '
+gateway.pip.install.fasterwhisper.hermes: '(`pip install faster-whisper` in the Hermes
+  venv) '
+gateway.set.sttenabled.true.configyaml: 'and set `stt.enabled: true` in config.yaml, '
+gateway.then.restart.gateway: then /restart the gateway.
+gateway.nnfor.full.setup.instructions: '\n\nFor full setup instructions, type: `/skill
+  hermes-agent-setup`'
+gateway.user.sent.audio.file: '[The user sent an audio file attachment: '
+gateway.saved.agentpath: 'It is saved at: {_agent_path}. '
+gateway.ask.user.what: Ask the user what they
+gateway.user.sent.text.document: '[The user sent a text document: '
+gateway.content.included.below: 'Its content has been included below. '
+gateway.file.also.saved.agentpath: 'The file is also saved at: {agent_path}]'
+gateway.user.sent.document: '[The user sent a document: '
+gateway.file.saved.agentpath: 'The file is saved at: {agent_path}. '
+gateway.ask.user.what_1: Ask the user what they
+gateway.replying.to: '[Replying to: '
+warn.context.injection.refused: Context injection refused.
+log.context.reference.expansion.failed: '@ context reference expansion failed: %s'
+log.failed.cache.live.session: Failed to cache live session source for %s
+gateway.inner.handler.runs.under: Inner handler that runs under the _running_agents
+  sentinel guard.
+gateway.inbound.message.platforms.users: 'inbound message: platform=%s user=%s chat=%s
+  msg=%r'
+gateway.telegram.topic.recovery.chats: 'telegram topic recovery: chat=%s user=%s %r
+  -> %s'
+log.failed.read.telegram.topic_1: Failed to read Telegram topic binding
+log.failed.record.telegram.topic: Failed to record Telegram topic binding
+gateway.system.note.user: '[System note: The user'
+gateway.system.note.user_1: '[System note: The user'
+gateway.system.note.user_2: '[System note: The user'
+gateway.daily.schedule.policyathour00: daily schedule at {policy.at_hour}:00
+gateway.session.automatically.reset.reasontext: '◐ Session automatically reset ({reason_text}). '
+gateway.conversation.history.clearedn: Conversation history cleared.\n
+gateway.use.resume.browse.restore: Use /resume to browse and restore a previous session.\n
+gateway.adjust.reset.timing.configyaml: Adjust reset timing in config.yaml under session_reset.
+log.autoreset.notification.failed.nonfatal: 'Auto-reset notification failed (non-fatal):
+  %s'
+gateway.important.the: '[IMPORTANT: The '
+gateway.skill.autoloaded: ' skill is auto-loaded. '
+gateway.follow.instructions.session: Follow its instructions for this session.]
+log.gateway.autoskill: '[Gateway] Auto-skill '
+gateway.gateway.autoloaded.skills.session: '[Gateway] Auto-loaded skill(s) %s for
+  session %s'
+log.gateway.failed.autoload.skills: '[Gateway] Failed to auto-load skill(s) %s: %s'
+gateway.session.hygiene.messages.tokens: 'Session hygiene: %s messages, ~%s tokens
+  (%s) — auto-compressing '
+gateway.threshold.tokens: '(threshold: %s%% of %s = %s tokens)'
+gateway.session.hygiene.compressed.msgs: 'Session hygiene: compressed %s → %s msgs, '
+gateway.session.hygiene.still.tokens: 'Session hygiene: still ~%s tokens after '
+gateway.context.compression.aborted: '⚠️ Context compression aborted '
+gateway.err.messages.dropped: '({_err}). No messages were dropped — '
+gateway.conversation.unchanged.run.compress: 'conversation is unchanged. Run /compress '
+gateway.retry.reset.clean.session: 'to retry, /reset for a clean session, or '
+gateway.check.auxiliarycompression.model: 'check your auxiliary.compression model '
+warn.failed.deliver.compressionfailure.warning: 'Failed to deliver compression-failure
+  warning to user: %s'
+gateway.configured.compression.model.auxmodel: 'ℹ️ Configured compression model `{_aux_model}` '
+gateway.failed.auxerr.recovered.using: 'failed ({_aux_err}). Recovered using your
+  main '
+gateway.check.auxiliarycompressionmodel.configyaml: check `auxiliary.compression.model`
+  in config.yaml.
+gateway.failed.deliver.auxmodelfallback.notice: 'Failed to deliver aux-model-fallback
+  notice to user: %s'
+gateway.session.hygiene.autocompress.failed: 'Session hygiene auto-compress failed:
+  %s'
+gateway.nnsystem.note.user: '\n\n[System note: This is the user'
+gateway.briefly.introduce.yourself.mention: 'Briefly introduce yourself and mention
+  that /help shows available commands. '
+gateway.keep.introduction.concise.one: Keep the introduction concise -- one or two
+  sentences max.]
+gateway.home.channel.set.platformnametitle: '📬 No home channel is set for {platform_name.title()}. '
+gateway.home.channel.where.hermes: 'A home channel is where Hermes delivers cron job
+  results '
+gateway.crossplatform.messagesnn: and cross-platform messages.\n\n
+gateway.type.sethomecmd.make.chat: 'Type {sethome_cmd} to make this chat your home
+  channel, '
+gateway.ignore.skip: or ignore to skip.
+gateway.discarding.stale.agent.result: Discarding stale agent result for %s — generation
+  %d is no longer current
+gateway.model.returned.response.after: '⚠️ The model returned no response after processing
+  tool '
+gateway.results.can.happen.some: 'results. This can happen with some models — try
+  again or '
+gateway.rephrase.question: rephrase your question.
+gateway.response.ready.platforms.chats: 'response ready: platform=%s chat=%s time=%.1fs
+  api_calls=%d response=%d chars'
+gateway.clearresumepending.failed: 'clear_resume_pending failed for %s: %s'
+gateway.lenlines.more.lines: \n_... ({len(lines) - 15} more lines)_
+log.runtimefooter.build.failed: 'runtime_footer build failed: %s'
+log.process.watcher.setup.error: 'Process watcher setup error: %s'
+log.watch.notification.injection.error: 'Watch notification injection error: %s'
+log.watch.queue.drain.error: 'Watch queue drain error: %s'
+gateway.skipping.transcript.persistence.contextoverflow: 'Skipping transcript persistence
+  for context-overflow '
+gateway.failure.session.prevent.session: failure in session %s to prevent session
+  growth loop.
+gateway.transient.agent.failure.session: 'Transient agent failure in session %s —
+  persisting user '
+gateway.message.conversation.context.preserved: message so conversation context is
+  preserved on retry.
+gateway.autoresetting.session.after.compression: Auto-resetting session %s after compression
+  exhaustion.
+gateway.session.autoreset.conversation.exceeded: '\n\n🔄 Session auto-reset — the conversation
+  exceeded the '
+gateway.maximum.context.size.compressed: 'maximum context size and could not be compressed
+  further. '
+gateway.next.message.start.fresh: Your next message will start a fresh session.
+log.trailing.footer.send.failed: 'trailing footer send failed: %s'
+log.agent.error.session: Agent error in session %s
+log.check.api.key.run: ' Check your API key or run `claude /login` to refresh OAuth
+  credentials.'
+gateway.api.balance.quota.exhausted: ' Your API balance or quota is exhausted. Check
+  your provider dashboard.'
+gateway.ratelimited.please.wait.moment: ' You are being rate-limited. Please wait
+  a moment and try again.'
+gateway.api.temporarily.overloaded.please: ' The API is temporarily overloaded. Please
+  try again shortly.'
+gateway.session.too.large.model_1: ⚠️ Session too large for the model
+gateway.use.compact.compress.conversation_1: 'Use /compact to compress the conversation,
+  or '
+gateway.reset.start.fresh_1: /reset to start fresh.
+gateway.request.rejected.api: ' The request was rejected by the API.'
+error.sorry.encountered.error.errortypen: Sorry, I encountered an error ({error_type}).\n
+gateway.try.again.use.reset_1: Try again or use /reset to start a fresh session.
+gateway.default.set.modelcontextlength.config: default — set model.context_length
+  in config to override
+gateway.contextlength.10000001fm: '{context_length / 1_000_000:.1f}M'
+gateway.contextlength.1000k: '{context_length // 1_000}K'
+gateway.handle.new.reset.command: Handle /new or /reset command.
+log.failed.rebind.telegram.topic: Failed to rebind Telegram topic after /new
+gateway.handle.profile.show.active: Handle /profile — show active profile name and
+  home directory.
+gateway.slash.command.denied.admin: Slash command /%s denied for %s:%s (not admin,
+  not in user_allowed_commands)
+gateway.can.run: 'You can run: '
+gateway.use.whoami.full.list: . Use /whoami for the full list.
+gateway.slash.commands.enabled.nonadmins: 'No slash commands are enabled for non-admins
+  on this '
+gateway.platform.ask.admin.add: 'platform. Ask an admin to add you to allow_admin_from '
+gateway.set.userallowedcommands: or to set user_allowed_commands.
+gateway.canonicalcmd.adminonly.here.suffix: ⛔ /{canonical_cmd} is admin-only here.
+  {suffix}
+gateway.handle.whoami.show.user: Handle /whoami — show the user
+gateway.platform.scopen: '**You** — {platform} ({scope})\n'
+gateway.user.useridn: 'User ID: `{user_id}`\n'
+gateway.tier.unrestricted.admin.list: 'Tier: unrestricted (no admin list configured
+  for this scope)\n'
+gateway.slash.commands.all.available: 'Slash commands: all available'
+gateway.platform.scopen_1: '**You** — {platform} ({scope})\n'
+gateway.user.useridn_1: 'User ID: `{user_id}`\n'
+gateway.tier.adminn: 'Tier: **admin**\n'
+gateway.slash.commands.all.available_1: 'Slash commands: all available'
+gateway.platform.scopen_2: '**You** — {platform} ({scope})\n'
+gateway.user.useridn_2: 'User ID: `{user_id}`\n'
+gateway.tier.usern: 'Tier: user\n'
+gateway.slash.commands.can.run: 'Slash commands you can run: {runnable_str}'
+log.kanban.create.autosubscribe.failed: 'kanban create auto-subscribe failed: %s'
+gateway.handle.status.command: Handle /status command.
+gateway.ymd.hm: '%Y-%m-%d %H:%M'
+gateway.ymd.hm_1: '%Y-%m-%d %H:%M'
+log.buildrecap.failed.status: 'build_recap failed in /status: %s'
+gateway.handle.agents.command.list: Handle /agents command - list active agents and
+  running tasks.
+gateway.ispending.else.strgetattragent: ' if is_pending else str(getattr(agent, '
+gateway.ispending.else.strgetattragent_1: ' if is_pending else str(getattr(agent, '
+gateway.idx.row: '{idx}. `{row['
+gateway.procget: '- `{proc.get('
+gateway.0.cmd: ', 0)))} · `{cmd}`'
+log.stop.pending.session.sentinel: STOP (pending) for session %s — sentinel cleared
+gateway.gateway.platforms: '**Gateway platforms**'
+gateway.connected: 'Connected: '
+gateway.connected.none: 'Connected: (none)'
+gateway.pvalue.paused.reason: '  · {p.value} — PAUSED ({reason}). '
+gateway.resume.platform.resume.pvalue: Resume with `/platform resume {p.value}`.
+gateway.pvalue.retrying.attempt.attempts: '  · {p.value} — retrying (attempt {attempts})'
+gateway.failedpaused.none: 'Failed/paused: (none)'
+gateway.usage.platform.action.name: 'Usage: /platform {action} <name>'
+gateway.unknown.platform.target: 'Unknown platform: {target}'
+gateway.platformvalue.retry.queue: '{platform.value} is not in the retry queue '
+gateway.platformvalue.already.paused: '{platform.value} is already paused.'
+gateway.platformvalue.paused: '✓ {platform.value} paused. '
+gateway.resume.platform.resume.platformvalue: 'Resume with `/platform resume {platform.value}`
+  or '
+gateway.hermes.gateway.restart.reset: '`hermes gateway restart` to reset.'
+gateway.platformvalue.retry.queue_1: '{platform.value} is not in the retry queue — '
+gateway.nothing.resume: nothing to resume.
+gateway.platformvalue.already.retrying: '{platform.value} is already retrying — '
+gateway.resume.needed: no resume needed.
+gateway.platformvalue.resumed.retrying.next: ✓ {platform.value} resumed — retrying
+  on next watcher tick.
+gateway.usage.platform.listpauseresume.namen: 'Usage: /platform <list|pause|resume>
+  [name]\n'
+gateway.handle.restart.command.drain: Handle /restart command - drain active work,
+  then restart the gateway.
+gateway.ignoring.redelivered.restart.platforms: 'Ignoring redelivered /restart (platform=%s,
+  update_id=%s) — '
+gateway.already.processed.previous.gateway: already processed by a previous gateway
+  instance.
+log.failed.write.restart.notify: 'Failed to write restart notify file: %s'
+log.failed.write.restart.dedup: 'Failed to write restart dedup marker: %s'
+gateway.handle.help.command.list: Handle /help command - list available commands.
+gateway.strip.or.t: ).strip() or t(
+gateway.perform.model.switch.return: Perform the model switch and return confirmation
+  text.
+log.picker.model.switch.failed: 'Picker model switch failed for cached agent: %s'
+gateway.note.model.just.switched: '[Note: model was just switched from {_cur_model}
+  to {result.new_model} '
+gateway.via.resultproviderlabel.resulttargetprovider: 'via {result.provider_label
+  or result.target_provider}. '
+gateway.adjust.selfidentification.accordingly: Adjust your self-identification accordingly.]
+log.inplace.model.switch.failed: 'In-place model switch failed for cached agent: %s'
+gateway.note.model.just.switched_1: '[Note: model was just switched from {current_model}
+  to {result.new_model} '
+gateway.via.resultproviderlabel.resulttargetprovider_1: 'via {result.provider_label
+  or result.target_provider}. '
+gateway.adjust.selfidentification.accordingly_1: Adjust your self-identification accordingly.]
+log.failed.persist.model.switch: 'Failed to persist model switch: %s'
+gateway.prefix.resultmessage: '{prefix} {result.message}'
+gateway.handle.personality.command.list: Handle /personality command - list or set
+  a personality.
+gateway.tone.value: 'Tone: {value['
+gateway.style.value: 'Style: {value['
+gateway.handle.retry.command.resend: Handle /retry command - re-send the last user
+  message.
+log.goal.manager.unavailable: 'goal manager unavailable: %s'
+log.goal.manager.session.lookup: 'goal manager: session lookup failed: %s'
+log.goal.pause.pending.continuation: 'goal pause: pending continuation cleanup failed:
+  %s'
+log.goal.clear.pending.continuation: 'goal clear: pending continuation cleanup failed:
+  %s'
+log.goal.kickoff.enqueue.failed: 'goal kickoff enqueue failed: %s'
+gateway.active.goal.set.one: No active goal. Set one with /goal <text>.
+gateway.usage.subgoal.remove: 'Usage: /subgoal remove <n>'
+gateway.subgoal.remove.integer.1based: '/subgoal remove: <n> must be an integer (1-based
+  index).'
+gateway.subgoal.remove.exc: '/subgoal remove: {exc}'
+gateway.removed.subgoal.idx.removed: '✓ Removed subgoal {idx}: {removed}'
+gateway.subgoal.clear.exc: '/subgoal clear: {exc}'
+gateway.cleared.prev.subgoal: ✓ Cleared {prev} subgoal{
+gateway.prev.else: ' if prev != 1 else '
+gateway.subgoals.clear: No subgoals to clear.
+gateway.subgoal.exc: '/subgoal: {exc}'
+gateway.added.subgoal.idx.text: '✓ Added subgoal {idx}: {text}'
+gateway.send.goal.judge.status: Send a /goal judge status line back to the originating
+  chat/thread.
+log.goal.continuation.adapter: 'goal continuation: no adapter for %s'
+gateway.goal.continuation.status.send: 'goal continuation: status send failed: %s'
+log.goal.continuation.adapter_1: 'goal continuation: no adapter for %s'
+log.goal.continuation.status.send: 'goal continuation: status send failed: %s'
+log.goal.continuation.postdelivery.callback: 'goal continuation: post-delivery callback
+  registration failed: %s'
+log.goal.continuation.goals.module: 'goal continuation: goals module unavailable:
+  %s'
+log.goal.continuation.enqueue.failed: 'goal continuation: enqueue failed: %s'
+gateway.handle.undo.command.remove: Handle /undo command - remove the last user/assistant
+  exchange.
+gateway.handle.sethome.command.set: Handle /sethome command -- set the current chat
+  as the platform
+gateway.extract.discord.guildid.raw: Extract Discord guild_id from the raw message
+  object.
+gateway.handle.voice.onoffttschannelleavestatus.command: Handle /voice [on|off|tts|channel|leave|status]
+  command.
+gateway.join.user: Join the user
+gateway.voice.channels.supported.platform: Voice channels are not supported on this
+  platform.
+gateway.command.only.works.discord: This command only works in a Discord server.
+gateway.need.voice.channel.first: You need to be in a voice channel first.
+log.failed.join.voice.channel: 'Failed to join voice channel: %s'
+gateway.voice.dependencies.missing.pynacl: 'Voice dependencies are missing (PyNaCl
+  / davey). '
+gateway.install.sysexecutable.pip.install: 'Install with: `{sys.executable} -m pip
+  install PyNaCl`'
+gateway.failed.join.voice.channel: 'Failed to join voice channel: {e}'
+gateway.joined.voice.channel.voicechannelnamen: Joined voice channel **{voice_channel.name}**.\n
+gateway.failed.join.voice.channel_1: Failed to join voice channel. Check bot permissions
+  (Connect + Speak).
+gateway.leave.discord.voice.channel: Leave the Discord voice channel.
+gateway.voice.channel: Not in a voice channel.
+gateway.voice.channel_1: Not in a voice channel.
+log.error.leaving.voice.channel: 'Error leaving voice channel: %s'
+gateway.left.voice.channel: Left voice channel.
+log.unauthorized.voice.input.user: Unauthorized voice input from user %d, ignoring
+gateway.suppressing.duplicate.voice.transcript: 'Suppressing duplicate voice transcript
+  for guild=%s user=%s: %s'
+gateway.voice.userid.safetext: '**[Voice]** <@{user_id}>: {safe_text}'
+gateway.generate.tts.audio.send: Generate TTS audio and send as a voice message before
+  the text reply.
+log.auto.voice.reply.tts: 'Auto voice reply TTS returned invalid JSON: %s'
+log.auto.voice.reply.tts_1: 'Auto voice reply TTS failed: %s'
+log.auto.voice.reply.failed: 'Auto voice reply failed: %s'
+log.poststream.image.batch.delivery: '[%s] Post-stream image batch delivery failed:
+  %s'
+log.poststream.media.delivery.failed: '[%s] Post-stream media delivery failed: %s'
+log.poststream.file.delivery.failed: '[%s] Post-stream file delivery failed: %s'
+log.poststream.media.extraction.failed: 'Post-stream media extraction failed: %s'
+gateway.handle.rollback.command.list: Handle /rollback command — list or restore filesystem
+  checkpoints.
+gateway.execute.background.agent.task: Execute a background agent task and deliver
+  the result to the chat.
+log.adapter.platform.background.task: No adapter for platform %s in background task
+  %s
+log.background.task.vision.enrichment: 'Background task vision enrichment failed:
+  %s'
+error.error.result: 'Error: {result['
+gateway.background.task.completenprompt: '✅ Background task complete\nPrompt: '
+gateway.response.generated: (No response generated)
+gateway.background.task.completenprompt_1: '✅ Background task complete\nPrompt: '
+gateway.nnno.response.generated: \n\n(No response generated)
+log.background.task.failed: Background task %s failed
+gateway.save.dotseparated.key.configyaml: Save a dot-separated key to config.yaml.
+log.failed.save.config.key: 'Failed to save config key %s: %s'
+gateway.handle.fast.mirror.cli: Handle /fast — mirror the CLI Priority Processing
+  toggle in gateway chats.
+gateway.save.dotseparated.key.configyaml_1: Save a dot-separated key to config.yaml.
+log.failed.save.config.key_1: 'Failed to save config key %s: %s'
+gateway.handle.yolo.toggle.dangerous: Handle /yolo — toggle dangerous command approval
+  bypass for this session only.
+log.failed.save.toolprogress.mode: 'Failed to save tool_progress mode: %s'
+log.failed.save.runtimefooterenabled: 'Failed to save runtime_footer.enabled: %s'
+log.manual.compress.failed: 'Manual compress failed: %s'
+gateway.read.telegram.privatetopic.capability: Read Telegram private-topic capability
+  flags via Bot API getMe.
+log.failed.fetch.telegram.getme: Failed to fetch Telegram getMe topic capabilities
+gateway.createpin.managed.system.topic: Create/pin the managed System topic after
+  /topic activation when possible.
+log.failed.create.telegram.system: Failed to create Telegram System topic
+gateway.system.topic.hermes.commands: System topic for Hermes commands and status.
+log.failed.send.telegram.system: Failed to send Telegram System topic intro
+log.failed.pin.telegram.system: Failed to pin Telegram System topic intro
+gateway.send.bundled.botfather.threads: Send the bundled BotFather Threads Settings
+  screenshot when available.
+gateway.botfather.bot.settings.threads: BotFather → Bot Settings → Threads Settings
+log.failed.send.telegram.topic: Failed to send Telegram topic setup image
+gateway.return.bot.apisafe.forum: Return a Bot API-safe forum topic name from a generated
+  session title.
+gateway.hermes.chat: Hermes Chat
+gateway.besteffort.rename.telegram.topic: Best-effort rename of a Telegram DM topic
+  when Hermes auto-titles a session.
+log.failed.verify.telegram.topic: Failed to verify Telegram topic binding before rename
+log.failed.rename.telegram.topic: Failed to rename Telegram topic for auto-generated
+  title
+gateway.schedule.topic.rename.autotitle: Schedule a topic rename from the auto-title
+  background thread.
+log.telegram.topic.title.rename: Telegram topic title rename failed to schedule
+log.telegram.topic.title.rename_1: Telegram topic title rename failed
+gateway.topic.enable.multisession.mode: /topic — enable multi-session DM mode (one
+  bot, many parallel chats)\n
+gateway.topic.enable.topic.mode: '  /topic             Enable topic mode, or show
+  status if already on\n'
+gateway.topic.help.show.messagen: '  /topic help        Show this message\n'
+gateway.topic.off.disable.topic: '  /topic off         Disable topic mode and clear
+  topic bindings\n'
+gateway.topic.inside.topic.restore: '  /topic <id>        Inside a topic: restore
+  a previous session by ID\n'
+gateway.how.worksn: How it works:\n
+gateway.run.topic.once.hermes: 1. Run /topic once in this DM — Hermes checks BotFather
+  Threads\n
+gateway.settings.enabled.flips.multisession: '   Settings are enabled and flips on
+  multi-session mode.\n'
+gateway.tap.all.messages.top: 2. Tap All Messages at the top of the bot and send any
+  message.\n
+gateway.telegram.creates.new.topic: '   Telegram creates a new topic for that message;
+  each topic is\n'
+gateway.independent.hermes.session.fresh: '   an independent Hermes session (fresh
+  history, fresh context).\n'
+gateway.root.becomes.system.lobby: 3. The root DM becomes a system lobby — send /topic,
+  /status,\n
+gateway.help.usage.there.normal: '   /help, /usage there. Normal prompts go in a topic.\n'
+gateway.new.inside.topic.resets: 4. /new inside a topic resets just that topic
+gateway.topic.inside.topic.restores: 5. /topic <id> inside a topic restores an old
+  session into it.
+gateway.cleanly.disable.topic.mode: Cleanly disable topic mode for a chat via /topic
+  off.
+gateway.determine.chat: Could not determine chat ID.
+gateway.multisession.topic.mode.currently: Multi-session topic mode is not currently
+  enabled for this chat.
+log.failed.disable.telegram.topic: Failed to disable Telegram topic mode
+gateway.failed.disable.topic.mode: 'Failed to disable topic mode: {exc}'
+gateway.multisession.topic.mode.now: Multi-session topic mode is now OFF for this
+  chat.\n\n
+gateway.existing.topics.telegram.aren: Existing topics in Telegram aren
+gateway.gated.independent.sessions.root: 'being gated as independent sessions. The
+  root DM works as a '
+gateway.normal.hermes.chat.again: normal Hermes chat again. Run /topic to re-enable
+  later.
+gateway.handle.topic.telegram.usermanaged: Handle /topic for Telegram DM user-managed
+  topic sessions.
+log.topic.auth.check.failed: Topic auth check failed
+log.failed.enable.telegram.topic: Failed to enable Telegram topic mode
+log.failed.read.telegram.topic_2: Failed to read Telegram topic binding
+gateway.telegram.multisession.topics.enabled: Telegram multi-session topics are enabled.
+gateway.create.new.hermes.chat: 'To create a new Hermes chat, open All Messages at
+  the top of this '
+gateway.bot.interface.send.any_1: 'bot interface and send any message there. Telegram
+  will create a '
+gateway.new.topic: new topic for it.
+log.failed.list.unlinked.telegram: Failed to list unlinked Telegram sessions
+gateway.previous.unlinked.sessions: 'Previous unlinked sessions:'
+gateway.untitled.session: Untitled session
+gateway.restore.one: 'To restore one:'
+gateway.create.open.topic.create: 1. Create or open a topic. To create a new one,
+  open All Messages and send any message there.
+gateway.send.topic.sessionid.inside: 2. Send /topic <session-id> inside that topic.
+gateway.example.send.topic.sessions0get: 'Example: Send /topic {sessions[0].get('
+gateway.inside.topic: )} inside a topic.
+gateway.previous.unlinked.telegram.sessions: No previous unlinked Telegram sessions
+  found.
+gateway.restore.previous.session.later: 'To restore a previous session later:'
+gateway.create.open.topic.create_1: 1. Create or open a topic. To create a new one,
+  open All Messages and send any message there.
+gateway.send.topic.sessionid.inside_1: 2. Send /topic <session-id> inside that topic.
+gateway.restore.existing.telegramowned.hermes: Restore an existing Telegram-owned
+  Hermes session into this topic.
+gateway.session.found.rawsessionidstrip: 'Session not found: {raw_session_id.strip()}'
+gateway.session.found.rawsessionidstrip_1: 'Session not found: {raw_session_id.strip()}'
+gateway.session.telegram.session.cannot: That session is not a Telegram session and
+  cannot be restored into this topic.
+gateway.session.belong.telegram.user: That session does not belong to this Telegram
+  user.
+gateway.session.already.linked.another: That session is already linked to another
+  Telegram topic.
+gateway.session.already.linked.another_1: That session is already linked to another
+  Telegram topic.
+gateway.session.restored.title: 'Session restored: {title}'
+gateway.nnlast.hermes.messagenlastassistant: \n\nLast Hermes message:\n{last_assistant}
+gateway.handle.title.command.set: Handle /title command — set or show the current
+  session
+gateway.handle.resume.command.list: Handle /resume command — list or switch to a previous
+  session.
+log.failed.list.titled.sessions: 'Failed to list titled sessions: %s'
+log.failed.list.titled.sessions_1: 'Failed to list titled sessions for numeric resume:
+  %s'
+log.failed.resolve.resume.continuation: 'Failed to resolve resume continuation for
+  %s: %s'
+log.failed.create.branch.session: 'Failed to create branch session: %s'
+gateway.handle.insights.command.show: Handle /insights command -- show usage insights
+  and analytics.
+log.insights.command.error: 'Insights command error: %s'
+gateway.always.approve: Always Approve
+gateway.user.opted.out.reloadmcp: User opted out of /reload-mcp confirmation (session=%s)
+log.failed.persist.mcpreloadconfirmfalse: 'Failed to persist mcp_reload_confirm=false:
+  %s'
+gateway.failed.update.cached.agent: 'Failed to update cached agent tools after MCP
+  reload: %s'
+gateway.added.servers: 'Added servers: {'
+gateway.removed.servers: 'Removed servers: {'
+gateway.reconnected.servers: 'Reconnected servers: {'
+gateway.lennewtools.mcp.tools.now: '{len(new_tools)} MCP tool(s) now available'
+gateway.mcp.tools.available: No MCP tools available
+gateway.important.mcp.servers.reloaded: '[IMPORTANT: MCP servers have been reloaded.
+  {change_detail}{tool_summary}. The tool list for this conversation has been updated
+  accordingly.]'
+log.mcp.reload.failed: 'MCP reload failed: %s'
+gateway.adapter.refreshskillgroup.raised: 'Adapter %s refresh_skill_group raised:
+  %s'
+gateway.user.initiated.skills.reload: '[USER INITIATED SKILLS RELOAD:'
+gateway.added.skills: 'Added Skills:'
+gateway.removed.skills: 'Removed Skills:'
+log.use.skillslist.see.updated: Use skills_list to see the updated catalog.]
+log.skills.reload.failed: 'Skills reload failed: %s'
+log.bundles.command.unavailable: 'Bundles command unavailable: %s'
+gateway.bundles.subsystem.unavailable.exc: 'Bundles subsystem unavailable: {exc}'
+gateway.skill.bundles.installedn: No skill bundles installed.\n
+gateway.create.one.host.withn: Create one on the host with:\n
+gateway.directory.bundlesdir: 'Directory: `{_bundles_dir()}`'
+gateway.skill.bundles.lenbundles.installed: '**Skill Bundles** ({len(bundles)} installed):'
+gateway.load.skillcount.skills: Load {skill_count} skills
+gateway.invoke.bundle.slug.load: Invoke a bundle with `/<slug>` to load all its skills.
+gateway.command.cancelled.conversation.unchanged: 🟡 /{command} cancelled. Conversation
+  unchanged.
+gateway.user.opted.out.destructive: User opted out of destructive slash confirm (session=%s)
+gateway.failed.persist.destructiveslashconfirmfalse: 'Failed to persist destructive_slash_confirm=false:
+  %s'
+gateway.future.clear.new.reset: '\n\nℹ️ Future /clear, /new, /reset, and /undo will
+  run '
+gateway.without.confirmation.reenable.via: 'without confirmation. Re-enable via '
+gateway.approvalsdestructiveslashconfirm.true.configyaml: '`approvals.destructive_slash_confirm:
+  true` in config.yaml.'
+gateway.approve.once.proceed.time: • **Approve Once** — proceed this time only\n
+gateway.always.approve.proceed.silence: • **Always Approve** — proceed and silence
+  this prompt permanently\n
+gateway.cancel.keep.current.conversationnn: • **Cancel** — keep current conversation\n\n
+gateway.text.fallback.reply.approve: '_Text fallback: reply `/approve`, `/always`,
+  or `/cancel`._'
+gateway.sendslashconfirm.failed: 'send_slash_confirm failed for %s on %s: %s'
+gateway.read.user: Read the user
+gateway.always.approve_1: Always Approve
+gateway.build.metadata.dict.platforms: Build the metadata dict platforms need for
+  thread-aware replies.
+gateway.return.platformspecific.reply.anchor: Return the platform-specific reply anchor
+  for GatewayRunner sends.
+log.user.approved.dangerous.commands: User approved %d dangerous command(s) via /approve
+  (%s)
+log.user.denied.dangerous.commands: User denied %d dangerous command(s) via /deny
+gateway.labellabelwidth.url: '`{label:<{label_width}}`  {url}'
+gateway.pythonunbuffered1.hermescmdstr.update.gateway: PYTHONUNBUFFERED=1 {hermes_cmd_str}
+  update --gateway
+gateway.shlexquotestroutputpath.21: ' > {shlex.quote(str(output_path))} 2>&1; '
+gateway.rc.printf: 'rc=$?; printf '
+gateway.shlexquotestrexitcodepath: ' > {shlex.quote(str(exit_code_path))}'
+gateway.ensure.background.task.watching: Ensure a background task is watching for
+  update completion.
+log.skipping.update.notification.watcher: 'Skipping update notification watcher: no
+  running event loop'
+log.update.watcher.cannot.resolve: 'Update watcher: cannot resolve adapter/chat_id,
+  falling back to completion-only'
+gateway.send.buffered.output.user: Send buffered output to the user.
+log.update.stream.send.failed: 'Update stream send failed: %s'
+gateway.hermes.update.finished: ✅ Hermes update finished.
+gateway.hermes.update.failed.exit: ❌ Hermes update failed (exit code {}).
+log.update.finished.exits.notified: Update finished (exit=%s), notified %s
+log.update.final.notification.failed: 'Update final notification failed: %s'
+log.buttonbased.update.prompt.failed: 'Button-based update prompt failed: %s'
+gateway.default.default: ' (default: {default})'
+gateway.update.needs.inputnn: ⚕ **Update needs your input:**\n\n
+gateway.reply.approve.yes.deny: 'Reply `/approve` (yes) or `/deny` (no), '
+gateway.type.answer.directly: or type your answer directly.
+log.forwarded.update.prompt: 'Forwarded update prompt to %s: %s'
+log.failed.read.update.prompt: 'Failed to read update prompt: %s'
+log.update.watcher.timed.out: Update watcher timed out after %.0fs
+gateway.hermes.update.timed.out: ❌ Hermes update timed out after 30 minutes.
+log.update.notification.deferred.update: 'Update notification deferred: update still
+  running'
+gateway.hermes.update.finished.successfully: ✅ Hermes update finished successfully.
+log.hermes.update.failed.check: ❌ Hermes update failed. Check the gateway logs or
+  run `hermes update` manually for details.
+gateway.sent.postupdate.notification.exits: Sent post-update notification to %s:%s
+  (exit=%s)
+log.postupdate.notification.failed: 'Post-update notification failed: %s'
+gateway.notify.chat.initiated.restart: Notify the chat that initiated /restart that
+  the gateway is back.
+gateway.restart.notification.skipped.adapter: 'Restart notification skipped: %s adapter
+  not connected'
+gateway.restart.notification.suppressed.gatewayrestartnotificationfalse: 'Restart
+  notification suppressed: %s has gateway_restart_notification=false'
+gateway.restart.notification.delivered: 'Restart notification to %s:%s was not delivered:
+  %s'
+error.send.returned.successfalse_3: send returned success=False
+gateway.sent.restart.notification: Sent restart notification to %s:%s
+log.restart.notification.failed: 'Restart notification failed: %s'
+gateway.gateway.online.hermes.back: ♻️ Gateway online — Hermes is back and ready.
+gateway.homechannel.startup.notification.suppressed: 'Home-channel startup notification
+  suppressed: %s has gateway_restart_notification=false'
+gateway.homechannel.startup.notification.failed: 'Home-channel startup notification
+  failed for %s:%s: %s'
+error.send.returned.successfalse_4: send returned success=False
+gateway.sent.homechannel.startup.notification: Sent home-channel startup notification
+  to %s:%s
+gateway.homechannel.startup.notification.failed_1: 'Home-channel startup notification
+  failed for %s:%s: %s'
+gateway.restore.session.context.variables: Restore session context variables to their
+  pre-handler values.
+gateway.run.blocking.work.thread: Run blocking work in the thread pool while preserving
+  session contextvars.
+log.imagerouting.decision.failed.falling: 'image_routing: decision failed, falling
+  back to text — %s'
+gateway.describe.everything.visible.image: 'Describe everything visible in this image
+  in thorough detail. '
+gateway.include.any.text.code: 'Include any text, code, data, objects, people, layout,
+  colors, '
+gateway.any.other.notable.visual: and any other notable visual information.
+log.autoanalyzing.user.image: 'Auto-analyzing user image: %s'
+gateway.user.sent.image.here: '[The user sent an image~ Here'
+gateway.need.closer.look.use: '[If you need a closer look, use vision_analyze with '
+gateway.imageurl.path: 'image_url: {path} ~]'
+gateway.user.sent.image.couldn: '[The user sent an image but I couldn'
+gateway.time.can.try.looking: 'this time (>_<) You can try looking at it yourself '
+gateway.visionanalyze.using.imageurl.path: 'with vision_analyze using image_url: {path}]'
+log.vision.autoanalysis.error: 'Vision auto-analysis error: %s'
+gateway.user.sent.image.something: '[The user sent an image but something went wrong
+  when I '
+gateway.tried.look.can.try: 'tried to look at it~ You can try examining it yourself '
+gateway.visionanalyze.using.imageurl.path_1: 'with vision_analyze using image_url:
+  {path}]'
+gateway.user.sent.voice.message: '[The user sent a voice message: {abs_path} (duration:
+  {duration_str})]'
+gateway.user.sent.voice.message_1: '[The user sent a voice message: {abs_path}]'
+gateway.user.sent.message.text: (The user sent a message with no text content)
+log.transcribing.user.voice: 'Transcribing user voice: %s'
+gateway.user.sent.voice.message_2: '[The user sent a voice message~ '
+error.stt.provider: No STT provider
+error.neither.voicetoolsopenaikey.nor.openaiapikey: Neither VOICE_TOOLS_OPENAI_KEY
+  nor OPENAI_API_KEY is set
+gateway.user.sent.voice.message_3: '[The user sent a voice message but I can'
+gateway.right.now.stt.provider: 'to it right now — no STT provider is configured. '
+gateway.direct.message.already.sent: 'A direct message has already been sent to the
+  user '
+gateway.setup.instructions: with setup instructions.
+gateway.skill.called.hermesagentsetup: ' You have a skill called hermes-agent-setup '
+gateway.can.help.users.configure: 'that can help users configure Hermes features '
+gateway.including.voice.tools.more: including voice, tools, and more.
+gateway.user.sent.voice.message_4: '[The user sent a voice message but I had trouble '
+log.transcription.error: 'Transcription error: %s'
+gateway.user.sent.voice.message_5: '[The user sent a voice message but something went
+  wrong '
+gateway.when.tried.listen.let: when I tried to listen to it~ Let them know!]
+gateway.user.sent.message.text_1: (The user sent a message with no text content)
+gateway.synthetic.processevent.sessionstore.lookup: 'Synthetic process-event session-store
+  lookup failed for %s: %s'
+gateway.synthetic.process.event.invalid: 'Synthetic process event has invalid platform
+  metadata: %r'
+gateway.dropping.watch.notification.routing: Dropping watch notification with no routing
+  metadata for process %s
+gateway.watch.pattern.notification.injecting: Watch pattern notification — injecting
+  for %s chat=%s thread=%s
+log.watch.notification.injection.error_1: 'Watch notification injection error: %s'
+log.process.watcher.started.every: 'Process watcher started: %s (every %ss, notify=%s,
+  agent_notify=%s)'
+log.process.watcher.ended.silent: 'Process watcher ended (silent): %s'
+gateway.important.background.process.sessionid: '[IMPORTANT: Background process {session_id}
+  completed '
+gateway.exit.code.sessionexitcoden: (exit code {session.exit_code}).\n
+gateway.command.sessioncommandn: 'Command: {session.command}\n'
+gateway.dropping.completion.notification.routing: Dropping completion notification
+  with no routing metadata for process %s
+gateway.process.finished.injecting.agent: Process %s finished — injecting agent notification
+  for session %s chat=%s thread=%s
+log.agent.notify.injection.error: 'Agent notify injection error: %s'
+gateway.background.process.sessionid.finished: '[Background process {session_id} finished
+  with exit code {session.exit_code}~ '
+log.watcher.delivery.error: 'Watcher delivery error: %s'
+gateway.background.process.sessionid.still: '[Background process {session_id} is still
+  running~ '
+gateway.new.outputnnewoutput: New output:\n{new_output}]
+log.watcher.delivery.error_1: 'Watcher delivery error: %s'
+log.process.watcher.ended: 'Process watcher ended: %s'
+gateway.return.true.agentmodel.matches: Return True if *agent_model* matches an active
+  /model session override.
+gateway.clear.persession.control.state: Clear per-session control state that must
+  not survive a boundary switch.
+gateway.failed.clear.slashconfirm.state: 'Failed to clear slash-confirm state for
+  session boundary %s: %s'
+gateway.failed.clear.approval.state: 'Failed to clear approval state for session boundary
+  %s: %s'
+gateway.invalidate.any.inflight.run: Invalidate any in-flight run token for ``session_key``.
+gateway.invalidated.run.generation: Invalidated run generation for %s → %d (%s)
+gateway.return.true.when.generation: Return True when ``generation`` is still current
+  for ``session_key``.
+gateway.bind.gateway.run.generation: Bind a gateway run generation to the adapter
+gateway.interrupt.current.run.clear: Interrupt the current run and clear queued session
+  state consistently.
+gateway.remove.cached.agent.session: Remove a cached agent for a session (called on
+  /new, /model, etc).
+gateway.evict.don: t evict, don
+gateway.agent.cache.over.cap: 'Agent cache over cap (%d > %d); %d excess slot(s) held
+  by '
+gateway.midturn.agents.recheck.next: mid-turn agents — will re-check on next insert.
+gateway.agent.cache.cap.evicting: Agent cache at cap; evicting LRU session=%s (cache_size=%d)
+gateway.agent.cache.idlettl.evict: 'Agent cache idle-TTL evict: session=%s (idle=%.0fs)'
+gateway.proxy.mode.requires.aiohttp: '⚠️ Proxy mode requires aiohttp. Install with:
+  pip install aiohttp'
+gateway.proxy.url.configured.gatewayproxyurl: ⚠️ Proxy URL not configured (GATEWAY_PROXY_URL
+  or gateway.proxy_url)
+gateway.bearer.proxykey: Bearer {proxy_key}
+log.proxy.set.stream.consumer: 'Proxy: could not set up stream consumer: %s'
+error.proxy.error: 'Proxy error (%d) from %s: %s'
+gateway.discarding.stale.proxy.stream: Discarding stale proxy stream for %s — generation
+  %d is no longer current
+log.proxy.connection.error: 'Proxy connection error to %s: %s'
+gateway.discarding.stale.proxy.result: Discarding stale proxy result for %s — generation
+  %d is no longer current
+gateway.proxy.response.urls.sessions: 'proxy response: url=%s session=%s time=%.1fs
+  response=%d chars'
+gateway.response.remote.agent: (No response from remote agent)
+gateway.callback.invoked.agent.tool: Callback invoked by agent on tool lifecycle events.
+log.toolprogress.onboarding.hint.failed: 'tool-progress onboarding hint failed: %s'
+gateway.emoji.toolnamelistargskeysnargsstr: '{emoji} {tool_name}({list(args.keys())})\n{args_str}'
+gateway.emoji.toolname: '{emoji} {tool_name}: \'
+gateway.emoji.toolname_1: '{emoji} {tool_name}...'
+gateway.emoji.toolname_2: '{emoji} {tool_name}: \'
+gateway.emoji.toolname_3: '{emoji} {tool_name}...'
+gateway.dedup: __dedup__
+gateway.partition.progress.lines.into: Partition progress lines into platform-sized
+  editable bubbles.
+gateway.transient.edit.failure.keeping: '[%s] Transient edit failure — keeping can_edit=True'
+gateway.progress.edit.flood.control: '[%s] Progress edit flood control, backing off'
+log.progress.message.error: 'Progress message error: %s'
+log.agentstep.hook.scheduling.error: agent:step hook scheduling error
+gateway.statuscallback.suppressed: 'status_callback suppressed for %s/%s: %s'
+gateway.runagent.resolved.models.providers: 'run_agent resolved: model=%s provider=%s
+  session=%s'
+gateway.reset: __reset__
+log.set.stream.consumer: 'Could not set up stream consumer: %s'
+log.reusing.cached.agent.session: Reusing cached agent for session %s
+log.created.new.agent.session: Created new agent for session %s (sig=%s)
+log.clarify.send.failed.schedule: Clarify send failed to schedule
+log.clarify.send.failed: 'Clarify send failed: %s'
+error.sendexecapproval.loop.unavailable: 'send_exec_approval: loop unavailable'
+error.buttonbased.approval.failed.send: 'Button-based approval failed (send returned
+  error), falling back to text: %s'
+gateway.buttonbased.approval.failed.falling: 'Button-based approval failed, falling
+  back to text: %s'
+gateway.reason.descnn: 'Reason: {desc}\n\n'
+gateway.reply.approve.execute.approve: 'Reply `/approve` to execute, `/approve session`
+  to approve this pattern '
+gateway.session.approve.always.approve: for the session, `/approve always` to approve
+  permanently, or `/deny` to cancel.
+log.approval.textsend.scheduling.error: Approval text-send scheduling error
+log.failed.send.approval.request: 'Failed to send approval request: %s'
+gateway.system.note.previous.turn: '[System note: Your previous turn in this session
+  was interrupted '
+gateway.reasonphrase.conversation.history.below: 'by {_reason_phrase}. The conversation
+  history below is intact. '
+gateway.contains.unfinished.tool.results: 'If it contains unfinished tool result(s),
+  process them first and '
+gateway.summarize.what.accomplished.then: summarize what was accomplished, then address
+  the user
+gateway.message.belownn: message below.]\n\n
+gateway.system.note.previous.turn_1: '[System note: Your previous turn was interrupted
+  before you could '
+gateway.process.last.tool.results: 'process the last tool result(s). The conversation
+  history contains '
+gateway.results.summarize.what.accomplished: 'those results and summarize what was
+  accomplished, then address the '
+gateway.native.image.attachment.skipped: 'Native image attachment: skipped %d unreadable
+  path(s): %s'
+gateway.native.image.attachment.failed: 'Native image attachment failed, falling back
+  to text: %s'
+gateway.session.split.detected.compression: 'Session split detected: %s → %s (compression)'
+gateway.restored.sourcethreadids.binding.after: Restored source.thread_id=%s from
+  binding after session split %s → %s
+gateway.failed.restore.threadid.binding: Failed to restore thread_id from binding
+  after session split
+gateway.gateway.autotitle.failure.suppressed: 'Gateway auto-title failure suppressed
+  (not user-visible): %s: %s'
+gateway.wait.stream.consumer.created: Wait for the stream consumer to be created,
+  then run it.
+gateway.skipping.stale.agent.promotion: Skipping stale agent promotion for %s — generation
+  %s is no longer current
+log.interrupt.detected.adapter.signaling: Interrupt detected from adapter, signaling
+  agent...
+log.monitorforinterrupt.error.retry: 'monitor_for_interrupt error (will retry): %s'
+log.longrunning.notification.error: 'Long-running notification error: %s'
+gateway.backup.interrupt.detected.session: 'Backup interrupt detected for session
+  %s '
+gateway.monitor.task.state: '(monitor task state: %s)'
+msg.agent.respond.soon: 'If the agent does not respond soon, it will '
+gateway.timed.out.remainingmins.min: 'be timed out in {_remaining_mins} min. '
+gateway.can.continue.waiting.use: You can continue waiting or use /reset.
+log.inactivity.warning.send.error: 'Inactivity warning send error: %s'
+gateway.backup.interrupt.detected.session_1: 'Backup interrupt detected for session
+  %s '
+gateway.monitor.task.state_1: '(monitor task state: %s)'
+gateway.agent.idle.0fs.timeout: 'Agent idle for %.0fs (timeout %.0fs) in session %s '
+gateway.api.responses: or API responses.
+gateway.agent.appears.stuck.tool: 'The agent appears stuck on tool `{_cur_tool}` '
+gateway.secsago0fs.since.last.activity: '({_secs_ago:.0f}s since last activity, '
+gateway.iteration.iternitermax: iteration {_iter_n}/{_iter_max}).
+gateway.last.activity.lastdesc.secsago0fs: 'Last activity: {_last_desc} ({_secs_ago:.0f}s
+  ago, '
+gateway.iteration.iternitermax_1: 'iteration {_iter_n}/{_iter_max}). '
+gateway.agent.waiting.api.response: The agent may have been waiting on an API response.
+gateway.increase.limit.set.agentgatewaytimeout: 'To increase the limit, set agent.gateway_timeout
+  in config.yaml '
+gateway.value.seconds.limit.restart: (value in seconds, 0 = no limit) and restart
+  the gateway.\n
+gateway.try.again.use.reset_2: Try again, or use /reset to start fresh.
+gateway.ignoring.control.interrupt.message: 'Ignoring control interrupt message for
+  session %s: %s'
+log.processing.queued.message.after: 'Processing queued message after agent completion: '
+log.delivering.leftover.steer.next: 'Delivering leftover /steer as next turn: '
+gateway.discarding.command: 'Discarding command '
+gateway.discarding.pending.followup.session: Discarding pending follow-up for session
+  %s during gateway %s
+log.processing.pending.message: 'Processing pending message: '
+gateway.interrupt.recursion.depth.reached: 'Interrupt recursion depth %d reached for
+  session %s — '
+gateway.queueing.message.instead.recursing: queueing message instead of recursing.
+log.stream.consumer.wait.before: 'Stream consumer wait before queued message failed:
+  %s'
+gateway.queued.followup.session.final: 'Queued follow-up for session %s: final stream
+  delivery not confirmed; sending first response before continuing.'
+log.failed.send.first.response: 'Failed to send first response before queued message:
+  %s'
+gateway.queued.followup.session.skipping: 'Queued follow-up for session %s: skipping
+  resend because final streamed delivery was confirmed.'
+gateway.discarding.stale.goal.continuation: Discarding stale goal continuation for
+  session %s — goal is no longer active
+gateway.suppressing.normal.final.send: 'Suppressing normal final send for session
+  %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).'
+gateway.edited.streamed.message.session: Edited streamed message %s for session %s
+  to include plugin-transformed content.
+gateway.failed.edit.streamed.message: 'Failed to edit streamed message for session
+  %s: %s'
+log.temp.bubble.cleanup.scheduling: Temp bubble cleanup scheduling error
+log.postdelivery.cleanup.registration.failed: 'Post-delivery cleanup registration
+  failed: %s'
+log.cron.ticker.started.intervalds: Cron ticker started (interval=%ds)
+log.cron.tick.error: 'Cron tick error: %s'
+log.channel.directory.refresh.scheduling: Channel directory refresh scheduling error
+log.channel.directory.refresh.error: 'Channel directory refresh error: %s'
+log.image.cache.cleanup.removed: 'Image cache cleanup: removed %d stale file(s)'
+log.image.cache.cleanup.error: 'Image cache cleanup error: %s'
+log.document.cache.cleanup.removed: 'Document cache cleanup: removed %d stale file(s)'
+log.document.cache.cleanup.error: 'Document cache cleanup error: %s'
+gateway.paste.sweep.deleted.expired: 'Paste sweep: deleted %d expired paste(s), %d
+  pending'
+log.paste.sweep.error: 'Paste sweep error: %s'
+log.curator.s: 'curator: %s'
+log.curator.tick.error: 'Curator tick error: %s'
+log.cron.ticker.stopped: Cron ticker stopped
+gateway.replacing.existing.gateway.instance: Replacing existing gateway instance (PID
+  %d) with --replace.
+log.write.takeover.marker: 'Could not write takeover marker: %s'
+gateway.permission.denied.killing.pid: Permission denied killing PID %d. Cannot replace.
+gateway.old.gateway.pid.exit: Old gateway (PID %d) did not exit after SIGTERM, sending
+  SIGKILL.
+log.released.stale.scoped.locks: Released %d stale scoped lock(s) from old gateway.
+gateway.another.gateway.instance.already: 'Another gateway instance is already running
+  (PID %d, HERMES_HOME=%s). '
+gateway.to.replace.it: ' to replace it, or '
+gateway.gateway.already.running.pid: \n❌ Gateway already running (PID {existing_pid}).\n
+gateway.replace.itn: ' to replace it,\n'
+gateway.kill.firstn: ' to kill it first.\n'
+gateway.to.autoreplacen: ' to auto-replace.\n'
+log.failed.start.memory.monitor: 'Failed to start memory monitor: %s'
+gateway.levelnames.names.messages: '%(levelname)s %(name)s: %(message)s'
+log.takeover.marker.check.failed: 'Takeover marker check failed: %s'
+log.planned.stop.marker.check: 'Planned stop marker check failed: %s'
+log.snapshotshutdowncontext.failed: 'snapshot_shutdown_context failed: %s'
+gateway.received.planned.replace.takeover: Received %s as a planned --replace takeover
+  — exiting cleanly
+gateway.received.planned.gateway.stop: Received %s as a planned gateway stop — exiting
+  cleanly
+gateway.received.initiating.shutdown: Received %s — initiating shutdown
+log.shutdown.context: 'Shutdown context: %s'
+log.formatcontextforlog.failed: 'format_context_for_log failed: %s'
+log.spawnasyncdiagnostic.failed: 'spawn_async_diagnostic failed: %s'
+log.skipping.signal.handlers.running: Skipping signal handlers (not running in main
+  thread).
+gateway.another.gateway.instance.pid: 'Another gateway instance (PID %d) started during
+  our startup. '
+gateway.exiting.avoid.doublerunning: Exiting to avoid double-running.
+gateway.gateway.runtime.lock.already: Gateway runtime lock is already held by another
+  instance. Exiting.
+gateway.pid.file.race.lost: PID file race lost to another gateway instance. Exiting.
+log.mcp.tool.discovery.failed: 'MCP tool discovery failed: %s'
+log.gateway.exiting.cleanly: 'Gateway exiting cleanly: %s'
+log.gateway.exiting.failure: 'Gateway exiting with failure: %s'
+gateway.exiting.code.signalinitiated.shutdown: 'Exiting with code 1 (signal-initiated
+  shutdown without restart '
+gateway.request.systemd.restartonfailure.can: request) so systemd Restart=on-failure
+  can revive the gateway.
+gateway.exiting.code.servicerestart.requested: 'Exiting with code 75 (service-restart
+  requested) so '
+gateway.launchd.keepalive.relaunches.gateway: launchd KeepAlive relaunches the gateway.
+gateway.cli.entry.point.gateway: CLI entry point for the gateway.
+gateway.hermes.gateway.multiplatform.messaging: Hermes Gateway - Multi-platform messaging
+gateway.path.gateway.config.file: Path to gateway config file
+gateway.verbose.output: Verbose output

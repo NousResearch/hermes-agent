@@ -362,6 +362,33 @@ class TestExtractMedia:
         assert media == [("/path/to/audio.ogg", False)]
         assert cleaned == ""
 
+    def test_file_alias_for_media_marker(self):
+        # Claude Opus 4.x and other reasoning models routinely hallucinate
+        # ``FILE:`` instead of the documented ``MEDIA:`` marker even when the
+        # system prompt is explicit. The extractor must treat them as aliases
+        # so user-facing delivery does not silently degrade into a literal
+        # path string (regression: Jessi received four FILE:/...pdf strings
+        # as plain text on WhatsApp on 2026-05-14).
+        content = "FILE:/home/aldo/document.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/home/aldo/document.pdf"
+        assert cleaned.strip() == ""
+
+    def test_file_alias_mixed_with_prose(self):
+        content = "Aquí va el PDF que pediste:\nFILE:/tmp/x.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/x.pdf"
+        assert "Aquí va el PDF que pediste" in cleaned
+        assert "FILE:" not in cleaned
+
+    def test_media_and_file_can_coexist(self):
+        content = "MEDIA:/a.png\nFILE:/b.pdf"
+        media, _ = BasePlatformAdapter.extract_media(content)
+        paths = sorted(p for p, _ in media)
+        assert paths == ["/a.png", "/b.pdf"]
+
     def test_media_tag_strips_wrapping_quotes_and_backticks(self):
         content = "MEDIA: `/path/to/file.png`\nMEDIA:\"/path/to/file2.png\"\nMEDIA:'/path/to/file3.png'"
         media, cleaned = BasePlatformAdapter.extract_media(content)

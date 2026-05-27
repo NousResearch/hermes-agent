@@ -1466,7 +1466,7 @@ _MEDIA_EXT_ALTERNATION = "|".join(
 # Path anchors: ``~/`` (Unix home-relative), ``/`` (Unix absolute),
 # ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
 MEDIA_TAG_CLEANUP_RE = re.compile(
-    r'''[`"']?MEDIA:\s*'''
+    r'''[`"']?(?:MEDIA|FILE):\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+(?:[^\S\n]+\S+)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
     r'''(?=[\s`"',;:)\]}]|$)[`"']?''',
@@ -3619,6 +3619,11 @@ class BasePlatformAdapter(ABC):
         # and quoted/backticked paths for LLM-formatted outputs. The extension
         # set is the shared MEDIA_DELIVERY_EXTS source of truth (built once into
         # MEDIA_TAG_CLEANUP_RE) so it can never drift from extract_local_files.
+        # Accept ``FILE:`` as an alias for ``MEDIA:`` — large reasoning models
+        # (Claude Opus 4.x notably) routinely hallucinate ``FILE:`` instead of
+        # the documented ``MEDIA:`` marker even when the system prompt is
+        # explicit. The shared regex (MEDIA_TAG_CLEANUP_RE) treats them
+        # interchangeably so user-facing delivery does not silently degrade.
         media_pattern = MEDIA_TAG_CLEANUP_RE
         # Mask example/stored MEDIA: paths before scanning so they are never
         # delivered as real attachments:
@@ -4907,7 +4912,8 @@ class BasePlatformAdapter(ABC):
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561).
-                # _strip_media_directives shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag
+                # _strip_media_directives shares MEDIA_TAG_CLEANUP_RE, which now
+                # accepts FILE: as an alias for MEDIA: (cp 3cdc07659), so a tag
                 # with an unknown extension is intentionally left in the body for
                 # extract_local_files below to pick up rather than silently dropped (#34517).
                 text_content = _strip_media_directives(text_content).strip()

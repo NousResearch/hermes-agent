@@ -519,11 +519,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if bundle.source == "url" and not category and not skip_confirm:
         category = _prompt_for_category(c, _existing_categories())
 
-    # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
+    # Auto-detect the full parent path for official skills. Optional skills
+    # can be nested (e.g. "official/mlops/training/trl-fine-tuning"), so keep
+    # every identifier segment between "official" and the final skill slug.
     if bundle.source == "official" and not category:
-        id_parts = bundle.identifier.split("/")  # ["official", "category", "skill"]
+        id_parts = bundle.identifier.split("/")
         if len(id_parts) >= 3:
-            category = id_parts[1]
+            category = "/".join(id_parts[1:-1])
 
     # Check if already installed
     lock = HubLockFile()

@@ -43,7 +43,7 @@ def _close_created_task(coro, *args, **kwargs):
 
 
 def test_sidequest_shortcut_normalizer_expands_compact_aliases_only_at_start():
-    assert _normalize_sidequest_shortcut_text("sq2") == "/sq 2 resume"
+    assert _normalize_sidequest_shortcut_text("sq2") == "/sq 2"
     assert _normalize_sidequest_shortcut_text("sq2 status") == "/sq 2 status"
     assert _normalize_sidequest_shortcut_text("/sq1 status") == "/sq 1 status"
     assert _normalize_sidequest_shortcut_text("/sidequest2 add docs") == "/sq 2 add docs"
@@ -113,3 +113,10 @@ async def test_sidequest_create_and_short_alias_status(tmp_path):
     status = await runner._handle_sidequest_command(_make_event("/sq 1 status"))
     assert "Sidequest #1" in status
     assert "investigate background handles" in status
+
+    bare_resume = await runner._handle_sidequest_command(
+        _make_event(_normalize_sidequest_shortcut_text("sq1"))
+    )
+    assert "Sidequest #1" in bare_resume
+    assert "investigate background handles" in bare_resume
+    assert "Background task started" not in bare_resume

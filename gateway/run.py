@@ -81,8 +81,8 @@ def _normalize_sidequest_shortcut_text(text: str) -> str:
     Keep the rewrite intentionally narrow: only a message-leading `sq<digits>`,
     `/sq<digits>`, `/sidequest<digits>`, or `#sq<digits>` with a word boundary
     is rewritten, so paths, hashtags like `#sqlite`, and commands like `/sqldb`
-    keep their normal meaning. Bare `sq<digits>` is a resume shortcut, not a
-    status shortcut.
+    keep their normal meaning. Bare `sq<digits>` opens the sidequest handle; it
+    must not enqueue a synthetic follow-up/background resume on its own.
     """
     raw = text or ""
     stripped = raw.strip()
@@ -101,8 +101,6 @@ def _normalize_sidequest_shortcut_text(text: str) -> str:
     else:
         alias = match.group(1)
         rest = match.group(2)
-        if not rest and stripped.lower().startswith("sq"):
-            rest = "resume"
     return f"/sq {alias}" + (f" {rest.strip()}" if rest and rest.strip() else "")
 
 

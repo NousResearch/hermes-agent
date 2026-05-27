@@ -1127,66 +1127,63 @@ class TestElementLabelParsing:
         assert labels[15] == "Search"
 
 
-class TestVersionWarning:
-    """cua_driver_version_warning(): soft, per-OS minimum-version check.
+class TestUpdateCheck:
+    """cua_driver_update_check() / _nudge(): native `check-update --json`.
 
-    macOS (Swift build) and the cross-platform Rust build version
-    independently, so the floor is keyed by platform. Older → warn; equal /
-    newer / local-dev / unknown-platform / undeterminable → stay quiet.
+    Prefers cua-driver's source-of-truth update check over a hardcoded
+    version floor. Stays quiet (None) when indeterminate: an old driver with
+    no `check-update` verb, offline, an `error` payload, or unparseable output.
     """
 
-    def test_older_than_floor_warns(self):
-        from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.2.10"), \
-             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
-            msg = cua_backend.cua_driver_version_warning()
-        assert msg is not None
-        assert "0.2.10" in msg and "0.2.16" in msg  # installed + floor
-
-    def test_equal_to_floor_is_quiet(self):
-        from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.2.16"), \
-             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
-            assert cua_backend.cua_driver_version_warning() is None
-
-    def test_newer_than_floor_is_quiet(self):
-        from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.2.18"), \
-             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
-            assert cua_backend.cua_driver_version_warning() is None
-
-    def test_local_build_exempt(self):
-        from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.0.0-local-release"), \
-             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
-            assert cua_backend.cua_driver_version_warning() is None
-
-    def test_macos_floor_independent_of_rust_build(self):
-        # darwin floor is 0.5.0; a fresh 0.5.x macOS build must not warn even
-        # though it would be "newer" than the 0.2.x Rust floor.
-        from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.5.1"), \
-             patch("tools.computer_use.cua_backend.sys.platform", "darwin"):
-            assert cua_backend.cua_driver_version_warning() is None
-
-    def test_unknown_platform_is_quiet(self):
-        from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "installed_cua_driver_version", return_value="0.0.1"), \
-             patch("tools.computer_use.cua_backend.sys.platform", "freebsd13"):
-            assert cua_backend.cua_driver_version_warning() is None
-
-    def test_undeterminable_version_is_quiet(self):
-        from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "installed_cua_driver_version", return_value=None), \
-             patch("tools.computer_use.cua_backend.sys.platform", "win32"):
-            assert cua_backend.cua_driver_version_warning() is None
-
-    def test_installed_version_parses_cli_output(self):
-        from tools.computer_use import cua_backend
+    @staticmethod
+    def _run_returning(stdout: str):
         fake = MagicMock()
-        fake.stdout = "cua-driver 0.2.18\n"
-        with patch("tools.computer_use.cua_backend.subprocess.run", return_value=fake):
-            assert cua_backend.installed_cua_driver_version() == "0.2.18"
+        fake.stdout = stdout
+        return patch("tools.computer_use.cua_backend.subprocess.run", return_value=fake)
+
+    def test_update_available(self):
+        from tools.computer_use import cua_backend
+        payload = '{"current_version":"0.3.1","latest_version":"0.3.2","update_available":true}'
+        with self._run_returning(payload):
+            st = cua_backend.cua_driver_update_check()
+            assert st is not None and st["update_available"] is True
+            msg = cua_backend.cua_driver_update_nudge()
+        assert msg is not None
+        assert "0.3.2" in msg and "0.3.1" in msg
+
+    def test_up_to_date_is_quiet(self):
+        from tools.computer_use import cua_backend
+        payload = '{"current_version":"0.3.2","latest_version":"0.3.2","update_available":false}'
+        with self._run_returning(payload):
+            st = cua_backend.cua_driver_update_check()
+            assert st is not None and st["update_available"] is False
+            assert cua_backend.cua_driver_update_nudge() is None
+
+    def test_error_payload_is_indeterminate(self):
+        from tools.computer_use import cua_backend
+        payload = '{"current_version":"0.3.2","update_available":false,"error":"github 503"}'
+        with self._run_returning(payload):
+            assert cua_backend.cua_driver_update_check() is None
+            assert cua_backend.cua_driver_update_nudge() is None
+
+    def test_old_driver_without_verb_is_quiet(self):
+        # Drivers predating trycua/cua#1734 print usage to stderr; stdout empty.
+        from tools.computer_use import cua_backend
+        with self._run_returning(""):
+            assert cua_backend.cua_driver_update_check() is None
+            assert cua_backend.cua_driver_update_nudge() is None
+
+    def test_nonjson_output_is_quiet(self):
+        from tools.computer_use import cua_backend
+        with self._run_returning("cua-driver 0.2.18\n"):
+            assert cua_backend.cua_driver_update_check() is None
+
+    def test_subprocess_failure_is_quiet(self):
+        from tools.computer_use import cua_backend
+        with patch("tools.computer_use.cua_backend.subprocess.run",
+                   side_effect=FileNotFoundError()):
+            assert cua_backend.cua_driver_update_check() is None
+            assert cua_backend.cua_driver_update_nudge() is None
 
 
 class TestLazyMcpInstall:
@@ -1202,7 +1199,7 @@ class TestLazyMcpInstall:
 
     def test_start_lazy_installs_mcp(self):
         from tools.computer_use import cua_backend
-        with patch.object(cua_backend, "_warn_if_cua_driver_outdated"), \
+        with patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure") as mock_ensure, \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             cua_backend.CuaDriverBackend().start()
@@ -1218,7 +1215,7 @@ class TestLazyMcpInstall:
         unavailable = FeatureUnavailable(
             "tool.computer_use", ("mcp==1.26.0",), "lazy installs disabled"
         )
-        with patch.object(cua_backend, "_warn_if_cua_driver_outdated"), \
+        with patch.object(cua_backend, "_maybe_nudge_update"), \
              patch("tools.lazy_deps.ensure", side_effect=unavailable), \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             with pytest.raises(FeatureUnavailable):

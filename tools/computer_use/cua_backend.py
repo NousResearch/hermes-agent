@@ -55,28 +55,18 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Version compatibility
+# Update checking
 # ---------------------------------------------------------------------------
 #
-# cua-driver ships as two independently-versioned products: the macOS Swift
-# build (~0.5.x) and the cross-platform Rust build, cua-driver-rs (~0.2.x),
-# used on Windows / Linux. Their version lines do NOT track each other, so the
-# minimum-supported version is per-OS.
-#
-# This is a SOFT floor: Hermes warns — it does not refuse to run — when the
-# installed binary is older than the version it was tested against. Newer is
-# always fine; local dev builds (0.0.0-local-*) are exempt. Bump these as
-# newer drivers are verified.
+# cua-driver ships a native `check-update` verb (and a `check_for_update` MCP
+# tool) that compares the installed binary against the latest GitHub release —
+# the source of truth — and caches the result (~20h). We prefer that over a
+# hardcoded version floor, which would rot and can't know what "latest" is.
 #
 # There is intentionally no version *pin* knob: the upstream installer always
 # fetches the latest release, so a `HERMES_CUA_DRIVER_VERSION` env var would
-# only have *looked* like it pinned without doing so. For a reproducible
-# version, point `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
-MIN_CUA_DRIVER_VERSION = {
-    "darwin": "0.5.0",   # macOS Swift build
-    "win32": "0.2.16",   # cua-driver-rs
-    "linux": "0.2.16",   # cua-driver-rs (alpha)
-}
+# only have *looked* like it pinned. For a reproducible version, point
+# `HERMES_CUA_DRIVER_CMD` at a specific binary instead.
 
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
 _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
@@ -117,61 +107,79 @@ def cua_driver_binary_available() -> bool:
     return bool(shutil.which(_CUA_DRIVER_CMD))
 
 
-def installed_cua_driver_version() -> Optional[str]:
-    """Return the installed cua-driver version (e.g. "0.2.18"), or None if it
-    can't be determined. Best-effort; never raises."""
-    try:
-        out = subprocess.run(
-            [_CUA_DRIVER_CMD, "--version"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
-    except Exception:
-        return None
-    # Output looks like "cua-driver 0.2.18"; pull the first semver token.
-    m = re.search(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?", out)
-    return m.group(0) if m else None
+def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]:
+    """Run ``cua-driver check-update --json`` and return its parsed state.
 
+    The payload mirrors the ``check_for_update`` MCP tool:
+    ``{current_version, latest_version, update_available, ...}``.
 
-def cua_driver_version_warning() -> Optional[str]:
-    """Return a warning string if the installed cua-driver is older than the
-    per-OS minimum Hermes is tested against; otherwise None.
-
-    Soft check — stays quiet (returns None) when the platform has no declared
-    floor, the version can't be parsed, or it's a local dev build.
+    Returns ``None`` (callers should stay quiet) when the result is
+    indeterminate: the binary is missing, the driver is too old to support
+    the verb (it predates trycua/cua#1734), the GitHub check failed (an
+    ``error`` field is set), or the output didn't parse. Best-effort; never
+    raises.
     """
-    floor = MIN_CUA_DRIVER_VERSION.get(sys.platform)
-    if not floor:
-        return None
-    installed = installed_cua_driver_version()
-    if not installed:
-        return None
-    if installed.startswith("0.0.0") or "local" in installed:
-        return None  # local/dev build — intentionally exempt
     try:
-        from packaging.version import Version
-        if Version(installed) >= Version(floor):
-            return None
+        proc = subprocess.run(
+            [_CUA_DRIVER_CMD, "check-update", "--json"],
+            capture_output=True, text=True, timeout=timeout,
+            # Some older drivers don't have the verb and fall through to a
+            # stdin-reading mode rather than erroring — DEVNULL gives them EOF
+            # so they exit fast instead of blocking until the timeout.
+            stdin=subprocess.DEVNULL,
+        )
     except Exception:
-        return None  # unparseable → don't cry wolf
+        return None
+    out = (proc.stdout or "").strip()
+    if not out:
+        # Older drivers don't have the verb: usage goes to stderr, stdout empty.
+        return None
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("error"):
+        # A failed check (exit 1) carries its reason in `error` — indeterminate.
+        return None
+    return data
+
+
+def cua_driver_update_nudge() -> Optional[str]:
+    """One-line "an update is available" message, or ``None`` when up to date,
+    indeterminate, or the driver is too old to report."""
+    state = cua_driver_update_check()
+    if not state or not state.get("update_available"):
+        return None
+    latest = state.get("latest_version") or "?"
+    current = state.get("current_version") or "?"
     return (
-        f"cua-driver {installed} is older than {floor}, the minimum Hermes is "
-        f"tested against on this platform — some computer_use actions may "
-        f"misbehave. Update with `hermes computer-use install --upgrade`."
+        f"cua-driver {latest} is available (you have {current}); "
+        f"update with `hermes computer-use install --upgrade`."
     )
 
 
-_version_warned = False
+_update_checked = False
 
 
-def _warn_if_cua_driver_outdated() -> None:
-    """Emit the version-compatibility warning at most once per process."""
-    global _version_warned
-    if _version_warned:
+def _maybe_nudge_update() -> None:
+    """Emit an update nudge at most once per process, off-thread so the
+    (cached, ~20h) GitHub poll never blocks the first computer_use action."""
+    global _update_checked
+    if _update_checked:
         return
-    _version_warned = True
-    msg = cua_driver_version_warning()
-    if msg:
-        logger.warning("computer_use: %s", msg)
+    _update_checked = True
+
+    def _run() -> None:
+        try:
+            msg = cua_driver_update_nudge()
+        except Exception:
+            return
+        if msg:
+            logger.info("computer_use: %s", msg)
+
+    threading.Thread(
+        target=_run, name="cua-driver-update-check", daemon=True
+    ).start()
 
 
 def cua_driver_install_hint() -> str:
@@ -509,7 +517,7 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
-        _warn_if_cua_driver_outdated()
+        _maybe_nudge_update()
         # The MCP client SDK (`mcp`) is an optional dependency (the
         # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
         # Lazy-install it on first use — the same pattern every other optional

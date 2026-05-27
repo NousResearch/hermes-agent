@@ -800,6 +800,23 @@ def install_cua_driver(upgrade: bool = False) -> bool:
     if not _check_cua_driver_asset_for_arch():
         return bool(binary)
 
+    # Skip the (network) re-install when the driver itself reports it's already
+    # on the latest release. Best-effort: an older driver (no check-update
+    # verb) or an offline check returns None, in which case we fall through and
+    # re-run the installer as before.
+    if binary:
+        try:
+            from tools.computer_use.cua_backend import cua_driver_update_check
+            _state = cua_driver_update_check()
+            if _state is not None and not _state.get("update_available"):
+                _print_success(
+                    f"    {driver_cmd} is already on the latest release "
+                    f"({_state.get('current_version') or 'unknown'})."
+                )
+                return True
+        except Exception:
+            pass
+
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
         try:

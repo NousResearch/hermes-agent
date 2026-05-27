@@ -164,7 +164,7 @@ result = video_understand(
 
 ## Author
 
-**xiaopengsvip** — [GitHub](https://github.com/xiaopengsvip)
+**Everett** — [GitHub](https://github.com/xiaopengsvip)
 
 ## License
 

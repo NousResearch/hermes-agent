@@ -13,7 +13,7 @@ Features:
 - Audio extraction from video via ffmpeg
 - Context-aware system prompts for better results
 
-Author: xiaopengsvip (https://github.com/xiaopengsvip)
+Author: Everett (https://github.com/xiaopengsvip)
 """
 
 import json

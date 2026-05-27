@@ -1,7 +1,7 @@
 name: mimo-multimodal
 version: 2.0.0
 description: "Image, audio, and video understanding via Xiaomi MiMo multimodal models"
-author: xiaopengsvip
+author: Everett (xiaopengsvip)
 kind: standalone
 provides_tools:
   - image_understand

@@ -2450,3 +2450,35 @@ class TestDashboardPluginStaticAssetAllowlist:
         # — never 200.
         assert resp.status_code in (403, 404)
 
+
+def test_ws_lan_client_rejected_by_default(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _ws_client_is_allowed
+    monkeypatch.delenv("HERMES_DASHBOARD_TRUST_LAN", raising=False)
+    ws = SimpleNamespace(client=SimpleNamespace(host="192.168.1.10"))
+    assert _ws_client_is_allowed(ws) is False
+
+
+def test_ws_lan_client_allowed_with_trust_env(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _ws_client_is_allowed
+    monkeypatch.setenv("HERMES_DASHBOARD_TRUST_LAN", "1")
+    ws = SimpleNamespace(client=SimpleNamespace(host="192.168.1.10"))
+    assert _ws_client_is_allowed(ws) is True
+
+
+def test_ws_public_client_rejected_even_with_trust_env(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _ws_client_is_allowed
+    monkeypatch.setenv("HERMES_DASHBOARD_TRUST_LAN", "1")
+    ws = SimpleNamespace(client=SimpleNamespace(host="8.8.8.8"))
+    assert _ws_client_is_allowed(ws) is False
+
+
+def test_ws_loopback_always_allowed(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _ws_client_is_allowed
+    monkeypatch.delenv("HERMES_DASHBOARD_TRUST_LAN", raising=False)
+    ws = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+    assert _ws_client_is_allowed(ws) is True
+

@@ -3303,6 +3303,7 @@ async def get_models_analytics(days: int = 30):
 
 import re
 import asyncio
+import ipaddress
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native
 # Windows the import raises; catch and leave PtyBridge=None so the rest of
@@ -3326,16 +3327,40 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
+_TRUST_LAN_ENV = "HERMES_DASHBOARD_TRUST_LAN"
+
+
+def _is_rfc1918_or_ula(host: str) -> bool:
+    """Return True if *host* parses as an RFC1918 (10/8, 172.16/12, 192.168/16)
+    or IPv6 ULA (fc00::/7) address.  Invalid input returns False."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except (ValueError, TypeError):
+        return False
+    if isinstance(ip, ipaddress.IPv4Address):
+        return ip in ipaddress.ip_network("10.0.0.0/8") \
+            or ip in ipaddress.ip_network("172.16.0.0/12") \
+            or ip in ipaddress.ip_network("192.168.0.0/16")
+    return ip in ipaddress.ip_network("fc00::/7")
+
 
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback clients only.
+    Loopback is always allowed.  When the ``HERMES_DASHBOARD_TRUST_LAN``
+    environment variable is set to a truthy value (``1``/``true``/``yes``),
+    RFC1918 and IPv6 ULA clients are also allowed; this is intended for
+    reverse-proxy deployments where the dashboard sits behind a separate
+    LAN gateway.  Public addresses are always rejected.
     """
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    if client_host in _LOOPBACK_HOSTS:
+        return True
+    if os.environ.get(_TRUST_LAN_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        return _is_rfc1918_or_ula(client_host)
+    return False
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:

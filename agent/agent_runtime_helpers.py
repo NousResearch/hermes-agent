@@ -1846,6 +1846,27 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     if not tool_name:
         return None
 
+    # VolcEngine api/plan workaround (issue #33007): the endpoint's
+    # protocol-translation layer occasionally leaks raw XML attribute
+    # fragments into tool_use.name, e.g.
+    #   `terminal" parameter="command" string="true`
+    #   `execute_code" parameter="code" string="true`
+    #   `session_search" parameter="session_id" string="true`
+    # We trim at the first unambiguous XML/quote character so the rest
+    # of the repair pipeline (lowercase / snake_case / fuzzy match)
+    # can resolve the cleaned name to a real tool.
+    #
+    # Crucially we DO NOT split on whitespace: legitimate inputs like
+    # "write file" must keep flowing through ``_norm`` -> ``write_file``
+    # (covered by test_space_to_underscore in
+    # tests/run_agent/test_repair_tool_call_name.py).
+    for _xml_sep in ('"', "'", "<", ">"):
+        _idx = tool_name.find(_xml_sep)
+        if _idx > 0:
+            tool_name = tool_name[:_idx]
+    if not tool_name:
+        return None
+
     def _norm(s: str) -> str:
         return s.lower().replace("-", "_").replace(" ", "_")
 

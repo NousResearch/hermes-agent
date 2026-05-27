@@ -972,7 +972,7 @@ def run_conversation(
             failed = True
             _turn_exit_reason = "ollama_runtime_context_too_small"
             messages.append({"role": "assistant", "content": final_response})
-            agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
+            agent._emit_status(t('conversation.ollama.runtime.context.too_1'))
             api_call_count -= 1
             agent._api_call_count = api_call_count
             try:
@@ -1201,7 +1201,7 @@ def run_conversation(
                     if not _ct_v.validate_response(response):
                         if response is None:
                             response_invalid = True
-                            error_details.append("response is None")
+                            error_details.append(t('conversation.response.none_3'))
                         else:
                             # Provider returned a terminal failure (e.g. quota exhaustion).
                             # Treat as invalid so the fallback chain is triggered instead of
@@ -1269,7 +1269,7 @@ def run_conversation(
                         elif not hasattr(response, 'choices'):
                             error_details.append("response has no 'choices' attribute")
                         elif response.choices is None:
-                            error_details.append("response.choices is None")
+                            error_details.append(t('conversation.responsechoices.none'))
                         else:
                             error_details.append("response.choices is empty")
 
@@ -1289,7 +1289,7 @@ def run_conversation(
                     # rate-limit symptom.  Switch to fallback immediately
                     # rather than retrying with extended backoff.
                     if agent._fallback_index < len(agent._fallback_chain):
-                        agent._emit_status("⚠️ Empty/malformed response — switching to fallback...")
+                        agent._emit_status(t('conversation.emptymalformed.response.switching.fallback'))
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -1597,7 +1597,7 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response remained truncated after 3 continuation attempts",
+                                "error": t('conversation.response.remained.truncated.after'),
                             }
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
@@ -1625,7 +1625,7 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response truncated due to output length limit",
+                                "error": t('conversation.response.truncated.due.output_2'),
                             }
 
                     # If we have prior messages, roll back to last complete state
@@ -1654,7 +1654,7 @@ def run_conversation(
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
-                            "error": "First response truncated due to output length limit"
+                            "error": t('conversation.first.response.truncated.due')
                         }
                 
                 # Track actual token usage from response for context management
@@ -2066,7 +2066,7 @@ def run_conversation(
                     agent._vprint(
                         f"{agent.log_prefix}⚠️  Server rejected image content — "
                         f"switching to text-only mode for this session"
-                        + (". Stripped images from history and retrying." if _imgs_removed else "."),
+                        + (t('conversation.stripped.images.history.retrying') if _imgs_removed else "."),
                         force=True,
                     )
                     continue
@@ -2188,7 +2188,7 @@ def run_conversation(
                 ):
                     codex_auth_retry_attempted = True
                     if agent._try_refresh_codex_client_credentials(force=True):
-                        _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
+                        _label = t('conversation.xai.oauth') if agent.provider == "xai-oauth" else "Codex"
                         agent._vprint(f"{agent.log_prefix}🔐 {_label} auth refreshed after 401. Retrying request...")
                         continue
                 if (
@@ -2494,7 +2494,7 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        agent._emit_status(t('conversation.rate.limited.switching.fallback'))
                         if agent._try_activate_fallback(reason=classified.reason):
                             retry_count = 0
                             compression_attempts = 0
@@ -3218,7 +3218,7 @@ def run_conversation(
                         "api_calls": api_call_count,
                         "completed": False,
                         "partial": True,
-                        "error": "Incomplete REASONING_SCRATCHPAD after 2 retries"
+                        "error": t('conversation.incomplete.reasoningscratchpad.after.retries')
                     }
             
             # Reset incomplete scratchpad counter on clean response
@@ -3278,7 +3278,7 @@ def run_conversation(
                     "api_calls": api_call_count,
                     "completed": False,
                     "partial": True,
-                    "error": "Codex response remained incomplete after 3 continuation attempts",
+                    "error": t('conversation.codex.response.remained.incomplete'),
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
@@ -3333,7 +3333,7 @@ def run_conversation(
                         if tc.function.name not in agent.valid_tool_names:
                             content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
                         else:
-                            content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
+                            content = t('conversation.skipped.another.tool.call')
                         messages.append({
                             "role": "tool",
                             "name": tc.function.name,
@@ -3425,7 +3425,7 @@ def run_conversation(
                                     f"Please retry with valid JSON."
                                 )
                             else:
-                                tool_result = "Skipped: other tool call in this response had invalid JSON."
+                                tool_result = t('conversation.skipped.other.tool.call')
                             messages.append({
                                 "role": "tool",
                                 "name": tc.function.name,
@@ -3659,8 +3659,8 @@ def run_conversation(
                     fallback = getattr(agent, '_last_content_with_tools', None)
                     if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
                         _turn_exit_reason = "fallback_prior_turn_content"
-                        logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-                        agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
+                        logger.info(t('conversation.empty.followup.after.tool'))
+                        agent._emit_status(t('conversation.empty.response.after.tool'))
                         agent._last_content_with_tools = None
                         agent._last_content_tools_all_housekeeping = False
                         agent._empty_content_retries = 0
@@ -3868,9 +3868,9 @@ def run_conversation(
                             agent.provider,
                         )
                         agent._emit_status(
-                            "❌ Model returned no content after all retries"
+                            t('conversation.model.returned.content.after')
                             + (" and fallback attempts." if agent._fallback_chain else
-                               ". No fallback providers configured.")
+                               t('conversation.fallback.providers.configured'))
                         )
 
                     final_response = "(empty)"

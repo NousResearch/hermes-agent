@@ -2719,3 +2719,120 @@ gateway.cli.entry.point.gateway: CLI entry point for the gateway.
 gateway.hermes.gateway.multiplatform.messaging: Hermes Gateway - Multi-platform messaging
 gateway.path.gateway.config.file: Path to gateway config file
 gateway.verbose.output: Verbose output
+conversation.return.userfacing.error.when: Return a user-facing error when Ollama
+  is loaded with too little context.
+conversation.ollama.runtime.context.too: 'Ollama runtime context too small for Hermes
+  tool use: '
+conversation.increase.ollama.context.model: 'Increase the Ollama context for this
+  model and restart/reload the '
+conversation.model.before.trying.again: 'model before trying again. A known-good starting
+  point is 65,536 '
+conversation.tokens.hermes.config.set: 'tokens. In Hermes config, set `model.ollama_num_ctx:
+  65536` '
+conversation.set.parameter.numctx.65536: set `PARAMETER num_ctx 65536` there instead.
+conversation.session.getsession.failed.systemprompt: 'Session DB get_session failed
+  for system-prompt restore '
+conversation.scratch.turn.prefix.cache: 'from scratch this turn. Prefix cache will
+  miss until '
+conversation.rebuild.persists.investigate.previous: the rebuild persists. Investigate
+  the previous turn
+conversation.delivered.retry: 'could be delivered. Do NOT retry '
+conversation.large.content.instead.break: 'large content. Instead, break the '
+conversation.arguments.under: 's arguments must be under ~8K '
+conversation.network.error.midstream.continue: 'network error mid-stream. Continue
+  exactly where '
+conversation.left.off.restart.repeat: 'you left off. Do not restart or repeat prior
+  text. '
+conversation.length.limit.continue.exactly: 'length limit. Continue exactly where
+  you left off. Do not '
+conversation.detected.stale.connections.previous: '🔌 Detected stale connections from
+  a previous provider '
+conversation.issue.cleaned.automatically.proceeding: 'issue — cleaned up automatically.
+  Proceeding with fresh '
+conversation.starting.conversation: '💬 Starting conversation: '
+conversation.take.moment: This may take a moment.
+conversation.ollama.runtime.context.too_1: ❌ Ollama runtime context is too small for
+  Hermes tool use
+conversation.nous.portal.rate.limit: 'Nous Portal rate limit active — '
+conversation.fallback.provider.available: 'No fallback provider available. '
+conversation.try.again.after.reset: 'Try again after the reset, or add a '
+conversation.response.none: response is None
+conversation.responses.api.returned.status: 'Responses API returned status '
+conversation.codex.response.status: Codex response status=
+conversation.codex.responseoutput.empty.outputtext: 'Codex response.output is empty
+  but output_text is present '
+conversation.codex.responseoutput.empty.after: 'Codex response.output is empty after
+  stream backfill '
+conversation.response.none_1: response is None
+conversation.response.none_2: response is None
+conversation.response.none_3: response is None
+conversation.responsechoices.none: response.choices is None
+conversation.emptymalformed.response.switching.fallback: ⚠️ Empty/malformed response
+  — switching to fallback...
+conversation.model.used.all.output: 'Model used all output tokens on reasoning with
+  none left '
+conversation.response.try.lowering.reasoning: 'for the response. Try lowering reasoning
+  effort or '
+conversation.model.used.all.output_1: 'The model used all its output tokens on reasoning '
+conversation.switch.largernonreasoning.model.model: → Or switch to a larger/non-reasoning
+  model with `/model`
+conversation.response.remained.truncated.after: Response remained truncated after
+  3 continuation attempts
+conversation.response.truncated.due.output: Response truncated due to output length
+  limit
+conversation.response.truncated.due.output_1: Response truncated due to output length
+  limit
+conversation.first.response.truncated.due: First response truncated due to output
+  length limit
+conversation.stripped.images.history.retrying: . Stripped images from history and
+  retrying.
+conversation.imageshrink.recovery.dataurl.image: 'image-shrink recovery: no data-URL
+  image parts found '
+conversation.1mcontext.beta.disabled.session: the 1M-context beta — disabled for this
+  session and retrying...
+conversation.xai.oauth: xAI OAuth
+conversation.rate.limited.switching.fallback: ⚠️ Rate limited — switching to fallback
+  provider...
+conversation.nous.429.looks.like: 'Nous 429 looks like upstream capacity '
+conversation.connection.keeps.dropping.often: 'connection keeps dropping. This often
+  happens '
+conversation.use.executecode.python: to use execute_code with Python
+conversation.executecode.python: execute_code with Python
+conversation.incomplete.reasoningscratchpad.after.retries: Incomplete REASONING_SCRATCHPAD
+  after 2 retries
+conversation.codex.response.remained.incomplete: Codex response remained incomplete
+  after 3 continuation attempts
+conversation.tool: 'Tool '
+conversation.skipped.another.tool.call: 'Skipped: another tool call in this turn used
+  an invalid name. Please retry this tool call.'
+conversation.response.truncated.due.output_2: Response truncated due to output length
+  limit
+conversation.please.retry.valid.json: Please retry with valid JSON.
+conversation.skipped.other.tool.call: 'Skipped: other tool call in this response had
+  invalid JSON.'
+conversation.stream.interrupted.using.delivered: '↻ Stream interrupted — using delivered
+  content '
+conversation.empty.followup.after.tool: Empty follow-up after tool calls — using prior
+  turn content as final response
+conversation.empty.response.after.tool: ↻ Empty response after tool calls — using
+  earlier content as final answer
+conversation.empty.response.after.tool_1: 'Empty response after tool calls — nudging
+  model '
+conversation.model.returned.empty.after: '⚠️ Model returned empty after tool calls
+  — '
+conversation.just.executed.tool.calls: 'You just executed tool calls but returned
+  an '
+conversation.empty.response.please.process: 'empty response. Please process the tool '
+conversation.thinkingonly.response.prefilling.continue: '↻ Thinking-only response
+  — prefilling to continue '
+conversation.empty.response.model.retrying: '⚠️ Empty response from model — retrying '
+conversation.model.returning.empty.responses: '⚠️ Model returning empty responses
+  — '
+conversation.fallback.activated.after.empty: 'Fallback activated after empty responses: '
+conversation.model.produced.reasoning.visible: '⚠️ Model produced reasoning but no
+  visible '
+conversation.response.after.all.retries: response after all retries. Returning empty.
+conversation.model.returned.content.after: ❌ Model returned no content after all retries
+conversation.fallback.providers.configured: . No fallback providers configured.
+conversation.iteration.budget.exhausted: 'Iteration budget exhausted '
+conversation.failed.call.kanbanblock.after: 'Failed to call kanban_block after iteration '

@@ -70,6 +70,12 @@ class TestParseModelInput:
         assert provider == "stepfun"
         assert model == "step-3.5-flash"
 
+    def test_alibaba_token_plan_alias_resolved(self):
+        provider, model = parse_model_input("alibaba-token:qwen3.7-max", "openrouter")
+        assert provider == "alibaba-token-plan"
+        assert model == "qwen3.7-max"
+        assert provider_label(provider) == "Alibaba Token Plan"
+
     def test_no_slash_no_colon_keeps_provider(self):
         provider, model = parse_model_input("gpt-5.4", "openrouter")
         assert provider == "openrouter"
@@ -602,6 +608,12 @@ class TestValidateApiFallback:
     def test_zai_known_model_accepted_via_catalog_when_api_down(self):
         # glm-5 is in the zai curated catalog (_PROVIDER_MODELS["zai"]).
         result = _validate("glm-5", provider="zai", api_models=None)
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+
+    def test_alibaba_token_plan_known_models_accepted_via_catalog_when_api_down(self):
+        result = _validate("deepseek-v4-pro", provider="alibaba-token-plan", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
         assert result["recognized"] is True

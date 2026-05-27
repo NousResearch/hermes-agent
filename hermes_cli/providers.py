@@ -143,6 +143,16 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
+    "alibaba-token-plan": HermesOverlay(
+        transport="anthropic_messages",
+        extra_env_vars=("ALIBABA_TOKEN_PLAN_API_KEY",),
+        base_url_override="https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+        base_url_env_var="ALIBABA_TOKEN_PLAN_BASE_URL",
+    ),
+    "vercel": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+    ),
     "opencode": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -310,6 +320,9 @@ ALIASES: Dict[str, str] = {
     "alibaba_coding": "alibaba-coding-plan",
     "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
+    "alibaba_token": "alibaba-token-plan",
+    "alibaba-token": "alibaba-token-plan",
+    "alibaba_token_plan": "alibaba-token-plan",
 
     # google-gemini-cli (OAuth + Code Assist)
     "gemini-cli": "google-gemini-cli",
@@ -376,6 +389,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
+    "alibaba-token-plan": "Alibaba Token Plan",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }

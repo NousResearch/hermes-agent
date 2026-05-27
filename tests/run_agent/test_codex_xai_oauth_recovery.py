@@ -37,7 +37,18 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fix A: prelude error fallback
+# Fix A: prelude error surfacing via wire `error` events
+#
+# With the migration to ``responses.create(stream=True)`` raw event iteration,
+# the SDK's high-level state-machine RuntimeError no longer mediates between
+# the wire and us — we read the wire directly.  When the chatgpt.com Codex
+# backend (or xAI, codex-lb, custom relays) emits a ``type=error`` frame as
+# its first event, our consumer raises ``_StreamErrorEvent`` straight from
+# the wire payload, which carries the real provider message in ``.body`` /
+# ``.message`` shape for ``_summarize_api_error`` to consume.  This is
+# strictly better than the old "SDK raises RuntimeError → we retry → fall
+# back to a second non-stream call" two-phase dance, because the error
+# surfaces on the first event instead of after one wasted round trip.
 # ---------------------------------------------------------------------------
 
 
@@ -60,105 +71,104 @@ def _make_codex_agent():
 
 
 @pytest.mark.parametrize(
-    "prelude_event_type",
+    "provider_message",
     [
-        "error",                  # xAI OAuth multi-turn
-        "codex.rate_limits",      # codex-lb relays (#14634)
-        "response.in_progress",   # custom Responses relays (#8133)
+        "You do not have an active Grok subscription",
+        "rate limit exceeded",
+        "model not available",
     ],
 )
-def test_codex_stream_prelude_error_falls_back_to_create_stream(prelude_event_type):
-    """The SDK's prelude RuntimeError must trigger the non-stream fallback.
+def test_codex_stream_wire_error_event_surfaces_stream_error_event(provider_message):
+    """A wire ``type=error`` SSE frame raises ``_StreamErrorEvent`` with the
+    provider's real message in the body."""
+    from run_agent import _StreamErrorEvent
 
-    When the first SSE event isn't ``response.created``, openai-python
-    raises RuntimeError before our event loop sees anything.  We must
-    detect that, retry once, then fall back to ``create(stream=True)``
-    which surfaces the real provider error or a real response.
-    """
     agent = _make_codex_agent()
 
-    prelude_error = RuntimeError(
-        f"Expected to have received `response.created` before `{prelude_event_type}`"
-    )
+    class _ErrorCreateStream:
+        def __iter__(self_inner):
+            yield SimpleNamespace(type="error", message=provider_message, code="forbidden")
+
+        def close(self_inner):
+            pass
 
     mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = prelude_error
+    mock_client.responses.create.return_value = _ErrorCreateStream()
 
-    fallback_response = SimpleNamespace(
-        output=[SimpleNamespace(
-            type="message",
-            content=[SimpleNamespace(type="output_text", text="fallback ok")],
-        )],
-        status="completed",
-    )
+    with pytest.raises(_StreamErrorEvent) as excinfo:
+        agent._run_codex_stream({}, client=mock_client)
 
-    with patch.object(
-        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
-    ) as mock_fallback:
-        result = agent._run_codex_stream({}, client=mock_client)
-
-    assert result is fallback_response
-    mock_fallback.assert_called_once_with({}, client=mock_client)
+    assert provider_message in str(excinfo.value)
+    assert excinfo.value.body["error"]["message"] == provider_message
 
 
-def test_codex_stream_prelude_error_retries_once_before_fallback():
-    """The retry path must fire one extra stream attempt before falling back."""
+def test_codex_stream_retries_remote_protocol_error_once():
+    """Transport errors (``httpx.RemoteProtocolError``) trigger a single retry.
+
+    Previously this was on the ``responses.stream(...)`` helper; now it's on
+    ``responses.create(stream=True)`` itself.  The user-facing behavior is the
+    same: one retry, then re-raise if the second attempt also fails.
+    """
+    import httpx
+
     agent = _make_codex_agent()
-
     call_count = {"n": 0}
 
-    def stream_side_effect(**kwargs):
+    def create_side_effect(**kwargs):
         call_count["n"] += 1
-        raise RuntimeError(
-            "Expected to have received `response.created` before `error`"
+        raise httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body"
         )
 
     mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = stream_side_effect
+    mock_client.responses.create.side_effect = create_side_effect
 
-    fallback_response = SimpleNamespace(output=[], status="completed")
-    with patch.object(
-        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
-    ) as mock_fallback:
+    with pytest.raises(httpx.RemoteProtocolError):
         agent._run_codex_stream({}, client=mock_client)
 
-    # max_stream_retries=1 → one retry + final attempt → 2 stream calls,
-    # THEN the fallback path runs.
+    # max_stream_retries=1 → one retry + final attempt → 2 create calls total.
     assert call_count["n"] == 2
-    mock_fallback.assert_called_once()
 
 
 def test_codex_stream_unrelated_runtimeerror_still_raises():
-    """RuntimeErrors that aren't prelude/postlude shape must propagate."""
+    """RuntimeErrors that aren't transport errors must propagate.
+
+    With the event-driven path there's no separate fallback function to
+    short-circuit into; any RuntimeError from ``responses.create()`` or the
+    consumer surfaces directly.
+    """
     agent = _make_codex_agent()
 
     mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = RuntimeError("something else broke")
+    mock_client.responses.create.side_effect = RuntimeError("something else broke")
 
-    with patch.object(agent, "_run_codex_create_stream_fallback") as mock_fallback:
-        with pytest.raises(RuntimeError, match="something else broke"):
-            agent._run_codex_stream({}, client=mock_client)
-
-    mock_fallback.assert_not_called()
+    with pytest.raises(RuntimeError, match="something else broke"):
+        agent._run_codex_stream({}, client=mock_client)
 
 
-def test_codex_stream_postlude_error_still_falls_back():
-    """Existing ``response.completed`` fallback must not regress."""
+def test_codex_stream_truncated_no_terminal_event_raises():
+    """Streams that end without a terminal event AND no items raise.
+
+    Preserves the "Codex Responses stream did not emit a terminal response"
+    signal callers use to distinguish "stream truncated mid-flight" from
+    "stream completed with empty body".  Previously surfaced by the SDK's
+    ``RuntimeError("Didn't receive a `response.completed` event.")``; now
+    surfaced directly by the event consumer.
+    """
     agent = _make_codex_agent()
 
+    class _EmptyStream:
+        def __iter__(self_inner):
+            return iter(())
+
+        def close(self_inner):
+            pass
+
     mock_client = MagicMock()
-    mock_client.responses.stream.side_effect = RuntimeError(
-        "Didn't receive a `response.completed` event."
-    )
+    mock_client.responses.create.return_value = _EmptyStream()
 
-    fallback_response = SimpleNamespace(output=[], status="completed")
-    with patch.object(
-        agent, "_run_codex_create_stream_fallback", return_value=fallback_response
-    ) as mock_fallback:
-        result = agent._run_codex_stream({}, client=mock_client)
-
-    assert result is fallback_response
-    mock_fallback.assert_called_once()
+    with pytest.raises(RuntimeError, match="did not emit a terminal response"):
+        agent._run_codex_stream({}, client=mock_client)
 
 
 # ---------------------------------------------------------------------------

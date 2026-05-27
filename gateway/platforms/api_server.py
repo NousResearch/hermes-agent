@@ -547,6 +547,22 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+def _sanitize_error_msg(exc: Exception, max_len: int = 200) -> str:
+    """Return a sanitized error string safe for HTTP responses.
+
+    Truncates long messages and strips absolute paths to avoid leaking
+    internal filesystem layout or stack details to external clients.
+    """
+    import re
+    msg = str(exc)
+    # Strip absolute paths (Unix and Windows)
+    msg = re.sub(r'/(?:[\w.-]+/)+[\w.-]+', '<path>', msg)
+    msg = re.sub(r'[A-Za-z]:\\(?:[\w.-]+\\)+[\w.-]+', '<path>', msg)
+    if len(msg) > max_len:
+        msg = msg[:max_len] + "..."
+    return msg
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -2570,7 +2586,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     agent_error = result["error"]
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
-                agent_error = str(e)
+                agent_error = _sanitize_error_msg(e)
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -3105,7 +3121,7 @@ class APIServerAdapter(BasePlatformAdapter):
             jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _sanitize_error_msg(e)}, status=500)
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
@@ -3154,7 +3170,7 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_create(**kwargs)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _sanitize_error_msg(e)}, status=500)
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id} — get a single cron job."""
@@ -3173,7 +3189,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _sanitize_error_msg(e)}, status=500)
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
         """PATCH /api/jobs/{job_id} — update a cron job."""
@@ -3206,7 +3222,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _sanitize_error_msg(e)}, status=500)
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
         """DELETE /api/jobs/{job_id} — delete a cron job."""
@@ -3225,7 +3241,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"ok": True})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _sanitize_error_msg(e)}, status=500)
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
@@ -3244,7 +3260,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _sanitize_error_msg(e)}, status=500)
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
@@ -3263,7 +3279,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _sanitize_error_msg(e)}, status=500)
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
@@ -3282,7 +3298,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({"error": _sanitize_error_msg(e)}, status=500)
 
     # ------------------------------------------------------------------
     # Output extraction helper
@@ -3944,7 +3960,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._set_run_status(
                     run_id,
                     "failed",
-                    error=str(exc),
+                    error=_sanitize_error_msg(exc),
                     last_event="run.failed",
                 )
                 try:
@@ -3952,7 +3968,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "error": str(exc),
+                        "error": _sanitize_error_msg(exc),
                     })
                 except Exception:
                     pass
@@ -4121,7 +4137,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.exception("[api_server] approval resolution failed for run %s", run_id)
-            return web.json_response(_openai_error(str(exc)), status=500)
+            return web.json_response(_openai_error(_sanitize_error_msg(exc)), status=500)
 
         if resolved <= 0:
             return web.json_response(

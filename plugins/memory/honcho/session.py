@@ -1090,11 +1090,8 @@ class HonchoSessionManager:
             card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
             if card:
                 return card
-            # Honcho self-hosted v3 stores the peer card on the peer itself
-            # (GET /peers/{id}/card). The observer-target slot used above is
-            # only populated when writes also go through that path. Fall back
-            # to the target peer's own card so honcho_profile works regardless
-            # of which write path populated it.
+            # Some backends store cards directly on the target peer, not the
+            # observer-target slot. Fall back so honcho_profile still works.
             if target_peer_id:
                 return self._fetch_peer_card(target_peer_id)
             return []

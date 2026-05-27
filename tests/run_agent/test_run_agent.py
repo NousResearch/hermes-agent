@@ -3761,6 +3761,26 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_summary_injects_turn_level_current_time_context(self, agent):
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        with patch(
+            "agent.chat_completion_helpers.current_time_context",
+            return_value="[Current time: 2026-05-27 09:30 Asia/Shanghai Wednesday]",
+        ):
+            result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_msgs = kwargs.get("messages", [])
+        summary_msg = sent_msgs[-1]
+        assert summary_msg["role"] == "user"
+        assert "[Current time: 2026-05-27 09:30 Asia/Shanghai Wednesday]" in summary_msg["content"]
+        assert "[Current time:" not in messages[-1]["content"]
+
     def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
         agent.base_url = "https://api.openai.com/v1"
         agent._base_url_lower = agent.base_url.lower()
@@ -3983,6 +4003,74 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_injects_turn_level_current_time_context_into_user_message(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch(
+                "agent.conversation_loop.current_time_context",
+                return_value="[Current time: 2026-05-27 09:30 Asia/Shanghai Wednesday]",
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Final answer"
+        assert result["completed"] is True
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_messages = kwargs["messages"]
+        assert "[Current time:" not in sent_messages[0]["content"]
+        user_message = next(m for m in sent_messages if m.get("role") == "user")
+        assert user_message["content"] == (
+            "hello\n\n[Current time: 2026-05-27 09:30 Asia/Shanghai Wednesday]"
+        )
+        assert result["messages"][0]["content"] == "hello"
+
+    def test_injects_turn_level_current_time_context_into_multimodal_user_message(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        multimodal_content = [
+            {"type": "text", "text": "What is in this image?"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA"},
+            },
+        ]
+
+        with (
+            patch(
+                "agent.conversation_loop.current_time_context",
+                return_value="[Current time: 2026-05-27 09:30 Asia/Shanghai Wednesday]",
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_model_supports_vision", return_value=True),
+        ):
+            result = agent.run_conversation(multimodal_content)
+
+        assert result["final_response"] == "Final answer"
+        assert result["completed"] is True
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        user_message = next(m for m in kwargs["messages"] if m.get("role") == "user")
+        assert user_message["content"] == [
+            *multimodal_content,
+            {
+                "type": "text",
+                "text": "[Current time: 2026-05-27 09:30 Asia/Shanghai Wednesday]",
+            },
+        ]
+        assert result["messages"][0]["content"] == multimodal_content
+        assert all(
+            "[Current time:" not in str(part)
+            for part in result["messages"][0]["content"]
+        )
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"
@@ -4066,7 +4154,12 @@ class TestRunConversation:
         ]
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
         assert all("request" in c and "messages" in c["request"]["body"] for c in pre_request_calls)
-        assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
+        first_user_msg = next(
+            msg for msg in pre_request_calls[0]["request_messages"]
+            if msg.get("role") == "user"
+        )
+        assert first_user_msg.get("content", "").startswith("search something")
+        assert "[Current time:" in first_user_msg.get("content", "")
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 

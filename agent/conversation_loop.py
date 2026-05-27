@@ -68,6 +68,7 @@ from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
+from hermes_time import current_time_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
@@ -800,6 +801,9 @@ def run_conversation(
             # never mutated, so nothing leaks into session persistence.
             if idx == current_turn_user_idx and msg.get("role") == "user":
                 _injections = []
+                _time_context = current_time_context()
+                if _time_context:
+                    _injections.append(_time_context)
                 if _ext_prefetch_cache:
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
@@ -808,8 +812,17 @@ def run_conversation(
                     _injections.append(_plugin_user_context)
                 if _injections:
                     _base = api_msg.get("content", "")
+                    _injected_text = "\n\n".join(_injections)
                     if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                        api_msg["content"] = _base + "\n\n" + _injected_text
+                    elif isinstance(_base, list):
+                        # Copy the list before appending so the API-only part
+                        # cannot leak into canonical/persisted history through
+                        # the shallow ``msg.copy()`` above.
+                        api_msg["content"] = [
+                            *_base,
+                            {"type": "text", "text": _injected_text},
+                        ]
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved

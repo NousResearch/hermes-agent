@@ -133,3 +133,23 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
+def current_time_context() -> str:
+    """Return a compact per-turn current-time context string for LLM calls.
+
+    This is intended for API-call-time user-message context, not for the
+    cached system prompt.  The formatter never surfaces an invalid configured
+    timezone name; if validation fails, ``now()`` has already fallen back to
+    the server-local timezone and we label that instead.
+    """
+    current = now()
+    tz = get_timezone()
+    if tz is not None and _cached_tz_name:
+        tz_label = _cached_tz_name
+    else:
+        tz_label = current.tzname() or current.strftime("%z") or "local"
+    return (
+        f"[Current time: {current.strftime('%Y-%m-%d %H:%M')} "
+        f"{tz_label} {current.strftime('%A')}]"
+    )
+
+

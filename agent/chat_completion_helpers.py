@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from hermes_time import current_time_context
 from agent.error_classifier import FailoverReason
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
@@ -1681,14 +1682,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         "without calling any more tools."
     )
     messages.append({"role": "user", "content": summary_request})
+    summary_user_idx = len(messages) - 1
 
     try:
         # Build API messages, stripping internal-only fields
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
         _needs_sanitize = agent._should_sanitize_tool_calls()
         api_messages = []
-        for msg in messages:
+        for idx, msg in enumerate(messages):
             api_msg = msg.copy()
+            if idx == summary_user_idx and msg.get("role") == "user":
+                _time_context = current_time_context()
+                if _time_context and isinstance(api_msg.get("content"), str):
+                    api_msg["content"] = api_msg["content"] + "\n\n" + _time_context
             agent._copy_reasoning_content_for_api(msg, api_msg)
             for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                 api_msg.pop(internal_field, None)

@@ -103,6 +103,32 @@ class TestHermesTimeNow:
         assert r2.utcoffset() == timedelta(hours=5, minutes=30)
 
 
+class TestCurrentTimeContext:
+    """Test the LLM-facing current-time context formatter."""
+
+    def setup_method(self):
+        _reset_hermes_time_cache()
+
+    def teardown_method(self):
+        _reset_hermes_time_cache()
+        os.environ.pop("HERMES_TIMEZONE", None)
+
+    def test_uses_configured_timezone_label(self):
+        os.environ["HERMES_TIMEZONE"] = "Asia/Kolkata"
+        context = hermes_time.current_time_context()
+
+        assert context.startswith("[Current time: ")
+        assert "Asia/Kolkata" in context
+        assert context.endswith("]")
+
+    def test_invalid_timezone_label_not_exposed(self):
+        os.environ["HERMES_TIMEZONE"] = "Mars/Olympus_Mons"
+        context = hermes_time.current_time_context()
+
+        assert "[Current time: " in context
+        assert "Mars/Olympus_Mons" not in context
+
+
 class TestGetTimezone:
     """Test get_timezone()."""
 

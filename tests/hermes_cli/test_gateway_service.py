@@ -2409,6 +2409,38 @@ class TestSystemScopeRequiresRootError:
         assert not isinstance(err, SystemExit)
 
 
+class TestSystemScopeSelinuxExecError:
+    def test_systemd_install_raises_when_selinux_blocks_home_exec(self, monkeypatch, tmp_path):
+        unit_path = tmp_path / "etc" / "systemd" / "system" / "hermes-gateway.service"
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_require_root_for_system_service", lambda action: None)
+        monkeypatch.setattr(gateway_cli, "_selinux_is_enforcing", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_python_path",
+            lambda: "/home/alice/.hermes/hermes-agent/venv/bin/python",
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        with pytest.raises(gateway_cli.SystemScopeSelinuxExecError) as excinfo:
+            gateway_cli.systemd_install(force=False, system=True, run_as_user="alice")
+
+        assert "status 203/EXEC" in str(excinfo.value)
+        assert not unit_path.exists()
+        assert calls == []
+
+
 class TestSystemScopeWizardPreCheck:
     """Tests for _system_scope_wizard_would_need_root — the guard the
     wizard uses to detect the dead-end BEFORE prompting the user to start
@@ -2533,3 +2565,32 @@ class TestGatewayCommandCatchesSystemScopeError:
         # Renders the message, NOT the ``('msg', 'action')`` tuple repr
         assert "System gateway start requires root. Re-run with sudo." in out
         assert "('" not in out  # no tuple repr leaking through
+
+    def test_system_install_selinux_exec_error_exits_one_with_clean_message(self, monkeypatch, capsys):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "prompt_yes_no", lambda *args, **kwargs: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_install",
+            lambda force=False, system=False, run_as_user=None, enable_on_startup=True: (_ for _ in ()).throw(
+                gateway_cli.SystemScopeSelinuxExecError("status 203/EXEC")
+            ),
+        )
+
+        args = SimpleNamespace(
+            gateway_command="install",
+            force=False,
+            system=True,
+            run_as_user="alice",
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            gateway_cli.gateway_command(args)
+
+        assert excinfo.value.code == 1
+        out = capsys.readouterr().out
+        assert "status 203/EXEC" in out

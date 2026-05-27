@@ -1386,6 +1386,13 @@ class SystemScopeRequiresRootError(RuntimeError):
         return self.args[0] if self.args else ""
 
 
+class SystemScopeSelinuxExecError(RuntimeError):
+    """Raised when SELinux would block a system service ExecStart path."""
+
+    def __str__(self) -> str:
+        return self.args[0] if self.args else ""
+
+
 def _user_dbus_socket_path() -> Path:
     """Return the expected per-user D-Bus socket path (regardless of existence)."""
     xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
@@ -1868,6 +1875,17 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
 
     if scope == "system":
         run_as_user = _default_system_service_user()
+        if run_as_user:
+            conflict = _system_service_selinux_exec_conflict(run_as_user)
+            if conflict:
+                username, _home_dir, _python_path = conflict
+                print_warning("  System service install is not supported for this Hermes checkout while SELinux is enforcing.")
+                print_info("  Hermes' current virtualenv lives under the target user's home directory,")
+                print_info("  and a systemd system service would fail with status 203/EXEC on Fedora/RHEL-style hosts.")
+                print_info("  Use a user service instead: hermes gateway install")
+                print_info("  Or reinstall Hermes into a trusted system path such as /opt/hermes, then run:")
+                print_info(f"    sudo hermes gateway install --system --run-as-user {username}")
+                return scope, False
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd install wizard, never invoked on Windows
             print_warning("  System service install requires sudo, so Hermes can't create it from this user session.")
             if run_as_user:
@@ -2018,6 +2036,83 @@ def get_python_path() -> str:
         if venv_python.exists():
             return str(venv_python)
     return sys.executable
+
+
+def _selinux_is_enforcing() -> bool:
+    """Return True when SELinux is active and enforcing on this host."""
+    if not is_linux() or is_termux():
+        return False
+
+    enforce_path = Path("/sys/fs/selinux/enforce")
+    try:
+        if enforce_path.exists():
+            return enforce_path.read_text(encoding="utf-8").strip() == "1"
+    except OSError:
+        pass
+
+    getenforce = shutil.which("getenforce")
+    if not getenforce:
+        return False
+
+    try:
+        result = subprocess.run(
+            [getenforce],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except Exception:
+        return False
+
+    return result.returncode == 0 and result.stdout.strip().lower() == "enforcing"
+
+
+def _system_service_selinux_exec_conflict(
+    run_as_user: str | None = None,
+) -> tuple[str, str, str] | None:
+    """Return conflict details when SELinux would block the system ExecStart."""
+    if not _selinux_is_enforcing():
+        return None
+
+    username, _group_name, home_dir = _system_service_identity(run_as_user)
+    python_path = _remap_path_for_user(get_python_path(), home_dir)
+
+    try:
+        Path(python_path).expanduser().relative_to(Path(home_dir).expanduser())
+    except ValueError:
+        return None
+
+    return username, home_dir, python_path
+
+
+def _raise_if_system_service_selinux_exec_conflicts(
+    run_as_user: str | None = None,
+) -> None:
+    conflict = _system_service_selinux_exec_conflict(run_as_user)
+    if not conflict:
+        return
+
+    username, home_dir, python_path = conflict
+    raise SystemScopeSelinuxExecError(
+        textwrap.dedent(
+            f"""
+            SELinux is enforcing and the Hermes system service for user '{username}'
+            would execute '{python_path}' from inside '{home_dir}'.
+
+            System-level systemd services on SELinux hosts cannot exec Hermes'
+            virtualenv interpreter from a home directory, so this install would
+            fail with status 203/EXEC.
+
+            Use a user service instead:
+              hermes gateway install
+
+            Or reinstall Hermes into a trusted system path such as /opt/hermes,
+            then rerun:
+              sudo hermes gateway install --system --run-as-user {username}
+            """
+        ).strip()
+    )
 
 
 # =============================================================================
@@ -2467,6 +2562,7 @@ def systemd_install(
 ):
     if system:
         _require_root_for_system_service("install")
+        _raise_if_system_service_selinux_exec_conflicts(run_as_user)
 
     # Offer to remove legacy units (hermes.service from pre-rename installs)
     # before installing the new hermes-gateway.service. If both remain, they
@@ -5147,6 +5243,9 @@ def gateway_command(args):
         # intercept the same condition with friendlier guidance before the
         # error is raised.
         print(str(e))
+        sys.exit(1)
+    except SystemScopeSelinuxExecError as e:
+        print_error(str(e))
         sys.exit(1)
 
 

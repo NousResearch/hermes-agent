@@ -492,6 +492,26 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
     assert "sudo hermes gateway start --system" in out
 
 
+def test_install_linux_gateway_from_setup_system_choice_warns_on_selinux_home_exec(monkeypatch, capsys):
+    monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
+    monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(gateway, "_default_system_service_user", lambda: "alice")
+    monkeypatch.setattr(
+        gateway,
+        "_system_service_selinux_exec_conflict",
+        lambda run_as_user=None: ("alice", "/home/alice", "/home/alice/.hermes/hermes-agent/venv/bin/python"),
+    )
+    monkeypatch.setattr(gateway, "systemd_install", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not install")))
+
+    scope, did_install = gateway.install_linux_gateway_from_setup(force=False)
+
+    out = capsys.readouterr().out
+    assert (scope, did_install) == ("system", False)
+    assert "status 203/EXEC" in out
+    assert "hermes gateway install" in out
+    assert "sudo hermes gateway install --system --run-as-user alice" in out
+
+
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
     monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)

@@ -2289,6 +2289,195 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     assert available == []
 
 
+def _codex_auth_store_with_manual_pool_entry(
+    singleton_access: str,
+    singleton_refresh: str,
+    pool_access: str,
+    pool_refresh: str,
+    *,
+    pool_status: "str | None" = None,
+    pool_error_code: "int | None" = None,
+    pool_reset_at: "float | None" = None,
+) -> dict:
+    """Build an auth.json with a singleton + a *manual* pool entry.
+
+    Mirrors the on-disk shape produced when the user has previously run
+    ``hermes auth`` -> Add credential for openai-codex, which writes the
+    pool entry with ``source="manual:device_code"`` while subsequent
+    refreshes write to the ``providers["openai-codex"]`` singleton.
+    """
+    entry: dict = {
+        "id": "manual-1",
+        "label": "openai-codex-oauth-1",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "manual:device_code",
+        "access_token": pool_access,
+        "refresh_token": pool_refresh,
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    }
+    if pool_status is not None:
+        entry["last_status"] = pool_status
+        entry["last_status_at"] = time.time()
+        entry["last_error_code"] = pool_error_code
+        entry["last_error_reset_at"] = pool_reset_at
+    return {
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {
+            "openai-codex": {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": singleton_access,
+                    "refresh_token": singleton_refresh,
+                    "id_token": "id-" + singleton_access,
+                },
+                "last_refresh": "2026-05-27T08:12:17Z",
+            }
+        },
+        "credential_pool": {
+            "openai-codex": [entry],
+        },
+    }
+
+
+def test_sync_codex_entry_adopts_newer_tokens_for_manual_source(tmp_path, monkeypatch):
+    """Manually-added Codex pool entries must also sync from auth.json.
+
+    Regression: previously the sync gate required ``entry.source ==
+    "device_code"``, so entries created by ``hermes auth`` -> Add
+    credential (which use ``source="manual:device_code"``) silently
+    diverged from the singleton tokens after every refresh.  Once the
+    pool entry's access_token went stale, every chat-mode request 401d
+    while the singleton-backed paths kept working -- leaving the user
+    with a half-broken install that was very hard to diagnose.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        _codex_auth_store_with_manual_pool_entry(
+            singleton_access="access-NEW",
+            singleton_refresh="refresh-NEW",
+            pool_access="access-OLD",
+            pool_refresh="refresh-OLD",
+        ),
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = next(
+        e for e in pool._entries if e.source == "manual:device_code"
+    )
+    assert entry.access_token == "access-OLD"
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+    assert synced is not entry
+    assert synced.access_token == "access-NEW"
+    assert synced.refresh_token == "refresh-NEW"
+    assert synced.last_status is None
+    assert synced.last_error_code is None
+
+
+def test_codex_manual_exhausted_entry_recovers_via_auth_store_sync(
+    tmp_path, monkeypatch
+):
+    """Full recovery path: an exhausted ``manual:device_code`` entry
+    must be revived by ``_available_entries`` once auth.json holds
+    fresh tokens -- the same way auto-seeded ``device_code`` entries
+    already do.
+
+    Without this, ``hermes auth`` re-login left the pool entry frozen
+    behind ``last_error_reset_at`` (often hours into the future for
+    Codex 429 weekly-window patterns), so every request continued to
+    fail with "no available entries (all exhausted or empty)" until
+    the cooldown elapsed naturally.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    now = time.time()
+    _write_auth_store(
+        tmp_path,
+        _codex_auth_store_with_manual_pool_entry(
+            singleton_access="access-FRESH",
+            singleton_refresh="refresh-FRESH",
+            pool_access="access-OLD",
+            pool_refresh="refresh-OLD",
+            pool_status=STATUS_EXHAUSTED,
+            pool_error_code=401,
+            pool_reset_at=now + 3600,
+        ),
+    )
+
+    pool = load_pool("openai-codex")
+    available = pool._available_entries(clear_expired=True, refresh=False)
+    # load_pool may also auto-seed a separate device_code entry
+    # from the singleton.  What matters here is that the manual entry
+    # is no longer quarantined and now carries the fresh tokens.
+    manual = [e for e in available if e.source == "manual:device_code"]
+    assert len(manual) == 1, [e.source for e in available]
+    assert manual[0].access_token == "access-FRESH"
+    assert manual[0].refresh_token == "refresh-FRESH"
+    assert manual[0].last_status is None
+    assert manual[0].last_error_reset_at is None
+
+
+
+
+def test_codex_manual_and_seeded_entries_stay_consistent_after_sync(
+    tmp_path, monkeypatch
+):
+    """Coexisting ``manual:device_code`` and ``device_code`` entries must
+    converge on the singleton's fresh tokens after sync.
+
+    ``_upsert_entry`` keys on the exact source string, so a manual entry
+    and an auto-seeded entry live side-by-side in the pool without
+    deduplicating.  Once this PR's sync widens to admit
+    ``manual:device_code``, both should end up holding the same tokens
+    -- not silently diverge -- when ``_available_entries`` runs.
+
+    Both entries are pre-populated explicitly here so the test is
+    independent of singleton auto-seeding behavior.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+
+    now = time.time()
+    payload = _codex_auth_store_with_manual_pool_entry(
+        singleton_access="access-FRESH",
+        singleton_refresh="refresh-FRESH",
+        pool_access="access-OLD",
+        pool_refresh="refresh-OLD",
+        pool_status=STATUS_EXHAUSTED,
+        pool_error_code=401,
+        pool_reset_at=now + 3600,
+    )
+    # Add an explicit auto-seeded entry alongside the manual one so the
+    # invariant we assert does not depend on load_pool's seeding path.
+    payload["credential_pool"]["openai-codex"].append({
+        "id": "seeded-1",
+        "label": "device_code",
+        "auth_type": "oauth",
+        "priority": 1,
+        "source": "device_code",
+        "access_token": "access-FRESH",
+        "refresh_token": "refresh-FRESH",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    })
+    _write_auth_store(tmp_path, payload)
+
+    pool = load_pool("openai-codex")
+    available = pool._available_entries(clear_expired=True, refresh=False)
+
+    manual = [e for e in available if e.source == "manual:device_code"]
+    seeded = [e for e in available if e.source == "device_code"]
+    assert manual, [e.source for e in available]
+    assert seeded, [e.source for e in available]
+    assert manual[0].access_token == seeded[0].access_token == "access-FRESH"
+    assert manual[0].refresh_token == seeded[0].refresh_token == "refresh-FRESH"
+
+
 # ---------------------------------------------------------------------------
 # xAI OAuth terminal error quarantine
 # ---------------------------------------------------------------------------

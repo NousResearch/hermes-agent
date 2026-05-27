@@ -508,11 +508,12 @@ class CredentialPool:
         though fresh credentials are sitting on disk — and every request
         fails with "no available entries (all exhausted or empty)".
 
-        Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
-        auth.json shadow to sync from.
+        Mirrors the Nous/Anthropic resync paths above.  Applies to both
+        auto-seeded ("device_code") and user-added ("manual:device_code")
+        entries; env/API-key-sourced entries have no auth.json shadow to
+        sync from.
         """
-        if self.provider != "openai-codex" or entry.source != "device_code":
+        if self.provider != "openai-codex" or entry.source not in {"device_code", "manual:device_code"}:
             return entry
         try:
             with _auth_store_lock():
@@ -1186,7 +1187,7 @@ class CredentialPool:
             # frozen behind last_error_reset_at (can be hours in the
             # future for ChatGPT weekly windows).
             if (self.provider == "openai-codex"
-                    and entry.source == "device_code"
+                    and entry.source in {"device_code", "manual:device_code"}
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:

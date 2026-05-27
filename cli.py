@@ -9515,9 +9515,19 @@ class HermesCLI:
         # _DIM is now a fixed dim+italic ANSI escape (terminal-default fg)
         # so it doesn't need re-resolving on skin switch.
         if save_config_value("display.skin", new_skin):
-            print(f"  Skin set to: {new_skin} (saved)")
+            if new_skin == "auto":
+                from hermes_cli.skin_engine import get_resolved_auto_skin
+                resolved = get_resolved_auto_skin() or "?"
+                print(f"  Skin set to: auto (resolved: {resolved}) (saved)")
+            else:
+                print(f"  Skin set to: {new_skin} (saved)")
         else:
-            print(f"  Skin set to: {new_skin}")
+            if new_skin == "auto":
+                from hermes_cli.skin_engine import get_resolved_auto_skin
+                resolved = get_resolved_auto_skin() or "?"
+                print(f"  Skin set to: auto (resolved: {resolved})")
+            else:
+                print(f"  Skin set to: {new_skin}")
         print("  Note: banner colors will update on next session start.")
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")

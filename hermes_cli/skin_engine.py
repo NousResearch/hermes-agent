@@ -651,6 +651,158 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
+_resolved_auto_skin_name: Optional[str] = None
+
+
+# =============================================================================
+# Auto skin detection — adapts to terminal light/dark mode
+# =============================================================================
+
+# Preference-ordered pairs: (dark_skin, light_skin)
+# When "auto" is active, we walk this list and pick the first available pair
+# whose skin exists (built-in or user). This way custom skins can override.
+_SKIN_VARIANT_PAIRS: List[Tuple[str, str]] = [
+    ("ko-dark", "ko-light"),
+    ("slate", "daylight"),
+    ("default", "warm-lightmode"),
+    ("mono", "warm-lightmode"),
+    ("ares", "daylight"),
+    ("poseidon", "daylight"),
+    ("sisyphus", "warm-lightmode"),
+    ("charizard", "warm-lightmode"),
+]
+
+
+def _detect_terminal_is_light() -> bool:
+    """Detect whether the terminal is in light mode.
+
+    Priority chain:
+    1. HERMES_LIGHT / HERMES_TUI_LIGHT env vars (explicit: "1" = light, "0" = dark)
+    2. HERMES_TUI_THEME env var ("light" / "dark")
+    3. HERMES_TUI_BACKGROUND hex value (luminance > 128 = light)
+    4. COLORFGBG env var (xterm/Konsole convention: last value > 7 = light bg)
+    5. OSC 11 query (ask terminal for bg color)
+    6. Default: dark
+    """
+    import os
+
+    # 1. Explicit env overrides
+    for var in ("HERMES_LIGHT", "HERMES_TUI_LIGHT"):
+        val = os.environ.get(var, "").strip().lower()
+        if val in ("1", "true", "yes", "light"):
+            return True
+        if val in ("0", "false", "no", "dark"):
+            return False
+
+    # 2. Theme name
+    theme = os.environ.get("HERMES_TUI_THEME", "").strip().lower()
+    if theme in ("light", "lightmode", "light-mode"):
+        return True
+    if theme in ("dark", "darkmode", "dark-mode"):
+        return False
+
+    # 3. Background hex luminance
+    bg_hex = os.environ.get("HERMES_TUI_BACKGROUND", "").strip().lstrip("#")
+    if len(bg_hex) == 6:
+        try:
+            r, g, b = int(bg_hex[0:2], 16), int(bg_hex[2:4], 16), int(bg_hex[4:6], 16)
+            # Perceived luminance (ITU-R BT.601)
+            luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+            return luminance > 128
+        except (ValueError, IndexError):
+            pass
+
+    # 4. COLORFGBG (xterm convention)
+    colorfgbg = os.environ.get("COLORFGBG", "")
+    if ";" in colorfgbg:
+        parts = colorfgbg.split(";")
+        if len(parts) >= 2:
+            try:
+                bg_val = int(parts[-1])
+                if bg_val > 7:
+                    return True
+                return False
+            except ValueError:
+                pass
+        elif parts:
+            try:
+                bg_val = int(parts[0])
+                if bg_val > 7:
+                    return True
+            except ValueError:
+                pass
+
+    # 5. OSC 11 query (non-blocking)
+    try:
+        import sys
+        import termios
+        import tty
+        import select
+        if sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                sys.stdout.write("\033]11;?\007")
+                sys.stdout.flush()
+                if select.select([sys.stdin], [], [], 0.3)[0]:
+                    response = ""
+                    while True:
+                        if not select.select([sys.stdin], [], [], 0.1)[0]:
+                            break
+                        ch = sys.stdin.read(1)
+                        response += ch
+                        if ch in ("\x07", "\x1b\\"):
+                            break
+                    # Parse "rgb:RRRR/GGGG/BBBB" from response
+                    if "rgb:" in response:
+                        rgb_part = response.split("rgb:")[1].split("\x07")[0].split("\x1b")[0]
+                        components = rgb_part.split("/")
+                        if len(components) == 3:
+                            # Scale 16-bit to 8-bit
+                            r = int(components[0][:2], 16) if len(components[0]) >= 2 else 0
+                            g = int(components[1][:2], 16) if len(components[1]) >= 2 else 0
+                            b = int(components[2][:2], 16) if len(components[2]) >= 2 else 0
+                            luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+                            return luminance > 128
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except (ImportError, termios.error, OSError, IOError):
+        pass  # Not a real terminal or not Unix-like
+
+    # 6. Default: assume dark
+    return False
+
+
+def resolve_auto_skin() -> str:
+    """Resolve 'auto' to a concrete skin name based on terminal detection.
+
+    Walks _SKIN_VARIANT_PAIRS and returns the first available skin from the
+    appropriate column (dark or light). Falls back to 'default' if nothing matches.
+    """
+    global _resolved_auto_skin_name
+
+    is_light = _detect_terminal_is_light()
+    available_names = {s["name"] for s in list_skins()}
+
+    for dark_skin, light_skin in _SKIN_VARIANT_PAIRS:
+        preferred = light_skin if is_light else dark_skin
+        fallback = dark_skin if is_light else light_skin
+        if preferred in available_names:
+            _resolved_auto_skin_name = preferred
+            return preferred
+        if fallback in available_names:
+            _resolved_auto_skin_name = fallback
+            return fallback
+
+    # Nothing matched — use default
+    _resolved_auto_skin_name = "default"
+    return "default"
+
+
+def get_resolved_auto_skin() -> Optional[str]:
+    """Return the last resolved auto skin name, or None if auto was never resolved."""
+    return _resolved_auto_skin_name
 
 
 def _skins_dir() -> Path:
@@ -720,8 +872,18 @@ def list_skins() -> List[Dict[str, str]]:
     """List all available skins (built-in + user-installed).
 
     Returns list of {"name": ..., "description": ..., "source": "builtin"|"user"}.
+    Includes ``"auto"`` as a virtual entry that shows the resolved skin name.
     """
     result = []
+
+    # Add "auto" as first virtual entry
+    resolved = _resolved_auto_skin_name or "?"
+    result.append({
+        "name": "auto",
+        "description": f"Auto-detect terminal light/dark (currently: {resolved})",
+        "source": "builtin",
+    })
+
     for name, data in _BUILTIN_SKINS.items():
         result.append({
             "name": name,
@@ -748,7 +910,14 @@ def list_skins() -> List[Dict[str, str]]:
 
 
 def load_skin(name: str) -> SkinConfig:
-    """Load a skin by name. Checks user skins first, then built-in."""
+    """Load a skin by name. Checks user skins first, then built-in.
+
+    When name is ``"auto"``, resolves to a concrete skin based on terminal
+    light/dark detection and caches the resolution.
+    """
+    if name == "auto":
+        name = resolve_auto_skin()
+
     # Check user skins directory
     skins_path = _skins_dir()
     user_file = skins_path / f"{name}.yaml"
@@ -775,10 +944,18 @@ def get_active_skin() -> SkinConfig:
 
 
 def set_active_skin(name: str) -> SkinConfig:
-    """Switch the active skin. Returns the new SkinConfig."""
+    """Switch the active skin. Returns the new SkinConfig.
+
+    When ``name`` is ``"auto"``, the skin name is stored as ``"auto"``
+    and the actual skin is resolved via terminal detection.
+    """
     global _active_skin, _active_skin_name
     _active_skin_name = name
-    _active_skin = load_skin(name)
+    if name == "auto":
+        resolved = resolve_auto_skin()
+        _active_skin = load_skin(resolved)  # bypass auto-resolve since we already resolved
+    else:
+        _active_skin = load_skin(name)
     return _active_skin
 
 
@@ -791,6 +968,7 @@ def init_skin_from_config(config: dict) -> None:
     """Initialize the active skin from CLI config at startup.
 
     Call this once during CLI init with the loaded config dict.
+    Handles ``"auto"`` by resolving to a concrete skin via terminal detection.
     """
     display = config.get("display") or {}
     if not isinstance(display, dict):

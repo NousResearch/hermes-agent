@@ -107,6 +107,21 @@ class TestResolveContextTemplates:
         # which is unset in tests, so empty string.
         assert _resolve_context_templates("${context:NEVER_REGISTERED}") == ""
 
+    def test_non_string_contextvar_value_coerces_to_str(self):
+        """A plugin-registered ContextVar holding a non-string value must
+        not crash the regex substitution — str()-coerce on resolve so
+        re.sub never sees a non-string replacement."""
+        # Register a contextvar typed as Any so we can hold an int.
+        from contextvars import ContextVar as _ContextVar
+        weird: _ContextVar = _ContextVar("WEIRD_INT", default=_UNSET)
+        register_session_context_var("WEIRD_INT", weird)
+        try:
+            weird.set(42)
+            assert _resolve_context_templates("${context:WEIRD_INT}") == "42"
+        finally:
+            weird.set(_UNSET)
+            _VAR_MAP.pop("WEIRD_INT", None)
+
 
 class TestSplitStaticAndTemplatedHeaders:
     def test_partitions_correctly(self):

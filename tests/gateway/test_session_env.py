@@ -376,10 +376,24 @@ def test_register_session_context_var_explicit_empty_does_not_fall_back(
 
 
 def test_register_session_context_var_rejects_invalid_inputs():
-    """Defensive checks — bad inputs raise before corrupting the registry."""
+    """Defensive checks — bad inputs raise before corrupting the registry.
+
+    The validity bar matches what the ``${context:NAME}`` template regex
+    will actually resolve: ASCII identifiers only. Names with hyphens,
+    spaces, leading digits, or unicode would register but silently fail
+    to resolve — failing fast at registration is friendlier.
+    """
     valid_var: ContextVar = ContextVar("X", default=_UNSET)
     with pytest.raises(ValueError):
         register_session_context_var("", valid_var)
+    with pytest.raises(ValueError):
+        register_session_context_var("HAS-HYPHEN", valid_var)
+    with pytest.raises(ValueError):
+        register_session_context_var("has space", valid_var)
+    with pytest.raises(ValueError):
+        register_session_context_var("1_leading_digit", valid_var)
+    with pytest.raises(ValueError):
+        register_session_context_var("café", valid_var)  # non-ASCII
     with pytest.raises(TypeError):
         register_session_context_var("X", "not a contextvar")  # type: ignore[arg-type]
 

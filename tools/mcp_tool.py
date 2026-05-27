@@ -693,7 +693,12 @@ def _resolve_context_templates(value: str) -> str:
 
     def _replace(match: re.Match) -> str:
         name = match.group(1)
-        return get_session_env(name, "")
+        # str()-coerce in case a plugin registers a ContextVar whose value
+        # is not a string (int, bool, None). re.sub raises TypeError on
+        # non-string replacements; defensive coercion keeps the resolver
+        # robust against plugin authors who didn't read the str-only
+        # convention.
+        return str(get_session_env(name, ""))
 
     return _CONTEXT_TEMPLATE_RE.sub(_replace, value)
 
@@ -1484,7 +1489,7 @@ class MCPServerTask:
             # spun up before the session context vars are set will see empty
             # values, which is consistent with non-templated unset env vars.
             sse_headers = {
-                key: (_resolve_context_templates(value) if isinstance(value, str) else value)
+                key: _resolve_context_templates(value)
                 for key, value in headers.items()
             }
             _sse_kwargs: dict = {
@@ -1601,7 +1606,7 @@ class MCPServerTask:
                     self.name,
                 )
             legacy_headers = {
-                key: (_resolve_context_templates(value) if isinstance(value, str) else value)
+                key: _resolve_context_templates(value)
                 for key, value in headers.items()
             }
             _http_kwargs: dict = {

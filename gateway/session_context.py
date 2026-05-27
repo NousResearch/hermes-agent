@@ -207,8 +207,16 @@ def register_session_context_var(name: str, var: ContextVar) -> None:
     ``HERMES_CRON_AUTO_DELIVER_*``) can be overridden but typically should
     not be.
     """
-    if not isinstance(name, str) or not name:
-        raise ValueError("register_session_context_var: name must be a non-empty str")
+    if not isinstance(name, str) or not name or not name.isascii() or not name.isidentifier():
+        # The MCP-headers template regex (``${context:NAME}``) only matches
+        # ASCII identifier characters ``[A-Za-z_][A-Za-z0-9_]*``. Names
+        # outside that set (hyphens, spaces, unicode) would register
+        # successfully here but silently fail to resolve in templates —
+        # surface the invariant at registration time instead.
+        raise ValueError(
+            "register_session_context_var: name must be a valid ASCII "
+            "identifier matching the ${context:NAME} template regex",
+        )
     if not isinstance(var, ContextVar):
         raise TypeError("register_session_context_var: var must be a ContextVar")
     _VAR_MAP[name] = var

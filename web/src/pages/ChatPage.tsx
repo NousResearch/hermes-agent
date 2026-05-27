@@ -565,6 +565,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     // WebSocket
     const url = buildWsUrl(token, resumeParam, channel);
+    setBanner("Connecting to Hermes chat endpoint...");
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -604,10 +605,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (ev.code === 1011) {
-        // Server already wrote an ANSI error frame.
+        setBanner("Chat backend reported an internal error. Check the terminal output and server logs.");
         return;
       }
+      const detail = ev.reason ? `: ${ev.reason}` : "";
+      setBanner(`Chat endpoint closed (code ${ev.code}${detail}). Reload or check the Hermes server logs.`);
       term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+    };
+
+    ws.onerror = () => {
+      if (!unmounting) {
+        setBanner("Chat endpoint connection failed. Check the server is running and the session token is valid.");
+      }
     };
 
     // Keystrokes → PTY.

@@ -89,6 +89,55 @@ class HermesSseClientTest {
     }
 
     @Test
+    fun streamChatCompletion_reports_endpoint_status_steps() {
+        val body = """
+            data: {"choices":[{"delta":{"content":"hello"}}]}
+
+            data: [DONE]
+
+        """.trimIndent() + "\n"
+        val client = HermesSseClient(
+            baseUrl = "http://127.0.0.1:15436",
+            httpClient = singleResponseClient(body),
+        )
+
+        val statuses = mutableListOf<String>()
+        client.streamChatCompletion(
+            request = sampleRequest(),
+            onDelta = {},
+            onComplete = {},
+            onError = {},
+            onStatus = { statuses += it },
+        )
+
+        assertTrue(statuses.any { it.contains("Opening endpoint stream") })
+        assertTrue(statuses.any { it.contains("Endpoint responded HTTP 200") })
+        assertTrue(statuses.any { it.contains("Endpoint stream is live") })
+    }
+
+    @Test
+    fun streamChatCompletion_reports_http_error_body_snippet() {
+        val client = HermesSseClient(
+            baseUrl = "http://127.0.0.1:15436",
+            httpClient = singleResponseClient(
+                body = """{"error":{"message":"model not found"}}""",
+                code = 404,
+                message = "Not Found",
+            ),
+        )
+
+        var error: String? = null
+        client.streamChatCompletion(
+            request = sampleRequest(),
+            onDelta = {},
+            onComplete = {},
+            onError = { error = it },
+        )
+
+        assertEquals("""SSE request failed: 404 Not Found {"error":{"message":"model not found"}}""", error)
+    }
+
+    @Test
     fun streamChatCompletion_reports_endpoint_hint_when_sse_stream_closes_before_done() {
         val body = """
             data: {"choices":[{"delta":{"content":"partial"}}]}
@@ -188,14 +237,14 @@ class HermesSseClientTest {
         )
     }
 
-    private fun singleResponseClient(body: String): OkHttpClient {
+    private fun singleResponseClient(body: String, code: Int = 200, message: String = "OK"): OkHttpClient {
         return OkHttpClient.Builder()
             .addInterceptor { chain ->
                 Response.Builder()
                     .request(chain.request())
                     .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
+                    .code(code)
+                    .message(message)
                     .body(body.toResponseBody("text/event-stream".toMediaType()))
                     .build()
             }

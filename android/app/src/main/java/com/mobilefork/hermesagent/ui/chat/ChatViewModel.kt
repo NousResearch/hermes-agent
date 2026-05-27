@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.mobilefork.hermesagent.api.ChatCompletionRequest
 import com.mobilefork.hermesagent.api.ChatContentPart
 import com.mobilefork.hermesagent.api.ChatMessage
+import com.mobilefork.hermesagent.api.HermesApiClient
 import com.mobilefork.hermesagent.api.HermesSseClient
 import com.mobilefork.hermesagent.backend.HermesRuntimeManager
 import com.mobilefork.hermesagent.backend.OnDeviceBackendManager
@@ -23,6 +24,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.net.URI
 import java.util.UUID
@@ -207,6 +210,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 return@launch
             }
+            _uiState.update {
+                it.copy(
+                    status = "Checking ${endpoint.debugLabel()} before sending…",
+                    error = "",
+                )
+            }
 
             val userContentParts = runCatching { buildUserContentParts(text, attachments) }.getOrElse { error ->
                 _uiState.update {
@@ -332,18 +341,100 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     },
                     onError = { error ->
-                        _uiState.update { it.copy(isSending = false, error = endpoint.failureMessage(error), status = "") }
+                        tryNonStreamingEndpointFallback(
+                            endpoint = endpoint,
+                            request = request,
+                            sessionId = sessionId,
+                            assistantMessageId = assistantMessageId,
+                            streamError = error,
+                        )
+                    },
+                    onStatus = { status ->
+                        _uiState.update {
+                            it.copy(status = "${endpoint.debugLabel()}: $status")
+                        }
                     },
                 )
             }.onFailure { error ->
-                _uiState.update {
-                    it.copy(
-                        isSending = false,
-                        error = endpoint.failureMessage(error.message ?: error.javaClass.simpleName),
-                        status = "",
-                    )
-                }
+                val message = error.message ?: error.javaClass.simpleName
+                tryNonStreamingEndpointFallback(
+                    endpoint = endpoint,
+                    request = request,
+                    sessionId = sessionId,
+                    assistantMessageId = assistantMessageId,
+                    streamError = message,
+                )
             }
+        }
+    }
+
+    private fun tryNonStreamingEndpointFallback(
+        endpoint: ChatEndpoint,
+        request: ChatCompletionRequest,
+        sessionId: String,
+        assistantMessageId: String,
+        streamError: String,
+    ): Boolean {
+        if (endpoint.nativeToolCalling) {
+            return false
+        }
+        _uiState.update {
+            it.copy(
+                status = "${endpoint.debugLabel()}: stream issue detected; retrying non-stream chat…",
+                error = "",
+            )
+        }
+        return runCatching {
+            val fallbackClient = HermesApiClient(
+                baseUrl = endpoint.baseUrl,
+                apiKey = endpoint.apiKey,
+                networkGuard = { url ->
+                    HermesNetworkPolicy.requireExternalNetworkAllowed(
+                        getApplication<Application>(),
+                        url,
+                        actionLabel = "chat fallback request",
+                    )
+                },
+            )
+            val result = fallbackClient.createChatCompletion(request.copy(stream = false))
+            val content = extractAssistantContentFromChatCompletion(result.rawBody)
+            require(content.isNotBlank()) {
+                "Non-stream endpoint returned no assistant text"
+            }
+            conversationStore.updateMessageContent(
+                sessionId = sessionId,
+                messageId = assistantMessageId,
+                newContent = content,
+            )
+            _uiState.update { state ->
+                state.copy(
+                    activeConversationTitle = conversationStore.currentConversation().title,
+                    conversationSummaries = loadSummaries(),
+                    messages = state.messages.map { message ->
+                        if (message.id == assistantMessageId) {
+                            message.copy(content = content)
+                        } else {
+                            message
+                        }
+                    },
+                    isSending = false,
+                    error = "",
+                    status = "${endpoint.debugLabel()}: recovered with non-stream chat after SSE failed.",
+                )
+            }
+            true
+        }.getOrElse { fallbackError ->
+            _uiState.update {
+                it.copy(
+                    isSending = false,
+                    error = endpoint.failureMessage(
+                        "Streaming failed: $streamError. Non-stream fallback also failed: " +
+                            (fallbackError.message ?: fallbackError.javaClass.simpleName),
+                    ),
+                    status = "",
+                )
+            }
+            false
         }
     }
 
@@ -371,9 +462,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return "$clean If this is a custom endpoint, verify the Base URL includes /v1, the model name matches the server exactly, the phone network is stable, and the server keeps SSE streams open until [DONE]."
     }
 
+    private fun ChatEndpoint.debugLabel(): String {
+        val mode = if (nativeToolCalling) "on-device" else "endpoint"
+        return "$mode ${endpointHostLabel(baseUrl)} · $modelName"
+    }
+
     private fun String.looksLikeEndpointDisconnect(): Boolean {
         val lower = lowercase()
-        return listOf("timeout", "closed", "reset", "disconnect", "unexpected end", "[done]", "sse").any { token ->
+        return listOf("timeout", "closed", "reset", "disconnect", "unexpected end", "[done]", "sse", "stream").any { token ->
             lower.contains(token)
         }
     }
@@ -552,5 +648,43 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 },
             )
         }
+    }
+}
+
+internal fun extractAssistantContentFromChatCompletion(rawBody: String): String {
+    val root = JSONObject(rawBody)
+    val choices = root.optJSONArray("choices") ?: return ""
+    if (choices.length() == 0) {
+        return ""
+    }
+    val choice = choices.optJSONObject(0) ?: return ""
+    val messageContent = choice.optJSONObject("message")?.opt("content")
+    val deltaContent = choice.optJSONObject("delta")?.opt("content")
+    return chatCompletionContentToText(messageContent ?: deltaContent).trim()
+}
+
+private fun chatCompletionContentToText(value: Any?): String {
+    if (value == null || value == JSONObject.NULL) {
+        return ""
+    }
+    return when (value) {
+        is String -> value
+        is JSONArray -> buildString {
+            for (index in 0 until value.length()) {
+                val item = value.opt(index)
+                val text = when (item) {
+                    is JSONObject -> item.optString("text")
+                        .ifBlank { item.optString("content") }
+                    is String -> item
+                    else -> item?.toString().orEmpty()
+                }
+                if (text.isNotBlank()) {
+                    if (isNotEmpty()) append('\n')
+                    append(text)
+                }
+            }
+        }
+        is JSONObject -> value.optString("text").ifBlank { value.optString("content") }
+        else -> value.toString()
     }
 }

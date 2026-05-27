@@ -22,21 +22,23 @@ class HermesSseClient(
         onDelta: (String) -> Unit,
         onComplete: () -> Unit,
         onError: (String) -> Unit,
+        onStatus: (String) -> Unit = {},
     ) {
         try {
             val payload = JSONObject().apply {
                 put("model", request.model)
                 put("stream", true)
                 put(
-                "messages",
-                JSONArray().apply {
-                    request.messages.forEach { msg ->
+                    "messages",
+                    JSONArray().apply {
+                        request.messages.forEach { msg ->
                             put(msg.toJsonObject())
+                        }
                     }
-                }
-            )
+                )
             }
             val chatUrl = "$normalizedBaseUrl/v1/chat/completions"
+            onStatus("Opening endpoint stream at ${endpointLabel(chatUrl)}")
             networkGuard(chatUrl)
             val builder = Request.Builder()
                 .url(chatUrl)
@@ -51,16 +53,18 @@ class HermesSseClient(
             }
 
             httpClient.newCall(builder.build()).execute().use { response ->
+                onStatus("Endpoint responded HTTP ${response.code}; reading SSE frames")
+                val body = response.body
                 if (!response.isSuccessful) {
-                    onError("SSE request failed: ${response.code}")
+                    onError("SSE request failed: ${response.code} ${response.message} ${body?.string().orEmpty().takeBodySnippet()}")
                     return
                 }
-                val source = response.body?.source()
+                val source = body?.source()
                 if (source == null) {
                     onError("SSE response body was empty")
                     return
                 }
-                parseStream(source, onDelta, onComplete, onError)
+                parseStream(source, onDelta, onComplete, onError, onStatus)
             }
         } catch (error: Exception) {
             onError(endpointTransportErrorMessage(error))
@@ -72,6 +76,7 @@ class HermesSseClient(
         onDelta: (String) -> Unit,
         onComplete: () -> Unit,
         onError: (String) -> Unit,
+        onStatus: (String) -> Unit = {},
     ) {
         var sawDataFrame = false
         var sawFinishReason = false
@@ -81,7 +86,10 @@ class HermesSseClient(
             if (payload.isBlank()) {
                 continue
             }
-            sawDataFrame = true
+            if (!sawDataFrame) {
+                sawDataFrame = true
+                onStatus("Endpoint stream is live; waiting for assistant text")
+            }
             if (payload == "[DONE]") {
                 onComplete()
                 return
@@ -147,6 +155,22 @@ class HermesSseClient(
                 raw.contains("unexpected end", ignoreCase = true) ->
                 "Custom endpoint stream disconnected: $raw. $CUSTOM_ENDPOINT_HINT"
             else -> raw
+        }
+    }
+
+    private fun endpointLabel(url: String): String {
+        return url
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .take(96)
+    }
+
+    private fun String.takeBodySnippet(limit: Int = 240): String {
+        val compact = replace(Regex("\\s+"), " ").trim()
+        return when {
+            compact.isBlank() -> ""
+            compact.length <= limit -> compact
+            else -> compact.take(limit).trimEnd() + "..."
         }
     }
 

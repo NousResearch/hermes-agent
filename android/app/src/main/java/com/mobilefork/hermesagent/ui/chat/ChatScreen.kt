@@ -306,8 +306,8 @@ fun ChatScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .widthIn(max = 960.dp)
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                 ChatHeaderCard(
                     title = uiState.activeConversationTitle,
@@ -345,7 +345,7 @@ fun ChatScreen(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                         contentPadding = PaddingValues(vertical = 8.dp),
                     ) {
                         item {
@@ -366,8 +366,8 @@ fun ChatScreen(
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                            contentPadding = PaddingValues(bottom = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 8.dp),
                         ) {
                             if (settingsState.chatDisplayMode == "expanded") {
                                 itemsIndexed(uiState.messages, key = { _, message -> message.id }) { index, message ->
@@ -396,7 +396,7 @@ fun ChatScreen(
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
                                     .padding(end = 8.dp, bottom = 8.dp)
-                                    .size(42.dp)
+                                    .size(38.dp)
                                     .clickable {
                                         scrollScope.launch {
                                             listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
@@ -446,33 +446,34 @@ private fun ChatHeaderCard(
     val displayTitle = if (title.equals("New chat", ignoreCase = true)) strings.newChat else title
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        shape = MaterialTheme.shapes.large,
-        tonalElevation = 2.dp,
+        color = MaterialTheme.colorScheme.surface,
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 1.dp,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
                 painter = painterResource(id = R.drawable.ic_nav_hermes),
                 contentDescription = strings.sectionHermes,
                 tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp),
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = strings.chatTitle.ifBlank { "Hermes Chat" },
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = displayTitle,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -481,11 +482,12 @@ private fun ChatHeaderCard(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onOpenHistory) {
+                IconButton(onClick = onOpenHistory, modifier = Modifier.size(40.dp)) {
                     Icon(
                         painter = painterResource(id = R.drawable.ic_action_history),
                         contentDescription = strings.openHistory.ifBlank { "Open history" },
                         tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
                     )
                 }
                 Button(
@@ -496,7 +498,7 @@ private fun ChatHeaderCard(
                         containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                         contentColor = MaterialTheme.colorScheme.primary,
                     ),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 5.dp),
                 ) {
                     Text(
                         text = strings.chatDisplayModeLabel(chatDisplayMode),
@@ -506,11 +508,12 @@ private fun ChatHeaderCard(
                     )
                 }
                 if (onOpenActions != null) {
-                    IconButton(onClick = onOpenActions) {
+                    IconButton(onClick = onOpenActions, modifier = Modifier.size(40.dp)) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_action_cog),
                             contentDescription = strings.openPageActions.ifBlank { "Open page actions" },
                             tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
                         )
                     }
                 }
@@ -531,15 +534,15 @@ private fun StatusBanner(text: String, isError: Boolean = false) {
         shape = MaterialTheme.shapes.medium,
     ) {
         Row(
-            modifier = Modifier.padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.Top,
         ) {
             if (endpointStatus) {
                 Box(
                     modifier = Modifier
-                        .padding(top = 4.dp)
-                        .size(9.dp)
+                        .padding(top = 3.dp)
+                        .size(8.dp)
                         .clip(RoundedCornerShape(50))
                         .background(indicatorColor),
                 )
@@ -575,7 +578,7 @@ private fun StatusBanner(text: String, isError: Boolean = false) {
 
 private fun isEndpointStatusText(text: String): Boolean {
     val lower = text.lowercase()
-    return listOf("custom endpoint", "sse", "[done]", "base url", "model name").any { token ->
+    return listOf("endpoint", "stream", "sse", "http", "non-stream", "[done]", "base url", "model name").any { token ->
         lower.contains(token)
     } || (lower.contains("hermes is") && lower.contains(" via "))
 }
@@ -591,47 +594,67 @@ private fun EmptyChatHint(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = MaterialTheme.shapes.large,
+        shape = MaterialTheme.shapes.medium,
         tonalElevation = 1.dp,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
                 text = strings.welcomeToHermes.ifBlank { "Welcome to Hermes" },
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(strings.welcomeDescription, style = MaterialTheme.typography.bodyMedium)
-            Button(onClick = onNewChat, modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = strings.newChat.ifBlank { "New chat" },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Text(
+                text = strings.welcomeDescription,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
             SignalIntelligenceQuickActionGrid(
                 enabled = true,
                 onSignalQuickAction = onSignalQuickAction,
             )
-            Column(
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(onClick = onOpenAccounts, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = onNewChat,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                ) {
                     Text(
-                        text = strings.accounts.ifBlank { "Accounts" },
+                        text = strings.newChat.ifBlank { "New chat" },
+                        style = MaterialTheme.typography.labelMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Button(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = onOpenAccounts,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        text = strings.accounts.ifBlank { "Accounts" },
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Button(
+                    onClick = onOpenSettings,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                ) {
                     Text(
                         text = strings.settings.ifBlank { "Settings" },
+                        style = MaterialTheme.typography.labelMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -653,58 +676,61 @@ private fun ChatBubble(
     val contentColor = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
     val strings = LocalHermesStrings.current
     val roleLabel = if (isUser) strings.userRoleLabel() else "Hermes"
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-    ) {
-        Surface(
-            modifier = Modifier.widthIn(max = 320.dp),
-            color = containerColor,
-            shape = RoundedCornerShape(
-                topStart = 22.dp,
-                topEnd = 22.dp,
-                bottomStart = if (isUser) 22.dp else 8.dp,
-                bottomEnd = if (isUser) 8.dp else 22.dp,
-            ),
-            tonalElevation = 1.dp,
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val bubbleMaxWidth = if (maxWidth < 760.dp) maxWidth * 0.88f else 640.dp
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
         ) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            Surface(
+                modifier = Modifier.widthIn(max = bubbleMaxWidth),
+                color = containerColor,
+                shape = RoundedCornerShape(
+                    topStart = 22.dp,
+                    topEnd = 22.dp,
+                    bottomStart = if (isUser) 22.dp else 8.dp,
+                    bottomEnd = if (isUser) 8.dp else 22.dp,
+                ),
+                tonalElevation = 1.dp,
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(roleLabel, style = MaterialTheme.typography.labelLarge, color = contentColor)
-                    if (showTimestamp) {
-                        QuietMetaText(
-                            text = DateFormat.format("HH:mm", message.createdAtEpochMs).toString(),
-                            color = contentColor,
-                        )
-                    }
-                }
-                HighlightedMessageText(
-                    text = message.content.ifBlank { "…" },
-                    color = contentColor,
-                    keywordHighlightingEnabled = keywordHighlightingEnabled,
-                )
-                AttachmentPreviewColumn(attachments = message.attachments, contentColor = contentColor)
-                if (!isUser && hasToolActivity(message.content)) {
-                    CompactActivityRow(content = message.content, contentColor = contentColor)
-                }
-                if (!isUser && message.content.isNotBlank()) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = onSpeak) {
-                            Icon(
-                                painter = painterResource(id = R.drawable.ic_action_speaker),
-                                contentDescription = strings.speakReply(),
-                                tint = contentColor,
+                        Text(roleLabel, style = MaterialTheme.typography.labelLarge, color = contentColor)
+                        if (showTimestamp) {
+                            QuietMetaText(
+                                text = DateFormat.format("HH:mm", message.createdAtEpochMs).toString(),
+                                color = contentColor,
                             )
+                        }
+                    }
+                    HighlightedMessageText(
+                        text = message.content.ifBlank { "…" },
+                        color = contentColor,
+                        keywordHighlightingEnabled = keywordHighlightingEnabled,
+                    )
+                    AttachmentPreviewColumn(attachments = message.attachments, contentColor = contentColor)
+                    if (!isUser && hasToolActivity(message.content)) {
+                        CompactActivityRow(content = message.content, contentColor = contentColor)
+                    }
+                    if (!isUser && message.content.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            IconButton(onClick = onSpeak) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_action_speaker),
+                                    contentDescription = strings.speakReply(),
+                                    tint = contentColor,
+                                )
+                            }
                         }
                     }
                 }
@@ -727,12 +753,12 @@ private fun CompactChatTurn(
             .fillMaxWidth()
             .testTag("HermesCompactChatTurn"),
         color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = MaterialTheme.shapes.large,
+        shape = MaterialTheme.shapes.medium,
         tonalElevation = 1.dp,
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (userMessage != null) {
                 CompactPromptHeader(
@@ -1315,14 +1341,14 @@ private fun ChatComposer(
     Surface(
         modifier = modifier,
         color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(24.dp),
         tonalElevation = 2.dp,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (actionMenuOpen) {
                 Surface(
@@ -1334,7 +1360,7 @@ private fun ChatComposer(
                 ) {
                     Column(
                         modifier = Modifier.padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         SignalIntelligenceQuickActionGrid(
                             enabled = !isSending && input.isBlank() && attachments.isEmpty(),
@@ -1345,7 +1371,7 @@ private fun ChatComposer(
                         )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Button(
@@ -1400,7 +1426,7 @@ private fun ChatComposer(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("HermesChatAttachments"),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(strings.attachedImages(attachments.size), style = MaterialTheme.typography.bodySmall)
                     attachments.forEach { attachment ->
@@ -1432,13 +1458,13 @@ private fun ChatComposer(
                     .fillMaxWidth()
                     .testTag("HermesChatComposerFrame"),
             ) {
-                val stackedComposer = maxWidth < 360.dp
+                val stackedComposer = maxWidth < 340.dp
                 if (stackedComposer) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("HermesChatComposerCompact"),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         ComposerInputField(
                             input = input,
@@ -1449,7 +1475,7 @@ private fun ChatComposer(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("HermesChatComposerRow"),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             ComposerActionsButton(
@@ -1474,7 +1500,7 @@ private fun ChatComposer(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("HermesChatComposerRow"),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         ComposerActionsButton(
@@ -1498,9 +1524,6 @@ private fun ChatComposer(
                         )
                     }
                 }
-            }
-            if (!actionMenuOpen) {
-                QuietMetaText(text = strings.chatCommandsTip(isListening), color = MaterialTheme.colorScheme.onSurface)
             }
         }
     }
@@ -1533,7 +1556,7 @@ private fun ComposerInputField(
         value = input,
         onValueChange = onInputChange,
         modifier = modifier
-            .heightIn(max = 128.dp)
+            .heightIn(max = 112.dp)
             .testTag("HermesChatInput"),
         shape = MaterialTheme.shapes.large,
         placeholder = {
@@ -1543,7 +1566,7 @@ private fun ComposerInputField(
                 overflow = TextOverflow.Ellipsis,
             )
         },
-        maxLines = 3,
+        maxLines = 4,
     )
 }
 
@@ -1572,7 +1595,7 @@ private fun SignalIntelligenceQuickActionGrid(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("HermesSignalQuickActions"),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
             text = LocalHermesStrings.current.signalIntelligence(),
@@ -1595,7 +1618,7 @@ private fun SignalIntelligenceQuickActionGrid(
                             .weight(1f)
                             .testTag("HermesSignalQuickAction_${action.id}"),
                         shape = MaterialTheme.shapes.small,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                     ) {
                         Icon(
                             painter = painterResource(id = action.iconRes),
@@ -1626,7 +1649,7 @@ private fun ChatSendButton(
     onSend: () -> Unit,
 ) {
     val strings = LocalHermesStrings.current
-    Box(modifier = Modifier.widthIn(min = 72.dp, max = 112.dp)) {
+    Box(modifier = Modifier.widthIn(min = 64.dp, max = 88.dp)) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = onSend,
@@ -1635,6 +1658,7 @@ private fun ChatSendButton(
                     .fillMaxWidth()
                     .testTag("HermesChatSendButton"),
                 shape = RoundedCornerShape(28.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             ) {
                 Text(
                     text = if (isSending) "…" else strings.send.ifBlank { "Send" },

@@ -38,4 +38,22 @@ class ChatViewModelTest {
 
         assertEquals("Please use camera", preview)
     }
+
+    @Test
+    fun extractAssistantContentFromChatCompletionReadsStringMessageContent() {
+        val content = extractAssistantContentFromChatCompletion(
+            """{"choices":[{"message":{"role":"assistant","content":"Endpoint recovered"}}]}""",
+        )
+
+        assertEquals("Endpoint recovered", content)
+    }
+
+    @Test
+    fun extractAssistantContentFromChatCompletionReadsArrayMessageContent() {
+        val content = extractAssistantContentFromChatCompletion(
+            """{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"First"},{"type":"text","text":"Second"}]}}]}""",
+        )
+
+        assertEquals("First\nSecond", content)
+    }
 }

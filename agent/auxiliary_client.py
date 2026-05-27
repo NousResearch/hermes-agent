@@ -107,6 +107,32 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 logger = logging.getLogger(__name__)
 
 
+def _responses_null_output_iterable_error(exc: BaseException) -> bool:
+    """True when the OpenAI SDK trips over terminal response.output=None."""
+    text = str(exc)
+    return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
+
+
+def _responses_backfilled_response(output_items: List[Any], text_parts: List[str], *, has_function_calls: bool, model: str = None) -> Optional[Any]:
+    """Build a minimal Responses-like object from already streamed events."""
+    if output_items:
+        return SimpleNamespace(output=list(output_items), usage=None, status="completed", model=model)
+    if text_parts and not has_function_calls:
+        assembled = "".join(text_parts)
+        return SimpleNamespace(
+            output=[SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )],
+            usage=None,
+            status="completed",
+            model=model,
+        )
+    return None
+
+
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
     """Return False instead of raising when a patched symbol is not a type."""
     try:
@@ -796,44 +822,61 @@ class _CodexCompletionsAdapter:
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
+            final = None
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+                try:
+                    for _event in stream:
+                        _check_cancelled()
+                        _etype = getattr(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = getattr(_event, "item", None)
+                            if _done is not None:
+                                collected_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = getattr(_event, "delta", "")
+                            if _delta:
+                                collected_text_deltas.append(_delta)
+                        elif "function_call" in _etype:
+                            has_function_calls = True
                     _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
+                    final = stream.get_final_response()
+                except TypeError as exc:
+                    if not _responses_null_output_iterable_error(exc):
+                        raise
+                    final = _responses_backfilled_response(
+                        collected_output_items,
+                        collected_text_deltas,
+                        has_function_calls=has_function_calls,
+                        model=resp_kwargs.get("model"),
+                    )
+                    if final is None:
+                        raise
+                    logger.debug(
+                        "Codex auxiliary Responses stream parser hit response.output=None; "
+                        "recovered from streamed events (items=%d, text_parts=%d)",
+                        len(collected_output_items),
+                        len(collected_text_deltas),
+                    )
+
+            if final is None:
+                raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
-                if collected_output_items:
-                    final.output = list(collected_output_items)
+            if _output is None or (isinstance(_output, list) and not _output):
+                recovered = _responses_backfilled_response(
+                    collected_output_items,
+                    collected_text_deltas,
+                    has_function_calls=has_function_calls,
+                    model=resp_kwargs.get("model"),
+                )
+                if recovered is not None:
+                    final.output = recovered.output
                     logger.debug(
-                        "Codex auxiliary: backfilled %d output items from stream events",
+                        "Codex auxiliary: backfilled missing output from stream events "
+                        "(items=%d, text_parts=%d)",
                         len(collected_output_items),
-                    )
-                elif collected_text_deltas and not has_function_calls:
-                    # Only synthesize text when no tool calls were streamed —
-                    # a function_call response with incidental text should not
-                    # be collapsed into a plain-text message.
-                    assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
-                        type="message", role="assistant", status="completed",
-                        content=[SimpleNamespace(type="output_text", text=assembled)],
-                    )]
-                    logger.debug(
-                        "Codex auxiliary: synthesized from %d deltas (%d chars)",
-                        len(collected_text_deltas), len(assembled),
+                        len(collected_text_deltas),
                     )
 
             # Extract text and tool calls from the Responses output.

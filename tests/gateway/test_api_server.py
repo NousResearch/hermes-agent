@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _extract_request_extra_body,
     _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
@@ -280,6 +281,61 @@ class TestIdempotencyCache:
 
 
 # ---------------------------------------------------------------------------
+# Request extra_body extraction
+# ---------------------------------------------------------------------------
+
+
+class TestRequestExtraBody:
+    def test_extracts_nested_extra_body_and_top_level_provider_extensions(self):
+        extra_body, err = _extract_request_extra_body({
+            "model": "hermes-agent",
+            "extra_body": {
+                "tags": ["hermes"],
+                "chat_template_kwargs": {"enable_thinking": False},
+                "vllm_xargs": {"temperature_floor": 0.0},
+            },
+            "chat_template_kwargs": {"top_k": 4},
+            "vllm_xargs": {"lang_guard": "ko_en"},
+        })
+
+        assert err is None
+        assert extra_body == {
+            "tags": ["hermes"],
+            "chat_template_kwargs": {
+                "enable_thinking": False,
+                "top_k": 4,
+            },
+            "vllm_xargs": {
+                "temperature_floor": 0.0,
+                "lang_guard": "ko_en",
+            },
+        }
+
+    def test_rejects_non_object_extra_body(self):
+        extra_body, err = _extract_request_extra_body({"extra_body": "bad"})
+
+        assert extra_body == {}
+        assert err == "'extra_body' must be an object"
+
+    def test_rejects_non_object_top_level_provider_extension(self):
+        extra_body, err = _extract_request_extra_body({
+            "chat_template_kwargs": "bad",
+        })
+
+        assert extra_body == {}
+        assert err == "'chat_template_kwargs' must be an object"
+
+    def test_rejects_non_object_nested_provider_extension_merge_target(self):
+        extra_body, err = _extract_request_extra_body({
+            "extra_body": {"chat_template_kwargs": "bad"},
+            "chat_template_kwargs": {"top_k": 4},
+        })
+
+        assert extra_body == {}
+        assert err == "'extra_body.chat_template_kwargs' must be an object"
+
+
+# ---------------------------------------------------------------------------
 # Adapter initialization
 # ---------------------------------------------------------------------------
 
@@ -478,6 +534,67 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["model"] == "primary/model"
 
+    def test_create_agent_merges_request_extra_body(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-compatible",
+                "base_url": "https://example.test/v1",
+                "request_overrides": {
+                    "service_tier": "auto",
+                    "extra_body": {
+                        "tags": ["hermes"],
+                        "chat_template_kwargs": {"enable_thinking": False},
+                        "vllm_xargs": {"temperature_floor": 0.0},
+                    },
+                },
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "local")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(
+            session_id="api-session",
+            request_extra_body={
+                "chat_template_kwargs": {"top_k": 4},
+                "vllm_xargs": {"lang_guard": "ko_en"},
+                "custom": True,
+            },
+        )
+
+        assert captured["request_overrides"] == {
+            "service_tier": "auto",
+            "extra_body": {
+                "tags": ["hermes"],
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                    "top_k": 4,
+                },
+                "vllm_xargs": {
+                    "temperature_floor": 0.0,
+                    "lang_guard": "ko_en",
+                },
+                "custom": True,
+            },
+        }
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -656,6 +773,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
         "/api/platforms/{platform}/events",
         adapter._handle_platform_event_callback,
     )
+    app.router.add_post("/v1/runs", adapter._handle_runs)
     return app
 
 
@@ -717,6 +835,26 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_forwards_request_extra_body(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent) as create_agent:
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+                request_extra_body={"vllm_xargs": {"lang_guard": "ko_en"}},
+            )
+
+        assert create_agent.call_args.kwargs["request_extra_body"] == {
+            "vllm_xargs": {"lang_guard": "ko_en"},
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1253,6 +1391,37 @@ class TestChatCompletionsEndpoint:
             data = await resp.json()
             assert data["object"] == "chat.completion"
             assert data["choices"][0]["message"]["content"] == mock_result["final_response"]
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_forwards_request_extra_body(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "extra_body": {
+                            "tags": ["hermes"],
+                            "vllm_xargs": {"temperature_floor": 0.0},
+                        },
+                        "vllm_xargs": {"lang_guard": "ko_en"},
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["request_extra_body"] == {
+                "tags": ["hermes"],
+                "vllm_xargs": {
+                    "temperature_floor": 0.0,
+                    "lang_guard": "ko_en",
+                },
+            }
 
     @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_chat_completions(self, adapter):
@@ -1891,6 +2060,31 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+
+    @pytest.mark.asyncio
+    async def test_responses_forwards_request_extra_body(self, adapter):
+        mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Hello",
+                        "vllm_xargs": {"lang_guard": "ko_en"},
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["request_extra_body"] == {
+                "vllm_xargs": {"lang_guard": "ko_en"},
+            }
 
     @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):
@@ -2720,6 +2914,49 @@ class TestResponsesStreaming:
         stored = adapter._response_store.get(response_id)
         assert stored is not None, "snapshot must survive client disconnect"
         assert stored["response"]["status"] == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# /v1/runs endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestRunsEndpoint:
+    @pytest.mark.asyncio
+    async def test_runs_forwards_request_extra_body(self, adapter):
+        agent_created = asyncio.Event()
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+
+        def _fake_create_agent(*args, **kwargs):
+            agent_created.set()
+            return mock_agent
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_fake_create_agent) as create_agent:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Hello",
+                        "vllm_xargs": {"lang_guard": "ko_en"},
+                    },
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+                await asyncio.wait_for(agent_created.wait(), timeout=1)
+                assert create_agent.call_args.kwargs["request_extra_body"] == {
+                    "vllm_xargs": {"lang_guard": "ko_en"},
+                }
+
+                task = adapter._active_run_tasks.get(data["run_id"])
+                if task is not None:
+                    await asyncio.wait_for(task, timeout=1)
 
 
 # ---------------------------------------------------------------------------

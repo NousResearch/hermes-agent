@@ -307,7 +307,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
         method = stamp.read_text(encoding="utf-8").strip().lower()
         if method:
             return method
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     managed = get_managed_system()
     if managed:

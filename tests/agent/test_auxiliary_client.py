@@ -491,6 +491,19 @@ class TestNormalizeAuxProvider:
 class TestResolveCodexCredentialToken:
     """Token half of ``_resolve_codex_credential_and_base`` with no pool (auth.json only)."""
 
+    def test_scoped_backend_token_pairs_with_default_host_before_pool(self, tmp_path, monkeypatch):
+        import base64
+        import time
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        payload = {"aud": "https://api.openai.com/v1", "exp": int(time.time()) + 3600}
+        token = "h." + base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=") + ".s"
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", token)
+        monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", side_effect=AssertionError("pool bypassed")):
+            assert _resolve_codex_credential_and_base() == (token, "https://chatgpt.com/backend-api/codex")
+
     def test_valid_auth_store(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)

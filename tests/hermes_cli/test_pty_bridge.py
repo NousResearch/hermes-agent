@@ -7,6 +7,7 @@ printf) to verify it behaves like a PTY you can read/write/resize/close.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 
@@ -66,7 +67,7 @@ class TestPtyBridgeIO:
     def test_write_sends_to_child_stdin(self):
         # `cat` with no args echoes stdin back to stdout.  We write a line,
         # read it back, then signal EOF to let cat exit cleanly.
-        bridge = PtyBridge.spawn(["/bin/cat"])
+        bridge = PtyBridge.spawn([shutil.which("cat") or "cat"])
         try:
             bridge.write(b"hello-pty\n")
             output = _read_until(bridge, b"hello-pty")

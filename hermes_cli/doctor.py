@@ -207,19 +207,80 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+def _check_s6_supervision(issues: list[str]) -> None:
+    """Inside a container under our s6 /init, surface what s6 sees.
+
+    Runs as a counterpart to :func:`_check_gateway_service_linger` for
+    the systemd-on-host case. No-op everywhere except in the s6
+    container so host runs aren't cluttered with irrelevant output.
+
+    Reports:
+      - Whether the main-hermes and dashboard static services are up
+      - How many per-profile gateway slots are registered (via
+        ``S6ServiceManager.list_profile_gateways()``) and how many are
+        currently supervised as ``up``
+    """
+    try:
+        from hermes_cli.service_manager import (
+            S6ServiceManager,
+            detect_service_manager,
+        )
+    except Exception:
+        return
+
+    if detect_service_manager() != "s6":
+        return
+
+    _section("s6 Supervision")
+
+    mgr = S6ServiceManager()
+
+    # Static services. They live under /run/service/ via s6-rc symlinks,
+    # so the same s6-svstat probe works.
+    for static in ("main-hermes", "dashboard"):
+        if mgr.is_running(static):
+            check_ok(f"{static}: up")
+        else:
+            check_info(f"{static}: down (expected if not enabled via env)")
+
+    profiles = mgr.list_profile_gateways()
+    if not profiles:
+        check_info("No per-profile gateways registered yet — create one with `hermes profile create <name>`")
+        return
+
+    up_count = sum(1 for p in profiles if mgr.is_running(f"gateway-{p}"))
+    check_ok(
+        f"Per-profile gateways: {up_count}/{len(profiles)} supervised up"
+        + (f" ({', '.join(sorted(profiles))})" if len(profiles) <= 8 else "")
+    )
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
-    """Warn when a systemd user gateway service will stop after logout."""
+    """Warn when a systemd user gateway service will stop after logout.
+
+    Skipped inside a container running under s6 — the linger concept
+    (user-systemd surviving SSH logout) doesn't apply there, and the
+    s6 supervision state is surfaced separately by
+    ``_check_s6_supervision``.
+    """
     try:
         from hermes_cli.gateway import (
             get_systemd_linger_status,
             get_systemd_unit_path,
             is_linux,
         )
+        from hermes_cli.service_manager import detect_service_manager
     except Exception as e:
         check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
         return
 
     if not is_linux():
+        return
+
+    # Inside a container under our s6 /init, _check_s6_supervision
+    # reports the live supervision state; the linger warning would be
+    # confusing here (no systemd, no logout, no "lingering" concept).
+    if detect_service_manager() == "s6":
         return
 
     unit_path = get_systemd_unit_path()
@@ -508,6 +569,13 @@ def run_doctor(args):
             if should_fix:
                 env_path.parent.mkdir(parents=True, exist_ok=True)
                 env_path.touch()
+                # .env holds API keys — restrict to owner-only access from
+                # creation. touch() obeys umask which is commonly 0o022,
+                # leaving the file world-readable; tighten explicitly.
+                try:
+                    os.chmod(str(env_path), 0o600)
+                except OSError:
+                    pass
                 check_ok(f"Created empty {_DHH}/.env")
                 check_info("Run 'hermes setup' to configure API keys")
                 fixed_count += 1
@@ -744,7 +812,18 @@ def run_doctor(args):
                     "(should be under 'model:' section)"
                 )
                 if should_fix:
-                    model_section = raw_config.setdefault("model", {})
+                    # Coerce scalar/None ``model:`` into a dict before mutation —
+                    # ``setdefault("model", {})`` would return an existing scalar
+                    # and then ``model_section[k] = ...`` would raise TypeError.
+                    raw_model = raw_config.get("model")
+                    if isinstance(raw_model, dict):
+                        model_section = raw_model
+                    elif isinstance(raw_model, str) and raw_model.strip():
+                        model_section = {"default": raw_model.strip()}
+                        raw_config["model"] = model_section
+                    else:
+                        model_section = {}
+                        raw_config["model"] = model_section
                     for k in stale_root_keys:
                         if not model_section.get(k):
                             model_section[k] = raw_config.pop(k)
@@ -984,6 +1063,7 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
+    _check_s6_supervision(issues)
 
     if sys.platform != "win32":
         _section("Command Installation")
@@ -1076,6 +1156,26 @@ def run_doctor(args):
     
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
+    try:
+        from hermes_constants import is_container as _is_container
+        running_in_container = _is_container()
+    except Exception:
+        running_in_container = False
+
+    if running_in_container:
+        # Inside our container the Docker terminal backend is not
+        # configured by default (Docker-in-Docker isn't set up); the
+        # local backend is the intended one. Skip the noisy "docker
+        # not found" warning. If the user has explicitly chosen
+        # TERMINAL_ENV=docker inside the container they likely mounted
+        # /var/run/docker.sock, so fall through to the normal check.
+        if terminal_env != "docker":
+            check_info(
+                "Running inside a container — using local terminal backend "
+                "(docker-in-docker is not configured by default)"
+            )
+            # Skip to next section; Docker isn't relevant here.
+            terminal_env = "local"
     if terminal_env == "docker":
         if _safe_which("docker"):
             # Check if docker daemon is running
@@ -1098,6 +1198,8 @@ def run_doctor(args):
         check_ok("docker", "(optional)")
     elif _is_termux():
         check_info("Docker backend is not available inside Termux (expected on Android)")
+    elif running_in_container:
+        pass  # already explained above
     else:
         check_warn("docker not found", "(optional)")
     

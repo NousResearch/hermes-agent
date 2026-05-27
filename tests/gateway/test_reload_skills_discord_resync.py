@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 
 def _make_adapter():
     """Construct a DiscordAdapter without going through __init__ / token checks."""
-    from gateway.platforms.discord import DiscordAdapter
+    from plugins.platforms.discord.adapter import DiscordAdapter
     from gateway.platforms.base import Platform
     adapter = object.__new__(DiscordAdapter)
     adapter.config = MagicMock()

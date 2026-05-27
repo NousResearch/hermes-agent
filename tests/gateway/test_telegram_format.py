@@ -574,10 +574,15 @@ class TestWrapMarkdownTables:
         )
         out = _wrap_markdown_tables(text)
         assert "**Alice**" in out
-        assert "• Player: Alice" in out
+        # The heading IS the Player cell — don't repeat it as a bullet.
+        assert "• Player: Alice" not in out
         assert "• Score: 150" in out
         assert "**Bob**" in out
         assert "• Score: 120" in out
+        # Heading and its bullet sit on consecutive lines (no blank between).
+        assert "**Alice**\n• Score: 150" in out
+        # Separate row groups ARE separated by a blank line.
+        assert "• Score: 150\n\n**Bob**" in out
         # Surrounding prose is preserved
         assert out.startswith("Scores:")
         assert out.endswith("End.")
@@ -587,7 +592,8 @@ class TestWrapMarkdownTables:
         text = "head1 | head2\n--- | ---\na | b\nc | d"
         out = _wrap_markdown_tables(text)
         assert out.startswith("**a**")
-        assert "• head1: a" in out
+        # No duplicate first bullet — heading 'a' already shows the head1 value.
+        assert "• head1: a" not in out
         assert "• head2: b" in out
         assert "**c**" in out
 
@@ -600,8 +606,12 @@ class TestWrapMarkdownTables:
         )
         out = _wrap_markdown_tables(text)
         assert "**Ada**" in out
+        # 'Ada' is the heading (first cell); skip the redundant Name bullet.
+        assert "• Name: Ada" not in out
         assert "• Age: 30" in out
         assert "• City: NYC" in out
+        # All three lines pack tightly with single newlines.
+        assert "**Ada**\n• Age: 30\n• City: NYC" in out
 
     def test_two_consecutive_tables_rewritten_separately(self):
         text = (
@@ -616,8 +626,11 @@ class TestWrapMarkdownTables:
         out = _wrap_markdown_tables(text)
         assert out.count("**1**") == 1
         assert out.count("**9**") == 1
-        assert "• A: 1" in out
-        assert "• X: 9" in out
+        # Headings duplicate first cells (no row-label col) — skip those bullets.
+        assert "• A: 1" not in out
+        assert "• X: 9" not in out
+        assert "• B: 2" in out
+        assert "• Y: 8" in out
 
     def test_plain_text_with_pipes_not_wrapped(self):
         """A bare pipe in prose must NOT trigger wrapping."""
@@ -655,6 +668,56 @@ class TestWrapMarkdownTables:
         text = "| a |\n| - |\n| b |"
         assert _wrap_markdown_tables(text) == text
 
+    def test_row_group_uses_single_newlines_within_group(self):
+        """Regression: each bullet within a row-group must be separated by
+        a single newline, not a blank line.  Telegram renders blank lines
+        as paragraph breaks, which previously left every bullet floating in
+        its own paragraph and made multi-column tables unreadable.
+
+        Mirrors the exact pattern that produced the screenshot bug report:
+        a five-column comparison table with no row-label column.
+        """
+        text = (
+            "| Play | Capital | Build | $/day | Risk |\n"
+            "|---|---|---|---|---|\n"
+            "| A. Copy Hands (HK/SZ) | $5-10k | 2 wk | $30-70 | Low |\n"
+            "| B. NO-sweeper        | $50-100k | 3 wk | $300-1000 | Med |"
+        )
+        out = _wrap_markdown_tables(text)
+
+        # No bullet sits inside its own paragraph: the substring "\n\n• "
+        # would mean a blank line precedes a bullet, which is the bug.
+        assert "\n\n• " not in out
+
+        # The two row-groups DO have a paragraph break between them.
+        groups = [g for g in out.split("\n\n") if g.strip()]
+        assert len(groups) == 2
+        # Heading + 4 bullets per group means each group is exactly 5 lines.
+        for group in groups:
+            line_count = group.count("\n") + 1
+            assert line_count == 5, (
+                "Each row-group should be 5 lines (heading + 4 bullets), "
+                f"got {line_count}:\n{group}"
+            )
+
+    def test_row_label_column_preserves_first_bullet(self):
+        """When the table has a row-label column (data rows have one more
+        cell than the header row), the heading comes from the label cell
+        and is distinct from any header — so every header→value bullet is
+        kept, including the first one."""
+        text = (
+            "|        | Score | Rank |\n"
+            "|--------|-------|------|\n"
+            "| Alice  | 150   | 1    |\n"
+            "| Bob    | 120   | 2    |\n"
+        )
+        out = _wrap_markdown_tables(text)
+        assert "**Alice**" in out
+        # No header to duplicate against — both bullets stay.
+        assert "• Score: 150" in out
+        assert "• Rank: 1" in out
+        assert "**Alice**\n• Score: 150\n• Rank: 1" in out
+
 
 class TestFormatMessageTables:
     """End-to-end: pipe tables become readable Telegram-native text instead
@@ -669,7 +732,8 @@ class TestFormatMessageTables:
         )
         out = adapter.format_message(text)
         assert "*A*" in out
-        assert "• Col1: A" in out
+        # Heading 'A' duplicates the Col1 value — skip that bullet.
+        assert "• Col1: A" not in out
         assert "• Col2: B" in out
         assert "```" not in out
         assert "\\|" not in out
@@ -688,7 +752,9 @@ class TestFormatMessageTables:
         # Exclamation outside fence is escaped
         assert "\\!" in out
         assert "*1*" in out
-        assert "• A: 1" in out
+        # Heading '1' is also the A-column value — skip the redundant bullet.
+        assert "• A: 1" not in out
+        assert "• B: 2" in out
 
     def test_multiple_tables_in_single_message(self, adapter):
         text = (
@@ -705,7 +771,7 @@ class TestFormatMessageTables:
         out = adapter.format_message(text)
         assert out.count("*1*") == 1
         assert out.count("*9*") == 1
-        assert "• X: 9" in out
+        assert "• Y: 8" in out
 
 
 @pytest.mark.asyncio

@@ -348,3 +348,158 @@ class TestCompletionConsumed:
         result = registry.poll("proc_running")
         assert result["status"] == "running"
         assert not registry.is_completion_consumed("proc_running")
+
+
+# ---------------------------------------------------------------------------
+# Silent-background-process hint
+#
+# background=True without notify_on_complete=True OR watch_patterns runs
+# the process silently — the agent has no way to learn it finished short
+# of calling process(action="poll") explicitly. The tool result must
+# include a "hint" field that nudges the agent toward
+# notify_on_complete=True for bounded tasks. May 2026 PR #31231 incident:
+# bg CI poller exited green, agent never noticed, user had to surface it.
+# ---------------------------------------------------------------------------
+
+
+def _silent_bg_base_config(tmp_path):
+    return {
+        "env_type": "local",
+        "docker_image": "",
+        "singularity_image": "",
+        "modal_image": "",
+        "daytona_image": "",
+        "cwd": str(tmp_path),
+        "timeout": 30,
+    }
+
+
+def _silent_bg_harness(monkeypatch, tmp_path):
+    """Common test fixture: patch enough of terminal_tool to spawn a fake
+    background process and capture the JSON result the agent sees."""
+    import tools.terminal_tool as terminal_tool_module
+    from tools import process_registry as process_registry_module
+    from types import SimpleNamespace
+
+    config = _silent_bg_base_config(tmp_path)
+    dummy_env = SimpleNamespace(env={})
+
+    def fake_spawn_local(**kwargs):
+        return SimpleNamespace(
+            id="proc_silent_test",
+            pid=4242,
+            notify_on_complete=False,
+            watcher_platform="",
+            watcher_chat_id="",
+            watcher_user_id="",
+            watcher_user_name="",
+            watcher_thread_id="",
+            watcher_message_id="",
+            watcher_interval=0,
+        )
+
+    monkeypatch.setattr(terminal_tool_module, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool_module, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool_module, "_check_all_guards", lambda *_args, **_kwargs: {"approved": True})
+    monkeypatch.setattr(process_registry_module.process_registry, "spawn_local", fake_spawn_local)
+    monkeypatch.setitem(terminal_tool_module._active_environments, "default", dummy_env)
+    monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
+    return terminal_tool_module
+
+
+def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_path):
+    """The footgun case (May 2026 PR #31231): bg=True alone runs silently
+    and the agent has no signal it finished. Tool must nudge."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command="while true; do gh pr checks 999; sleep 30; done",
+                background=True,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert result["session_id"] == "proc_silent_test"
+    hint = result.get("hint", "")
+    assert hint, "Silent background process must include a hint field"
+    assert "notify_on_complete" in hint, (
+        "Hint must name the corrective flag so the agent can self-correct"
+    )
+    assert "silent" in hint.lower() or "no way to learn" in hint.lower(), (
+        "Hint must explain the failure mode, not just suggest the fix"
+    )
+
+
+def test_background_with_notify_does_not_emit_hint(monkeypatch, tmp_path):
+    """The correct shape — bg+notify together — must not nag."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command="pytest tests/",
+                background=True,
+                notify_on_complete=True,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert "hint" not in result, (
+        f"Correct usage must not emit a hint, got: {result.get('hint')!r}"
+    )
+    assert result.get("notify_on_complete") is True
+
+
+def test_background_with_watch_patterns_does_not_emit_hint(monkeypatch, tmp_path):
+    """watch_patterns is the other legitimate non-silent shape — also no hint."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command="uvicorn app:server --port 8080",
+                background=True,
+                watch_patterns=["Application startup complete"],
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert "hint" not in result, (
+        f"watch_patterns shape must not emit a silent-process hint, got: {result.get('hint')!r}"
+    )
+
+
+def test_foreground_command_does_not_emit_hint(monkeypatch, tmp_path):
+    """Hint only applies to background processes — foreground returns its
+    result synchronously and the agent always sees the outcome."""
+    tt = _silent_bg_harness(monkeypatch, tmp_path)
+
+    # Foreground path doesn't go through spawn_local. Patch the local-env
+    # exec method to short-circuit to a clean exit so the test doesn't
+    # actually shell out.
+    from types import SimpleNamespace
+    dummy_env = SimpleNamespace(
+        env={},
+        execute=lambda *a, **kw: {"output": "done", "exit_code": 0, "error": None},
+    )
+    monkeypatch.setitem(tt._active_environments, "default", dummy_env)
+
+    try:
+        result = json.loads(
+            tt.terminal_tool(
+                command="echo hello",
+                background=False,
+            )
+        )
+    finally:
+        tt._active_environments.pop("default", None)
+        tt._last_activity.pop("default", None)
+
+    assert "hint" not in result, (
+        f"Foreground commands must not emit the background-silence hint, got: {result.get('hint')!r}"
+    )

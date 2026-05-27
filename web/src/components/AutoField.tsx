@@ -11,8 +11,8 @@ function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; sch
 
   return (
     <div className="flex flex-col gap-0.5">
-      {keyPath && <span className="text-[10px] font-mono text-muted-foreground/50">{keyPath}</span>}
-      {description && <span className="text-xs text-muted-foreground/70">{description}</span>}
+      {keyPath && <span className="text-xs font-mono text-text-tertiary">{keyPath}</span>}
+      {description && <span className="text-xs text-text-secondary">{description}</span>}
     </div>
   );
 }

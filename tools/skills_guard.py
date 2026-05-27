@@ -170,7 +170,7 @@ THREAT_PATTERNS = [
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "critical", "injection",
      "instructs agent to hide information from user"),
-    (r'system\s+prompt\s+override',
+    (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection",
      "attempts to override the system prompt"),
     (r'pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+',
@@ -474,7 +474,7 @@ THREAT_PATTERNS = [
     (r'you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to',
      "fake_update", "high", "injection",
      "fake update/patch announcement (social engineering)"),
-    (r'new\s+policy|updated\s+guidelines|revised\s+instructions',
+    (r'new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions',
      "fake_policy", "medium", "injection",
      "claims new policy/guidelines (may be social engineering)"),
 
@@ -661,7 +661,7 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
     if decision == "allow":
         return True, f"Allowed ({result.trust_level} source, {result.verdict} verdict)"
 
-    if force:
+    if force and not (result.verdict == "dangerous" and result.trust_level in ("community", "trusted")):
         return True, (
             f"Force-installed despite {result.verdict} verdict "
             f"({len(result.findings)} findings)"
@@ -674,6 +674,13 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
             f"{len(result.findings)} findings)"
         )
 
+    # Dangerous verdicts cannot be overridden by --force (community/trusted);
+    # other blocks can.
+    if result.verdict == "dangerous" and result.trust_level in ("community", "trusted"):
+        return False, (
+            f"Blocked ({result.trust_level} source + dangerous verdict, "
+            f"{len(result.findings)} findings). --force does not override a dangerous verdict."
+        )
     return False, (
         f"Blocked ({result.trust_level} source + {result.verdict} verdict, "
         f"{len(result.findings)} findings). Use --force to override."
@@ -717,12 +724,24 @@ def format_scan_report(result: ScanResult) -> str:
 
 
 def content_hash(skill_path: Path) -> str:
-    """Compute a SHA-256 hash of all files in a skill directory for integrity tracking."""
+    """Compute a SHA-256 hash of all files in a skill directory for integrity tracking.
+
+    File paths (relative to ``skill_path``) are mixed into the hash alongside
+    file contents so that swapping the contents of two files in a skill
+    changes the hash. This must stay symmetric with
+    ``tools.skills_hub.bundle_content_hash`` — both functions need to
+    produce the same digest for the same skill (one operates on disk,
+    one on an in-memory bundle), so any change to the hash shape MUST
+    land in both places at once.
+    """
     h = hashlib.sha256()
     if skill_path.is_dir():
         for f in sorted(skill_path.rglob("*")):
             if f.is_file():
                 try:
+                    rel = f.relative_to(skill_path).as_posix()
+                    h.update(rel.encode("utf-8"))
+                    h.update(b"\x00")
                     h.update(f.read_bytes())
                 except OSError:
                     continue
@@ -898,12 +917,14 @@ def _resolve_trust_level(source: str) -> str:
     # Agent-created skills get their own permissive trust level
     if normalized_source == "agent-created":
         return "agent-created"
-    # Official optional skills shipped with the repo
-    if normalized_source.startswith("official/") or normalized_source == "official":
+    # Official optional skills must be identified by source provenance, not by
+    # user-controlled GitHub identifiers such as "official/<repo>".
+    if normalized_source == "official":
         return "builtin"
-    # Check if source matches any trusted repo
+    # Check if source matches any trusted repo exactly, or a skill path inside
+    # that repo. Do not trust sibling repositories that merely share a prefix.
     for trusted in TRUSTED_REPOS:
-        if normalized_source.startswith(trusted) or normalized_source == trusted:
+        if normalized_source == trusted or normalized_source.startswith(f"{trusted}/"):
             return "trusted"
     return "community"
 
@@ -920,7 +941,8 @@ def _determine_verdict(findings: List[Finding]) -> str:
         return "dangerous"
     if has_high:
         return "caution"
-    return "caution"
+    # medium/low findings alone are informational, not blocking
+    return "safe"
 
 
 def _build_summary(name: str, source: str, trust: str, verdict: str, findings: List[Finding]) -> str:

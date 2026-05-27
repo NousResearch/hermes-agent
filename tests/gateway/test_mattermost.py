@@ -71,7 +71,7 @@ class TestMattermostConfigLoading:
 
 def _make_adapter():
     """Create a MattermostAdapter with mocked config."""
-    from gateway.platforms.mattermost import MattermostAdapter
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
     config = PlatformConfig(
         enabled=True,
         token="test-token",
@@ -637,19 +637,19 @@ class TestMattermostRequirements:
     def test_check_requirements_with_token_and_url(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
         monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
-        from gateway.platforms.mattermost import check_mattermost_requirements
+        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
         assert check_mattermost_requirements() is True
 
     def test_check_requirements_without_token(self, monkeypatch):
         monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
-        from gateway.platforms.mattermost import check_mattermost_requirements
+        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
         assert check_mattermost_requirements() is False
 
     def test_check_requirements_without_url(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
-        from gateway.platforms.mattermost import check_mattermost_requirements
+        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
         assert check_mattermost_requirements() is False
 
 

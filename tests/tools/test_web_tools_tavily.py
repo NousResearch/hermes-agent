@@ -13,6 +13,8 @@ import asyncio
 import pytest
 from unittest.mock import patch, MagicMock
 
+from tests.tools.conftest import register_all_web_providers
+
 
 # ─── _tavily_request ─────────────────────────────────────────────────────────
 
@@ -163,6 +165,15 @@ class TestNormalizeTavilyDocuments:
 class TestWebSearchTavily:
     """Test web_search_tool dispatch to Tavily."""
 
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
     def test_search_dispatches_to_tavily(self):
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -185,6 +196,15 @@ class TestWebSearchTavily:
 
 class TestWebExtractTavily:
     """Test web_extract_tool dispatch to Tavily."""
+
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
 
     def test_extract_dispatches_to_tavily(self):
         mock_response = MagicMock()
@@ -210,6 +230,15 @@ class TestWebExtractTavily:
 
 class TestWebCrawlTavily:
     """Test web_crawl_tool dispatch to Tavily."""
+
+    _register_providers = staticmethod(register_all_web_providers)
+
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
 
     def test_crawl_dispatches_to_tavily(self):
         mock_response = MagicMock()

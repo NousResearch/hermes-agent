@@ -95,7 +95,9 @@ def _invoke_tool(home, cfg: dict, args: dict) -> dict:
     if hasattr(cfg_mod, "_invalidate_load_config_cache"):
         cfg_mod._invalidate_load_config_cache()
 
-    from tools.registry import registry
+    from tools.registry import discover_builtin_tools, registry
+    if "video_generate" not in registry._tools:
+        discover_builtin_tools()
     handler = registry._tools["video_generate"].handler
     return json.loads(handler(args))
 

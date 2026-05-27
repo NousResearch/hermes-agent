@@ -240,11 +240,11 @@ def _clear_auth_store_provider(provider: str) -> bool:
 def _remove_nous_device_code(provider: str, removed) -> RemovalResult:
     """Nous OAuth lives in auth.json providers.nous — clear it and suppress.
 
-    We suppress in addition to clearing because nothing else stops the
-    user's next `hermes login` run from writing providers.nous again
-    before they decide to.  Suppression forces them to go through
-    `hermes auth add nous` to re-engage, which is the documented re-add
-    path and clears the suppression atomically.
+    We suppress in addition to clearing because nothing else stops a future
+    `hermes auth add nous` (or any other path that writes providers.nous)
+    from re-seeding before the user has decided to.  Suppression forces
+    them to go through `hermes auth add nous` to re-engage, which is the
+    documented re-add path and clears the suppression atomically.
     """
     result = RemovalResult()
     if _clear_auth_store_provider(provider):
@@ -285,7 +285,7 @@ def _remove_xai_oauth_loopback_pkce(provider: str, removed) -> RemovalResult:
     if _clear_auth_store_provider(provider):
         result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
     result.hints.append(
-        "Run `hermes model` → xAI Grok OAuth (SuperGrok Subscription) to re-authenticate if needed."
+        "Run `hermes model` → xAI Grok OAuth (SuperGrok / Premium+) to re-authenticate if needed."
     )
     return result
 

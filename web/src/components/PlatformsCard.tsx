@@ -57,18 +57,18 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                 />
 
                 <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="text-sm font-medium capitalize truncate">
+                  <span className="font-mondwest normal-case text-sm font-medium capitalize truncate">
                     {name}
                   </span>
 
                   {info.error_message && (
-                    <span className="text-xs text-destructive">
+                    <span className="font-mondwest normal-case text-xs text-destructive">
                       {info.error_message}
                     </span>
                   )}
 
                   {info.updated_at && (
-                    <span className="text-xs text-muted-foreground">
+                    <span className="font-mondwest normal-case text-xs text-muted-foreground">
                       {t.status.lastUpdate}: {isoTimeAgo(info.updated_at)}
                     </span>
                   )}

@@ -35,7 +35,7 @@ hermes tools
 
 The picker offers two credential choices:
 
-1. **xAI Grok OAuth (SuperGrok Subscription)** — opens the browser to `accounts.x.ai` if you're not already logged in
+1. **xAI Grok OAuth (SuperGrok / Premium+)** — opens the browser to `accounts.x.ai` if you're not already logged in
 2. **xAI API key** — prompts for `XAI_API_KEY`
 
 Either choice satisfies the gating. You can pick whichever credentials you already have; the tool works identically with both. If both end up configured, OAuth is preferred at call time.
@@ -135,6 +135,6 @@ Causes worth checking:
 
 ## See Also
 
-- [xAI Grok OAuth (SuperGrok Subscription)](../../guides/xai-grok-oauth.md) — the OAuth setup guide
+- [xAI Grok OAuth (SuperGrok / Premium+)](../../guides/xai-grok-oauth.md) — the OAuth setup guide
 - [Web Search & Extract](web-search.md) — for general (non-X) web search
 - [Tools Reference](../../reference/tools-reference.md) — full tool catalog

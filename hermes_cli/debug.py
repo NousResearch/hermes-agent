@@ -14,6 +14,7 @@ Currently supports:
 import io
 import json
 import logging
+import re
 import sys
 import time
 import urllib.error
@@ -34,6 +35,12 @@ logger = logging.getLogger(__name__)
 _REDACTION_BANNER = (
     "[hermes debug share: log content redacted at upload time. "
     "run with --no-redact to disable]\n"
+)
+
+_EMAIL_ADDRESS_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+-])"
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    r"(?![A-Za-z0-9._%+-])"
 )
 
 
@@ -398,7 +405,8 @@ def _redact_log_text(text: str) -> str:
         return text
     from agent.redact import redact_sensitive_text
 
-    return redact_sensitive_text(text, force=True)
+    text = redact_sensitive_text(text, force=True)
+    return _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
 
 
 def _capture_log_snapshot(

@@ -17,7 +17,7 @@ class TestDiscordThreadPersistence:
     def _make_adapter(self, tmp_path):
         """Build a minimal DiscordAdapter with HERMES_HOME pointed at tmp_path."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
 
         config = PlatformConfig(enabled=True, token="test-token")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

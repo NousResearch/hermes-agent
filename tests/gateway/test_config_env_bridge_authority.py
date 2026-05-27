@@ -45,6 +45,7 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
             "HERMES_AGENT_TIMEOUT",
             "HERMES_AGENT_TIMEOUT_WARNING",
             "HERMES_GATEWAY_BUSY_INPUT_MODE",
+            "HERMES_GATEWAY_BUSY_TEXT_MODE",
             "HERMES_TIMEZONE",
         ):
             v = os.environ.get(k)
@@ -141,6 +142,15 @@ def test_config_display_busy_input_mode_wins_over_stale_env(hermes_home: Path) -
     env = _run_gateway_import(hermes_home, initial_env={})
 
     assert env.get("HERMES_GATEWAY_BUSY_INPUT_MODE") == "interrupt"
+
+
+def test_config_display_busy_text_mode_wins_over_stale_env(hermes_home: Path) -> None:
+    _write_config(hermes_home, display_cfg={"busy_text_mode": "queue"})
+    _write_env(hermes_home, {"HERMES_GATEWAY_BUSY_TEXT_MODE": "interrupt"})
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("HERMES_GATEWAY_BUSY_TEXT_MODE") == "queue"
 
 
 def test_config_timezone_wins_over_stale_env(hermes_home: Path) -> None:

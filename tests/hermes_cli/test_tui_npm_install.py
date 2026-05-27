@@ -168,7 +168,7 @@ def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
 
     argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
-    assert argv == ["/bin/node", str(tmp_path / "dist" / "entry.js")]
+    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
     assert cwd == tmp_path
 
 

@@ -33,7 +33,7 @@ def _run_prompt(existing_key, choice, new_key="", provider_id="", pconfig_name="
 
     pconfig = _pconfig(pconfig_name)
     with patch("builtins.input", return_value=choice), \
-         patch("getpass.getpass", return_value=new_key):
+         patch("hermes_cli.secret_prompt.masked_secret_prompt", return_value=new_key):
         return m._prompt_api_key(pconfig, existing_key, provider_id=provider_id)
 
 

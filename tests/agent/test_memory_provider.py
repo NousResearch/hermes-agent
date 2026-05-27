@@ -1060,3 +1060,191 @@ class TestHonchoCadenceTracking:
         p.on_turn_start(2, "second message")
         should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
         assert should_skip, "Second turn (turn 2) SHOULD be skipped"
+
+
+class TestMemoryToolToolsetGate:
+    """Issue #5544: memory provider tools must respect platform_toolsets.
+
+    Before the fix, MemoryManager.get_all_tool_schemas() output was appended
+    to AIAgent.tools unconditionally in agent_init.py — bypassing the
+    enabled_toolsets filter. Result: `platform_toolsets: telegram: []`
+    still leaked fact_store and other memory tools into the tool surface,
+    causing 10x latency on local models (Qwen3-30B: 1.7s → 42s) and
+    tool-call loops on small models.
+
+    These tests mirror the gate logic in agent/agent_init.py around the
+    memory provider tool injection block. The gate condition is:
+
+        enabled_toolsets is None        → no filter, inject (backward compat)
+        "memory" in enabled_toolsets    → user opted in, inject
+        otherwise (incl. [])            → skip injection
+    """
+
+    @staticmethod
+    def _run_memory_injection(enabled_toolsets, memory_manager):
+        """Simulate the gated memory-tool injection block from agent_init.py."""
+        tools = []
+        valid_tool_names = set()
+
+        if memory_manager and tools is not None and (
+            enabled_toolsets is None or "memory" in enabled_toolsets
+        ):
+            _existing = {
+                t.get("function", {}).get("name")
+                for t in tools
+                if isinstance(t, dict)
+            }
+            for _schema in memory_manager.get_all_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in _existing:
+                    continue
+                tools.append({"type": "function", "function": _schema})
+                if _tname:
+                    valid_tool_names.add(_tname)
+                    _existing.add(_tname)
+
+        return tools, valid_tool_names
+
+    def _mgr_with_tools(self, *tool_names):
+        """Build a MemoryManager whose providers expose the named tool schemas."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider(
+            "ext",
+            tools=[{"name": n, "description": n, "parameters": {}} for n in tool_names],
+        )
+        mgr.add_provider(p)
+        return mgr
+
+    def test_none_toolsets_injects(self):
+        """enabled_toolsets=None (no filter) injects memory tools — backward compat."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(None, mgr)
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
+
+    def test_memory_in_toolsets_injects(self):
+        """enabled_toolsets including 'memory' injects memory tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
+        assert "fact_store" in names
+
+    def test_empty_toolsets_blocks_injection(self):
+        """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection([], mgr)
+        assert tools == []
+        assert names == set()
+
+    def test_toolsets_without_memory_blocks_injection(self):
+        """Toolset list that doesn't name 'memory' must suppress injection."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(["terminal", "web"], mgr)
+        assert tools == []
+        assert names == set()
+
+    def test_no_memory_manager_no_injection(self):
+        """Gate is moot without a memory manager."""
+        tools, names = self._run_memory_injection(None, None)
+        assert tools == []
+
+    def test_multiple_schemas_all_blocked_together(self):
+        """When the gate is closed, no memory tools leak — not even partially."""
+        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
+        tools, names = self._run_memory_injection(["terminal"], mgr)
+        assert tools == []
+        assert names == set()
+
+    def test_multiple_schemas_all_injected_when_enabled(self):
+        """When the gate is open, every memory tool schema is injected."""
+        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
+        tools, names = self._run_memory_injection(None, mgr)
+        assert names == {"fact_store", "memory_search", "memory_add"}
+
+
+class TestContextEngineToolsetGate:
+    """Issue #5544 (sibling): context engine tools follow the same gate.
+
+    `agent.context_compressor.get_tool_schemas()` (e.g. lcm_grep, lcm_describe,
+    lcm_expand) was appended to AIAgent.tools unconditionally. Same blind
+    injection class as the memory bug; same local-model penalty. Gate name:
+    "context_engine" (matches the existing plugin-system convention).
+    """
+
+    @staticmethod
+    def _run_context_engine_injection(enabled_toolsets, compressor):
+        """Simulate the gated context-engine injection block from agent_init.py."""
+        tools = []
+        valid_tool_names = set()
+        engine_tool_names = set()
+
+        if (
+            compressor is not None
+            and tools is not None
+            and (
+                enabled_toolsets is None
+                or "context_engine" in enabled_toolsets
+            )
+        ):
+            _existing = {
+                t.get("function", {}).get("name")
+                for t in tools
+                if isinstance(t, dict)
+            }
+            for _schema in compressor.get_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in _existing:
+                    continue
+                tools.append({"type": "function", "function": _schema})
+                if _tname:
+                    valid_tool_names.add(_tname)
+                    engine_tool_names.add(_tname)
+                    _existing.add(_tname)
+
+        return tools, valid_tool_names, engine_tool_names
+
+    class _FakeCompressor:
+        def __init__(self, schemas):
+            self._schemas = schemas
+
+        def get_tool_schemas(self):
+            return list(self._schemas)
+
+    def _compressor_with(self, *tool_names):
+        return self._FakeCompressor(
+            [{"name": n, "description": n, "parameters": {}} for n in tool_names]
+        )
+
+    def test_none_toolsets_injects(self):
+        """enabled_toolsets=None injects context-engine tools — backward compat."""
+        c = self._compressor_with("lcm_grep", "lcm_describe", "lcm_expand")
+        tools, names, engine_names = self._run_context_engine_injection(None, c)
+        assert engine_names == {"lcm_grep", "lcm_describe", "lcm_expand"}
+
+    def test_context_engine_in_toolsets_injects(self):
+        """enabled_toolsets including 'context_engine' injects the tools."""
+        c = self._compressor_with("lcm_grep")
+        tools, names, engine_names = self._run_context_engine_injection(
+            ["terminal", "context_engine"], c
+        )
+        assert "lcm_grep" in engine_names
+
+    def test_empty_toolsets_blocks_injection(self):
+        """`platform_toolsets: telegram: []` must suppress context-engine tools."""
+        c = self._compressor_with("lcm_grep")
+        tools, names, engine_names = self._run_context_engine_injection([], c)
+        assert tools == []
+        assert engine_names == set()
+
+    def test_toolsets_without_context_engine_blocks_injection(self):
+        """A toolset list that doesn't name 'context_engine' suppresses injection."""
+        c = self._compressor_with("lcm_grep", "lcm_describe")
+        tools, names, engine_names = self._run_context_engine_injection(
+            ["terminal", "memory"], c
+        )
+        assert tools == []
+        assert engine_names == set()
+
+    def test_no_compressor_no_injection(self):
+        """Gate is moot without a context_compressor."""
+        tools, names, engine_names = self._run_context_engine_injection(None, None)
+        assert tools == []

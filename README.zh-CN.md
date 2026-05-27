@@ -65,6 +65,27 @@ hermes doctor       # 诊断问题
 
 📖 **[完整文档 →](https://hermes-agent.nousresearch.com/docs/)**
 
+---
+
+## 省去到处收集 API Key — Nous Portal
+
+Hermes 始终允许你使用任意服务商，这点不会改变。但如果你不想为模型、网页搜索、图像生成、TTS、云浏览器分别去申请五个不同的 API Key，**[Nous Portal](https://portal.nousresearch.com)** 用一个订阅就能覆盖全部：
+
+- **300+ 模型** — 用 `/model <name>` 随时切换
+- **Tool Gateway** — 网页搜索（Firecrawl）、图像生成（FAL）、文本转语音（OpenAI）、云浏览器（Browser Use），全部通过订阅托管。无需额外注册任何账户。
+
+全新安装时一条命令即可：
+
+```bash
+hermes setup --portal
+```
+
+它会通过 OAuth 登录、把 Nous 设为推理服务商，并启用 Tool Gateway。随时用 `hermes portal status` 查看路由状态。完整说明见 [Tool Gateway 文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway)。
+
+你随时可以按工具单独切回自己的 API Key — Gateway 是按工具粒度生效的，不是一刀切。
+
+---
+
 ## CLI 与消息平台 快速对照
 
 Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Telegram、Discord、Slack、WhatsApp、Signal 或 Email 与之对话。进入对话后，许多斜杠命令在两种界面中通用。

@@ -856,7 +856,16 @@ export const ToolTrail = memo(function ToolTrail({
       color: t.color.text,
       key: tool.id,
       label,
-      details: [],
+      details: tool.verboseArgs
+        ? [
+            {
+              color: t.color.muted,
+              content: `Args:\n${boundedLiveRenderText(tool.verboseArgs)}`,
+              dimColor: true,
+              key: `${tool.id}-args`
+            }
+          ]
+        : [],
       content: (
         <>
           <Spinner color={t.color.accent} variant="tool" /> {label}

@@ -12,6 +12,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
+
+
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
     """Strip every STT-related env var so the test really exercises the

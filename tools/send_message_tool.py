@@ -810,6 +810,35 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
+def _import_telegram_send_deps():
+    """Import Telegram SDK pieces needed by the standalone send path.
+
+    The gateway adapter already lazy-installs ``platform.telegram`` when the
+    Telegram SDK is absent.  The out-of-process send_message tool must do the
+    same so ``hermes send --to telegram ...`` works from CLI/cron sessions
+    without asking users to run pip manually.
+    """
+    try:
+        from telegram import Bot
+        from telegram.constants import ParseMode
+        return Bot, ParseMode
+    except ImportError as first_error:
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.telegram", prompt=False)
+        except Exception as install_error:
+            raise ImportError(
+                "python-telegram-bot is not installed and automatic lazy install failed"
+            ) from install_error
+
+        try:
+            from telegram import Bot
+            from telegram.constants import ParseMode
+            return Bot, ParseMode
+        except ImportError:
+            raise first_error
+
+
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
@@ -819,8 +848,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot
-        from telegram.constants import ParseMode
+        Bot, ParseMode = _import_telegram_send_deps()
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.

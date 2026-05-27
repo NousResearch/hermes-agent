@@ -144,3 +144,19 @@ class TestToolsPatchParserF821:
             "tools/patch_parser.py has F821 violation(s):\n"
             f"{result.stdout}"
         )
+
+class TestToolsPatchParserE741:
+    """tools/patch_parser.py must have zero E741 (ambiguous-name) violations."""
+
+    def test_patch_parser_has_zero_e741_violations(self):
+        """tools/patch_parser.py must have zero ambiguous-name violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=E741",
+             "--output-format=concise", "tools/patch_parser.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/patch_parser.py has E741 violation(s):\n"
+            f"{result.stdout}"
+        )

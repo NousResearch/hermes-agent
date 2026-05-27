@@ -88,6 +88,12 @@ _POLL_MAX_INTERVAL = 5.0
 _POLL_BACKOFF = 1.3
 _POLL_TIMEOUT_SECONDS = 180.0
 
+# HTTP statuses worth retrying during the poll loop. Everything else (401,
+# 402, 403, 404, other 4xx) is a permanent failure — surface it immediately
+# instead of burning the 180s deadline retrying a request that will never
+# succeed.
+_RETRYABLE_POLL_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
 
 
@@ -360,7 +366,11 @@ class KreaImageGenProvider(ImageGenProvider):
                 resp = exc.response
                 status = resp.status_code if resp is not None else 0
                 logger.error("Krea poll failed (%d) for job %s", status, job_id)
-                if time.monotonic() >= deadline:
+                # Fail fast for non-retryable statuses (auth/billing/not-found,
+                # other permanent 4xx) so callers don't wait the full 180s
+                # deadline on a request that will never succeed. Only retry
+                # transient statuses such as 408/409/425/429/5xx.
+                if status not in _RETRYABLE_POLL_STATUSES or time.monotonic() >= deadline:
                     return error_response(
                         error=f"Krea poll failed ({status}) for job {job_id}",
                         error_type="api_error",
@@ -369,8 +379,8 @@ class KreaImageGenProvider(ImageGenProvider):
                         prompt=prompt,
                         aspect_ratio=aspect,
                     )
-                # Otherwise keep trying — transient 5xx during polling is
-                # common on async jobs.
+                # Otherwise keep trying — transient 5xx (and a few retryable
+                # 4xx like 408/409/425/429) are common on async jobs.
                 continue
             except (requests.Timeout, requests.ConnectionError) as exc:
                 logger.warning("Krea poll transient error for job %s: %s", job_id, exc)

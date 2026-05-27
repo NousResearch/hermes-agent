@@ -2535,7 +2535,7 @@ OPTIONAL_ENV_VARS = {
     "KREA_API_KEY": {
         "description": "Krea API key for Krea 2 image generation (Medium + Large)",
         "prompt": "Krea API key",
-        "url": "https://www.krea.ai/api-keys",
+        "url": "https://www.krea.ai/app/api/tokens",
         "tools": ["image_generate"],
         "password": True,
         "category": "tool",

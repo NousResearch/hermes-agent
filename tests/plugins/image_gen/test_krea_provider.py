@@ -501,6 +501,113 @@ class TestGenerateErrors:
         assert result["success"] is True
 
 
+class TestPollRetryPolicy:
+    """Polling fail-fast on permanent 4xx, retry on transient 5xx/429."""
+
+    def _http_error_response(self, status: int):
+        import requests as req_lib
+
+        resp = req_lib.Response()
+        resp.status_code = status
+        resp._content = b'{"error": "boom"}'
+        resp.headers["Content-Type"] = "application/json"
+        resp.raise_for_status = MagicMock(
+            side_effect=req_lib.HTTPError(response=resp)
+        )
+        return resp
+
+    def test_poll_fails_fast_on_401(self):
+        """Auth failure mid-poll should not wait the 180s deadline."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        bad_poll = self._http_error_response(401)
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch("plugins.image_gen.krea.requests.get", return_value=bad_poll) as mock_get, \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "401" in result["error"]
+        # One call — no retry on permanent auth failure.
+        assert mock_get.call_count == 1
+
+    def test_poll_fails_fast_on_404(self):
+        """Missing job (404) should surface immediately, not retry for 180s."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        bad_poll = self._http_error_response(404)
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch("plugins.image_gen.krea.requests.get", return_value=bad_poll) as mock_get, \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "404" in result["error"]
+        assert mock_get.call_count == 1
+
+    def test_poll_fails_fast_on_403(self):
+        """Billing/permission failure (403) should not retry."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        bad_poll = self._http_error_response(403)
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch("plugins.image_gen.krea.requests.get", return_value=bad_poll) as mock_get, \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert mock_get.call_count == 1
+
+    def test_poll_retries_on_503_then_succeeds(self):
+        """Transient 5xx should retry and eventually surface a completion."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        flaky = self._http_error_response(503)
+        good = _poll_response(_completed_job("https://krea.cdn/ok.png"))
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch(
+                 "plugins.image_gen.krea.requests.get",
+                 side_effect=[flaky, flaky, good],
+             ) as mock_get, \
+             patch(
+                 "plugins.image_gen.krea.save_url_image",
+                 return_value=Path("/tmp/x.png"),
+             ), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is True
+        assert mock_get.call_count == 3
+
+    def test_poll_retries_on_429(self):
+        """Rate-limit (429) is in the retryable set."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        rate_limited = self._http_error_response(429)
+        good = _poll_response(_completed_job("https://krea.cdn/ok.png"))
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch(
+                 "plugins.image_gen.krea.requests.get",
+                 side_effect=[rate_limited, good],
+             ) as mock_get, \
+             patch(
+                 "plugins.image_gen.krea.save_url_image",
+                 return_value=Path("/tmp/x.png"),
+             ), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is True
+        assert mock_get.call_count == 2
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------

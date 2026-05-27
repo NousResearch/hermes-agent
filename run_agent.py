@@ -4390,29 +4390,11 @@ class AIAgent:
         handle the image parts natively). Non-vision models get each image
         replaced by a cached vision_analyze text description so the turn
         doesn't fail with "model does not support image input".
+
+        Delegates to _prepare_anthropic_messages_for_api — the logic is
+        identical (both call _preprocess_anthropic_content on each msg).
         """
-        if not any(
-            isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
-            for msg in api_messages
-        ):
-            return api_messages
-
-        if self._model_supports_vision():
-            return api_messages
-
-        transformed = copy.deepcopy(api_messages)
-        for msg in transformed:
-            if not isinstance(msg, dict):
-                continue
-            # Reuse the Anthropic text-fallback preprocessor — the behaviour is
-            # identical (walk content parts, replace images with cached
-            # descriptions, merge back into a single text or structured
-            # content). Naming is historical.
-            msg["content"] = self._preprocess_anthropic_content(
-                msg.get("content"),
-                str(msg.get("role", "user") or "user"),
-            )
-        return transformed
+        return self._prepare_anthropic_messages_for_api(api_messages)
 
     def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
         """Return the tool message content that is safe for the active model.

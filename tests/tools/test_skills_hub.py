@@ -1575,6 +1575,43 @@ class TestQuarantineBundleBinaryAssets:
         assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
         assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"
 
+
+    def test_quarantine_bundle_uses_unique_directory_per_install(self, tmp_path):
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            first = SkillBundle(
+                name="demo",
+                files={"SKILL.md": "---\nname: demo\n---\nclean\n"},
+                source="well-known",
+                identifier="well-known:https://example.com/clean",
+                trust_level="community",
+            )
+            second = SkillBundle(
+                name="demo",
+                files={"SKILL.md": "---\nname: demo\n---\nreplacement\n"},
+                source="well-known",
+                identifier="well-known:https://example.com/replacement",
+                trust_level="community",
+            )
+
+            first_path = quarantine_bundle(first)
+            second_path = quarantine_bundle(second)
+
+        assert first_path != second_path
+        assert first_path.parent == second_path.parent
+        assert first_path.name.startswith("demo-")
+        assert second_path.name.startswith("demo-")
+        assert (first_path / "SKILL.md").read_text(encoding="utf-8").endswith("clean\n")
+        assert (second_path / "SKILL.md").read_text(encoding="utf-8").endswith("replacement\n")
+
     def test_quarantine_bundle_rejects_traversal_file_paths(self, tmp_path):
         import tools.skills_hub as hub
 

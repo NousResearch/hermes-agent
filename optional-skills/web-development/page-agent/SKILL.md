@@ -63,15 +63,16 @@ Inside an existing web project (React / Vue / Svelte / plain):
 npm install page-agent
 ```
 
-Wire it up with your own LLM endpoint — **never ship the demo CDN to real users**:
+Wire it up to a backend proxy that keeps provider credentials server-side — **never ship the demo CDN or an LLM provider key to real users**:
 
 ```javascript
 import { PageAgent } from 'page-agent'
 
 const agent = new PageAgent({
     model: 'qwen3.5-plus',
-    baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    apiKey: process.env.LLM_API_KEY,   // never hardcode
+    // Your backend injects the real provider key when forwarding requests.
+    // Do not pass apiKey here unless it is a short-lived, origin-scoped proxy token.
+    baseURL: '/api/llm-proxy/v1',
     language: 'en-US',
 })
 
@@ -82,10 +83,10 @@ agent.panel.show()
 await agent.execute('Click submit button, then fill username as John')
 ```
 
-Provider examples (any OpenAI-compatible endpoint works):
+Provider examples for your backend proxy (any OpenAI-compatible upstream works):
 
-| Provider | `baseURL` | `model` |
-|----------|-----------|---------|
+| Provider | Upstream `baseURL` configured on your server | `model` |
+|----------|--------------------------------------------|---------|
 | Qwen / DashScope | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.5-plus` |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | Ollama (local) | `http://localhost:11434/v1` | `qwen3:14b` |
@@ -93,15 +94,16 @@ Provider examples (any OpenAI-compatible endpoint works):
 
 **Key config fields** (passed to `new PageAgent({...})`):
 
-- `model`, `baseURL`, `apiKey` — LLM connection
+- `model`, `baseURL` — LLM connection; for production, point `baseURL` at your backend proxy
+- `apiKey` — only for local demos or short-lived proxy tokens; never put provider credentials in browser code
 - `language` — UI language (`en-US`, `zh-CN`, etc.)
 - Allowlist and data-masking hooks exist for locking down what the agent can touch — see https://alibaba.github.io/page-agent/ for the full option list
 
-**Security.** Don't put your `apiKey` in client-side code for a real deployment — proxy LLM calls through your backend and point `baseURL` at your proxy. The demo CDN exists because alibaba runs that proxy for evaluation.
+**Security.** Don't put provider `apiKey` values in client-side code for a real deployment — proxy LLM calls through your backend and point `baseURL` at your proxy. The demo CDN exists because alibaba runs that proxy for evaluation.
 
 ## Path 3 — clone the source repo (contributing, or hacking on it)
 
-Use this when the user wants to modify page-agent itself, test it against arbitrary sites via a local IIFE bundle, or develop the browser extension.
+Use this when the user wants to modify page-agent itself, test it against pages they own or control via a local IIFE bundle, or develop the browser extension.
 
 ```bash
 git clone https://github.com/alibaba/page-agent.git
@@ -135,15 +137,15 @@ npm run dev:ext     # develop the browser extension (WXT + React)
 npm run build:ext   # build the extension
 ```
 
-**Test on any website** using the local IIFE bundle. Add this bookmarklet:
+**Test only on pages you own or control** using the local IIFE bundle. Add this bookmarklet for a local development page:
 
 ```javascript
 javascript:(function(){var s=document.createElement('script');s.src=`http://localhost:5174/page-agent.demo.js?t=${Math.random()}`;s.onload=()=>console.log('PageAgent ready!');document.head.appendChild(s);})();
 ```
 
-Then: `npm run dev:demo`, click the bookmarklet on any page, and the local build injects. Auto-rebuilds on save.
+Then: `npm run dev:demo`, click the bookmarklet on your local/test page, and the local build injects. Auto-rebuilds on save. Do not inject the bundle into third-party sites: page scripts and extensions can inspect browser-originated requests and any credentials embedded in the bundle.
 
-**Warning:** your `.env` `LLM_API_KEY` is inlined into the IIFE bundle during dev builds. Don't share the bundle. Don't commit it. Don't paste the URL into Slack. (Verified: grepping the public dev bundle returns the literal values from `.env`.)
+**Warning:** dev builds may inline `.env` `LLM_API_KEY` values into the public IIFE bundle. Use a local dummy key, Ollama, or a short-lived proxy token for this workflow; never use a real provider key in a bundle loaded by a browser.
 
 ## Repo layout (Path 3)
 
@@ -171,7 +173,7 @@ After Path 1 or Path 2:
 After Path 3:
 1. `npm run dev:demo` prints `Accepting connections at http://localhost:5174`
 2. `curl -I http://localhost:5174/page-agent.demo.js` returns `HTTP/1.1 200 OK` with `Content-Type: application/javascript`
-3. Click the bookmarklet on any site; panel appears
+3. Click the bookmarklet on your local/test page; panel appears
 
 ## Pitfalls
 

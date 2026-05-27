@@ -130,6 +130,18 @@ describe('texToUnicode — fractions', () => {
     expect(texToUnicode('\\frac{a}')).toBe('\\frac{a}')
     expect(texToUnicode('\\fraction{a}{b}')).toBe('\\fraction{a}{b}')
   })
+
+  it('preserves deeply nested fractions instead of exhausting the stack', () => {
+    let expr = 'x'
+
+    for (let i = 0; i < 6000; i++) {
+      expr = `\\frac{1}{${expr}}`
+    }
+
+    const rendered = texToUnicode(expr)
+
+    expect(rendered).toContain('\\frac')
+  })
 })
 
 describe('texToUnicode — typography no-ops', () => {
@@ -211,6 +223,18 @@ describe('texToUnicode — \\boxed / \\fbox', () => {
 
   it('preserves \\boxed without a brace argument', () => {
     expect(texToUnicode('\\boxed something')).toBe('\\boxed something')
+  })
+
+  it('preserves deeply nested boxes instead of exhausting the stack', () => {
+    let expr = 'x'
+
+    for (let i = 0; i < 6000; i++) {
+      expr = `\\boxed{${expr}}`
+    }
+
+    const rendered = texToUnicode(expr)
+
+    expect(rendered).toContain('\\boxed')
   })
 })
 

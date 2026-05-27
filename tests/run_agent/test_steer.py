@@ -85,7 +85,7 @@ class TestSteerInjection:
         # The LAST tool result is modified; earlier ones are untouched.
         assert messages[2]["content"] == "ls output A"
         assert "ls output B" in messages[3]["content"]
-        assert "User guidance:" in messages[3]["content"]
+        assert "[USER STEER (injected mid-run, not tool output):" in messages[3]["content"]
         assert "please also check auth.log" in messages[3]["content"]
         # And pending_steer is consumed.
         assert agent._pending_steer is None
@@ -107,18 +107,17 @@ class TestSteerInjection:
         # Steer should remain pending (nothing to drain into)
         assert agent._pending_steer == "steer"
 
-    def test_marker_labels_text_as_user_guidance(self):
-        """The injection marker must label the appended text as user
-        guidance so the model attributes it to the user rather than
-        confusing it with tool output.  This is the cache-safe way to
-        signal provenance without violating message-role alternation.
+    def test_marker_labels_text_as_user_steer_not_tool_output(self):
+        """The injection marker must explicitly label appended text as
+        mid-run user steer text rather than tool output.
         """
         agent = _bare_agent()
         agent.steer("stop after next step")
         messages = [{"role": "tool", "content": "x", "tool_call_id": "1"}]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         content = messages[-1]["content"]
-        assert "User guidance:" in content
+        assert "[USER STEER (injected mid-run, not tool output):" in content
+        assert "User guidance:" not in content
         assert "stop after next step" in content
 
     def test_multimodal_content_list_preserved(self):
@@ -227,9 +226,9 @@ class TestPreApiCallSteerDrain:
         # Inject into last tool msg (mirrors the new code in run_conversation)
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += f"\n\nUser guidance: {_pre_api_steer}"
+                messages[_si]["content"] += agent._format_steer_marker(_pre_api_steer)
                 break
-        assert "User guidance:" in messages[-1]["content"]
+        assert "[USER STEER (injected mid-run, not tool output):" in messages[-1]["content"]
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
 
@@ -271,7 +270,7 @@ class TestPreApiCallSteerDrain:
         assert _pre_api_steer is not None
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += f"\n\nUser guidance: {_pre_api_steer}"
+                messages[_si]["content"] += agent._format_steer_marker(_pre_api_steer)
                 break
         assert "change approach" in messages[2]["content"]
 

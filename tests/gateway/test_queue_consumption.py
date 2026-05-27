@@ -334,6 +334,36 @@ class TestQueueConsumptionAfterCompletion:
             )
         assert runner._queue_depth(session_key, adapter=adapter) == 3
 
+
+    def test_enqueue_fifo_rejects_items_over_configured_depth(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"agent": {"gateway_queue_max_depth": 2}}
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        session_key = "telegram:user:capped"
+
+        accepted = []
+        for text in ("one", "two", "three"):
+            accepted.append(
+                runner._enqueue_fifo(
+                    session_key,
+                    MessageEvent(
+                        text=text,
+                        message_type=MessageType.TEXT,
+                        source=MagicMock(),
+                        message_id=f"q-{text}",
+                    ),
+                    adapter,
+                )
+            )
+
+        assert accepted == [True, True, False]
+        assert runner._queue_depth(session_key, adapter=adapter) == 2
+        assert adapter._pending_messages[session_key].text == "one"
+        assert [e.text for e in runner._queued_events[session_key]] == ["two"]
+
     def test_enqueue_preserves_text_no_merging(self):
         """Each /queue item keeps its own text — never merged with neighbors."""
         from gateway.run import GatewayRunner
@@ -361,3 +391,89 @@ class TestQueueConsumptionAfterCompletion:
             e.text for e in runner._queued_events[session_key]
         ]
         assert collected == texts
+
+
+@pytest.mark.asyncio
+async def test_reset_command_cancel_does_not_let_old_task_steal_follow_up():
+    """Regression: cancelled pre-reset task must not drain the command follow-up."""
+    from gateway.session import SessionSource, build_session_key
+
+    adapter = _StubAdapter()
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+
+    long_started = asyncio.Event()
+    command_started = asyncio.Event()
+    follow_queued = asyncio.Event()
+    follow_started = asyncio.Event()
+    follow_release = asyncio.Event()
+    third_started = asyncio.Event()
+    active_user_handlers = set()
+    max_user_concurrency = 0
+
+    async def handler(event):
+        nonlocal max_user_concurrency
+        if event.text == "long":
+            long_started.set()
+            await asyncio.Event().wait()
+        if event.text == "/new":
+            command_started.set()
+            await follow_queued.wait()
+            return "new session"
+        if event.text == "follow1":
+            active_user_handlers.add(event.text)
+            max_user_concurrency = max(max_user_concurrency, len(active_user_handlers))
+            follow_started.set()
+            try:
+                await follow_release.wait()
+                return "follow done"
+            finally:
+                active_user_handlers.discard(event.text)
+        if event.text == "third":
+            active_user_handlers.add(event.text)
+            max_user_concurrency = max(max_user_concurrency, len(active_user_handlers))
+            third_started.set()
+            active_user_handlers.discard(event.text)
+            return "third done"
+        return None
+
+    adapter.set_message_handler(handler)
+
+    def event(text, message_id):
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=message_id,
+        )
+
+    await adapter.handle_message(event("long", "m1"))
+    await asyncio.wait_for(long_started.wait(), timeout=1)
+
+    command_task = asyncio.create_task(adapter.handle_message(event("/new", "m2")))
+    await asyncio.wait_for(command_started.wait(), timeout=1)
+
+    await adapter.handle_message(event("follow1", "m3"))
+    assert adapter._pending_messages[session_key].text == "follow1"
+
+    follow_queued.set()
+    await asyncio.wait_for(command_task, timeout=1)
+    await asyncio.wait_for(follow_started.wait(), timeout=1)
+
+    assert session_key in adapter._active_sessions
+
+    await adapter.handle_message(event("third", "m4"))
+    await asyncio.sleep(0.05)
+
+    assert not third_started.is_set()
+    assert adapter._pending_messages[session_key].text == "third"
+    assert max_user_concurrency == 1
+
+    follow_release.set()
+    await asyncio.sleep(0.05)
+    await adapter.cancel_background_tasks()

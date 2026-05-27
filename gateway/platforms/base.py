@@ -778,6 +778,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 # ---------------------------------------------------------------------------
 
 VIDEO_CACHE_DIR = get_hermes_dir("cache/videos", "video_cache")
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 
 SUPPORTED_VIDEO_TYPES = {
     ".mp4": "video/mp4",
@@ -826,12 +827,34 @@ def get_video_cache_dir() -> Path:
 
 def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     """Save raw video bytes to the cache and return the absolute file path."""
+    if len(data) > MAX_VIDEO_BYTES:
+        raise ValueError("Video exceeds maximum cache size of 20 MB")
     cache_dir = get_video_cache_dir()
     filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
 
+
+def cleanup_video_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached videos older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    import time
+
+    cache_dir = get_video_cache_dir()
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
 
 # ---------------------------------------------------------------------------
 # Document cache utilities
@@ -3382,18 +3405,16 @@ class BasePlatformAdapter(ABC):
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)
+                current_guard = self._active_sessions.get(session_key)
                 if (
-                    existing_task is not None
-                    and existing_task is not current_task
+                    (existing_task is not None and existing_task is not current_task)
+                    or (current_guard is not None and current_guard is not interrupt_event)
                 ):
-                    # The in-band drain (or an earlier late-arrival drain)
-                    # already spawned a follow-up task that owns this
-                    # session.  Re-queue the late-arrival event so that
-                    # task picks it up — avoids spawning two concurrent
-                    # _process_message_background tasks for the same key
-                    # (#17758 follow-up: prevents the create_task path
-                    # from racing with itself across the in-band/finally
-                    # boundary).
+                    # Another owner already controls this session: either a
+                    # follow-up task recorded in _session_tasks, or a
+                    # command-scoped guard installed by /stop, /new, or /reset
+                    # while this task is being cancelled. Re-queue the event
+                    # so that owner performs the single authorized drain.
                     self._pending_messages[session_key] = late_pending
                 else:
                     logger.debug(

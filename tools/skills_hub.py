@@ -20,6 +20,8 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -59,6 +61,7 @@ INDEX_CACHE_TTL = 3600  # 1 hour
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
+_INSTALL_LOCK = threading.RLock()
 
 
 # ---------------------------------------------------------------------------
@@ -2739,18 +2742,19 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         safe_rel_path = _validate_bundle_rel_path(rel_path)
         validated_files.append((safe_rel_path, file_content))
 
-    dest = QUARANTINE_DIR / skill_name
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
+    dest = Path(tempfile.mkdtemp(prefix=f"{skill_name}-", dir=QUARANTINE_DIR))
 
-    for rel_path, file_content in validated_files:
-        file_dest = dest.joinpath(*rel_path.split("/"))
-        file_dest.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(file_content, bytes):
-            file_dest.write_bytes(file_content)
-        else:
-            file_dest.write_text(file_content, encoding="utf-8")
+    try:
+        for rel_path, file_content in validated_files:
+            file_dest = dest.joinpath(*rel_path.split("/"))
+            file_dest.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(file_content, bytes):
+                file_dest.write_bytes(file_content)
+            else:
+                file_dest.write_text(file_content, encoding="utf-8")
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
 
     return dest
 
@@ -2775,9 +2779,6 @@ def install_from_quarantine(
     else:
         install_dir = SKILLS_DIR / safe_skill_name
 
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
-
     # Warn (but don't block) if SKILL.md is very large
     skill_md = quarantine_path / "SKILL.md"
     if skill_md.exists():
@@ -2794,28 +2795,33 @@ def install_from_quarantine(
         except OSError:
             pass
 
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
+    with _INSTALL_LOCK:
+        if install_dir.exists():
+            shutil.rmtree(install_dir)
 
-    # Record in lock file
-    lock = HubLockFile()
-    lock.record_install(
-        name=safe_skill_name,
-        source=bundle.source,
-        identifier=bundle.identifier,
-        trust_level=bundle.trust_level,
-        scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
-        files=list(bundle.files.keys()),
-        metadata=bundle.metadata,
-    )
+        install_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(quarantine_path), str(install_dir))
+        installed_hash = content_hash(install_dir)
 
-    append_audit_log(
-        "INSTALL", safe_skill_name, bundle.source,
-        bundle.trust_level, scan_result.verdict,
-        content_hash(install_dir),
-    )
+        # Record in lock file
+        lock = HubLockFile()
+        lock.record_install(
+            name=safe_skill_name,
+            source=bundle.source,
+            identifier=bundle.identifier,
+            trust_level=bundle.trust_level,
+            scan_verdict=scan_result.verdict,
+            skill_hash=installed_hash,
+            install_path=str(install_dir.relative_to(SKILLS_DIR)),
+            files=list(bundle.files.keys()),
+            metadata=bundle.metadata,
+        )
+
+        append_audit_log(
+            "INSTALL", safe_skill_name, bundle.source,
+            bundle.trust_level, scan_result.verdict,
+            installed_hash,
+        )
 
     return install_dir
 

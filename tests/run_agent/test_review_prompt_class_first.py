@@ -1,112 +1,140 @@
-"""Behavior tests for the skill review / combined review prompts.
+"""Behavior tests for safe background skill-review prompts.
 
-The review prompts steer the background review agent toward actively updating
-the skill library after most sessions, with a strong bias toward:
-  1. Patching currently-loaded skills first,
-  2. Patching existing umbrellas next,
-  3. Adding references/ files under an existing umbrella,
-  4. Creating a new class-level umbrella only when nothing else fits.
-
-User-preference corrections (style, format, verbosity, legibility) are
-first-class skill signals, not just memory signals.
-
-These tests assert behavioral *instructions* are present — they do NOT
-snapshot the full prompt text (change-detector).
+The review prompts must preserve reusable skill maintenance while preventing
+background review from persisting user-specific, session-specific, private, or
+untrusted content into the global skill library.
 """
 
 from run_agent import AIAgent
 
 
 # ---------------------------------------------------------------------------
+# Shared prompt safety expectations
+# ---------------------------------------------------------------------------
+
+
+def _assert_safe_skill_review_stance(prompt: str, label: str) -> None:
+    lower = prompt.lower()
+    assert "global skill" in lower or "global skills" in lower, (
+        f"{label}: must frame skills as globally shared/reusable context"
+    )
+    assert "conservative" in lower, (
+        f"{label}: background review must be conservative, not write-biased"
+    )
+    assert "nothing to save" in lower, (
+        f"{label}: must preserve a no-op path when no safe update exists"
+    )
+    assert "most sessions produce" not in lower, (
+        f"{label}: must not bias the reviewer toward writes in most sessions"
+    )
+    assert "missed learning opportunity" not in lower, (
+        f"{label}: must not frame safe inaction as a failure"
+    )
+
+
+def _assert_private_content_exclusions(prompt: str, label: str) -> None:
+    lower = prompt.lower()
+    for phrase in (
+        "user-specific",
+        "session-specific",
+        "private",
+        "tenant",
+        "credentials",
+        "tokens",
+        "secrets",
+        "personal data",
+    ):
+        assert phrase in lower, f"{label}: must exclude {phrase} content from skills"
+    assert "error transcripts" in lower and "do not" in lower, (
+        f"{label}: must not persist raw/session error transcripts into global skills"
+    )
+
+
+def _assert_untrusted_source_guidance(prompt: str, label: str) -> None:
+    lower = prompt.lower()
+    assert "untrusted" in lower, f"{label}: must address untrusted content"
+    assert "independently validated" in lower, (
+        f"{label}: must require source/content validation before skill writes"
+    )
+    assert "stripped" in lower and "instructions" in lower, (
+        f"{label}: must strip embedded instructions from persisted skill text"
+    )
+
+
+def _assert_user_preferences_stay_out_of_global_skills(prompt: str, label: str) -> None:
+    lower = prompt.lower()
+    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone")), (
+        f"{label}: must mention style/format/verbosity-family preferences"
+    )
+    assert "memory" in lower and "skill" in lower, (
+        f"{label}: must distinguish memory/user profile from skills"
+    )
+    assert "shared skill library must not" in lower or "not in the shared skill library" in lower, (
+        f"{label}: user-specific preferences must not be written to global skills"
+    )
+    assert "first-class skill" not in lower, (
+        f"{label}: must not label user preferences as first-class skill signals"
+    )
+
+
+def _assert_support_file_safety(prompt: str, label: str) -> None:
+    lower = prompt.lower()
+    assert "references/" in prompt, f"{label}: must still document references/ support files"
+    assert "templates/" in prompt, f"{label}: must still document templates/ support files"
+    assert "scripts/" in prompt, f"{label}: must still document scripts/ support files"
+    assert "sanitized" in lower and "source-checked" in lower, (
+        f"{label}: support files must require sanitization and source checks"
+    )
+    assert "deterministic" in lower and "non-destructive" in lower, (
+        f"{label}: generated scripts/templates must be constrained to safe reusable content"
+    )
+    assert "never include private transcripts" in lower, (
+        f"{label}: support files must forbid private transcripts"
+    )
+
+
+def _assert_skill_update_shape(prompt: str, label: str) -> None:
+    lower = prompt.lower()
+    assert "loaded" in lower and "skill_view" in prompt and "/skill" in prompt, (
+        f"{label}: may still prefer loaded skills after safety checks"
+    )
+    assert "patch" in lower, f"{label}: must preserve patch guidance"
+    assert "create" in lower, f"{label}: must preserve create guidance"
+    assert "class-level" in lower or "class level" in lower, (
+        f"{label}: skill names must remain class-level"
+    )
+    assert "must not" in lower and "session artifact" in lower, (
+        f"{label}: must veto session-artifact skill names"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
-def test_skill_review_prompt_biases_toward_active_updates():
-    """Prompt must frame updating as the default stance, not something rare."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "ACTIVE" in prompt or "active" in prompt.lower(), (
-        "must tell the reviewer to be active"
-    )
-    # "missed learning opportunity" or equivalent framing for not acting
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower(), (
-        "must frame inaction as a miss, not a neutral outcome"
-    )
+
+def test_skill_review_prompt_uses_conservative_global_write_stance():
+    _assert_safe_skill_review_stance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
 
 
-def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
-    """Style/format/verbosity complaints must be FIRST-CLASS skill signals, not just memory."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    lower = prompt.lower()
-    # Must mention style/format/verbosity-family corrections
-    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone")), (
-        "must name style/format/verbosity/legibility as signals"
-    )
-    # Must frame these as first-class skill signals (not memory-only)
-    assert "FIRST-CLASS" in prompt or "first-class" in prompt, (
-        "must explicitly label user-preference corrections as first-class skill signals"
-    )
-    # Must mention the correction-type phrases to tune the model's ear
-    assert "stop doing" in lower or "don't" in lower or "hate" in lower or "frustrat" in lower, (
-        "must give concrete phrasing examples so the model recognizes corrections"
-    )
+def test_skill_review_prompt_excludes_private_and_session_content():
+    _assert_private_content_exclusions(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
 
 
-def test_skill_review_prompt_prefers_loaded_skills_first():
-    """Currently-loaded skills must be the first patch target."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "LOADED" in prompt or "loaded" in prompt, (
-        "must mention currently-loaded skills"
-    )
-    # Must name the mechanisms for detecting loaded skills
-    assert "skill_view" in prompt and "/skill" in prompt, (
-        "must name skill_view and /skill-name as loaded-skill signals"
-    )
+def test_skill_review_prompt_handles_untrusted_sources_safely():
+    _assert_untrusted_source_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
 
 
-def test_skill_review_prompt_has_four_step_preference_order():
-    """The 4-step patch/support-file/create ladder must be present."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "PATCH" in prompt
-    assert "references/" in prompt or "REFERENCE" in prompt
-    assert "CREATE" in prompt
-    assert "UMBRELLA" in prompt or "umbrella" in prompt
+def test_skill_review_prompt_keeps_user_preferences_out_of_global_skills():
+    _assert_user_preferences_stay_out_of_global_skills(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
 
 
-def test_skill_review_prompt_names_three_support_file_kinds():
-    """Support-file step must name references/, templates/, and scripts/."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "references/" in prompt, "must name references/ as a support-file kind"
-    assert "templates/" in prompt, "must name templates/ as a support-file kind"
-    assert "scripts/" in prompt, "must name scripts/ as a support-file kind"
-    # Purpose hints for each kind
-    assert "knowledge" in prompt.lower() or "research" in prompt.lower() or "API docs" in prompt, (
-        "must mention knowledge-bank / research / API-docs role of references/"
-    )
-    assert "copied" in prompt.lower() or "starter" in prompt.lower() or "reproduce" in prompt.lower(), (
-        "must mention that templates/ are starter files to copy/modify"
-    )
-    assert "re-runnable" in prompt.lower() or "verification" in prompt.lower() or "probe" in prompt.lower(), (
-        "must mention that scripts/ are re-runnable actions"
-    )
+def test_skill_review_prompt_support_files_are_sanitized_and_reusable():
+    _assert_support_file_safety(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
 
 
-def test_skill_review_prompt_has_name_veto_for_create():
-    """Creating a new skill must be gated behind class-level naming."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "class level" in prompt.lower() or "CLASS-LEVEL" in prompt
-    assert "MUST NOT" in prompt or "must not" in prompt, (
-        "must have a name-veto clause blocking session-artifact names"
-    )
-
-
-def test_skill_review_prompt_embeds_user_preferences_in_skills():
-    """Must explicitly say user-preference lessons belong in SKILL.md, not only memory."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    lower = prompt.lower()
-    assert "preference" in lower, "must mention user preferences"
-    assert "memory" in lower and "skill" in lower, (
-        "must contrast memory vs skill responsibilities"
-    )
+def test_skill_review_prompt_preserves_safe_skill_update_shape():
+    _assert_skill_update_shape(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
 
 
 def test_skill_review_prompt_flags_overlap_and_defers_to_curator():
@@ -116,15 +144,10 @@ def test_skill_review_prompt_flags_overlap_and_defers_to_curator():
     assert "curator" in prompt.lower(), "must defer consolidation to the curator"
 
 
-def test_skill_review_prompt_still_has_opt_out_clause():
-    """'Nothing to save.' must remain as a real-but-not-default option."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "Nothing to save." in prompt
-
-
 # ---------------------------------------------------------------------------
 # _COMBINED_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
+
 
 def test_combined_review_prompt_has_memory_section():
     """Memory half must still cover user facts and preferences."""
@@ -133,49 +156,30 @@ def test_combined_review_prompt_has_memory_section():
     assert "memory tool" in prompt
 
 
-def test_combined_review_prompt_skills_biased_toward_active_updates():
-    """Skills half must carry the active-update bias."""
+def test_combined_review_prompt_uses_conservative_global_write_stance():
     prompt = AIAgent._COMBINED_REVIEW_PROMPT
     assert "**Skills**" in prompt
-    assert "ACTIVE" in prompt or "active" in prompt.lower()
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower()
+    _assert_safe_skill_review_stance(prompt, "_COMBINED_REVIEW_PROMPT")
 
 
-def test_combined_review_prompt_treats_user_corrections_as_skill_signal():
-    """Combined prompt must carry the same user-preference-is-skill-signal rule."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    lower = prompt.lower()
-    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone"))
-    assert "FIRST-CLASS" in prompt or "first-class" in prompt
+def test_combined_review_prompt_excludes_private_and_session_content():
+    _assert_private_content_exclusions(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
 
 
-def test_combined_review_prompt_prefers_loaded_skills_first():
-    """Combined prompt must also prefer loaded skills first."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "LOADED" in prompt or "loaded" in prompt
-    assert "skill_view" in prompt and "/skill" in prompt
+def test_combined_review_prompt_handles_untrusted_sources_safely():
+    _assert_untrusted_source_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
 
 
-def test_combined_review_prompt_has_four_step_skill_ladder():
-    """Combined prompt must keep the patch/support-file/create ladder on the Skills half."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "PATCH" in prompt
-    assert "references/" in prompt or "REFERENCE" in prompt
-    assert "CREATE" in prompt
-    assert "CLASS-LEVEL" in prompt or "class-level" in prompt or "class level" in prompt.lower()
+def test_combined_review_prompt_keeps_user_preferences_out_of_global_skills():
+    _assert_user_preferences_stay_out_of_global_skills(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
 
 
-def test_combined_review_prompt_names_three_support_file_kinds():
-    """Combined prompt must also name all three support-file kinds."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "references/" in prompt
-    assert "templates/" in prompt
-    assert "scripts/" in prompt
+def test_combined_review_prompt_support_files_are_sanitized_and_reusable():
+    _assert_support_file_safety(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
 
 
-def test_combined_review_prompt_preserves_opt_out_clause():
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "Nothing to save." in prompt
+def test_combined_review_prompt_preserves_safe_skill_update_shape():
+    _assert_skill_update_shape(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +229,7 @@ def test_combined_review_prompt_has_anti_pattern_guidance():
 # ---------------------------------------------------------------------------
 # _MEMORY_REVIEW_PROMPT — unchanged, still memory-focused
 # ---------------------------------------------------------------------------
+
 
 def test_memory_review_prompt_still_focused_on_user_facts():
     """Memory-only review prompt stays focused on user facts — not touched by this change."""

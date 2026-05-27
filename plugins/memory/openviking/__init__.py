@@ -289,7 +289,7 @@ ADD_RESOURCE_SCHEMA = {
     "name": "viking_add_resource",
     "description": (
         "Add a remote URL to the OpenViking knowledge base. "
-        "Remote resources must be public http(s), git, or ssh URLs. "
+        "Resources must be public http(s), git, or ssh URLs reachable by OpenViking. "
         "Local filesystem paths and file:// URIs are not allowed. "
         "The system automatically parses, indexes, and generates summaries."
     ),
@@ -327,10 +327,6 @@ ADD_RESOURCE_SCHEMA = {
 }
 
 
-def _is_remote_resource_source(value: str) -> bool:
-    return value.startswith(_REMOTE_RESOURCE_PREFIXES)
-
-
 def _is_windows_absolute_path(value: str) -> bool:
     return (
         len(value) >= 3
@@ -338,6 +334,10 @@ def _is_windows_absolute_path(value: str) -> bool:
         and value[1] == ":"
         and value[2] in ("/", "\\")
     )
+
+
+def _is_remote_resource_source(value: str) -> bool:
+    return value.lower().startswith(_REMOTE_RESOURCE_PREFIXES)
 
 
 def _is_local_path_reference(value: str) -> bool:

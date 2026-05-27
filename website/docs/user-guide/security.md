@@ -64,9 +64,16 @@ The `/yolo` command is a **toggle** — each use flips the mode on or off:
 
 YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
 
+When YOLO is active, Hermes shows two persistent visual reminders so it's hard to forget that approval prompts are bypassed:
+
+- A red banner line at session start when YOLO is already active: `⚠ YOLO mode — all approval prompts bypassed`. Hidden when YOLO is off so the default banner stays uncluttered.
+- A `⚠ YOLO` fragment in the status bar across all width tiers, updated live as you toggle YOLO on or off (rich-text renderer and plain-text fallback).
+
 :::danger
 YOLO mode disables **all** dangerous command safety checks for the session — **except** the hardline blocklist (see below). Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
 :::
+
+For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/exit --delete`), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
 
 ### Hardline Blocklist (Always-On Floor)
 
@@ -137,7 +144,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### Approval Flow (CLI)
@@ -333,7 +340,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 :::warning
@@ -350,7 +357,6 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **singularity** | Container | ❌ Skipped | HPC environments |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
-| **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 
@@ -488,7 +494,7 @@ security:
 
 When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.
 
-See [Website Blocklist](/docs/user-guide/configuration#website-blocklist) in the configuration guide for full details.
+See [Website Blocklist](/user-guide/configuration#website-blocklist) in the configuration guide for full details.
 
 ### SSRF Protection
 
@@ -537,6 +543,8 @@ security:
 
 When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
 
+Tirith ships prebuilt binaries for Linux (x86_64 / aarch64) and macOS (x86_64 / arm64). On platforms with no prebuilt binary (Windows, etc.), tirith is silently skipped — pattern-matching guards still run, and the CLI does not surface an "unavailable" banner. To use tirith on Windows, run Hermes under WSL.
+
 Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
 
 ### Context File Injection Protection
@@ -582,14 +590,74 @@ chmod 600 ~/.hermes/.env
 
 ### Network Isolation
 
-For maximum security, run the gateway on a separate machine or VM:
+For maximum security, run the gateway on a separate machine or VM. Set `terminal.backend: ssh` in `config.yaml`, then provide host details via environment variables in `~/.hermes/.env`:
 
 ```yaml
+# ~/.hermes/config.yaml
 terminal:
   backend: ssh
-  ssh_host: "agent-worker.local"
-  ssh_user: "hermes"
-  ssh_key: "~/.ssh/hermes_agent_key"
 ```
 
-This keeps the gateway's messaging connections separate from the agent's command execution.
+```bash
+# ~/.hermes/.env
+TERMINAL_SSH_HOST=agent-worker.local
+TERMINAL_SSH_USER=hermes
+TERMINAL_SSH_KEY=~/.ssh/hermes_agent_key
+```
+
+The SSH connection details live in `.env` (not `config.yaml`) so they aren't checked in or shared along with profile exports. This keeps the gateway's messaging connections separate from the agent's command execution.
+
+## Supply-chain advisory checking
+
+Hermes ships with a built-in advisory scanner that flags Python packages in the active venv that match a curated catalog of known-compromised versions (supply-chain worms like the May 2026 `mistralai 2.4.6` poisoning). Implementation lives in `hermes_cli/security_advisories.py`.
+
+How it runs:
+
+- **CLI startup banner.** A one-line warning is printed if any advisory matches, with a pointer to `hermes doctor` for the full remediation.
+- **`hermes doctor`.** Surfaces every active advisory with version specifics and 2-4 step remediation instructions.
+- **Gateway startup.** Logged to `gateway.log`; the first interactive message gets a short operator banner.
+
+Each advisory carries a stable id. Once you have read and acted on it you can dismiss it for good:
+
+```bash
+hermes doctor --ack <advisory-id>
+```
+
+The ack is persisted to `config.security.acked_advisories` and survives restart. Old advisories are intentionally **not** removed from the catalog — leaving them in place keeps fresh installs warned about historically poisoned versions that might still be cached in a private mirror.
+
+The check itself is stdlib-only and runs from one `importlib.metadata.version()` lookup per advisory, so it's safe to run on every startup.
+
+### Lazy install of optional dependencies
+
+Many features (Mistral TTS, ElevenLabs, Honcho memory, Bedrock, Slack, Matrix, …) depend on Python packages that not every user needs. Hermes installs these **lazily** on first use rather than eagerly under `hermes-agent[all]`. The implementation lives in `tools/lazy_deps.py`.
+
+The trade-off this fixes:
+
+- **Fragility.** When one extra's transitive dependency becomes unavailable on PyPI (quarantined for malware, yanked, broken upload), the entire `[all]` resolve would fail and fresh installs would silently fall back to a stripped tier — losing 10+ unrelated extras at once. Lazy install isolates each backend so one poisoned dep can't break unrelated features.
+- **Bloat.** A user who only ever talks to one provider no longer pulls hundreds of packages they will never import.
+
+How it works:
+
+1. A backend module calls `ensure("feature.name")` at the top of its first-import path.
+2. If the deps are missing, `ensure` checks `security.allow_lazy_installs` in `config.yaml` (default `true`) and runs a venv-scoped `pip install` for the allowlisted specs.
+3. If the install fails or the user has disabled lazy installs, the call raises `FeatureUnavailable` with the actual pip stderr and a pointer at `hermes tools`.
+
+Security guarantees enforced by `tools/lazy_deps.py`:
+
+| Guarantee | What it means |
+|---|---|
+| Venv-scoped only | Installs target `sys.executable` in the active venv — never the system Python |
+| PyPI by name only | Specs accept `"package>=1.0,<2"` syntax. No `--index-url`, `git+https://`, or file: paths — a malicious `config.yaml` cannot redirect the install |
+| Allowlist | Only specs that appear in the in-tree `LAZY_DEPS` map can be installed via this path. A typo in a feature name does NOT get install-anything semantics |
+| Opt-out | Set `security.allow_lazy_installs: false` to disable runtime installs entirely. Useful for restricted networks or strict security postures |
+| No silent retries | Failures surface as `FeatureUnavailable` — no caching of bad state, no retry storms |
+
+To disable runtime installs:
+
+```yaml
+# ~/.hermes/config.yaml
+security:
+  allow_lazy_installs: false
+```
+
+When disabled, backends that need optional deps will tell the user to run the install manually (`pip install …`) or pick a different backend via `hermes tools`.

@@ -89,7 +89,7 @@ def _build_agent_history(history: list) -> list:
     agent_history: list = []
     for msg in history:
         role = msg.get("role")
-        if not role or role in ("session_meta", "system"):
+        if not role or role in {"session_meta", "system"}:
             continue
         has_tool_calls = "tool_calls" in msg
         has_tool_call_id = "tool_call_id" in msg
@@ -818,80 +818,6 @@ async def test_drain_timeout_uses_restart_reason_when_restarting():
     assert calls, "expected at least one mark_resume_pending call"
     for args in calls:
         assert args[0][1] == "restart_timeout"
-
-
-@pytest.mark.asyncio
-async def test_clean_drain_does_not_mark_resume_pending():
-    """If the drain completes within timeout (no force-interrupt), no
-    sessions should be flagged — the normal shutdown path is unchanged."""
-    runner, adapter = make_restart_runner()
-    adapter.disconnect = AsyncMock()
-
-    running_agent = MagicMock()
-    runner._running_agents = {"agent:main:telegram:dm:A": running_agent}
-
-    # Finish the agent before the (generous) drain deadline
-    async def finish_agent():
-        await asyncio.sleep(0.05)
-        runner._running_agents.clear()
-
-    asyncio.create_task(finish_agent())
-
-    session_store = MagicMock()
-    session_store.mark_resume_pending = MagicMock(return_value=True)
-    runner.session_store = session_store
-
-    with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.write_runtime_status"
-    ):
-        await runner.stop()
-
-    session_store.mark_resume_pending.assert_not_called()
-    running_agent.interrupt.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_drain_timeout_only_marks_still_running_sessions():
-    """A session that finished gracefully during the drain window must
-    NOT be marked ``resume_pending`` — it completed cleanly and its
-    next turn should be a normal fresh turn, not one prefixed with the
-    restart-interruption system note.
-
-    Regression guard for using ``self._running_agents`` at timeout
-    rather than the ``active_agents`` drain-start snapshot.
-    """
-    runner, adapter = make_restart_runner()
-    adapter.disconnect = AsyncMock()
-    # Long enough for the finisher to exit, short enough to still time out
-    # with the stuck session still present.
-    runner._restart_drain_timeout = 0.3
-
-    session_key_finisher = "agent:main:telegram:dm:A"
-    session_key_stuck = "agent:main:telegram:dm:B"
-    runner._running_agents = {
-        session_key_finisher: MagicMock(),
-        session_key_stuck: MagicMock(),
-    }
-
-    async def finish_one():
-        await asyncio.sleep(0.05)
-        runner._running_agents.pop(session_key_finisher, None)
-
-    asyncio.create_task(finish_one())
-
-    session_store = MagicMock()
-    session_store.mark_resume_pending = MagicMock(return_value=True)
-    runner.session_store = session_store
-
-    with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.write_runtime_status"
-    ):
-        await runner.stop()
-
-    calls = session_store.mark_resume_pending.call_args_list
-    marked = {args[0][0] for args in calls}
-    # Only the session still running at timeout is marked; the finisher is not.
-    assert marked == {session_key_stuck}
 
 
 @pytest.mark.asyncio

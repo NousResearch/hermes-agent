@@ -50,6 +50,8 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
+    multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -83,7 +85,7 @@ class ClassifiedError:
 
     @property
     def is_auth(self) -> bool:
-        return self.reason in (FailoverReason.auth, FailoverReason.auth_permanent)
+        return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
 
 
 
@@ -165,6 +167,32 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     # the likely culprit; we still try the shrink path before giving up.
 ]
 
+# Providers that follow the OpenAI spec strictly require tool message
+# ``content`` to be a string.  Some (Anthropic native, Codex Responses,
+# Gemini native, first-party OpenAI) extend this to accept a content-parts
+# list (text + image_url) so screenshots from computer_use survive.  Others
+# (Xiaomi MiMo, some Alibaba endpoints, a long tail of OpenAI-compatible
+# providers) reject the list with a 400 — the patterns below are the most
+# common error shapes we see.  Recovery: strip image parts from tool
+# messages in-place, record the (provider, model) for the rest of the
+# session so we don't waste another call learning the same lesson, retry.
+#
+# See: https://github.com/NousResearch/hermes-agent/issues/27344
+_MULTIMODAL_TOOL_CONTENT_PATTERNS = [
+    # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"text is not set"}}
+    "text is not set",
+    # Generic "tool message must be string" shapes
+    "tool message content must be a string",
+    "tool content must be a string",
+    "tool message must be a string",
+    # OpenAI-compat servers that reject list-type tool content with a
+    # schema-validation message
+    "expected string, got list",
+    "expected string, got array",
+    # Alibaba/DashScope variant
+    "tool_call.content must be string",
+]
+
 # Context overflow patterns
 _CONTEXT_OVERFLOW_PATTERNS = [
     "context length",
@@ -213,6 +241,24 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "unsupported model",
 ]
 
+# Request-validation patterns — the request is malformed and will fail
+# identically on every retry. Some OpenAI-compatible gateways (notably
+# codex.nekos.me) return these as 5xx instead of the standard 4xx, which
+# makes the generic "5xx → retryable server_error" rule misfire: the retry
+# loop hammers the same deterministic rejection 3+ times, then the
+# transport-recovery path resets the counter and does it again, producing
+# a request flood. When a 5xx body carries one of these unambiguous
+# request-validation signals, classify as a non-retryable format_error so
+# the loop fails fast and falls back instead of looping.
+_REQUEST_VALIDATION_PATTERNS = [
+    "unknown parameter",
+    "unsupported parameter",
+    "unrecognized request argument",
+    "invalid_request_error",
+    "unknown_parameter",
+    "unsupported_parameter",
+]
+
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -252,6 +298,20 @@ _AUTH_PATTERNS = [
 # Anthropic thinking block signature patterns
 _THINKING_SIG_PATTERNS = [
     "signature",  # Combined with "thinking" check
+]
+
+# Message-string patterns that indicate a provider-side timeout even when
+# the exception type is generic (e.g. RuntimeError from a local shim that
+# wraps a subprocess timeout).  Checked before the type-based transport
+# heuristics so custom-provider "timed out" errors don't fall through to
+# the unknown bucket and get misreported as empty responses.
+_TIMEOUT_MESSAGE_PATTERNS = [
+    "timed out",
+    "turn timed out",
+    "request timed out",
+    "deadline exceeded",
+    "operation timed out",
+    "upstream timed out",
 ]
 
 # Transport error type names
@@ -496,6 +556,35 @@ def classify_api_error(
             should_compress=False,
         )
 
+    # xAI Grok subscription entitlement errors.
+    #
+    # xAI returns "You have either run out of available resources or do not
+    # have an active Grok subscription" through two distinct code paths:
+    #
+    #   • HTTP 403 — status_code is set; _classify_by_status (step 2) routes
+    #     it to FailoverReason.auth correctly, and _is_entitlement_failure
+    #     then prevents the credential-refresh loop.
+    #
+    #   • SSE ``type=error`` frame — surfaced as _StreamErrorEvent with
+    #     status_code=None.  _classify_by_status is skipped entirely, and
+    #     "grok subscription" / "out of available resources" appear in none
+    #     of the message-pattern lists below.  Without this guard the error
+    #     falls through to FailoverReason.unknown (retryable=True), burning
+    #     max_retries before the agent stops — and _is_entitlement_failure
+    #     is never called because it only runs under FailoverReason.auth.
+    #
+    # Both X Premium+ and SuperGrok subscribers hit this path when their
+    # subscription tier does not cover the requested model or feature.
+    if (
+        "do not have an active grok subscription" in error_msg
+        or ("out of available resources" in error_msg and "grok" in error_msg)
+    ):
+        return _result(
+            FailoverReason.auth,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:
@@ -674,10 +763,27 @@ def _classify_by_status(
             result_fn=result_fn,
         )
 
-    if status_code in (500, 502):
+    if status_code in {500, 502}:
+        # Some OpenAI-compatible gateways return request-validation errors
+        # with a 5xx status (codex.nekos.me returns 502 for unknown/
+        # unsupported parameters). These are deterministic — every retry
+        # gets the identical rejection — so the generic "5xx → retryable
+        # server_error" rule turns one bad request into a retry flood.
+        # Detect the unambiguous request-validation signals (in either the
+        # message text or the structured error code) and fail fast.
+        if (
+            any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS)
+            or error_code.lower() in {"invalid_request_error", "unknown_parameter",
+                                      "unsupported_parameter"}
+        ):
+            return result_fn(
+                FailoverReason.format_error,
+                retryable=False,
+                should_fallback=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
-    if status_code in (503, 529):
+    if status_code in {503, 529}:
         return result_fn(FailoverReason.overloaded, retryable=True)
 
     # Other 4xx — non-retryable
@@ -738,6 +844,19 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
+    # Multimodal tool content rejected from 400.  Must be checked BEFORE
+    # image_too_large because the recovery is different (strip image parts
+    # from tool messages, mark the model as no-list-tool-content for the
+    # rest of the session) and BEFORE context_overflow because some of the
+    # patterns ("text is not set") are ambiguous in isolation but become
+    # specific when combined with a 400 on a request known to contain
+    # multimodal tool content.
+    if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
+        return result_fn(
+            FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
+        )
+
     # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
     # Must be checked BEFORE context_overflow because messages can trip both
     # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
@@ -745,6 +864,26 @@ def _classify_400(
         return result_fn(
             FailoverReason.image_too_large,
             retryable=True,
+        )
+
+    # Invalid encrypted reasoning replay blob (OpenAI Responses API).  Must be
+    # checked BEFORE context_overflow because some surfaces emit messages that
+    # contain context-like phrasing ("encrypted content … could not be
+    # verified") which could otherwise trip the context_overflow heuristics.
+    # ``error_msg`` is lowercased upstream — match accordingly.
+    error_code_lower = (error_code or "").lower()
+    if (
+        error_code_lower == "invalid_encrypted_content"
+        or "invalid_encrypted_content" in error_msg
+        or (
+            "encrypted content for item" in error_msg
+            and "could not be verified" in error_msg
+        )
+    ):
+        return result_fn(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
         )
 
     # Context overflow from 400
@@ -796,7 +935,7 @@ def _classify_400(
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
-    is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
+    is_generic = len(err_body_msg) < 30 or err_body_msg in {"error", ""}
     # Absolute token/message-count thresholds are only a proxy for smaller
     # context windows.  Large-context sessions can have many messages while
     # still being far below their actual token budget.
@@ -827,14 +966,14 @@ def _classify_by_error_code(
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
 
-    if code_lower in ("resource_exhausted", "throttled", "rate_limit_exceeded"):
+    if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
             should_rotate_credential=True,
         )
 
-    if code_lower in ("insufficient_quota", "billing_not_active", "payment_required"):
+    if code_lower in {"insufficient_quota", "billing_not_active", "payment_required"}:
         return result_fn(
             FailoverReason.billing,
             retryable=False,
@@ -842,18 +981,25 @@ def _classify_by_error_code(
             should_fallback=True,
         )
 
-    if code_lower in ("model_not_found", "model_not_available", "invalid_model"):
+    if code_lower in {"model_not_found", "model_not_available", "invalid_model"}:
         return result_fn(
             FailoverReason.model_not_found,
             retryable=False,
             should_fallback=True,
         )
 
-    if code_lower in ("context_length_exceeded", "max_tokens_exceeded"):
+    if code_lower in {"context_length_exceeded", "max_tokens_exceeded"}:
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,
             should_compress=True,
+        )
+
+    if code_lower == "invalid_encrypted_content":
+        return result_fn(
+            FailoverReason.invalid_encrypted_content,
+            retryable=True,
+            should_fallback=False,
         )
 
     return None
@@ -877,6 +1023,13 @@ def _classify_by_message(
             FailoverReason.payload_too_large,
             retryable=True,
             should_compress=True,
+        )
+
+    # Multimodal tool content patterns (from message text when no status_code)
+    if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
+        return result_fn(
+            FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
         )
 
     # Image-too-large patterns (from message text when no status_code)
@@ -963,6 +1116,14 @@ def _classify_by_message(
             should_fallback=True,
         )
 
+    # Timeout message patterns — generic exception types (e.g. RuntimeError)
+    # raised by local shims or custom providers that internally wrap a
+    # subprocess/HTTP timeout.  Classified as transport timeout so the retry
+    # loop rebuilds the client instead of treating the turn as an empty
+    # model response.
+    if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
+        return result_fn(FailoverReason.timeout, retryable=True)
+
     return None
 
 
@@ -1008,15 +1169,49 @@ def _extract_error_code(body: dict) -> str:
     """Extract an error code string from the response body."""
     if not body:
         return ""
+
+    def _code_from_payload(payload) -> str:
+        """Extract a code/type from a nested error payload dict (defensive)."""
+        if not isinstance(payload, dict):
+            return ""
+        payload_error = payload.get("error", {})
+        if isinstance(payload_error, dict):
+            nested = payload_error.get("code") or payload_error.get("type") or ""
+            if isinstance(nested, str) and nested.strip() and nested.strip() != "400":
+                return nested.strip()
+        code = payload.get("code") or payload.get("error_code") or ""
+        if isinstance(code, (str, int)):
+            text = str(code).strip()
+            if text and text != "400":
+                return text
+        return ""
+
     error_obj = body.get("error", {})
     if isinstance(error_obj, dict):
         code = error_obj.get("code") or error_obj.get("type") or ""
-        if isinstance(code, str) and code.strip():
+        if isinstance(code, str) and code.strip() and code.strip() != "400":
             return code.strip()
+
+        # Some providers wrap the real JSON error body as a string inside
+        # error.message — peek into it for a nested code (e.g. Responses API
+        # surfaces ``invalid_encrypted_content`` this way).
+        message = error_obj.get("message")
+        if isinstance(message, str) and message.strip().startswith("{"):
+            import json
+            try:
+                inner = json.loads(message)
+            except (json.JSONDecodeError, TypeError):
+                inner = None
+            nested_code = _code_from_payload(inner)
+            if nested_code:
+                return nested_code
+
     # Top-level code
     code = body.get("code") or body.get("error_code") or ""
     if isinstance(code, (str, int)):
-        return str(code).strip()
+        text = str(code).strip()
+        if text and text != "400":
+            return text
     return ""
 
 

@@ -95,11 +95,11 @@ def one_rep_max(weight, reps):
 
 def macros(tdee_kcal, goal):
     goal = goal.lower()
-    if goal in ("cut", "lose", "deficit"):
+    if goal in {"cut", "lose", "deficit"}:
         cals = tdee_kcal - 500
         p, f, c = 0.40, 0.30, 0.30
         label = "Fat Loss (-500 kcal)"
-    elif goal in ("bulk", "gain", "surplus"):
+    elif goal in {"bulk", "gain", "surplus"}:
         cals = tdee_kcal + 400
         p, f, c = 0.30, 0.25, 0.45
         label = "Lean Bulk (+400 kcal)"
@@ -184,7 +184,7 @@ def main():
                 int(sys.argv[4]), sys.argv[5], int(sys.argv[6]),
             )
 
-        elif cmd in ("1rm", "orm"):
+        elif cmd in {"1rm", "orm"}:
             one_rep_max(float(sys.argv[2]), int(sys.argv[3]))
 
         elif cmd == "macros":

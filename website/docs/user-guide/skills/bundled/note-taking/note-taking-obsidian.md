@@ -16,6 +16,7 @@ Read, search, create, and edit notes in the Obsidian vault.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/note-taking/obsidian` |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

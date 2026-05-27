@@ -15,7 +15,7 @@ session-picker flow.
 Environment overrides:
   HERMES_PERF_LOG     (default ~/.hermes/perf.log)
   HERMES_PERF_NODE    (default node from $PATH)
-  HERMES_TUI_DIR      (default /home/bb/hermes-agent/ui-tui)
+  HERMES_TUI_DIR      (default: <repo>/ui-tui relative to this script)
 
 Exit code is 0 if the harness ran and parsed results, 2 if the TUI crashed
 or produced no perf data (suggests HERMES_DEV_PERF wiring is broken).
@@ -44,7 +44,10 @@ except ImportError:
         val = (os.environ.get("HERMES_HOME") or "").strip()
         return Path(val) if val else Path.home() / ".hermes"
 
-DEFAULT_TUI_DIR = Path(os.environ.get("HERMES_TUI_DIR", "/home/bb/hermes-agent/ui-tui"))
+DEFAULT_TUI_DIR = Path(
+    os.environ.get("HERMES_TUI_DIR")
+    or str(Path(__file__).resolve().parent.parent / "ui-tui")
+)
 DEFAULT_LOG = Path(os.environ.get("HERMES_PERF_LOG", str(get_hermes_home() / "perf.log")))
 DEFAULT_STATE_DB = get_hermes_home() / "state.db"
 
@@ -343,7 +346,7 @@ def key_metrics(data: dict[str, Any]) -> dict[str, float]:
         metrics["backpressure_frames"] = bp
 
     if react:
-        for pid in set(e["id"] for e in react):
+        for pid in {e["id"] for e in react}:
             ms = [e["actualMs"] for e in react if e["id"] == pid]
             metrics[f"react_{pid}_p99"] = pct(ms, 0.99)
             metrics[f"react_{pid}_max"] = max(ms)
@@ -360,7 +363,7 @@ def format_diff(before: dict[str, float], after: dict[str, float]) -> str:
         b = before.get(k, 0.0)
         a = after.get(k, 0.0)
         d = a - b
-        pct_change = ((a / b) - 1) * 100 if b not in (0, 0.0) else float("inf") if a else 0
+        pct_change = ((a / b) - 1) * 100 if b not in {0, 0.0} else float("inf") if a else 0
 
         # Flag improvements vs regressions. For _p99 / _max / _total / gaps_over /
         # patches / writeBytes / backpressure, LOWER is better.  For fps / gaps_under,

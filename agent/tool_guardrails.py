@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
+from agent.tool_result_classification import file_mutation_result_landed
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -196,6 +197,8 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     """
     if result is None:
         return False, ""
+    if file_mutation_result_landed(tool_name, result):
+        return False, ""
 
     if tool_name == "terminal":
         data = safe_json_loads(result)
@@ -333,10 +336,7 @@ class ToolCallGuardrailController:
                 return ToolGuardrailDecision(
                     action="warn",
                     code="same_tool_failure_warning",
-                    message=(
-                        f"{tool_name} has failed {same_count} times this turn. "
-                        "This looks like a loop; change approach before retrying."
-                    ),
+                    message=_tool_failure_recovery_hint(tool_name, same_count),
                     tool_name=tool_name,
                     count=same_count,
                     signature=signature,
@@ -401,6 +401,26 @@ def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> s
         f"{decision.code}; count={decision.count}; {decision.message}]"
     )
     return (result or "") + suffix
+
+
+def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
+    """Action-oriented guidance for recovering from repeated tool failures."""
+    common = (
+        f"{tool_name} has failed {count} times this turn. This looks like a loop. "
+        "Do not switch to text-only replies; keep using tools, but diagnose before retrying. "
+        "First inspect the latest error/output and verify your assumptions. "
+    )
+    if tool_name == "terminal":
+        return common + (
+            "For terminal failures, run a small diagnostic such as `pwd && ls -la` "
+            "in the same tool, then try an absolute path, a simpler command, a different "
+            "working directory, or a different tool such as read_file/write_file/patch."
+        )
+    return common + (
+        "Try different arguments, a narrower query/path, an absolute path when relevant, "
+        "or a different tool that can make progress. If the blocker is external, report "
+        "the blocker after one diagnostic attempt instead of repeating the same failing path."
+    )
 
 
 def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:

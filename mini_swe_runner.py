@@ -38,6 +38,7 @@ from typing import List, Dict, Any, Optional, Literal
 
 import fire
 from dotenv import load_dotenv
+from agent.tool_dispatch_helpers import make_tool_result_message
 
 # Load environment variables
 load_dotenv()
@@ -536,11 +537,9 @@ Complete the user's task step by step."""
                             completed = True
                         
                         # Add tool response
-                        messages.append({
-                            "role": "tool",
-                            "content": result_json,
-                            "tool_call_id": tc.id
-                        })
+                        messages.append(make_tool_result_message(
+                            tc.function.name, result_json, tc.id,
+                        ))
                         
                         print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")
                     

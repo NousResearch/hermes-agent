@@ -71,7 +71,7 @@ def curses_checklist(
                 curses.use_default_colors()
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, 8, -1)  # dim gray
+                curses.init_pair(3, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1)  # dim gray
             cursor = 0
             scroll_offset = 0
 
@@ -139,16 +139,16 @@ def curses_checklist(
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key in (curses.KEY_UP, ord("k")):
+                if key in {curses.KEY_UP, ord("k")}:
                     cursor = (cursor - 1) % len(items)
-                elif key in (curses.KEY_DOWN, ord("j")):
+                elif key in {curses.KEY_DOWN, ord("j")}:
                     cursor = (cursor + 1) % len(items)
                 elif key == ord(" "):
                     chosen.symmetric_difference_update({cursor})
-                elif key in (curses.KEY_ENTER, 10, 13):
+                elif key in {curses.KEY_ENTER, 10, 13}:
                     result_holder[0] = set(chosen)
                     return
-                elif key in (27, ord("q")):
+                elif key in {27, ord("q")}:
                     result_holder[0] = cancel_returns
                     return
 
@@ -265,14 +265,14 @@ def curses_radiolist(
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key in (curses.KEY_UP, ord("k")):
+                if key in {curses.KEY_UP, ord("k")}:
                     cursor = (cursor - 1) % len(items)
-                elif key in (curses.KEY_DOWN, ord("j")):
+                elif key in {curses.KEY_DOWN, ord("j")}:
                     cursor = (cursor + 1) % len(items)
-                elif key in (ord(" "), curses.KEY_ENTER, 10, 13):
+                elif key in {ord(" "), curses.KEY_ENTER, 10, 13}:
                     result_holder[0] = cursor
                     return
-                elif key in (27, ord("q")):
+                elif key in {27, ord("q")}:
                     result_holder[0] = cancel_returns
                     return
 
@@ -388,14 +388,14 @@ def curses_single_select(
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key in (curses.KEY_UP, ord("k")):
+                if key in {curses.KEY_UP, ord("k")}:
                     cursor = (cursor - 1) % len(all_items)
-                elif key in (curses.KEY_DOWN, ord("j")):
+                elif key in {curses.KEY_DOWN, ord("j")}:
                     cursor = (cursor + 1) % len(all_items)
-                elif key in (curses.KEY_ENTER, 10, 13):
+                elif key in {curses.KEY_ENTER, 10, 13}:
                     result_holder[0] = cursor
                     return
-                elif key in (27, ord("q")):
+                elif key in {27, ord("q")}:
                     result_holder[0] = None
                     return
 

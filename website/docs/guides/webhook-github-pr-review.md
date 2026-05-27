@@ -254,6 +254,76 @@ Valid `deliver` values: `log` · `github_comment` · `telegram` · `discord` · 
 
 ---
 
+## Label-command mode: review, fix, merge, deploy
+
+For repository automation controlled by explicit GitHub labels, enable
+`github_pr_label_commands` on the route. By default this mode only runs for
+private repositories (`repository.private: true` in the GitHub payload); public
+repositories are ignored unless the route explicitly sets
+`allow_public_repositories: true`. Hermes will only run when GitHub sends
+a `pull_request` event with `action: labeled` and the added label matches one of
+these built-in command labels:
+
+| Label | Behavior |
+|---|---|
+| `hermes-review` | Read-only PR review. Fetches the diff, comments blockers/warnings/verdict, and never edits code. |
+| `hermes-autofix` | Guarded fix mode. May check out the PR branch, commit/push a minimal fix, and report tests. It must not merge or deploy. |
+| `hermes-automerge` | Guarded merge mode. Verifies CI/mergeability/policy, then uses the repo's normal squash merge flow when safe. It must not edit files. |
+| `hermes-deploy` | Deploy mode. Uses the repo-specific Hermes/Docker deployment procedure already documented in the repo/skills/scripts, then reports health/smoke evidence. |
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        github-pr-labels:
+          secret: "your-webhook-secret-here"
+          events: [pull_request]
+          github_pr_label_commands:
+            # Safe default is review only. Add modes deliberately as you grant
+            # side effects to this route.
+            allowed_modes: [review, autofix, automerge, deploy]
+            # Optional: only accept labels added by these GitHub usernames.
+            # allowed_senders: [octocat]
+          # deliver/deliver_extra default to commenting on the PR from the payload.
+```
+
+GitHub setup:
+
+- Payload URL: `https://your-public-url.example.com/webhooks/github-pr-labels`
+- Content type: `application/json`
+- Secret: same as the route secret
+- Events: **Pull requests**
+
+This mode acknowledges unsupported actions/labels without invoking the agent, so
+normal PR churn does not spend tokens. It also ignores public repositories by
+default; opt in per route with `allow_public_repositories: true` if you really
+want the same label commands on open-source repos. Sensitive modes are opt-in:
+`github_pr_label_commands: true` enables only read-only `review`; add
+`allowed_modes` deliberately before `autofix`, `automerge`, or `deploy` can run.
+You can also set `allowed_senders` to accept command labels only from explicit
+GitHub usernames. The labels are intentionally side-effect boundaries: review is
+read-only; autofix may write only to the PR branch; automerge may merge only
+after checks/policy pass; deploy must follow the existing repo-specific deploy
+playbook and verify Docker/public smoke before reporting.
+
+You can override labels for a route:
+
+```yaml
+github_pr_label_commands:
+  allowed_modes: [deploy]
+  labels:
+    ship-it:
+      mode: deploy
+      prompt: "Deploy PR {number} from {repository.full_name} using the repo playbook."
+```
+
+When a custom `labels` map is present, only those labels are accepted; built-in
+labels are disabled for that route.
+
+---
+
 ## GitLab support
 
 The same adapter works with GitLab. GitLab uses `X-Gitlab-Token` for authentication (plain string match, not HMAC) — Hermes handles both automatically.

@@ -105,7 +105,7 @@ import time
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional
+from typing import Any, Coroutine, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -3981,6 +3981,29 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
         safe_servers[name] = cfg
     return safe_servers
 
+def _validate_mcp_entry(name: str, cfg: Any) -> Tuple[bool, str]:
+    """Validate a single ``mcp_servers`` entry.
+
+    Returns ``(is_valid, reason)``. ``reason`` is a short human-readable
+    string describing why an entry was rejected, suitable for logging.
+    Validation rules (deliberately minimal, to mirror the upstream
+    ``_connect_server`` contract):
+
+    1. The entry value must be a ``dict`` — strings, lists, ``None`` and
+       scalars are rejected.
+    2. The entry must declare at least one of ``command`` (stdio
+       transport) or ``url`` (HTTP transport).
+
+    Anything that passes these two gates is forwarded to
+    ``_connect_server`` unchanged, preserving the existing behaviour for
+    well-formed configs (closes #33119).
+    """
+    if not isinstance(cfg, dict):
+        return False, f"entry value is not a dict (got {type(cfg).__name__})"
+    if not cfg.get("command") and not cfg.get("url"):
+        return False, "entry declares neither 'command' (stdio) nor 'url' (http)"
+    return True, ""
+
 
 def _load_mcp_config() -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
@@ -3992,6 +4015,12 @@ def _load_mcp_config() -> Dict[str, dict]:
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
     ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
+
+    Malformed entries (non-dict values, or entries missing both
+    ``command`` and ``url``) are skipped with a ``logger.warning(...)``
+    naming the offending entry and the concrete reason. This prevents a
+    single bad row written by a third-party installer from bricking
+    Hermes on startup (issue #33119).
     """
     try:
         from hermes_cli.config import load_config
@@ -4009,12 +4038,20 @@ def _load_mcp_config() -> Dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
-        safe_servers: Dict[str, dict] = {}
+        validated: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
+            ok, reason = _validate_mcp_entry(name, cfg)
+            if not ok:
+                logger.warning(
+                    "Skipping malformed mcp_servers entry %r: %s. "
+                    "Fix or remove this entry in ~/.hermes/config.yaml.",
+                    name, reason,
+                )
+                continue
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
-                safe_servers[name] = interpolated
-        return safe_servers
+                validated[name] = interpolated
+        return validated
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

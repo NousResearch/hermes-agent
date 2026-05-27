@@ -37,6 +37,7 @@ def _make_args(**kwargs):
         "deliver_chat_id": "",
         "secret": "",
         "payload": "",
+        "toolsets": [],
     }
     defaults.update(kwargs)
     return Namespace(**defaults)
@@ -91,6 +92,42 @@ class TestSubscribe:
         out = capsys.readouterr().out
         assert "Error" in out or "Invalid" in out
         assert _load_subscriptions() == {}
+
+    def test_toolset_override_persisted(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="trusted-lan",
+            toolsets=["hermes-cli"],
+        ))
+        route = _load_subscriptions()["trusted-lan"]
+        assert route["toolsets"] == ["hermes-cli"]
+
+    def test_toolset_override_repeatable(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="multi",
+            toolsets=["web", "vision"],
+        ))
+        route = _load_subscriptions()["multi"]
+        assert route["toolsets"] == ["web", "vision"]
+
+    def test_toolset_unknown_rejected(self, capsys):
+        webhook_command(_make_args(
+            webhook_action="subscribe",
+            name="bad-toolset",
+            toolsets=["this-does-not-exist"],
+        ))
+        out = capsys.readouterr().out
+        assert "Unknown toolset" in out
+        assert "bad-toolset" not in _load_subscriptions()
+
+    def test_no_toolset_omits_key(self):
+        # Default-case routes (which inherit the safe hermes-webhook toolset)
+        # must not carry a ``toolsets`` field, so the gateway side falls
+        # through to the platform default resolver.
+        webhook_command(_make_args(webhook_action="subscribe", name="default"))
+        route = _load_subscriptions()["default"]
+        assert "toolsets" not in route
 
 
 class TestList:

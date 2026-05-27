@@ -1,7 +1,7 @@
 ---
 name: webhook-subscriptions
 description: "Webhook subscriptions: event-driven agent runs."
-version: 1.1.0
+version: 1.2.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -76,6 +76,25 @@ hermes webhook subscribe <name> \
 ```
 
 Returns the webhook URL and HMAC secret. The user configures their service to POST to that URL.
+
+#### Toolset overrides (`--toolset`)
+
+By default, webhook subscriptions run with the safe `hermes-webhook` toolset: `web_search`, `web_extract`, `vision_analyze`, `clarify`. No terminal, no `send_message`, no file writes. This is deliberate — webhook payloads frequently come from untrusted third parties (GitHub PR titles, Stripe metadata, ntfy publishers) and prompt injection into a webhook handler must not be able to reach local execution tools.
+
+For *trusted* webhook routes — authenticated LAN integrations like Home Assistant, internal CI runners, your own scripts — you can widen the toolset per-route:
+
+```bash
+hermes webhook subscribe ha-front-door \
+  --toolset hermes-cli \
+  --deliver log \
+  --prompt "..."
+```
+
+`--toolset` is repeatable (`--toolset web --toolset vision`) and accepts any toolset name from `hermes tools`. Pass a composite (`hermes-cli`, `hermes-gateway`) to enable the full set, or individual toolsets (`terminal`, `file`, `messaging`, `vision`) for tighter scoping. Default behaviour is unchanged when `--toolset` is omitted.
+
+**When to use:** the route is authenticated end-to-end (per-route HMAC secret + bound to LAN / loopback / VPN), AND the prompt needs tools beyond the safe set (e.g. saving snapshots to disk, calling `send_message` to relay to Telegram, running shell commands). The Home Assistant cross-sensor snapshot gate is the canonical case.
+
+**When NOT to use:** the route receives payloads from anything outside your control. GitHub webhooks, Stripe webhooks, ntfy publishers, public form submitters — all should stay on the default. Anything the agent reads from those payloads becomes prompt-injectable text; with `terminal` or `send_message` exposed, that is a remote-code-execution surface.
 
 ### List subscriptions
 ```bash

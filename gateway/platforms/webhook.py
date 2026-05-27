@@ -601,6 +601,12 @@ class WebhookAdapter(BasePlatformAdapter):
             source=source,
             raw_message=payload,
             message_id=delivery_id,
+            enabled_toolsets_override=(
+                list(route_config["toolsets"])
+                if isinstance(route_config.get("toolsets"), list)
+                and route_config["toolsets"]
+                else None
+            ),
         )
 
         logger.info(

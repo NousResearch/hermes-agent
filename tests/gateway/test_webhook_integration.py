@@ -337,3 +337,111 @@ class TestGitHubCommentDelivery:
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
+
+
+
+# ===================================================================
+# Test 5: Per-subscription toolset override propagates to MessageEvent
+# ===================================================================
+
+class TestToolsetOverridePropagation:
+    """Routes with a ``toolsets: [...]`` field on the subscription should
+    propagate that list onto the emitted MessageEvent as
+    ``enabled_toolsets_override``. Routes without the field must leave
+    the override as None so the gateway falls through to the platform
+    default resolver (which yields the safe ``hermes-webhook`` toolset)."""
+
+    @pytest.mark.asyncio
+    async def test_toolset_field_propagated_to_event(self):
+        routes = {
+            "trusted-lan": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": [],
+                "prompt": "hi",
+                "toolsets": ["hermes-cli"],
+            }
+        }
+        adapter = _make_adapter(routes, host="127.0.0.1")
+
+        captured_events: list[MessageEvent] = []
+
+        async def _capture(event: MessageEvent):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/trusted-lan",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert len(captured_events) == 1
+        assert captured_events[0].enabled_toolsets_override == ["hermes-cli"]
+
+    @pytest.mark.asyncio
+    async def test_no_toolset_field_leaves_override_none(self):
+        routes = {
+            "untrusted-default": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": [],
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes, host="127.0.0.1")
+
+        captured_events: list[MessageEvent] = []
+
+        async def _capture(event: MessageEvent):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/untrusted-default",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert len(captured_events) == 1
+        assert captured_events[0].enabled_toolsets_override is None
+
+    @pytest.mark.asyncio
+    async def test_empty_toolset_list_treated_as_unset(self):
+        routes = {
+            "empty-list": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": [],
+                "prompt": "hi",
+                "toolsets": [],
+            }
+        }
+        adapter = _make_adapter(routes, host="127.0.0.1")
+
+        captured_events: list[MessageEvent] = []
+
+        async def _capture(event: MessageEvent):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/empty-list",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        assert len(captured_events) == 1
+        assert captured_events[0].enabled_toolsets_override is None

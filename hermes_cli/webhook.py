@@ -170,6 +170,24 @@ def _cmd_subscribe(args):
     secret = args.secret or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
+    toolsets = [t.strip() for t in (getattr(args, "toolsets", None) or []) if t.strip()]
+    if toolsets:
+        # Validate against the known toolset registry so a typo doesn't
+        # silently fall back to the safe default at request time.
+        try:
+            from toolsets import TOOLSETS as _TOOLSETS
+            unknown = [t for t in toolsets if t not in _TOOLSETS]
+            if unknown:
+                print(
+                    f"Error: Unknown toolset(s): {', '.join(unknown)}. "
+                    f"Run 'hermes tools' to see available toolsets."
+                )
+                return
+        except Exception:
+            # If toolsets module isn't importable for some reason, fall
+            # through — the gateway-side resolver logs and ignores unknowns.
+            pass
+
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
@@ -179,6 +197,9 @@ def _cmd_subscribe(args):
         "deliver": args.deliver or "log",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+
+    if toolsets:
+        route["toolsets"] = toolsets
 
     if getattr(args, "deliver_only", False):
         if route["deliver"] == "log":
@@ -206,6 +227,8 @@ def _cmd_subscribe(args):
     else:
         print("  Events: (all)")
     print(f"  Deliver: {route['deliver']}")
+    if route.get("toolsets"):
+        print(f"  Toolsets: {', '.join(route['toolsets'])}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
     if route.get("prompt"):
@@ -238,6 +261,8 @@ def _cmd_list(args):
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if route.get("toolsets"):
+            print(f"    Toolsets: {', '.join(route['toolsets'])}")
         print()
 
 

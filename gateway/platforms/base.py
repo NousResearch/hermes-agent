@@ -1197,6 +1197,14 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Optional per-event override of the toolsets enabled for this agent run.
+    # When set, replaces the platform-default resolution
+    # (``_get_platform_tools(config, platform)``) for this event only.
+    # Currently produced by the webhook adapter when a subscription declares
+    # ``toolsets: [...]`` (set via ``hermes webhook subscribe --toolset``).
+    # Untouched by every other adapter.  None = use platform default.
+    enabled_toolsets_override: Optional[List[str]] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

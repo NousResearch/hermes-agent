@@ -11960,6 +11960,19 @@ def main():
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').",
     )
+    wh_sub.add_argument(
+        "--toolset",
+        action="append",
+        default=[],
+        dest="toolsets",
+        metavar="NAME",
+        help="Override the toolset for this subscription (repeatable). "
+        "Defaults to 'hermes-webhook' (safe subset: web_search, web_extract, "
+        "vision_analyze, clarify). Pass e.g. --toolset hermes-cli to widen "
+        "to the full local toolset — only do this for routes you trust "
+        "(authenticated LAN integrations like Home Assistant). Untrusted "
+        "third-party webhooks (GitHub, Stripe, etc.) should keep the default.",
+    )
 
     webhook_subparsers.add_parser(
         "list", aliases=["ls"], help="List all dynamic subscriptions"

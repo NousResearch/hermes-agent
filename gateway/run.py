@@ -1054,6 +1054,69 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_toolset_override(
+    names: List[str], platform_key: str
+) -> set:
+    """Resolve a per-event toolset override into configurable toolset names.
+
+    Mirrors the resolution logic ``_get_platform_tools`` applies to composite
+    toolset names so a caller can pass ``["hermes-cli"]`` and get the full
+    configurable set — not the raw composite name, which the agent runtime
+    wouldn't recognise as an individual toolset.
+
+    For each entry in ``names``:
+      - If it's already a configurable toolset name (``web``, ``terminal``,
+        ``vision`` …) it's kept as-is, subject to per-platform allow-listing
+        (``_toolset_allowed_for_platform``).
+      - If it's a known composite toolset (``hermes-cli``, ``hermes-gateway``
+        …) it's expanded to its configurable members by intersecting each
+        ``CONFIGURABLE_TOOLSETS`` entry's tool list against the composite's
+        flattened tool list.
+      - Unknown names are logged and ignored — a typo on a hand-edited
+        ``webhook_subscriptions.json`` degrades safely to whatever else the
+        list resolved to (or to the platform default if nothing resolved).
+
+    Note: this deliberately does NOT subtract ``_DEFAULT_OFF_TOOLSETS`` (e.g.
+    ``homeassistant``, ``kanban``, ``computer_use``) the way the implicit
+    expansion in ``_get_platform_tools`` does.  The override is explicit by
+    construction — the operator typed ``--toolset hermes-cli`` on purpose —
+    so default-off filters that exist to avoid surprising new users on the
+    main resolver path shouldn't suppress members the operator just asked
+    for.  Callers that want a tighter scope should pass individual
+    configurable toolset names instead of a composite.
+    """
+    if not names:
+        return set()
+    from toolsets import resolve_toolset, TOOLSETS as _TOOLSETS
+    from hermes_cli.tools_config import (
+        CONFIGURABLE_TOOLSETS as _CONFIGURABLE_TOOLSETS,
+        _toolset_allowed_for_platform as _ts_allowed,
+    )
+    configurable_keys = {k for k, _, _ in _CONFIGURABLE_TOOLSETS}
+    resolved: set = set()
+    for ts_name in names:
+        ts_name = str(ts_name)
+        if ts_name in configurable_keys:
+            if _ts_allowed(ts_name, platform_key):
+                resolved.add(ts_name)
+            continue
+        if ts_name not in _TOOLSETS:
+            logger.warning(
+                "[gateway] enabled_toolsets_override: unknown toolset %r — ignoring",
+                ts_name,
+            )
+            continue
+        # Composite — expand to configurable members.
+        tool_names = set(resolve_toolset(ts_name))
+        for ck, _, _ in _CONFIGURABLE_TOOLSETS:
+            if not _ts_allowed(ck, platform_key):
+                continue
+            ck_tools = set(resolve_toolset(ck))
+            if ck_tools and ck_tools.issubset(tool_names):
+                resolved.add(ck)
+    return resolved
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -8716,6 +8779,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                enabled_toolsets_override=event.enabled_toolsets_override,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -15772,6 +15836,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -15811,6 +15876,17 @@ class GatewayRunner:
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        if enabled_toolsets_override:
+            resolved = _resolve_toolset_override(
+                enabled_toolsets_override, platform_key
+            )
+            if resolved:
+                enabled_toolsets = sorted(resolved)
+                logger.info(
+                    "[gateway] enabled_toolsets override for %s: %s",
+                    platform_key,
+                    enabled_toolsets,
+                )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
@@ -17851,6 +17927,12 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    # Carry the override through queued follow-ups so a webhook
+                    # subscription with toolsets: [...] doesn't silently revert
+                    # to the platform default on a second turn within the same
+                    # session.  None is the no-op default for all other
+                    # adapters, which never set this field.
+                    enabled_toolsets_override=enabled_toolsets_override,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

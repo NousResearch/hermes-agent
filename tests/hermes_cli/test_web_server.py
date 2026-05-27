@@ -2324,3 +2324,85 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+class TestNullTimestampGuard:
+    """Regression tests for crash when session timestamps are None.
+
+    Bug: TypeError: unsupported operand type(s) for -: 'float' and 'NoneType'
+    when last_active or started_at is None in active-session arithmetic.
+    """
+
+    @pytest.fixture
+    def _patch_sessions(self, monkeypatch):
+        """Inject sessions with None timestamps into SessionDB.list_sessions."""
+        import hermes_state
+        import hermes_cli.web_server as ws
+
+        def _make_sessions(self_db):
+            return [
+                {"id": "s1", "started_at": None, "last_active": None, "ended_at": None},
+                {"id": "s2", "started_at": 1000.0, "last_active": None, "ended_at": None},
+                {"id": "s3", "started_at": None, "last_active": 1000.0, "ended_at": None},
+            ], 3
+
+        monkeypatch.setattr(hermes_state.SessionDB, "list_sessions", _make_sessions)
+        return _make_sessions
+
+    def test_get_sessions_null_timestamps_no_crash(self, _patch_sessions):
+        """get_sessions must not crash when timestamps are None."""
+        from hermes_cli.web_server import create_app
+
+        app = create_app()
+        app.state.heroku_mode = True
+        token = app.state._SESSION_TOKEN
+
+        client = app.test_client()
+        resp = client.get(f"/api/sessions?token={token}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["total"] == 3
+
+    def test_get_sessions_null_timestamps_active_zero(self, _patch_sessions):
+        """Sessions with null timestamps must report is_active=False."""
+        from hermes_cli.web_server import create_app
+        import time
+
+        app = create_app()
+        app.state.heroku_mode = True
+        token = app.state._SESSION_TOKEN
+
+        client = app.test_client()
+        resp = client.get(f"/api/sessions?token={token}")
+        data = resp.get_json()
+        for s in data["sessions"]:
+            assert s["is_active"] is False
+
+    def test_get_sessions_real_timestamps_active(self, monkeypatch):
+        """Sessions with recent real timestamps must report is_active=True."""
+        import hermes_state
+        from hermes_cli.web_server import create_app
+
+        now = 1000000.0
+
+        def _make_sessions(self_db):
+            return [
+                {
+                    "id": "s1",
+                    "started_at": now - 10,
+                    "last_active": now - 10,
+                    "ended_at": None,
+                },
+            ], 1
+
+        monkeypatch.setattr(hermes_state.SessionDB, "list_sessions", _make_sessions)
+        monkeypatch.setattr("time.time", lambda: now)
+
+        app = create_app()
+        app.state.heroku_mode = True
+        token = app.state._SESSION_TOKEN
+
+        client = app.test_client()
+        resp = client.get(f"/api/sessions?token={token}")
+        data = resp.get_json()
+        assert data["sessions"][0]["is_active"] is True

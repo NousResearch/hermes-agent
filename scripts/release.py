@@ -1155,6 +1155,7 @@ AUTHOR_MAP = {
     "quenvix00@gmail.com": "QuenVix",  # PR #26761/26772 salvage
     "164776164+QuenVix@users.noreply.github.com": "QuenVix",
     "262945885+Mind-Dragon@users.noreply.github.com": "Mind-Dragon",  # PR #26966 salvage
+    "jefferson@jeffersonnunn.com": "Mind-Dragon",
     "soynchuux@gmail.com": "soynchux",  # PR #27060 salvage
     "209694554+soynchux@users.noreply.github.com": "soynchux",
     # batch salvage (May 2026 LHF run, group 6 — final)

@@ -1114,6 +1114,28 @@ class TestAgentCacheIdleResume:
         # Post-release: client reference is dropped (memory freed).
         assert agent.client is None
 
+    def test_release_clients_shuts_down_memory_clients_without_session_end(self):
+        """Cache eviction must close provider-owned HTTP clients.
+
+        The Hindsight provider owns an aiohttp ClientSession per AIAgent. If a
+        cached agent is evicted and only the LLM client is released, that
+        provider can be garbage-collected with an open TCPConnector.
+        """
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent._active_children_lock = threading.Lock()
+        agent._active_children = set()
+        agent.client = None
+
+        manager = MagicMock()
+        agent._memory_manager = manager
+
+        agent.release_clients()
+
+        manager.shutdown_all.assert_called_once_with()
+        assert agent._memory_manager is None
+
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
 

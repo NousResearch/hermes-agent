@@ -841,15 +841,20 @@ def _preflight_codex_api_kwargs(
 def _extract_responses_message_text(item: Any) -> str:
     """Extract assistant text from a Responses message output item."""
     content = getattr(item, "content", None)
+    if content is None and isinstance(item, dict):
+        content = item.get("content")
     if not isinstance(content, list):
         return ""
 
     chunks: List[str] = []
     for part in content:
         ptype = getattr(part, "type", None)
+        text = getattr(part, "text", None)
+        if isinstance(part, dict):
+            ptype = ptype or part.get("type")
+            text = text if text is not None else part.get("text")
         if ptype not in {"output_text", "text"}:
             continue
-        text = getattr(part, "text", None)
         if isinstance(text, str) and text:
             chunks.append(text)
     return "".join(chunks).strip()
@@ -922,7 +927,11 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
 
     for item in output:
         item_type = getattr(item, "type", None)
+        if item_type is None and isinstance(item, dict):
+            item_type = item.get("type")
         item_status = getattr(item, "status", None)
+        if item_status is None and isinstance(item, dict):
+            item_status = item.get("status")
         if isinstance(item_status, str):
             item_status = item_status.strip().lower()
         else:

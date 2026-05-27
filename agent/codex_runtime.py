@@ -277,7 +277,40 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
+                try:
+                    final_response = stream.get_final_response()
+                except TypeError as exc:
+                    # OpenAI SDK 2.24 can raise ``TypeError: 'NoneType' object is not iterable``
+                    # against chatgpt.com/backend-api/codex even after a healthy stream
+                    # emitted output_item.done / output_text.delta events.  Treat that as
+                    # a broken SDK finalizer, not a provider failure, and synthesize the
+                    # Responses object from the events we already collected.
+                    if "NoneType" not in str(exc) or (
+                        not collected_output_items and not agent._codex_streamed_text_parts
+                    ):
+                        raise
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    output_items = list(collected_output_items)
+                    if not output_items and assembled and not has_tool_calls:
+                        output_items = [SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )]
+                    final_response = SimpleNamespace(
+                        id=None,
+                        object="response",
+                        status="completed",
+                        output=output_items,
+                        output_text=assembled,
+                        usage=None,
+                    )
+                    logger.warning(
+                        "Codex stream: recovered from SDK get_final_response TypeError "
+                        "using %d output items and %d streamed chars. %s",
+                        len(output_items), len(assembled), agent._client_log_context(),
+                    )
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.

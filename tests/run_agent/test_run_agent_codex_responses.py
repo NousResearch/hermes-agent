@@ -10,6 +10,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent.codex_responses_adapter import _normalize_codex_response
 
 
 @pytest.fixture(autouse=True)
@@ -155,9 +156,11 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None, iter_error=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
+        self._iter_error = iter_error
 
     def __enter__(self):
         return self
@@ -166,7 +169,10 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        for event in self._events:
+            yield event
+        if self._iter_error is not None:
+            raise self._iter_error
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -537,6 +543,50 @@ def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(mo
     assert calls["stream"] == 1
     assert response.output == [output_item]
     assert response.status == "completed"
+
+
+def test_run_codex_stream_recovers_text_deltas_when_sdk_raises_nonetype(monkeypatch):
+    """Recover from text deltas if the SDK raises after streaming content."""
+    agent = _build_agent(monkeypatch)
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="O"),
+                SimpleNamespace(type="response.output_text.delta", delta="K"),
+            ],
+            iter_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response is not None
+    assert response.status == "completed"
+    assert response.output[0].content[0].text == "OK"
+
+
+def test_normalize_codex_response_accepts_dict_message_items():
+    response = SimpleNamespace(
+        output=[
+            {
+                "type": "message",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "dict ok"}],
+            }
+        ],
+        status="completed",
+        usage=None,
+    )
+
+    msg, finish_reason = _normalize_codex_response(response)
+    assert finish_reason == "stop"
+    assert msg.content == "dict ok"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

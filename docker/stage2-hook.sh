@@ -188,4 +188,47 @@ if [ -d "$INSTALL_DIR/skills" ]; then
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi
 
+# --- Discover agent-browser's Chromium binary ---
+# The image's Dockerfile runs `npx playwright install chromium`, which
+# populates ``$PLAYWRIGHT_BROWSERS_PATH`` (=/opt/hermes/.playwright) with
+# a ``chromium_headless_shell-<build>/chrome-headless-shell-linux64/``
+# directory. agent-browser (the runtime CLI Hermes spawns for the
+# browser tool) doesn't recognise this layout in its own cache scan and
+# fails with "Auto-launch failed: Chrome not found" — even though the
+# binary is right there (#15697).
+#
+# Fix: locate the binary at boot and export ``AGENT_BROWSER_EXECUTABLE_PATH``
+# via /run/s6/container_environment so the `with-contenv` shebang on
+# main-wrapper.sh propagates it into the supervised ``hermes`` process
+# and thence to agent-browser subprocesses.
+#
+# - Skipped when the user has already set ``AGENT_BROWSER_EXECUTABLE_PATH``
+#   (lets users override with a system Chrome install).
+# - Filename-matched (not path-matched): the chromium dir contains many
+#   shared libraries (libGLESv2.so, libEGL.so, ...) which inherit the
+#   executable bit from Playwright's tarball but are NOT browser binaries.
+#   We only accept files whose basename is chrome / chromium /
+#   chrome-headless-shell / chromium-browser. Compare PR #18635's earlier
+#   ``find | grep -Ei 'chrome|chromium'`` which would match the path
+#   ``.../chrome-headless-shell-linux64/libGLESv2.so`` and pick a .so.
+# - Quietly skipped when $PLAYWRIGHT_BROWSERS_PATH doesn't exist (e.g.
+#   custom builds that strip Playwright).
+if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
+        [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ] && \
+        [ -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
+    browser_bin=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -executable \
+        \( -name 'chrome' -o -name 'chromium' \
+           -o -name 'chrome-headless-shell' -o -name 'chromium-browser' \) \
+        2>/dev/null | head -n 1)
+    if [ -n "$browser_bin" ]; then
+        echo "[stage2] Found agent-browser Chromium binary: $browser_bin"
+        # Write to s6's container_environment so with-contenv picks it
+        # up for all supervised services (main-hermes, dashboard, etc.).
+        # Idempotent: each boot overwrites with the current path.
+        printf '%s' "$browser_bin" > /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH
+    else
+        echo "[stage2] Warning: no Chromium binary under $PLAYWRIGHT_BROWSERS_PATH; browser tool may fail"
+    fi
+fi
+
 echo "[stage2] Setup complete; starting user services"

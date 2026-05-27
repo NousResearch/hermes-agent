@@ -351,6 +351,82 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
+_SESSION_HEALTH_NUDGE_MIN_MESSAGES = 24
+_SESSION_HEALTH_NUDGE_MESSAGE_THRESHOLD = 120
+_SESSION_HEALTH_NUDGE_CONTEXT_PCT = 0.60
+_SESSION_HEALTH_NUDGE_AGE_HOURS = 12.0
+
+
+def _format_session_health_age_hours(age_seconds: float) -> str:
+    """Return a compact age label for session-health nudges."""
+    hours = max(1, round(max(0.0, age_seconds) / 3600.0))
+    return f"{hours}h"
+
+
+def _build_session_health_nudge(
+    *,
+    platform: Any,
+    session_entry: Any,
+    history: list[dict[str, Any]] | None,
+    approx_tokens: int,
+    context_length: Optional[int],
+    now: Optional[datetime] = None,
+) -> Optional[tuple[str, str]]:
+    """Return a one-shot Telegram session-health notice when a chat gets heavy.
+
+    This is intentionally a soft nudge, not an auto-reset. It fires well before
+    hard hygiene compression so the user can summarize/externalize and start a
+    fresh thread before the session turns into a broad workspace.
+    """
+    if _gateway_platform_value(platform) != "telegram":
+        return None
+    if session_entry is None or getattr(session_entry, "session_health_nudged", False):
+        return None
+
+    history = list(history or [])
+    msg_count = len(history)
+    if msg_count < _SESSION_HEALTH_NUDGE_MIN_MESSAGES:
+        return None
+
+    created_at = getattr(session_entry, "created_at", None)
+    if now is None:
+        now = datetime.now()
+    age_seconds = 0.0
+    if isinstance(created_at, datetime):
+        try:
+            age_seconds = max(0.0, (now - created_at).total_seconds())
+        except Exception:
+            age_seconds = 0.0
+
+    context_pct = 0.0
+    if context_length and context_length > 0 and approx_tokens > 0:
+        context_pct = approx_tokens / context_length
+
+    reasons: list[tuple[str, str]] = []
+    if context_pct >= _SESSION_HEALTH_NUDGE_CONTEXT_PCT:
+        pct_label = max(1, round(context_pct * 100))
+        reasons.append(("context", f"context is already ~{pct_label}% full"))
+    if msg_count >= _SESSION_HEALTH_NUDGE_MESSAGE_THRESHOLD:
+        reasons.append(("messages", f"thread already has {msg_count} messages"))
+    if age_seconds >= (_SESSION_HEALTH_NUDGE_AGE_HOURS * 3600.0):
+        reasons.append(("age", f"session has been open for {_format_session_health_age_hours(age_seconds)}"))
+    if not reasons:
+        return None
+
+    reason_key = reasons[0][0]
+    reason_text = ", ".join(text for _, text in reasons)
+    notice = (
+        "⚠️ Session-health nudge: this Telegram session is getting heavy "
+        f"({reason_text}).\n\n"
+        "If the topic is drifting, better flow is:\n"
+        "• summarize the current state\n"
+        "• externalize durable notes to memory/skills/KB\n"
+        "• start a fresh thread with /new\n\n"
+        "If you want to keep this thread, /compress is the safer next step than letting context keep ballooning."
+    )
+    return notice, reason_key
+
+
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -8619,6 +8695,37 @@ class GatewayRunner:
                         logger.warning(
                             "Session hygiene auto-compress failed: %s", e
                         )
+
+        _session_health_context_length = None
+        try:
+            _session_health_context_length = locals().get("_hyg_context_length")
+        except Exception:
+            _session_health_context_length = None
+        _session_health_tokens = max(
+            0,
+            int(getattr(session_entry, "last_prompt_tokens", 0) or 0),
+        )
+        if _session_health_tokens <= 0 and history:
+            try:
+                _session_health_tokens = max(
+                    0,
+                    sum(len(str(m.get("content") or "")) for m in history) // 4,
+                )
+            except Exception:
+                _session_health_tokens = 0
+        _session_health_notice = _build_session_health_nudge(
+            platform=source.platform,
+            session_entry=session_entry,
+            history=history,
+            approx_tokens=_session_health_tokens,
+            context_length=_session_health_context_length,
+        )
+        if _session_health_notice:
+            _notice_text, _notice_reason = _session_health_notice
+            await self._deliver_platform_notice(source, _notice_text)
+            session_entry.session_health_nudged = True
+            session_entry.session_health_nudge_reason = _notice_reason
+            self.session_store._save()
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():

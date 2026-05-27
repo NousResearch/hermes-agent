@@ -452,6 +452,12 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
+
+    # One-shot Telegram session-health nudge state. Used to avoid repeating
+    # the same "this thread is getting heavy" guidance on every turn once a
+    # session crosses the soft threshold.
+    session_health_nudged: bool = False
+    session_health_nudge_reason: Optional[str] = None
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -506,6 +512,8 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "session_health_nudged": self.session_health_nudged,
+            "session_health_nudge_reason": self.session_health_nudge_reason,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "expiry_finalized": self.expiry_finalized,
@@ -562,6 +570,8 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            session_health_nudged=data.get("session_health_nudged", False),
+            session_health_nudge_reason=data.get("session_health_nudge_reason"),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),

@@ -6,8 +6,12 @@ import pytest
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
+from contextvars import ContextVar
+
 from gateway.session_context import (
     get_session_env,
+    get_registered_var_names,
+    register_session_context_var,
     set_session_vars,
     clear_session_vars,
     _VAR_MAP,
@@ -322,3 +326,116 @@ async def test_run_in_executor_with_context_propagates_exceptions():
 
     with pytest.raises(ValueError, match="boom"):
         await runner._run_in_executor_with_context(blow_up)
+
+
+# ---------------------------------------------------------------------------
+# register_session_context_var — plugin-extensible registry
+# ---------------------------------------------------------------------------
+
+def test_register_session_context_var_makes_name_resolvable(monkeypatch):
+    """A registered ContextVar should resolve via get_session_env using
+    the registered name, even though it isn't a built-in HERMES_SESSION_*
+    name."""
+    var: ContextVar = ContextVar("CUSTOM_PRINCIPAL", default=_UNSET)
+    register_session_context_var("CUSTOM_PRINCIPAL", var)
+    monkeypatch.delenv("CUSTOM_PRINCIPAL", raising=False)
+    try:
+        var.set("alice@example.com")
+        assert get_session_env("CUSTOM_PRINCIPAL") == "alice@example.com"
+    finally:
+        var.set(_UNSET)
+        _VAR_MAP.pop("CUSTOM_PRINCIPAL", None)
+
+
+def test_register_session_context_var_falls_back_to_env(monkeypatch):
+    """When the ContextVar is _UNSET, the resolver falls back to os.environ
+    (same semantics as built-in vars)."""
+    var: ContextVar = ContextVar("CUSTOM_FALLBACK", default=_UNSET)
+    register_session_context_var("CUSTOM_FALLBACK", var)
+    monkeypatch.setenv("CUSTOM_FALLBACK", "from-env")
+    try:
+        assert get_session_env("CUSTOM_FALLBACK") == "from-env"
+    finally:
+        _VAR_MAP.pop("CUSTOM_FALLBACK", None)
+
+
+def test_register_session_context_var_explicit_empty_does_not_fall_back(
+    monkeypatch,
+):
+    """Setting the ContextVar to "" is an explicit clear — the resolver
+    must return "" and NOT fall back to os.environ."""
+    var: ContextVar = ContextVar("CUSTOM_EMPTY", default=_UNSET)
+    register_session_context_var("CUSTOM_EMPTY", var)
+    monkeypatch.setenv("CUSTOM_EMPTY", "from-env-should-not-be-seen")
+    try:
+        var.set("")
+        assert get_session_env("CUSTOM_EMPTY") == ""
+    finally:
+        var.set(_UNSET)
+        _VAR_MAP.pop("CUSTOM_EMPTY", None)
+
+
+def test_register_session_context_var_rejects_invalid_inputs():
+    """Defensive checks — bad inputs raise before corrupting the registry."""
+    valid_var: ContextVar = ContextVar("X", default=_UNSET)
+    with pytest.raises(ValueError):
+        register_session_context_var("", valid_var)
+    with pytest.raises(TypeError):
+        register_session_context_var("X", "not a contextvar")  # type: ignore[arg-type]
+
+
+def test_register_session_context_var_is_idempotent_and_last_writer_wins():
+    """Re-registering the same name swaps the binding (last writer wins)."""
+    a: ContextVar = ContextVar("DUP", default=_UNSET)
+    b: ContextVar = ContextVar("DUP", default=_UNSET)
+    register_session_context_var("DUP", a)
+    register_session_context_var("DUP", b)
+    try:
+        b.set("from-b")
+        a.set("from-a")
+        # b is the registered one — resolver should see "from-b".
+        assert get_session_env("DUP") == "from-b"
+    finally:
+        a.set(_UNSET)
+        b.set(_UNSET)
+        _VAR_MAP.pop("DUP", None)
+
+
+def test_get_registered_var_names_includes_builtin_and_plugin():
+    """The introspection helper lists both built-in and plugin-registered names."""
+    var: ContextVar = ContextVar("INTROSPECT_TEST", default=_UNSET)
+    register_session_context_var("INTROSPECT_TEST", var)
+    try:
+        names = get_registered_var_names()
+        assert "HERMES_SESSION_USER_ID" in names  # built-in
+        assert "INTROSPECT_TEST" in names         # plugin-registered
+    finally:
+        _VAR_MAP.pop("INTROSPECT_TEST", None)
+
+
+@pytest.mark.asyncio
+async def test_register_session_context_var_asyncio_task_isolation():
+    """Custom ContextVars registered via the public API inherit the same
+    per-asyncio-task isolation as built-in HERMES_SESSION_* vars."""
+    var: ContextVar = ContextVar("ISO_TEST", default=_UNSET)
+    register_session_context_var("ISO_TEST", var)
+
+    results: dict[str, str] = {}
+
+    async def handler(label: str, value: str, delay: float):
+        token = var.set(value)
+        try:
+            await asyncio.sleep(delay)
+            results[label] = get_session_env("ISO_TEST")
+        finally:
+            var.reset(token)
+
+    try:
+        await asyncio.gather(
+            handler("a", "alice", 0.02),
+            handler("b", "bob",   0.01),
+        )
+        # Each task reads its own value back — no bleed.
+        assert results == {"a": "alice", "b": "bob"}
+    finally:
+        _VAR_MAP.pop("ISO_TEST", None)

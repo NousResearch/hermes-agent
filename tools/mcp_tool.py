@@ -638,6 +638,86 @@ def _safe_numeric(value, default, coerce=int, minimum=1):
         return default
 
 
+# ---------------------------------------------------------------------------
+# Per-request context-template resolution for MCP-headers config.
+#
+# Distinguishing case from config-load-time substitution:
+#
+#   ``${ENV_VAR}``           — substituted ONCE at config load time by the
+#                              external envsubst pass (e.g. Mercator's
+#                              docker/entrypoint.sh). Values are frozen for
+#                              the lifetime of the MCP server task.
+#
+#   ``${context:NAME}``      — left intact through config load, then
+#                              resolved PER REQUEST from
+#                              ``gateway.session_context``. Asyncio-task-local,
+#                              so concurrent handler tasks each see their own
+#                              session state and never bleed into each other.
+#
+# This split lets consumers attach per-request values (most commonly delegated
+# user identity) to outbound MCP HTTP headers without monkey-patching httpx or
+# routing through a sidecar process.  Transport-specific behavior:
+#
+#   * Streamable HTTP (default for remote MCP servers) — per-request hook on
+#     httpx.AsyncClient.event_hooks["request"] performs substitution.  Empty
+#     resolved values cause the header to be dropped (not sent as an empty
+#     string).
+#
+#   * SSE — the headers dict is passed to ``sse_client`` once at stream-open;
+#     per-request substitution is not possible.  Templates resolve at
+#     stream-open time and are then frozen for the SSE connection's
+#     lifetime (typically minutes-to-hours).
+# ---------------------------------------------------------------------------
+
+_CONTEXT_TEMPLATE_RE = re.compile(r'\$\{context:([A-Za-z_][A-Za-z0-9_]*)\}')
+
+
+def _has_context_template(value: Any) -> bool:
+    """Return True if *value* is a string containing ``${context:NAME}``."""
+    return isinstance(value, str) and bool(_CONTEXT_TEMPLATE_RE.search(value))
+
+
+def _resolve_context_templates(value: str) -> str:
+    """Replace every ``${context:NAME}`` occurrence in *value* with the
+    current resolution of ``NAME`` via ``gateway.session_context``.
+
+    Unset names resolve to ``""``.  Mixed literal text + templates is fine
+    (e.g. ``"Bearer ${context:JWT}"``).  Non-template input is returned
+    unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    # Lazy import — keeps the gateway -> tools dependency one-way and avoids
+    # paying the import cost when no headers use templates.
+    from gateway.session_context import get_session_env
+
+    def _replace(match: re.Match) -> str:
+        name = match.group(1)
+        return get_session_env(name, "")
+
+    return _CONTEXT_TEMPLATE_RE.sub(_replace, value)
+
+
+def _split_static_and_templated_headers(
+    headers: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Separate a headers dict into a static part and a templated part.
+
+    Returns ``(static, templated)`` where *static* contains values with no
+    ``${context:NAME}`` placeholders (safe to set as httpx client defaults)
+    and *templated* contains the raw template strings (to be resolved
+    per-request via a request hook).
+    """
+    static: Dict[str, Any] = {}
+    templated: Dict[str, str] = {}
+    for key, value in headers.items():
+        if _has_context_template(value):
+            templated[key] = value
+        else:
+            static[key] = value
+    return static, templated
+
+
 class SamplingHandler:
     """Handles sampling/createMessage requests for a single MCP server.
 
@@ -1351,6 +1431,11 @@ class MCPServerTask:
         # case-insensitive so conventional casing is preserved.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+        # Separate headers carrying ``${context:NAME}`` templates from static
+        # ones. Static headers go on the httpx client as defaults; templated
+        # headers are resolved per-request via a request event hook so each
+        # outgoing MCP call sees the calling task's current session state.
+        static_headers, templated_headers = _split_static_and_templated_headers(headers)
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
 
@@ -1393,9 +1478,18 @@ class MCPServerTask:
             # Streamable HTTP code path's httpx read timeout below. Original
             # observation from @amiller in PR #5981 (Router Teamwork,
             # Supermemory on Cloudflare Workers idle-disconnect at ~60s).
+            # SSE is one long-lived connection — per-request substitution is
+            # not possible.  Resolve any ``${context:NAME}`` templates ONCE
+            # at stream-open and pass the resulting static dict.  Sessions
+            # spun up before the session context vars are set will see empty
+            # values, which is consistent with non-templated unset env vars.
+            sse_headers = {
+                key: (_resolve_context_templates(value) if isinstance(value, str) else value)
+                for key, value in headers.items()
+            }
             _sse_kwargs: dict = {
                 "url": url,
-                "headers": headers or None,
+                "headers": sse_headers or None,
                 "timeout": float(connect_timeout),
                 "sse_read_timeout": 300.0,
             }
@@ -1437,14 +1531,42 @@ class MCPServerTask:
                         response.next_request.headers.pop("authorization", None)
                         response.next_request.headers.pop("Authorization", None)
 
+            event_hooks: Dict[str, List[Any]] = {
+                "response": [_strip_auth_on_cross_origin_redirect],
+            }
+            if templated_headers:
+                # Bind the per-server templated_headers dict into the closure
+                # so concurrent MCP servers don't share resolution state.
+                _templated_for_hook = dict(templated_headers)
+
+                async def _inject_templated_headers(request):
+                    """Resolve ``${context:NAME}`` templates against the
+                    *calling task's* session context on each outbound request.
+
+                    Empty resolved values cause the header to be omitted from
+                    the outgoing request — this matches the natural unset-var
+                    semantic (don't send ``X-Foo:`` with an empty value).
+                    """
+                    for name, template in _templated_for_hook.items():
+                        resolved = _resolve_context_templates(template)
+                        if resolved:
+                            request.headers[name] = resolved
+                        else:
+                            # Headers dict supports __delitem__ but not pop
+                            # in older httpx; guard with membership check.
+                            if name in request.headers:
+                                del request.headers[name]
+
+                event_hooks["request"] = [_inject_templated_headers]
+
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "event_hooks": event_hooks,
             }
-            if headers:
-                client_kwargs["headers"] = headers
+            if static_headers:
+                client_kwargs["headers"] = static_headers
             if _oauth_auth is not None:
                 client_kwargs["auth"] = _oauth_auth
 
@@ -1466,9 +1588,24 @@ class MCPServerTask:
                                 "tearing down HTTP session", self.name,
                             )
         else:
-            # Deprecated API (mcp < 1.24.0): manages httpx client internally.
+            # Deprecated API (mcp < 1.24.0): manages httpx client internally,
+            # so we can't install a per-request event hook.  Resolve any
+            # ``${context:NAME}`` templates once at startup and freeze — the
+            # session-context value at server-init time is what every
+            # subsequent MCP call will carry.  Acceptable for the deprecated
+            # path; new HTTP path (mcp >= 1.24.0) uses per-request resolution.
+            if templated_headers:
+                logger.info(
+                    "MCP server '%s': legacy HTTP path resolves "
+                    "${context:...} once at startup (deprecated mcp client)",
+                    self.name,
+                )
+            legacy_headers = {
+                key: (_resolve_context_templates(value) if isinstance(value, str) else value)
+                for key, value in headers.items()
+            }
             _http_kwargs: dict = {
-                "headers": headers,
+                "headers": legacy_headers,
                 "timeout": float(connect_timeout),
                 "verify": ssl_verify,
             }

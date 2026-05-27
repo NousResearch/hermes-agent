@@ -152,6 +152,9 @@ def get_session_env(name: str, default: str = "") -> str:
        this context — i.e. CLI, cron scheduler, and test processes that
        don't use ``set_session_vars`` at all).
     3. *default*
+
+    Plugin-registered names (via :func:`register_session_context_var`) are
+    resolved through the same path as built-in ``HERMES_SESSION_*`` names.
     """
     import os
 
@@ -162,3 +165,59 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def register_session_context_var(name: str, var: ContextVar) -> None:
+    """Register a plugin-owned ``ContextVar`` resolvable through
+    :func:`get_session_env` and the ``${context:NAME}`` template syntax in
+    MCP-server header config.
+
+    Plugins call this during ``register(ctx)`` so their per-task state is
+    visible to Hermes config resolution. The registered ``ContextVar``
+    follows the same resolution semantics as built-in ``HERMES_SESSION_*``
+    vars: explicitly set values (even ``""``) are returned as-is; the
+    sentinel ``_UNSET`` default triggers ``os.environ`` fallback.
+
+    Example::
+
+        from contextvars import ContextVar
+        from gateway.session_context import register_session_context_var
+
+        DELEGATED_PRINCIPAL_EMAIL: ContextVar = ContextVar(
+            "DELEGATED_PRINCIPAL_EMAIL", default="",
+        )
+
+        def register(ctx):
+            register_session_context_var(
+                "DELEGATED_PRINCIPAL_EMAIL", DELEGATED_PRINCIPAL_EMAIL,
+            )
+            # ... plugin sets DELEGATED_PRINCIPAL_EMAIL.set(email) per turn
+
+    The config-side consumer (``tools/mcp_tool.py`` ``${context:NAME}``
+    expansion) reads via :func:`get_session_env`, so a registered name
+    becomes usable in ``config.yaml`` like::
+
+        mcp_servers:
+          my_server:
+            headers:
+              X-Delegated-Principal: "${context:DELEGATED_PRINCIPAL_EMAIL}"
+
+    Registration is idempotent — repeated calls with the same name replace
+    the prior binding (last-writer-wins). Built-in names (``HERMES_SESSION_*``,
+    ``HERMES_CRON_AUTO_DELIVER_*``) can be overridden but typically should
+    not be.
+    """
+    if not isinstance(name, str) or not name:
+        raise ValueError("register_session_context_var: name must be a non-empty str")
+    if not isinstance(var, ContextVar):
+        raise TypeError("register_session_context_var: var must be a ContextVar")
+    _VAR_MAP[name] = var
+
+
+def get_registered_var_names() -> tuple[str, ...]:
+    """Return the set of names currently resolvable via :func:`get_session_env`.
+
+    Useful for diagnostics and tests. Includes both built-in and
+    plugin-registered names.
+    """
+    return tuple(_VAR_MAP.keys())

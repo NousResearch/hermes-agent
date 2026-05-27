@@ -483,6 +483,15 @@ class AgentModelUpdate(BaseModel):
     allow_deprecated: bool = False
 
 
+class AgentModelStrategyUpdate(BaseModel):
+    """Payload for PUT /api/agents/{agent_id}/model-strategy."""
+    mode: str
+    primary: str = ""
+    chain: List[str] = []
+    fallback_on: List[str] = []
+    allow_deprecated: bool = False
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -1517,6 +1526,89 @@ def _empty_usage() -> Dict[str, Any]:
     }
 
 
+def _resolve_editable_managed_agent(agent_id: str):
+    from agent.managed_agents.registry import load_agent_registry
+
+    registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+    resolved_agent_id = registry.resolve_agent_id(agent_id) or agent_id
+    if resolved_agent_id not in registry.agents:
+        raise HTTPException(status_code=404, detail=f"Unknown agent_id: {agent_id}")
+    agent = registry.get(resolved_agent_id)
+    if agent.runtime in _EXTERNAL_AGENT_RUNTIMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{resolved_agent_id} is managed by external CLI runtime: {agent.runtime}",
+        )
+    return resolved_agent_id, agent
+
+
+def _validate_agent_model_ref(
+    model_ref: str,
+    models_cfg: Dict[str, Any],
+    *,
+    allow_deprecated: bool = False,
+) -> None:
+    if model_ref not in models_cfg:
+        raise HTTPException(status_code=400, detail=f"Unknown model_ref: {model_ref}")
+    model_status = str((models_cfg.get(model_ref) or {}).get("status") or "active").lower()
+    if model_status == "deprecated" and not allow_deprecated:
+        raise HTTPException(status_code=400, detail=f"model_ref {model_ref} is deprecated")
+
+
+def _normalize_strategy_update(
+    body: AgentModelStrategyUpdate,
+    models_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    mode = (body.mode or "").strip().lower()
+    if mode not in {"fixed", "fallback"}:
+        raise HTTPException(status_code=400, detail="mode must be fixed or fallback")
+
+    chain: list[str] = []
+    for item in body.chain or []:
+        ref = str(item or "").strip()
+        if ref and ref not in chain:
+            chain.append(ref)
+    primary = (body.primary or "").strip() or (chain[0] if chain else "")
+    if not primary:
+        raise HTTPException(status_code=400, detail="primary model_ref is required")
+    if primary not in chain:
+        chain.insert(0, primary)
+    else:
+        chain = [primary] + [ref for ref in chain if ref != primary]
+
+    for ref in chain:
+        _validate_agent_model_ref(ref, models_cfg, allow_deprecated=body.allow_deprecated)
+
+    fallback_on = [
+        str(item).strip()
+        for item in (body.fallback_on or [])
+        if str(item).strip()
+    ]
+    if mode == "fixed":
+        return {
+            "mode": "fixed",
+            "primary": primary,
+            "chain": [primary],
+            "fallback_on": [],
+        }
+    if len(chain) < 2:
+        raise HTTPException(status_code=400, detail="fallback mode requires at least two model_refs in chain")
+    if not fallback_on:
+        fallback_on = [
+            "quota_exceeded",
+            "rate_limited",
+            "timeout",
+            "server_error",
+            "empty_final_content",
+        ]
+    return {
+        "mode": "fallback",
+        "primary": primary,
+        "chain": chain,
+        "fallback_on": fallback_on,
+    }
+
+
 @app.get("/api/agents/managed")
 async def get_managed_agents(days: int = 30):
     try:
@@ -1592,25 +1684,10 @@ async def update_managed_agent_model(agent_id: str, body: AgentModelUpdate):
         raise HTTPException(status_code=400, detail="model_ref is required")
 
     try:
-        from agent.managed_agents.registry import load_agent_registry
-
         models_cfg = _load_models_config()
-        if requested_ref not in models_cfg:
-            raise HTTPException(status_code=400, detail=f"Unknown model_ref: {requested_ref}")
-        model_status = str((models_cfg.get(requested_ref) or {}).get("status") or "active").lower()
-        if model_status == "deprecated" and not body.allow_deprecated:
-            raise HTTPException(status_code=400, detail=f"model_ref {requested_ref} is deprecated")
+        _validate_agent_model_ref(requested_ref, models_cfg, allow_deprecated=body.allow_deprecated)
 
-        registry = load_agent_registry(_AGENTS_CONFIG_PATH)
-        resolved_agent_id = registry.resolve_agent_id(agent_id) or agent_id
-        if resolved_agent_id not in registry.agents:
-            raise HTTPException(status_code=404, detail=f"Unknown agent_id: {agent_id}")
-        agent = registry.get(resolved_agent_id)
-        if agent.runtime in _EXTERNAL_AGENT_RUNTIMES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{resolved_agent_id} is managed by external CLI runtime: {agent.runtime}",
-            )
+        resolved_agent_id, _agent = _resolve_editable_managed_agent(agent_id)
 
         data = _load_managed_agents_config()
         raw_agents = data.get("agents")
@@ -1663,6 +1740,44 @@ async def update_managed_agent_model(agent_id: str, body: AgentModelUpdate):
     except Exception as exc:
         _log.exception("PUT /api/agents/%s/model failed", agent_id)
         raise HTTPException(status_code=500, detail=f"Failed to update agent model: {exc}") from exc
+
+
+@app.put("/api/agents/{agent_id}/model-strategy")
+async def update_managed_agent_model_strategy(agent_id: str, body: AgentModelStrategyUpdate):
+    try:
+        models_cfg = _load_models_config()
+        resolved_agent_id, _agent = _resolve_editable_managed_agent(agent_id)
+        strategy = _normalize_strategy_update(body, models_cfg)
+
+        data = _load_managed_agents_config()
+        raw_agents = data.get("agents")
+        if not isinstance(raw_agents, list):
+            raise HTTPException(status_code=500, detail="agents.yaml agents must be a list")
+        updated = False
+        for raw in raw_agents:
+            if isinstance(raw, dict) and raw.get("agent_id") == resolved_agent_id:
+                raw["model_ref"] = strategy["primary"]
+                raw["model_strategy"] = strategy
+                updated = True
+                break
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Agent {resolved_agent_id} not found in agents.yaml")
+
+        _save_managed_agents_config(data)
+        primary_cfg = models_cfg.get(strategy["primary"]) or {}
+        return {
+            "ok": True,
+            "agent_id": resolved_agent_id,
+            "model_ref": strategy["primary"],
+            "model_strategy": strategy,
+            "provider": str(primary_cfg.get("provider") or ""),
+            "model": str(primary_cfg.get("model") or ""),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("PUT /api/agents/%s/model-strategy failed", agent_id)
+        raise HTTPException(status_code=500, detail=f"Failed to update agent model strategy: {exc}") from exc
 
 
 

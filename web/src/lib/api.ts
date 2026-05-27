@@ -102,6 +102,15 @@ export const api = {
     }),
   getManagedAgents: (days: number) =>
     fetchJSON<ManagedAgentsResponse>(`/api/agents/managed?days=${days}`),
+  setManagedAgentModelStrategy: (agentId: string, body: UpdateAgentModelStrategyRequest) =>
+    fetchJSON<UpdateAgentModelStrategyResponse>(
+      `/api/agents/${encodeURIComponent(agentId)}/model-strategy`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   getAgentRuns: (params: { agent_id?: string; status?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.agent_id) qs.set("agent_id", params.agent_id);
@@ -940,6 +949,23 @@ export interface UpdateAgentModelResponse {
   model_ref: string;
   provider: string;
   model: string;
+}
+
+export interface UpdateAgentModelStrategyRequest {
+  mode: "fixed" | "fallback";
+  primary: string;
+  chain: string[];
+  fallback_on?: string[];
+  allow_deprecated?: boolean;
+}
+
+export interface UpdateAgentModelStrategyResponse extends UpdateAgentModelResponse {
+  model_strategy: {
+    mode: string;
+    primary: string;
+    chain: string[];
+    fallback_on?: string[];
+  };
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent } from "react";
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
   MessageSquare,
   X,
   ExternalLink,
@@ -9,6 +11,7 @@ import {
   RefreshCw,
   Save,
   Send,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -29,6 +32,14 @@ const PERIODS = [
   { label: "7d", days: 7 },
   { label: "30d", days: 30 },
   { label: "90d", days: 90 },
+] as const;
+
+const FALLBACK_TRIGGERS = [
+  "quota_exceeded",
+  "rate_limited",
+  "timeout",
+  "server_error",
+  "empty_final_content",
 ] as const;
 
 function formatTokens(n: number): string {
@@ -160,26 +171,64 @@ function AgentModelSelect({
   onSaved: () => void;
 }) {
   const [selected, setSelected] = useState(agent.model_ref);
+  const [strategyMode, setStrategyMode] = useState<"fixed" | "fallback">(
+    agent.model_strategy?.mode === "fallback" ? "fallback" : "fixed",
+  );
+  const [chain, setChain] = useState<string[]>(() => {
+    const existing = agent.model_strategy?.chain || [];
+    return existing.length ? existing : [agent.model_ref];
+  });
+  const [fallbackOn, setFallbackOn] = useState<string[]>(() => agent.model_strategy?.fallback_on || []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const dirty = selected !== agent.model_ref;
+  const normalizedChain = useMemo(() => {
+    const ordered = [selected, ...chain].filter(Boolean);
+    return ordered.filter((ref, idx) => ordered.indexOf(ref) === idx);
+  }, [chain, selected]);
 
   useEffect(() => {
     setSelected(agent.model_ref);
+    setStrategyMode(agent.model_strategy?.mode === "fallback" ? "fallback" : "fixed");
+    setChain((agent.model_strategy?.chain || []).length ? agent.model_strategy?.chain || [] : [agent.model_ref]);
+    setFallbackOn(agent.model_strategy?.fallback_on || []);
     setError(null);
-  }, [agent.agent_id, agent.model_ref]);
+  }, [agent.agent_id, agent.model_ref, agent.model_strategy]);
 
-  const save = async () => {
+  const saveStrategy = async () => {
     setBusy(true);
     setError(null);
     try {
-      await api.setManagedAgentModel(agent.agent_id, { model_ref: selected });
+      await api.setManagedAgentModelStrategy(agent.agent_id, {
+        mode: strategyMode,
+        primary: selected,
+        chain: strategyMode === "fallback" ? normalizedChain : [selected],
+        fallback_on: strategyMode === "fallback" ? fallbackOn : undefined,
+      });
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
+  };
+
+  const setNormalizedChain = (nextChain: string[]) => {
+    const unique = nextChain.filter(Boolean).filter((ref, idx, arr) => arr.indexOf(ref) === idx);
+    if (unique[0]) setSelected(unique[0]);
+    setChain(unique);
+  };
+
+  const updateChainAt = (index: number, value: string) => {
+    const next = normalizedChain.map((item, idx) => (idx === index ? value : item));
+    setNormalizedChain(next);
+  };
+
+  const moveChainItem = (index: number, direction: -1 | 1) => {
+    const next = [...normalizedChain];
+    const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setNormalizedChain(next);
   };
 
   if (!agent.editable) {
@@ -213,18 +262,113 @@ function AgentModelSelect({
               </option>
             ))}
         </select>
-        <Button
-          size="sm"
-          className="h-8 px-2"
-          disabled={!dirty || busy}
-          onClick={save}
-          prefix={busy ? <Spinner /> : <Save className="h-3.5 w-3.5" />}
-        >
-          Save
-        </Button>
       </div>
       <ModelLabel model={modelByRef.get(selected)} />
       <ModelStrategySummary agent={agent} />
+      <div className="space-y-1 border-t border-border/60 pt-1.5">
+        <div className="flex items-center gap-2">
+          <select
+            className="h-7 border border-border bg-background px-2 text-[11px]"
+            value={strategyMode}
+            onChange={(e) => setStrategyMode(e.target.value === "fallback" ? "fallback" : "fixed")}
+            disabled={busy}
+          >
+            <option value="fixed">fixed</option>
+            <option value="fallback">fallback</option>
+          </select>
+          <Button
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            outlined
+            disabled={busy || (strategyMode === "fallback" && normalizedChain.length < 2)}
+            onClick={saveStrategy}
+            prefix={busy ? <Spinner /> : <Save className="h-3 w-3" />}
+          >
+            Strategy
+          </Button>
+        </div>
+        {strategyMode === "fallback" ? (
+          <div className="space-y-1">
+            {normalizedChain.map((ref, index) => (
+              <div key={`${ref}-${index}`} className="flex items-center gap-1">
+                <select
+                  className="h-7 min-w-0 flex-1 border border-border bg-background px-2 text-[11px]"
+                  value={ref}
+                  onChange={(e) => updateChainAt(index, e.target.value)}
+                  disabled={busy}
+                >
+                  {models
+                    .filter((m) => m.status !== "deprecated" || m.model_ref === ref)
+                    .map((m) => (
+                      <option key={m.model_ref} value={m.model_ref}>
+                        {index + 1}. {m.model_ref}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                  disabled={busy || index === 0}
+                  onClick={() => moveChainItem(index, -1)}
+                  aria-label="Move model up"
+                >
+                  <ChevronUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                  disabled={busy || index === normalizedChain.length - 1}
+                  onClick={() => moveChainItem(index, 1)}
+                  aria-label="Move model down"
+                >
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-destructive disabled:opacity-30"
+                  disabled={busy || normalizedChain.length <= 2}
+                  onClick={() => setNormalizedChain(normalizedChain.filter((_, idx) => idx !== index))}
+                  aria-label="Remove model"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+            <Button
+              size="sm"
+              className="h-7 px-2 text-[11px]"
+              outlined
+              disabled={busy}
+              onClick={() => {
+                const nextRef = models.find((m) => !normalizedChain.includes(m.model_ref))?.model_ref;
+                setNormalizedChain([...normalizedChain, nextRef || models[0]?.model_ref || selected]);
+              }}
+              prefix={<Plus className="h-3 w-3" />}
+            >
+              Add fallback
+            </Button>
+            <div className="grid grid-cols-2 gap-1 pt-1">
+              {FALLBACK_TRIGGERS.map((trigger) => (
+                <label key={trigger} className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={fallbackOn.includes(trigger)}
+                    disabled={busy}
+                    onChange={(event) => {
+                      setFallbackOn((current) => (
+                        event.target.checked
+                          ? [...current, trigger].filter((item, idx, arr) => arr.indexOf(item) === idx)
+                          : current.filter((item) => item !== trigger)
+                      ));
+                    }}
+                  />
+                  {trigger}
+                </label>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
       {error ? <div className="text-[11px] text-destructive">{error}</div> : null}
     </div>
   );

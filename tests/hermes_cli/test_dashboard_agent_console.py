@@ -28,6 +28,21 @@ agents:
     can_delegate: false
     capabilities: [content_writing]
     risk_allowed: [R0, R1, R2]
+  - agent_id: claude
+    name: Claude 主程执行官
+    role: lead_implementer
+    role_summary: 外部 Claude Code CLI。
+    model_ref: deepseek_pro
+    model_strategy:
+      mode: external
+      primary: deepseek_pro
+      chain: [deepseek_pro]
+    runtime: claude_code_cli
+    tools: [file, terminal]
+    permission: ask
+    can_delegate: false
+    capabilities: [code_edit]
+    risk_allowed: [R1, R2, R3]
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -93,6 +108,151 @@ def test_update_agent_model_preserves_fallback_strategy(tmp_path, monkeypatch):
     }
     mirror = json.loads(runtime_path.read_text(encoding="utf-8"))
     assert mirror["agents"]["pirlo"]["subagent_profile"]["model_strategy"]["mode"] == "fallback"
+
+
+def test_update_agent_model_strategy_reorders_fallback_chain(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    models_path = tmp_path / "models.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    _write_dashboard_models_yaml(models_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_MODELS_CONFIG_PATH", models_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+
+    resp = _client().put(
+        "/api/agents/pirlo/model-strategy",
+        headers=_headers(),
+        json={
+            "mode": "fallback",
+            "primary": "deepseek_pro",
+            "chain": ["deepseek_pro", "opencode_go_kimi25"],
+            "fallback_on": ["rate_limited", "timeout"],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    saved = ws.yaml.safe_load(agents_path.read_text(encoding="utf-8"))
+    pirlo = saved["agents"][0]
+    assert pirlo["model_ref"] == "deepseek_pro"
+    assert pirlo["model_strategy"] == {
+        "mode": "fallback",
+        "primary": "deepseek_pro",
+        "chain": ["deepseek_pro", "opencode_go_kimi25"],
+        "fallback_on": ["rate_limited", "timeout"],
+    }
+    mirror = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert mirror["agents"]["pirlo"]["subagent_profile"]["model_strategy"]["primary"] == "deepseek_pro"
+
+
+def test_update_agent_model_strategy_rejects_invalid_requests(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    models_path = tmp_path / "models.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    _write_dashboard_models_yaml(models_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_MODELS_CONFIG_PATH", models_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+
+    one_model = _client().put(
+        "/api/agents/pirlo/model-strategy",
+        headers=_headers(),
+        json={"mode": "fallback", "primary": "deepseek_pro", "chain": ["deepseek_pro"]},
+    )
+    assert one_model.status_code == 400
+
+    unknown = _client().put(
+        "/api/agents/pirlo/model-strategy",
+        headers=_headers(),
+        json={"mode": "fixed", "primary": "missing_model", "chain": ["missing_model"]},
+    )
+    assert unknown.status_code == 400
+
+
+def test_update_agent_model_strategy_switches_to_fixed(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    models_path = tmp_path / "models.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    _write_dashboard_models_yaml(models_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_MODELS_CONFIG_PATH", models_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+
+    resp = _client().put(
+        "/api/agents/pirlo/model-strategy",
+        headers=_headers(),
+        json={
+            "mode": "fixed",
+            "primary": "deepseek_pro",
+            "chain": ["deepseek_pro", "opencode_go_kimi25"],
+            "fallback_on": ["rate_limited"],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    saved = ws.yaml.safe_load(agents_path.read_text(encoding="utf-8"))
+    pirlo = saved["agents"][0]
+    assert pirlo["model_ref"] == "deepseek_pro"
+    assert pirlo["model_strategy"] == {
+        "mode": "fixed",
+        "primary": "deepseek_pro",
+        "chain": ["deepseek_pro"],
+        "fallback_on": [],
+    }
+
+
+def test_update_agent_model_strategy_defaults_and_deduplicates(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    models_path = tmp_path / "models.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    _write_dashboard_models_yaml(models_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_MODELS_CONFIG_PATH", models_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+
+    resp = _client().put(
+        "/api/agents/pirlo/model-strategy",
+        headers=_headers(),
+        json={
+            "mode": "fallback",
+            "primary": "deepseek_pro",
+            "chain": ["deepseek_pro", "deepseek_pro", "opencode_go_kimi25", "deepseek_pro"],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    strategy = resp.json()["model_strategy"]
+    assert strategy["chain"] == ["deepseek_pro", "opencode_go_kimi25"]
+    assert strategy["fallback_on"] == [
+        "quota_exceeded",
+        "rate_limited",
+        "timeout",
+        "server_error",
+        "empty_final_content",
+    ]
+
+
+def test_update_agent_model_strategy_rejects_external_cli_agent(tmp_path, monkeypatch):
+    agents_path = tmp_path / "agents.yaml"
+    models_path = tmp_path / "models.yaml"
+    runtime_path = tmp_path / "agent-registry.json"
+    _write_dashboard_agents_yaml(agents_path)
+    _write_dashboard_models_yaml(models_path)
+    monkeypatch.setattr(ws, "_AGENTS_CONFIG_PATH", agents_path)
+    monkeypatch.setattr(ws, "_MODELS_CONFIG_PATH", models_path)
+    monkeypatch.setattr(ws, "_RUNTIME_AGENT_REGISTRY_PATH", runtime_path)
+
+    resp = _client().put(
+        "/api/agents/claude/model-strategy",
+        headers=_headers(),
+        json={"mode": "fixed", "primary": "deepseek_pro", "chain": ["deepseek_pro"]},
+    )
+
+    assert resp.status_code == 400
+    assert "external CLI runtime" in resp.text
 
 
 def test_agent_console_records_managed_run(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@ from hermes_cli.loops import (
     complete_story,
     init_loop,
     loop_dir,
+    loop_text,
     run_loop,
     status_loop,
 )
@@ -150,6 +151,28 @@ def test_close_loop_marks_closed_and_archives_state(tmp_path):
     assert (archives[0] / "prd.json").exists()
 
 
+def test_closed_loop_does_not_run_complete_or_block_stories(tmp_path):
+    init_loop("done", root=tmp_path, title="Done loop")
+    path = loop_dir("done", root=tmp_path)
+    prd_path = path / "prd.json"
+    prd = json.loads(prd_path.read_text(encoding="utf-8"))
+    prd["userStories"] = [{"id": "S1", "title": "first", "priority": 1}]
+    prd_path.write_text(json.dumps(prd, indent=2) + "\n", encoding="utf-8")
+    close_loop("done", root=tmp_path)
+
+    run = run_loop("done", root=tmp_path)
+    completed = complete_story("done", root=tmp_path, story_id="S1", note="should not mutate")
+    blocked = block_story("done", root=tmp_path, story_id="S1", note="should not mutate")
+
+    updated = json.loads(prd_path.read_text(encoding="utf-8"))
+    assert "Status: closed" in run.text
+    assert "Status: closed" in completed.text
+    assert "Status: closed" in blocked.text
+    assert updated["status"] == "closed"
+    assert updated["userStories"][0].get("status") is None
+    assert updated["userStories"][0].get("passes") is None
+
+
 def test_status_loop_reports_not_started_without_creating_state(tmp_path):
     result = status_loop("missing", root=tmp_path)
 
@@ -157,3 +180,9 @@ def test_status_loop_reports_not_started_without_creating_state(tmp_path):
     assert "Status: not started" in result.text
     assert "Next: /loop init missing" in result.text
     assert not loop_dir("missing", root=tmp_path).exists()
+
+
+def test_loop_text_usage_lists_all_v1_subcommands(tmp_path):
+    result = loop_text("wat", root=tmp_path)
+
+    assert result == "Usage: /loop [init|run|status|complete|block|close] <slug>"

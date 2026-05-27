@@ -194,3 +194,9 @@ def test_pending_input_commands_includes_goal(server):
     """Guard: _PENDING_INPUT_COMMANDS must list 'goal' — removing it would
     silently re-break the TUI."""
     assert "goal" in server._PENDING_INPUT_COMMANDS
+
+
+def test_pending_input_commands_includes_loop(server):
+    """Guard: /loop run queues the story prompt in-process, so TUI must
+    route it through command.dispatch instead of the slash-worker subprocess."""
+    assert "loop" in server._PENDING_INPUT_COMMANDS

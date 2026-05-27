@@ -99,7 +99,9 @@ def _render(slug: str, path: Path, prd: dict[str, Any], status: str = "active") 
         "",
         f"State: {path}",
     ])
-    if pending:
+    if status == "closed":
+        lines.append(f"Next: /loop status {slug}")
+    elif pending:
         lines.append(f"Next: /loop run {slug}")
     elif total:
         lines.append(f"Next: /loop close {slug}")
@@ -146,7 +148,8 @@ def status_loop(slug: str | None = None, *, root: str | Path | None = None) -> L
         return LoopResult(name, path, text)
 
     prd = _load_prd(prd_path)
-    text = _render(name, path, prd)
+    status = "closed" if prd.get("status") == "closed" else "active"
+    text = _render(name, path, prd, status=status)
     (path / "status.md").write_text(text + "\n")
     return LoopResult(name, path, text)
 
@@ -221,6 +224,10 @@ def run_loop(slug: str | None = None, *, root: str | Path | None = None) -> Loop
         return status_loop(name, root=root)
 
     prd = _load_prd(prd_path)
+    if prd.get("status") == "closed":
+        text = _render(name, path, prd, status="closed")
+        (path / "status.md").write_text(text + "\n", encoding="utf-8")
+        return LoopResult(name, path, text)
     stories = sorted(_pending_stories(prd), key=lambda s: (s.get("priority", 999), str(s.get("id", ""))))
     if not stories:
         text = _render(name, path, prd, status="complete")
@@ -249,6 +256,10 @@ def complete_story(
         return status_loop(name, root=root)
 
     prd = _load_prd(prd_path)
+    if prd.get("status") == "closed":
+        text = _render(name, path, prd, status="closed")
+        (path / "status.md").write_text(text + "\n", encoding="utf-8")
+        return LoopResult(name, path, text)
     story = _select_story(prd, story_id)
     if story is None:
         text = _render(name, path, prd, status="no runnable story")
@@ -283,6 +294,10 @@ def block_story(
         return status_loop(name, root=root)
 
     prd = _load_prd(prd_path)
+    if prd.get("status") == "closed":
+        text = _render(name, path, prd, status="closed")
+        (path / "status.md").write_text(text + "\n", encoding="utf-8")
+        return LoopResult(name, path, text)
     story = _select_story(prd, story_id)
     if story is None:
         text = _render(name, path, prd, status="no runnable story")
@@ -313,7 +328,7 @@ def close_loop(slug: str | None = None, *, root: str | Path | None = None) -> Lo
     prd["status"] = "closed"
     prd["updatedAt"] = _now()
     prd_path.write_text(json.dumps(prd, indent=2) + "\n")
-    archive_dir = path / "archive" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_dir = path / "archive" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     archive_dir.mkdir(parents=True, exist_ok=True)
     for filename in ("prd.json", "progress.md", "status.md"):
         source = path / filename
@@ -344,4 +359,4 @@ def loop_text(args: str, *, root: str | Path | None = None) -> str:
         return block_story(slug, root=root, story_id=story_id, note=note).text
     if command == "close":
         return close_loop(slug, root=root).text
-    return "Usage: /loop [init|run|status|close] <slug>"
+    return "Usage: /loop [init|run|status|complete|block|close] <slug>"

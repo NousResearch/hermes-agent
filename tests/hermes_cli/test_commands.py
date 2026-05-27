@@ -120,8 +120,8 @@ class TestResolveCommand:
         loop = resolve_command("loop")
         assert loop is not None
         assert loop.name == "loop"
-        assert loop.args_hint == "[init|run|status|close] <slug>"
-        assert loop.subcommands == ("init", "run", "status", "close")
+        assert loop.args_hint == "[init|run|status|complete|block|close] <slug>"
+        assert loop.subcommands == ("init", "run", "status", "complete", "block", "close")
         assert "loop" in GATEWAY_KNOWN_COMMANDS
 
     def test_leading_slash_stripped(self):

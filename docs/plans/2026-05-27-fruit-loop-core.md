@@ -30,6 +30,13 @@ Latest slice:
 - Gateway `/loop run <slug>` queues the generated story execution prompt as the next normal `MessageEvent` when adapter/session state is available, and falls back to returning the prompt when it is not.
 - CLI `/loop run <slug>` queues the generated story execution prompt on `_pending_input` when available, and falls back to printing the prompt when it is not.
 
+Latest hardening slice:
+
+- `/loop` command metadata and usage now include `complete` and `block`.
+- TUI pending-input routing includes `loop`, so `/loop run` does not get stranded in the slash-worker subprocess.
+- Closed loops now refuse `run`, `complete`, and `block` mutations and render as `Status: closed`.
+- Close archives use microsecond timestamps to avoid same-second archive collisions.
+
 Known gap:
 
 - The core state model still uses the minimal `prd.json` shape from the first slice. It should eventually converge with the richer PRD/story manifest shape from the project-loop skill, but not before the V1 command spine is reviewed.
@@ -45,12 +52,23 @@ Known gap:
 
 ## Next slice
 
-Review and harden the V1 command spine before adding richer project-loop state:
+Prepare the branch for PR/review:
 
-1. Run the focused verification suite and inspect the `/loop` diff as one unit.
-2. Decide whether the minimal `prd.json` shape should remain the V1 storage contract or be migrated toward `prd.md` + `stories.json` before opening a PR.
+1. Inspect the full branch diff against `origin/main` as a single product slice.
+2. Decide whether to keep the minimal `prd.json` shape for the first PR, or migrate toward `prd.md` + `stories.json` before review.
 3. If keeping the minimal shape for this PR, add a short docs note/command help example so users know how to seed `userStories`.
-4. If migrating, do it as a separate slice with fixtures and backward-compatible loading.
+4. Run the focused verification suite and a broader command/TUI smoke if the diff still touches `tui_gateway/server.py`.
+
+Completed hardening slice:
+
+1. Command metadata:
+   - Include `complete` and `block` in `/loop` args/subcommands and usage output.
+2. TUI routing:
+   - Add `loop` to `_PENDING_INPUT_COMMANDS` so slash.exec rejects it and the TUI routes through command.dispatch.
+3. Closed-state guard:
+   - Refuse run/complete/block mutation after `/loop close`.
+4. Tests:
+   - Add guards for TUI pending-input routing, closed-loop mutation, and usage string.
 
 Completed slice — safe execution handoff for `/loop run`:
 

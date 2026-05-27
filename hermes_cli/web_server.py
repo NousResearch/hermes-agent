@@ -3558,6 +3558,16 @@ def _subagent_events_from_db(
             "goal_preview": payload.get("goal_preview"),
             "duration_seconds": payload.get("duration_seconds"),
             "tokens": payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {},
+            "fallback_activations": (
+                payload.get("fallback_activations")
+                if isinstance(payload.get("fallback_activations"), list)
+                else []
+            ),
+            "fallback_continuation": (
+                payload.get("fallback_continuation")
+                if isinstance(payload.get("fallback_continuation"), dict)
+                else {}
+            ),
             "payload": payload,
         }
         # Apply agent_id / status filters (client-side after DB fetch)
@@ -3601,10 +3611,18 @@ async def get_delegations(
                 "first_at": None,
                 "last_at": None,
                 "status": "unknown",
+                "fallback_activation_count": 0,
+                "fallback_continuation_risk": "",
             }
         grp = grouped[tid]
         grp["events"].append(ev)
         grp["event_count"] += 1
+        fallback_activations = ev.get("fallback_activations") or []
+        if isinstance(fallback_activations, list) and fallback_activations:
+            grp["fallback_activation_count"] += len(fallback_activations)
+            continuation = ev.get("fallback_continuation") or {}
+            if isinstance(continuation, dict):
+                grp["fallback_continuation_risk"] = str(continuation.get("risk") or "")
         ev_ts = float(ev.get("timestamp") or 0)
         if grp["first_at"] is None or ev_ts < grp["first_at"]:
             grp["first_at"] = ev_ts

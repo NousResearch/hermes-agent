@@ -827,6 +827,7 @@ def restore_primary_runtime(agent) -> bool:
         # entirely, stranding the index and silently blocking all future
         # fallback attempts for the session.  Fixes #20465.
         agent._fallback_index = 0
+        agent._fallback_activation_history = []
         return False
 
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
@@ -882,6 +883,7 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
+        agent._fallback_activation_history = []
 
         logging.info(
             "Primary runtime restored for new turn: %s (%s)",

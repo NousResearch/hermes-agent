@@ -2659,6 +2659,8 @@ def _try_log_subagent_event(
     api_calls: int = 0,
     tokens: Optional[Dict[str, int]] = None,
     transcript_path: Optional[str] = None,
+    fallback_activations: Optional[List[Dict[str, Any]]] = None,
+    fallback_continuation: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Fire a subagent lifecycle event, swallowing all failures.
 
@@ -2697,6 +2699,8 @@ def _try_log_subagent_event(
                 api_calls=api_calls,
                 tokens=tokens or {},
                 transcript_path=transcript_path,
+                fallback_activations=fallback_activations or [],
+                fallback_continuation=fallback_continuation or {},
             )
         elif event_type == "failed":
             elog.log_subagent_failed(
@@ -2707,6 +2711,8 @@ def _try_log_subagent_event(
                 parent_id=parent_id,
                 agent_id=agent_id,
                 role=role,
+                fallback_activations=fallback_activations or [],
+                fallback_continuation=fallback_continuation or {},
             )
         elif event_type == "interrupted":
             elog.log_subagent_interrupted(
@@ -2733,6 +2739,57 @@ def _try_log_subagent_event(
         elog.close()
     except Exception as exc:
         logger.warning("Failed to write subagent %s event: %s", event_type, exc)
+
+
+def _fallback_activation_history(child: Any) -> List[Dict[str, Any]]:
+    raw = getattr(child, "_fallback_activation_history", None)
+    if not isinstance(raw, list):
+        return []
+    history: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        cleaned: Dict[str, Any] = {}
+        for key in (
+            "from_model",
+            "from_provider",
+            "from_base_url",
+            "to_model",
+            "to_provider",
+            "to_base_url",
+            "to_api_mode",
+            "reason",
+            "fallback_index",
+            "activated_at",
+            "model_ref",
+        ):
+            value = item.get(key)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                cleaned[key] = value
+        history.append(cleaned)
+    return history
+
+
+def _fallback_continuation_meta(child: Any) -> Dict[str, Any]:
+    history = _fallback_activation_history(child)
+    if not history:
+        return {}
+    tools = set(getattr(child, "enabled_toolsets", None) or [])
+    mutating_toolsets = {"terminal", "git", "desktop", "browser"}
+    permission = str(getattr(child, "_subagent_permission_mode", "") or "").lower()
+    risk = "retry_after_model_switch"
+    if tools & mutating_toolsets or permission in {"ask", "allow", "write"}:
+        risk = "side_effects_may_have_retried"
+    return {
+        "mode": "retry_after_model_switch",
+        "activation_count": len(history),
+        "continuation_guarantee": "conversation_retry_not_tool_checkpoint",
+        "risk": risk,
+        "note": (
+            "Fallback retries the current model turn with prior conversation "
+            "context; it is not a tool-call checkpoint resume."
+        ),
+    }
 
 
 def _run_single_child(
@@ -3109,6 +3166,8 @@ def _run_single_child(
                 task_id=_parent_task_id,
                 session_id=_parent_session_id,
                 error=_err,
+                fallback_activations=_fallback_activation_history(child),
+                fallback_continuation=_fallback_continuation_meta(child),
             )
             return {
                 "task_index": task_index,
@@ -3125,6 +3184,8 @@ def _run_single_child(
                 "exit_reason": "timeout" if is_timeout else "error",
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
+                "fallback_activations": _fallback_activation_history(child),
+                "fallback_continuation": _fallback_continuation_meta(child),
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
@@ -3245,6 +3306,8 @@ def _run_single_child(
                 ),
             },
             "tool_trace": tool_trace,
+            "fallback_activations": _fallback_activation_history(child),
+            "fallback_continuation": _fallback_continuation_meta(child),
             # Captured before the finally block calls child.close() so the
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.
@@ -3408,6 +3471,8 @@ def _run_single_child(
                 task_id=_parent_task_id,
                 session_id=_parent_session_id,
                 error=entry.get("error", "Subagent did not produce a response."),
+                fallback_activations=entry.get("fallback_activations") or [],
+                fallback_continuation=entry.get("fallback_continuation") or {},
             )
         else:
             _try_log_subagent_event(
@@ -3423,6 +3488,8 @@ def _run_single_child(
                 api_calls=_child_api_calls,
                 tokens=_child_tokens,
                 transcript_path=_transcript_path,
+                fallback_activations=entry.get("fallback_activations") or [],
+                fallback_continuation=entry.get("fallback_continuation") or {},
             )
 
         return entry
@@ -3439,6 +3506,8 @@ def _run_single_child(
             task_id=_parent_task_id,
             session_id=_parent_session_id,
             error=str(exc),
+            fallback_activations=_fallback_activation_history(child),
+            fallback_continuation=_fallback_continuation_meta(child),
         )
         if child_progress_cb:
             try:
@@ -3458,6 +3527,8 @@ def _run_single_child(
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
+            "fallback_activations": _fallback_activation_history(child),
+            "fallback_continuation": _fallback_continuation_meta(child),
             "_child_role": getattr(child, "_delegate_role", None),
         }
 

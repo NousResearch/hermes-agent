@@ -613,6 +613,8 @@ class EventLog:
         api_calls: int = 0,
         tokens: Optional[Dict[str, int]] = None,
         transcript_path: Optional[str] = None,
+        fallback_activations: Optional[List[Dict[str, Any]]] = None,
+        fallback_continuation: Optional[Dict[str, Any]] = None,
     ) -> SessionEvent:
         return self._log_event(task_id, session_id, EVENT_SUBAGENT_COMPLETED, {
             "subagent_id": subagent_id,
@@ -624,6 +626,8 @@ class EventLog:
             "api_calls": api_calls,
             "tokens": tokens or {},
             "transcript_path": transcript_path,
+            "fallback_activations": fallback_activations or [],
+            "fallback_continuation": fallback_continuation or {},
         })
 
     def log_subagent_failed(
@@ -635,6 +639,8 @@ class EventLog:
         parent_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         role: str = "leaf",
+        fallback_activations: Optional[List[Dict[str, Any]]] = None,
+        fallback_continuation: Optional[Dict[str, Any]] = None,
     ) -> SessionEvent:
         return self._log_event(task_id, session_id, EVENT_SUBAGENT_FAILED, {
             "subagent_id": subagent_id,
@@ -642,6 +648,8 @@ class EventLog:
             "agent_id": agent_id,
             "role": role,
             "error": error[:500],
+            "fallback_activations": fallback_activations or [],
+            "fallback_continuation": fallback_continuation or {},
         })
 
     def log_subagent_interrupted(

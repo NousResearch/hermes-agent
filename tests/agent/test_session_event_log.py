@@ -82,11 +82,21 @@ class TestSubagentEvents:
             duration_seconds=12.5,
             api_calls=3,
             tokens={"input": 1000, "output": 500},
+            fallback_activations=[
+                {
+                    "from_model": "deepseek-v4-pro",
+                    "to_model": "qwen3.7-max",
+                    "reason": "rate_limit",
+                }
+            ],
+            fallback_continuation={"risk": "side_effects_may_have_retried"},
         )
         assert event.type == EVENT_SUBAGENT_COMPLETED
         assert event.payload["status"] == "completed"
         assert event.payload["duration_seconds"] == 12.5
         assert event.payload["api_calls"] == 3
+        assert event.payload["fallback_activations"][0]["to_model"] == "qwen3.7-max"
+        assert event.payload["fallback_continuation"]["risk"] == "side_effects_may_have_retried"
 
     def test_log_subagent_failed(self):
         """log_subagent_failed writes a valid event."""

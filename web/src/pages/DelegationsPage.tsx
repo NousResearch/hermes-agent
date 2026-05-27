@@ -21,14 +21,32 @@ function statusTone(status: string): "success" | "warning" | "secondary" | "dest
 }
 
 function EventRow({ event }: { event: DelegationEvent }) {
+  const fallbackActivations = event.fallback_activations || [];
+  const continuation = event.fallback_continuation || {};
+  const continuationRisk = typeof continuation.risk === "string" ? continuation.risk : "";
   return (
     <div className="border border-border bg-muted/20 px-3 py-2 text-xs">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone="secondary">{event.type}</Badge>
         <span className="font-mono text-muted-foreground">{event.agent_id || "unknown"}</span>
         {event.status ? <Badge tone={statusTone(event.status)}>{event.status}</Badge> : null}
+        {fallbackActivations.length > 0 ? <Badge tone="warning">fallback x{fallbackActivations.length}</Badge> : null}
         <span className="ml-auto text-muted-foreground">{timeAgo(event.timestamp)}</span>
       </div>
+      {fallbackActivations.length > 0 ? (
+        <div className="mt-2 space-y-1 border-l-2 border-warning/50 pl-2 text-muted-foreground">
+          {fallbackActivations.map((activation, idx) => (
+            <div key={idx} className="font-mono text-[11px]">
+              {String(activation.from_model || "?")} → {String(activation.to_model || "?")}
+              {" · "}
+              {String(activation.reason || "unknown")}
+            </div>
+          ))}
+          {continuationRisk ? (
+            <div className="text-[11px]">continuation: {continuationRisk}</div>
+          ) : null}
+        </div>
+      ) : null}
       {event.goal_preview || event.reason || event.error ? (
         <div className="mt-2 whitespace-pre-wrap text-muted-foreground">
           {event.goal_preview || event.reason || event.error}
@@ -159,6 +177,12 @@ export default function DelegationsPage() {
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
                   {trace.event_count} events · {trace.first_at ? timeAgo(trace.first_at) : "unknown"}
+                  {(trace.fallback_activation_count || 0) > 0 ? (
+                    <> · fallback x{trace.fallback_activation_count}</>
+                  ) : null}
+                  {trace.fallback_continuation_risk ? (
+                    <> · {trace.fallback_continuation_risk}</>
+                  ) : null}
                 </div>
               </button>
             ))}

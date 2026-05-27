@@ -222,7 +222,22 @@ def test_delegations_api_groups_subagent_events(tmp_path, monkeypatch):
             "subagent.completed",
             now + 1,
             "system",
-            json.dumps({"subagent_id": "sa1", "agent_id": "pirlo", "status": "completed"}),
+            json.dumps({
+                "subagent_id": "sa1",
+                "agent_id": "pirlo",
+                "status": "completed",
+                "fallback_activations": [
+                    {
+                        "from_model": "kimi-k2.5",
+                        "to_model": "kimi-k2.6",
+                        "reason": "rate_limit",
+                    }
+                ],
+                "fallback_continuation": {
+                    "risk": "retry_after_model_switch",
+                    "continuation_guarantee": "conversation_retry_not_tool_checkpoint",
+                },
+            }),
         ),
     )
     conn.commit()
@@ -232,7 +247,10 @@ def test_delegations_api_groups_subagent_events(tmp_path, monkeypatch):
     listing = client.get("/api/delegations?days=1&agent_id=pirlo", headers=_headers())
     assert listing.status_code == 200, listing.text
     assert listing.json()["total"] == 1
-    assert listing.json()["delegations"][0]["task_id"] == "task-a"
+    delegation = listing.json()["delegations"][0]
+    assert delegation["task_id"] == "task-a"
+    assert delegation["fallback_activation_count"] == 1
+    assert delegation["fallback_continuation_risk"] == "retry_after_model_switch"
 
     trace = client.get("/api/delegations/task-a", headers=_headers())
     assert trace.status_code == 200, trace.text
@@ -241,6 +259,9 @@ def test_delegations_api_groups_subagent_events(tmp_path, monkeypatch):
         "subagent.completed",
     ]
     assert trace.json()["events"][0]["agent_id"] == "pirlo"
+    completed = trace.json()["events"][1]
+    assert completed["fallback_activations"][0]["to_model"] == "kimi-k2.6"
+    assert completed["fallback_continuation"]["continuation_guarantee"] == "conversation_retry_not_tool_checkpoint"
 
     limited = client.get("/api/delegations?days=1&limit=1", headers=_headers())
     assert limited.status_code == 200, limited.text

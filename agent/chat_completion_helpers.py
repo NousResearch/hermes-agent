@@ -783,6 +783,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        old_provider = getattr(agent, "provider", "")
+        old_base_url = getattr(agent, "base_url", "")
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -881,6 +883,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
         )
+        reason_value = getattr(reason, "value", None) or str(reason or "unknown")
+        activation = {
+            "from_model": old_model,
+            "from_provider": old_provider,
+            "from_base_url": old_base_url,
+            "to_model": fb_model,
+            "to_provider": fb_provider,
+            "to_base_url": fb_base_url,
+            "to_api_mode": fb_api_mode,
+            "reason": reason_value,
+            "fallback_index": agent._fallback_index,
+            "activated_at": time.time(),
+            "model_ref": fb.get("model_ref"),
+        }
+        history = getattr(agent, "_fallback_activation_history", None)
+        if not isinstance(history, list):
+            history = []
+        history.append(activation)
+        agent._fallback_activation_history = history[-20:]
         logging.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,

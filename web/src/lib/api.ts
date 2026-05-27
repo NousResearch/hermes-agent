@@ -900,6 +900,8 @@ export interface DelegationEvent {
   goal_preview?: string | null;
   duration_seconds?: number | null;
   tokens?: Record<string, number>;
+  fallback_activations?: Array<Record<string, unknown>>;
+  fallback_continuation?: Record<string, unknown>;
   payload?: Record<string, unknown>;
 }
 
@@ -912,6 +914,8 @@ export interface DelegationTraceSummary {
   first_event_id?: string | null;
   last_event_id?: string | null;
   event_types: string[];
+  fallback_activation_count?: number;
+  fallback_continuation_risk?: string;
 }
 
 export interface DelegationsResponse {

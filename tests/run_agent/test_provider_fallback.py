@@ -7,6 +7,7 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -208,6 +209,24 @@ class TestFallbackChainAdvancement:
         assert agent.provider == "opencode-go"
         assert agent.model == "qwen3.7-max"
         assert agent.api_mode == "anthropic_messages"
+        assert agent._fallback_activation_history[-1]["to_model"] == "qwen3.7-max"
+        assert agent._fallback_activation_history[-1]["reason"] == "unknown"
+
+    def test_records_fallback_activation_reason(self):
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback(reason=FailoverReason.rate_limit) is True
+
+        activation = agent._fallback_activation_history[-1]
+        assert "from_model" in activation
+        assert "from_provider" in activation
+        assert activation["to_model"] == "gpt-4o"
+        assert activation["to_provider"] == "openai"
+        assert activation["reason"] == "rate_limit"
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

@@ -38,12 +38,6 @@ hermes profile list
 
 Lists all profiles with their configured model, gateway status, alias, and distribution metadata. The currently active profile is marked with `*` / `◆`.
 
-If you want to add a human-friendly nickname, set it in the profile's `profile.yaml`:
-
-```yaml
-nickname: Artemis
-```
-
 **Example:**
 
 ```bash

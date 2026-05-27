@@ -241,7 +241,7 @@ hermes profile export coder   # export to coder.tar.gz
 hermes profile import coder.tar.gz   # import from archive
 ```
 
-Profiles can also have a human-friendly nickname. Set it in the profile's `profile.yaml`, for example `~/.hermes/profiles/coder/profile.yaml`:
+Profiles can also have a human-friendly nickname, which other agents will be able to find and recognize when referenced. Set it in the profile's `profile.yaml`, for example `~/.hermes/profiles/coder/profile.yaml`:
 
 ```yaml
 nickname: Artemis

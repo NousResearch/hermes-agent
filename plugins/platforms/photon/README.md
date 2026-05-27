@@ -62,16 +62,19 @@ hermes photon login
 # 2. Full setup: project, user, sidecar deps
 hermes photon setup --phone +15551234567
 
-# 3. Expose your webhook URL to the public internet
-#    (cloudflared, ngrok, your gateway's public hostname, etc.)
-#    Then register it with Photon:
-hermes photon webhook register https://your-host.example.com/photon/webhook
+# 3. Expose the local webhook listener to the public internet.
+#    Keep this running while testing; copy the trycloudflare.com URL it prints.
+cloudflared tunnel --url http://127.0.0.1:8788
 
-# 4. Save the signing secret it prints to ~/.hermes/.env
+# 4. Register that public tunnel URL with Photon.
+hermes photon webhook register https://YOUR-TUNNEL.trycloudflare.com/photon/webhook
+
+# 5. Save the signing secret it prints to ~/.hermes/.env
 #    as PHOTON_WEBHOOK_SECRET=...
 #    Photon only returns it ONCE.
 
-# 5. Start the gateway in foreground QA mode
+# 6. Restart/start the gateway in foreground QA mode.
+#    Restart is required after webhook registration so Hermes loads the secret.
 hermes gateway run -v
 
 # For always-on local use, install/start the launchd service instead:

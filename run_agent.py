@@ -263,6 +263,11 @@ def _pool_may_recover_from_rate_limit(
     """
     if pool is None:
         return False
+    raw_pool_provider = getattr(pool, "provider", "")
+    pool_provider = raw_pool_provider.strip().lower() if isinstance(raw_pool_provider, str) else ""
+    current_provider = provider.strip().lower() if isinstance(provider, str) else ""
+    if pool_provider and current_provider and pool_provider != current_provider:
+        return False
     if not pool.has_available():
         return False
     # CloudCode / Gemini CLI quotas are account-wide — all pool entries share

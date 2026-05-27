@@ -7,6 +7,8 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -34,6 +36,14 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
     mock.base_url = base_url
     mock.api_key = api_key
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _stub_fallback_pool_load():
+    empty_pool = MagicMock()
+    empty_pool.has_credentials.return_value = False
+    with patch("agent.credential_pool.load_pool", return_value=empty_pool):
+        yield
 
 
 # ── Chain initialisation ──────────────────────────────────────────────────
@@ -116,6 +126,48 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.model == "glm-4.7"
             assert agent._fallback_index == 2
+
+    def test_fallback_replaces_stale_credential_pool(self):
+        fbs = [{"provider": "zai", "model": "glm-5.1"}]
+        agent = _make_agent(fallback_model=fbs)
+        stale_pool = MagicMock()
+        stale_pool.provider = "openai-codex"
+        agent._credential_pool = stale_pool
+        fallback_pool = MagicMock()
+        fallback_pool.provider = "zai"
+        fallback_pool.has_credentials.return_value = True
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(base_url="https://api.z.ai/api/paas/v4/"), "glm-5.1"),
+            ),
+            patch("agent.credential_pool.load_pool", return_value=fallback_pool),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.provider == "zai"
+            assert agent._credential_pool is fallback_pool
+
+    def test_fallback_clears_pool_when_target_has_no_credentials(self):
+        fbs = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        agent = _make_agent(fallback_model=fbs)
+        stale_pool = MagicMock()
+        stale_pool.provider = "openai-codex"
+        agent._credential_pool = stale_pool
+        empty_pool = MagicMock()
+        empty_pool.provider = "openrouter"
+        empty_pool.has_credentials.return_value = False
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(base_url="https://openrouter.ai/api/v1"), "anthropic/claude-sonnet-4"),
+            ),
+            patch("agent.credential_pool.load_pool", return_value=empty_pool),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.provider == "openrouter"
+            assert agent._credential_pool is None
 
     def test_all_exhausted_returns_false(self):
         fbs = [{"provider": "openai", "model": "gpt-4o"}]
@@ -213,6 +265,17 @@ class TestPoolRotationRoom:
     def test_two_credentials_available_returns_true(self):
         """With >1 credentials and at least one available, rotate instead of fallback."""
         assert _pool_may_recover_from_rate_limit(_pool(2)) is True
+
+    def test_mismatched_provider_pool_returns_false(self):
+        """A stale primary pool must not block fallback-provider failover."""
+        pool = _pool(2)
+        pool.provider = "openai-codex"
+        assert _pool_may_recover_from_rate_limit(pool, provider="openrouter") is False
+
+    def test_matching_provider_pool_still_returns_true(self):
+        pool = _pool(2)
+        pool.provider = "openrouter"
+        assert _pool_may_recover_from_rate_limit(pool, provider="openrouter") is True
 
     def test_multiple_credentials_all_in_cooldown_returns_false(self):
         """All credentials cooling down — fall back rather than wait."""

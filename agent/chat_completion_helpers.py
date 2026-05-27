@@ -1038,6 +1038,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        try:
+            from agent.credential_pool import load_pool
+
+            fb_pool = load_pool(fb_provider)
+            agent._credential_pool = fb_pool if fb_pool and fb_pool.has_credentials() else None
+        except Exception as exc:
+            logger.debug("Could not load credential pool for fallback %s: %s", fb_provider, exc)
+            agent._credential_pool = None
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True

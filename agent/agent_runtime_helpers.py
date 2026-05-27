@@ -559,6 +559,18 @@ def recover_with_credential_pool(
     pool = agent._credential_pool
     if pool is None:
         return False, has_retried_429
+    raw_pool_provider = getattr(pool, "provider", "")
+    raw_current_provider = getattr(agent, "provider", "")
+    pool_provider = raw_pool_provider.strip().lower() if isinstance(raw_pool_provider, str) else ""
+    current_provider = raw_current_provider.strip().lower() if isinstance(raw_current_provider, str) else ""
+    if pool_provider and current_provider and pool_provider != current_provider:
+        _ra().logger.warning(
+            "Skipping credential-pool recovery for provider mismatch "
+            "(pool=%s, current=%s)",
+            pool_provider,
+            current_provider,
+        )
+        return False, has_retried_429
 
     effective_reason = classified_reason
     if effective_reason is None:

@@ -232,3 +232,46 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is False
+
+    def test_provider_mismatch_does_not_mutate_stale_pool(self):
+        """A fallback provider error must not exhaust the primary provider pool."""
+        from run_agent import AIAgent
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+        pool = MagicMock()
+        pool.provider = "openai-codex"
+        agent.provider = "openrouter"
+        agent._credential_pool = pool
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=402, has_retried_429=False
+        )
+
+        assert recovered is False
+        assert has_retried is False
+        pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_provider_match_still_rotates_pool(self):
+        """The provider guard must not block normal same-provider rotation."""
+        from run_agent import AIAgent
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+        next_entry = MagicMock()
+        next_entry.id = "next"
+        pool = MagicMock()
+        pool.provider = "openrouter"
+        pool.mark_exhausted_and_rotate.return_value = next_entry
+        agent.provider = "openrouter"
+        agent._credential_pool = pool
+        agent._swap_credential = MagicMock()
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=402, has_retried_429=False
+        )
+
+        assert recovered is True
+        assert has_retried is False
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
+        agent._swap_credential.assert_called_once_with(next_entry)

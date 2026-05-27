@@ -251,7 +251,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if not isinstance(_out, list) or not _out:
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -330,6 +330,26 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 logger.debug(
                     "Responses stream %s; falling back to create(stream=True). %s err=%s",
                     "rejected before response.created" if prelude_error else "did not emit response.completed",
+                    agent._client_log_context(),
+                    err_text,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
+        except TypeError as exc:
+            err_text = str(exc)
+            sdk_output_none = "'NoneType' object is not iterable" in err_text
+            if sdk_output_none and attempt < max_stream_retries:
+                logger.debug(
+                    "Responses stream parser hit output=None "
+                    "(attempt %s/%s); retrying. %s",
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                )
+                continue
+            if sdk_output_none:
+                logger.debug(
+                    "Responses stream parser hit output=None; falling back to create(stream=True). %s err=%s",
                     agent._client_log_context(),
                     err_text,
                 )
@@ -414,7 +434,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is not None:
                 # Backfill empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if not isinstance(_out, list) or not _out:
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(

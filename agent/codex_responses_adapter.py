@@ -838,6 +838,23 @@ def _preflight_codex_api_kwargs(
 # Response extraction helpers
 # ---------------------------------------------------------------------------
 
+def _safe_get_response_output_text(response: Any, default: str = "") -> str:
+    """Read SDK ``response.output_text`` without letting output=None crash.
+
+    Recent OpenAI SDK builds compute ``output_text`` by iterating
+    ``response.output``. Some terminal ChatGPT Codex responses carry
+    ``output=None``, so the property itself raises TypeError before Hermes can
+    classify the upstream response.
+    """
+    try:
+        out_text = getattr(response, "output_text", default)
+    except TypeError as exc:
+        if "'NoneType' object is not iterable" not in str(exc):
+            raise
+        return default
+    return out_text if isinstance(out_text, str) else default
+
+
 def _extract_responses_message_text(item: Any) -> str:
     """Extract assistant text from a Responses message output item."""
     content = getattr(item, "content", None)
@@ -883,7 +900,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         # The Codex backend can return empty output when the answer was
         # delivered entirely via stream events. Check output_text as a
         # last-resort fallback before raising.
-        out_text = getattr(response, "output_text", None)
+        out_text = _safe_get_response_output_text(response)
         if isinstance(out_text, str) and out_text.strip():
             logger.debug(
                 "Codex response has empty output but output_text is present (%d chars); "
@@ -1024,10 +1041,8 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             ))
 
     final_text = "\n".join([p for p in content_parts if p]).strip()
-    if not final_text and hasattr(response, "output_text"):
-        out_text = getattr(response, "output_text", "")
-        if isinstance(out_text, str):
-            final_text = out_text.strip()
+    if not final_text:
+        final_text = _safe_get_response_output_text(response).strip()
 
     # ── Tool-call leak recovery ──────────────────────────────────
     # gpt-5.x on the Codex Responses API sometimes degenerates and emits

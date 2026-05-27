@@ -54,6 +54,20 @@ class TestCodexBuildKwargs:
         assert "input" in kw
         assert kw["store"] is False
 
+    def test_omits_tools_when_no_tools_are_available(self, transport):
+        messages = [{"role": "user", "content": "Hello"}]
+
+        assert "tools" not in transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=None,
+        )
+        assert "tools" not in transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+        )
+
     def test_system_extracted_from_messages(self, transport):
         messages = [
             {"role": "system", "content": "Custom system prompt"},
@@ -397,6 +411,22 @@ class TestCodexNormalizeResponse:
         assert isinstance(nr, NormalizedResponse)
         assert nr.content == "Hello world"
         assert nr.finish_reason == "stop"
+
+    def test_output_none_does_not_crash_output_text_property(self, transport):
+        class ResponseWithSdkOutputTextProperty:
+            output = None
+            status = "completed"
+            incomplete_details = None
+            usage = None
+
+            @property
+            def output_text(self):
+                for _output in self.output:
+                    pass
+                return "unreachable"
+
+        with pytest.raises(RuntimeError, match="Responses API returned no output items"):
+            transport.normalize_response(ResponseWithSdkOutputTextProperty())
 
     def test_message_items_preserved_in_provider_data(self, transport):
         """Codex assistant message item ids/phases must survive transport normalization."""

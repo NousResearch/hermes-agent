@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -236,7 +236,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    platform_message_id TEXT,
+    observed INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -570,6 +572,19 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+
+        # Indexes that reference reconciler-added columns must be created
+        # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
+        # makes the initial executescript fail on legacy DBs (the index's
+        # WHERE clause references a column that doesn't exist yet).
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_platform_msg_id "
+                "ON messages(session_id, platform_message_id) "
+                "WHERE platform_message_id IS NOT NULL"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
@@ -1445,12 +1460,20 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        platform_message_id: str = None,
+        observed: bool = False,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
 
         Also increments the session's message_count (and tool_call_count
         if role is 'tool' or tool_calls is present).
+
+        ``platform_message_id`` is the external messaging platform's own
+        message ID (e.g. Telegram update_id, Yuanbao msg_id).  It is
+        independent of the SQLite autoincrement primary key and is used by
+        platform-specific flows like yuanbao's recall guard to redact a
+        message by its platform-side identifier.
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
@@ -1480,8 +1503,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1497,6 +1520,8 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    platform_message_id,
+                    1 if observed else 0,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1558,13 +1583,18 @@ class SessionDB:
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                # Accept either `platform_message_id` (new explicit name) or
+                # `message_id` (yuanbao's existing convention on message dicts).
+                platform_msg_id = (
+                    msg.get("platform_message_id") or msg.get("message_id")
+                )
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id, observed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -1580,6 +1610,8 @@ class SessionDB:
                         reasoning_details_json,
                         codex_items_json,
                         codex_message_items_json,
+                        platform_msg_id,
+                        1 if msg.get("observed") else 0,
                     ),
                 )
                 total_messages += 1
@@ -1897,7 +1929,7 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
@@ -1918,6 +1950,15 @@ class SessionDB:
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
+            # Surface the platform-side message id (e.g. yuanbao msg_id,
+            # telegram update_id) so platform-specific flows like recall
+            # can match by external identifier instead of having to fall
+            # back to content-match heuristics.  Exposed as ``message_id``
+            # for backward compatibility with the JSONL transcript shape.
+            if row["platform_message_id"]:
+                msg["message_id"] = row["platform_message_id"]
+            if row["observed"]:
+                msg["observed"] = True
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -2826,6 +2867,51 @@ class SessionDB:
                     WHERE chat_id = ? AND thread_id = ?
                     """,
                     (str(chat_id), str(thread_id)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return dict(row) if row else None
+
+    def list_telegram_topic_bindings_for_chat(
+        self,
+        *,
+        chat_id: str,
+    ) -> List[Dict[str, Any]]:
+        """All Telegram DM topic bindings for one chat, newest first.
+
+        Read-only; returns [] if the bindings table doesn't exist yet
+        (does not trigger the topic-mode migration).
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT * FROM telegram_dm_topic_bindings "
+                    "WHERE chat_id = ? ORDER BY updated_at DESC",
+                    (str(chat_id),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        return [dict(row) for row in rows]
+
+    def get_telegram_topic_binding_by_session(
+        self,
+        *,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the Telegram DM topic binding for a given session_id, if present.
+
+        Uses the UNIQUE INDEX on telegram_dm_topic_bindings(session_id) for an
+        efficient reverse lookup. Returns None when the session has no binding or
+        the table does not exist yet.
+        """
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT * FROM telegram_dm_topic_bindings
+                    WHERE session_id = ?
+                    """,
+                    (str(session_id),),
                 ).fetchone()
             except sqlite3.OperationalError:
                 return None

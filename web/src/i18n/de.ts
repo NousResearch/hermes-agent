@@ -127,6 +127,7 @@ export const de: Translations = {
 
   sessions: {
     title: "Sitzungen",
+    overview: "Übersicht",
     searchPlaceholder: "Nachrichteninhalt suchen...",
     noSessions: "Noch keine Sitzungen",
     noMatch: "Keine Sitzungen entsprechen deiner Suche",
@@ -269,7 +270,7 @@ export const de: Translations = {
       "Hermes-Plugins entdecken, installieren, aktivieren und aktualisieren (entspricht `hermes plugins`).",
     identifierLabel: "Git-URL oder owner/repo",
     inactive: "inaktiv",
-    installBtn: "Aus Git installieren",
+    installBtn: "Installieren",
     installHeading: "Aus GitHub / Git-URL installieren",
     installHint: "Verwende owner/repo-Kurzform oder eine vollständige https:// oder git@ Klon-URL.",
     memoryProviderLabel: "Speicheranbieter",
@@ -367,6 +368,8 @@ export const de: Translations = {
     description: "Verwalte API-Schlüssel und Geheimnisse, die hier gespeichert sind",
     hideAdvanced: "Erweitert ausblenden",
     showAdvanced: "Erweitert anzeigen",
+    showLess: "Weniger anzeigen",
+    showMore: "Mehr anzeigen",
     llmProviders: "LLM-Anbieter",
     providersConfigured: "{configured} von {total} Anbietern konfiguriert",
     getKey: "Schlüssel holen",
@@ -392,7 +395,7 @@ export const de: Translations = {
     disconnect: "Trennen",
     managedExternally: "Extern verwaltet",
     copied: "Kopiert ✓",
-    cli: "CLI",
+    cli: "Kopieren",
     copyCliCommand: "CLI-Befehl kopieren (für extern / Fallback)",
     connect: "Verbinden",
     sessionExpires: "Sitzung läuft in {time} ab",
@@ -653,6 +656,7 @@ export const de: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "Zu erledigen",
+      scheduled: "Geplant",
       ready: "Bereit",
       running: "In Bearbeitung",
       blocked: "Blockiert",
@@ -662,6 +666,7 @@ export const de: Translations = {
     columnHelp: {
       triage: "Rohe Ideen — ein Specifier wird die Spezifikation ausarbeiten",
       todo: "Wartet auf Abhängigkeiten oder ist nicht zugewiesen",
+      scheduled: "Wartet auf eine bekannte Verzögerung oder eine geplante Nachverfolgung",
       ready: "Abhängigkeiten erfüllt; Profil zum Dispatch zuweisen",
       running: "Von einem Worker übernommen — in Bearbeitung",
       blocked: "Worker hat um menschliche Eingabe gebeten",

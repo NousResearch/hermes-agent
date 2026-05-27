@@ -121,6 +121,7 @@ class ToolEntry:
 _CHECK_FN_TTL_SECONDS = 30.0
 _check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
 _check_fn_cache_lock = threading.Lock()
+_check_fn_cache_generation = 0
 
 
 def _check_fn_cached(fn: Callable) -> bool:
@@ -144,8 +145,16 @@ def _check_fn_cached(fn: Callable) -> bool:
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results. Call after config changes that
     affect tool availability (e.g. ``hermes tools enable``)."""
+    global _check_fn_cache_generation
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
+        _check_fn_cache_generation += 1
+
+
+def check_fn_cache_generation() -> int:
+    """Return a generation token for callers that memoize tool definitions."""
+    with _check_fn_cache_lock:
+        return _check_fn_cache_generation
 
 
 class ToolRegistry:

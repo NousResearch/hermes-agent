@@ -41,7 +41,7 @@ def _find_chrome() -> str:
 
 
 @pytest.fixture
-def chrome_cdp(worker_id):
+def chrome_cdp(request):
     """Start a headless Chrome with --remote-debugging-port, yield its WS URL.
 
     Uses a unique port per xdist worker to avoid cross-worker collisions.
@@ -51,6 +51,9 @@ def chrome_cdp(worker_id):
     import socket
 
     # xdist worker_id is "master" in single-process mode or "gw0".."gwN" otherwise.
+    # Under subprocess-per-file isolation there's no xdist, so we fall back
+    # to "master" via the session-scoped fixture below.
+    worker_id = request.getfixturevalue("worker_id") if "worker_id" in request.fixturenames else "master"
     if worker_id == "master":
         port_offset = 0
     else:

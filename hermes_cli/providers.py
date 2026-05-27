@@ -60,6 +60,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
+    "openai-api": HermesOverlay(
+        transport="codex_responses",
+        base_url_override="https://api.openai.com/v1",
+        base_url_env_var="OPENAI_BASE_URL",
+    ),
     "xai-oauth": HermesOverlay(
         transport="codex_responses",
         auth_type="oauth_external",
@@ -198,6 +203,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
+        base_url_override="https://ollama.com/v1",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
     # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
@@ -380,6 +386,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
 

@@ -100,8 +100,10 @@ hermes config path          Print config.yaml path
 hermes config env-path      Print .env path
 hermes config check         Check for missing/outdated config
 hermes config migrate       Update config with new options
-hermes login [--provider P] OAuth login (nous, openai-codex)
-hermes logout               Clear stored auth
+hermes auth                 Interactive credential manager
+hermes auth add PROVIDER    Add OAuth or API-key credential (e.g. nous, openai-codex, qwen-oauth)
+hermes auth list            List stored credentials
+hermes auth remove PROVIDER Remove a stored credential
 hermes doctor [--fix]       Check dependencies and config
 hermes status [--all]       Show component status
 ```
@@ -336,7 +338,8 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 ~/.hermes/config.yaml       Main configuration
 ~/.hermes/.env              API keys and secrets
 $HERMES_HOME/skills/        Installed skills
-~/.hermes/sessions/         Session transcripts
+~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts (and optional per-session JSON snapshots when sessions.write_json_snapshots: true)
+~/.hermes/state.db          Canonical session store (SQLite + FTS5)
 ~/.hermes/logs/             Gateway and error logs
 ~/.hermes/auth.json         OAuth tokens and credential pools
 ~/.hermes/hermes-agent/     Source code (if git-installed)
@@ -389,7 +392,7 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 | AI Gateway (Vercel) | API key | `AI_GATEWAY_API_KEY` |
 | OpenCode Zen | API key | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | API key | `OPENCODE_GO_API_KEY` |
-| Qwen OAuth | OAuth | `hermes login --provider qwen-oauth` |
+| Qwen OAuth | OAuth | `hermes auth add qwen-oauth` |
 | Custom endpoint | Config | `model.base_url` + `model.api_key` in config.yaml |
 | GitHub Copilot ACP | External | `COPILOT_CLI_PATH` or Copilot CLI |
 
@@ -680,19 +683,25 @@ User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curato
 
 Durable SQLite board for multi-profile / multi-worker collaboration.
 Users drive it via `hermes kanban <verb>`; dispatcher-spawned workers
-see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK` so the
-schema footprint is zero outside worker processes.
+see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK`, and
+orchestrator profiles can opt into the broader `kanban` toolset. Normal
+sessions still have zero `kanban_*` schema footprint unless configured.
 
 - **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
   `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
   `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
   `log`, `dispatch`, `daemon`, `gc`.
-- **Worker toolset:** `kanban_show`, `kanban_complete`, `kanban_block`,
-  `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`.
+- **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
+  `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
+  `kanban_link`; profiles that explicitly enable the `kanban` toolset
+  outside a dispatcher-spawned task also get `kanban_list` and
+  `kanban_unblock` for board routing.
 - **Dispatcher** runs inside the gateway by default
   (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.
-  Auto-blocks a task after ~5 consecutive spawn failures.
+  Auto-blocks a task after `failure_limit` consecutive spawn failures
+  (default 2; configurable via `kanban.failure_limit` or per-task
+  `max_retries`).
 - **Isolation:** board is the hard boundary (workers get
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.
@@ -805,7 +814,7 @@ and logs — avoids shell-escaping backslashes in bash.
 
 ### Model/provider issues
 1. `hermes doctor` — check config and dependencies
-2. `hermes login` — re-authenticate OAuth providers
+2. `hermes auth` — re-authenticate OAuth providers (or `hermes auth add <provider>`)
 3. Check `.env` has the right API key
 4. **Copilot 403**: `gh auth login` tokens do NOT work for Copilot API. You must use the Copilot-specific OAuth device code flow via `hermes model` → GitHub Copilot.
 
@@ -861,7 +870,7 @@ hermes config set auxiliary.vision.model <model_name>
 | Env variables | `hermes config env-path` or [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
 | CLI commands | `hermes --help` or [CLI reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) |
 | Gateway logs | `~/.hermes/logs/gateway.log` |
-| Session files | `~/.hermes/sessions/` or `hermes sessions browse` |
+| Session files | `hermes sessions browse` (reads state.db) |
 | Source code | `~/.hermes/hermes-agent/` |
 
 ---

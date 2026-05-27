@@ -187,6 +187,8 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
         "Some _create_openai_client calls returned the same object across "
         "a teardown — rebuild is not producing fresh clients"
     )
+
+
 def test_force_close_tcp_sockets_descends_httpcore_1_connection_wrapper():
     """httpcore 1.x stores the real stream below conn._connection.
 

@@ -10,6 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# python-telegram-bot is an optional dep — skip the entire module when
+# it isn't installed (e.g. CI bare env). Tests that patch telegram.Bot
+# or call _send_telegram need it; tests for other platforms don't but
+# keeping the whole file consistent is simpler.
+_HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
+
 
 @pytest.fixture(autouse=True)
 def _reset_signal_scheduler():
@@ -22,15 +28,93 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
-    _derive_forum_thread_name,
+    _is_telegram_thread_not_found,
     _parse_target_ref,
-    _send_discord,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
 )
+# Discord helpers moved to the plugin in #24325.  Import from the new path
+# and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
+# pre-migration signature so the existing test bodies keep working.
+from plugins.platforms.discord.adapter import (
+    _DISCORD_CHANNEL_TYPE_PROBE_CACHE,
+    _derive_forum_thread_name,
+    _probe_is_forum_cached,
+    _remember_channel_is_forum,
+    _standalone_send,
+)
+
+
+async def _send_discord(
+    token,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+):
+    """Pre-migration ``(token, chat_id, message, …)`` adapter around the
+    plugin's ``_standalone_send(pconfig, …)``.  Lets test bodies continue
+    to call ``_send_discord("tok", ...)`` without rewriting every signature.
+    """
+    pconfig = SimpleNamespace(token=token, extra={})
+    return await _standalone_send(
+        pconfig,
+        chat_id,
+        message,
+        thread_id=thread_id,
+        media_files=media_files,
+    )
+
+
+def _discord_entry():
+    """Return the live Discord PlatformEntry, importing lazily so plugin
+    discovery is forced exactly once and patches survive across tests."""
+    from hermes_cli.plugins import discover_plugins
+    from gateway.platform_registry import platform_registry
+    discover_plugins()
+    return platform_registry.get("discord")
+
+
+class _patch_discord_sender:
+    """Patch the Discord registry entry's ``standalone_sender_fn`` with the
+    given mock and translate the production ``(pconfig, ...)`` call shape
+    back to the pre-migration ``(token, ...)`` shape the test mocks expect.
+
+    Use as a context manager:
+
+        send_mock = AsyncMock(return_value={...})
+        with _patch_discord_sender(send_mock):
+            asyncio.run(_send_to_platform(Platform.DISCORD, ...))
+        send_mock.assert_awaited_once_with("tok", "chat", "msg",
+                                           thread_id=None, media_files=[])
+    """
+
+    def __init__(self, mock):
+        self._mock = mock
+        self._entry = None
+        self._original = None
+
+    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None):
+        token = getattr(pconfig, "token", None)
+        return await self._mock(
+            token, chat_id, message,
+            thread_id=thread_id, media_files=media_files,
+        )
+
+    def __enter__(self):
+        self._entry = _discord_entry()
+        self._original = self._entry.standalone_sender_fn
+        self._entry.standalone_sender_fn = self._adapter
+        return self._mock
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._entry is not None:
+            self._entry.standalone_sender_fn = self._original
+        return False
 
 
 def _run_async_immediately(coro):
@@ -48,7 +132,10 @@ def _make_config():
 def _install_telegram_mock(monkeypatch, bot):
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot, constants=constants_mod)
+    # MessageEntity needed by #27865 mention-detection path; tests don't
+    # inspect it but the import must succeed.
+    _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
+    telegram_mod = SimpleNamespace(Bot=lambda token: bot, MessageEntity=_MessageEntity, constants=constants_mod)
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -290,6 +377,41 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+    def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):
+        # This test exercises the strict-allowlist path; disable recency trust
+        # so the freshly-written tmp_path file is not auto-accepted by the
+        # trust window. (Recency trust is covered in test_platform_base.py.)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        config, telegram_cfg = _make_config()
+        secret = tmp_path / "secret.pdf"
+        secret.write_bytes(b"%PDF secret")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": f"hello\nMEDIA:{secret}",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"
@@ -436,7 +558,7 @@ class TestSendToPlatformChunking:
         """Messages exceeding the platform limit are split into multiple sends."""
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
         long_msg = "word " * 1000  # ~5000 chars, well over Discord's 2000 limit
-        with patch("tools.send_message_tool._send_discord", send):
+        with _patch_discord_sender(send):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -873,6 +995,59 @@ class TestSendTelegramThreadIdMapping:
         kwargs = bot.send_message.await_args.kwargs
         assert "message_thread_id" not in kwargs
 
+    def test_thread_not_found_retries_without_message_thread_id(self, monkeypatch):
+        """When send_message raises "thread not found", retry without thread_id (#27012)."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        # First call raises thread-not-found, second succeeds
+        bot.send_message = AsyncMock(side_effect=[
+            Exception("Bad Request: message thread not found"),
+            SimpleNamespace(message_id=2),
+        ])
+
+        asyncio.run(
+            _send_telegram("tok", "-1001234567890", "hello", thread_id="17585")
+        )
+
+        assert bot.send_message.await_count == 2
+        # First call: should include message_thread_id=17585
+        call1_kwargs = bot.send_message.await_args_list[0].kwargs
+        assert call1_kwargs["message_thread_id"] == 17585
+        # Second call (retry): should NOT include message_thread_id
+        call2_kwargs = bot.send_message.await_args_list[1].kwargs
+        assert "message_thread_id" not in call2_kwargs
+
+    def test_thread_not_found_for_media_retries_without_message_thread_id(self, monkeypatch, tmp_path):
+        """Media send with stale thread_id retries without it (#27012)."""
+        bot = self._make_bot()
+        # Mock send_document to fail with thread-not-found, then succeed
+        bot.send_document = AsyncMock(side_effect=[
+            Exception("Bad Request: message thread not found"),
+            SimpleNamespace(message_id=3),
+        ])
+        _install_telegram_mock(monkeypatch, bot)
+
+        # Create a test file
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("test content")
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "-1001234567890", "",
+                media_files=[(str(test_file), False)],
+                thread_id="17585",
+            )
+        )
+
+        assert bot.send_document.await_count == 2
+        # First call: should include message_thread_id=17585
+        call1_kwargs = bot.send_document.await_args_list[0].kwargs
+        assert call1_kwargs["message_thread_id"] == 17585
+        # Second call (retry): should NOT include message_thread_id
+        call2_kwargs = bot.send_document.await_args_list[1].kwargs
+        assert "message_thread_id" not in call2_kwargs
+
 
 # ---------------------------------------------------------------------------
 # Tests for Discord thread_id support
@@ -1113,7 +1288,7 @@ class TestSendToPlatformDiscordThread:
         """Discord platform with thread_id passes it to _send_discord."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1133,7 +1308,7 @@ class TestSendToPlatformDiscordThread:
         """Discord platform without thread_id passes None."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1297,7 +1472,7 @@ class TestSendToPlatformDiscordMedia:
         # A message long enough to get chunked (Discord limit is 2000)
         long_msg = "A" * 1900 + " " + "B" * 1900
 
-        with patch("tools.send_message_tool._send_discord", side_effect=mock_send_discord):
+        with _patch_discord_sender(AsyncMock(side_effect=mock_send_discord)):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1317,7 +1492,7 @@ class TestSendToPlatformDiscordMedia:
         """Short message (single chunk) gets media_files directly."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1555,7 +1730,7 @@ class TestSendToPlatformDiscordForum:
         """Discord messages are routed through _send_discord, which handles forum detection."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1574,7 +1749,7 @@ class TestSendToPlatformDiscordForum:
         """Thread ID is still passed through when sending to Discord."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1712,11 +1887,11 @@ class TestForumProbeCache:
     """_DISCORD_CHANNEL_TYPE_PROBE_CACHE memoizes forum detection results."""
 
     def setup_method(self):
-        from tools import send_message_tool as smt
-        smt._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
+        from plugins.platforms.discord import adapter as discord_adapter
+        discord_adapter._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
 
     def test_cache_round_trip(self):
-        from tools.send_message_tool import (
+        from plugins.platforms.discord.adapter import (
             _probe_is_forum_cached,
             _remember_channel_is_forum,
         )
@@ -1756,7 +1931,7 @@ class TestForumProbeCache:
         thread_session.post = MagicMock(return_value=thread_resp)
 
         # Two _send_discord calls: first does probe + thread-create; second should skip probe
-        from tools import send_message_tool as smt
+        from plugins.platforms.discord import adapter as discord_adapter
 
         sessions_created = []
 
@@ -1774,7 +1949,7 @@ class TestForumProbeCache:
         with patch("aiohttp.ClientSession", side_effect=session_factory):
             result1 = asyncio.run(_send_discord("tok", "ch1", "first"))
         assert result1["success"] is True
-        assert smt._probe_is_forum_cached("ch1") is True
+        assert discord_adapter._probe_is_forum_cached("ch1") is True
 
         # Second call: cache hits, no new probe session needed. We need to only
         # return thread_session now since probe is skipped.
@@ -2422,3 +2597,93 @@ class TestCheckSendMessage:
              patch("gateway.status.is_gateway_running",
                    side_effect=ImportError("simulated")):
             assert _check_send_message() is False
+
+
+class TestSendTelegramThreadNotFoundRetry:
+    """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
+
+    def test_is_thread_not_found_matches_expected_errors(self):
+        """_is_telegram_thread_not_found should detect thread-not-found errors."""
+        class FakeError(Exception):
+            pass
+
+        assert _is_telegram_thread_not_found(FakeError("message thread not found")) is True
+        assert _is_telegram_thread_not_found(FakeError("THREAD NOT FOUND")) is True
+        assert _is_telegram_thread_not_found(FakeError("Bad Request: thread not found")) is True
+        assert _is_telegram_thread_not_found(FakeError("chat not found")) is False
+        assert _is_telegram_thread_not_found(FakeError("parse error")) is False
+        assert _is_telegram_thread_not_found(FakeError("")) is False
+
+    def test_text_send_retries_without_thread_id_on_thread_not_found(self):
+        """When thread is not found, the text send should retry without
+        message_thread_id."""
+        call_args = []
+
+        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
+            call_args.append(dict(kwargs, chat_id=chat_id, text=text))
+            if len(call_args) == 1:
+                raise Exception("Bad Request: message thread not found")
+            return SimpleNamespace(message_id=42)
+
+        async def run_test():
+            with patch(
+                "tools.send_message_tool._send_telegram_message_with_retry",
+                fake_retry,
+            ):
+                # _send_telegram imports Bot locally; we only need to mock
+                # the send path, not Bot itself (Bot import falls through
+                # normally since python-telegram-bot is installed).
+                return await _send_telegram(
+                    "fake-token", "-100123", "hello from topic 17585",
+                    thread_id="17585",
+                )
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True
+        assert result["message_id"] == "42"
+        assert len(call_args) == 2, f"expected 2 calls, got {len(call_args)}"
+        # First call should have message_thread_id
+        assert call_args[0].get("message_thread_id") is not None
+        # Second call (retry) should NOT have message_thread_id
+        assert "message_thread_id" not in call_args[1], \
+            "retry should drop message_thread_id after thread-not-found"
+
+    def test_disable_web_page_preview_not_leaked_to_media_sends(self):
+        """disable_web_page_preview should only appear in text send, not media sends."""
+        text_kwargs_seen = []
+        media_kwargs_seen = []
+
+        class FakeBot:
+            async def send_message(self, **kwargs):
+                text_kwargs_seen.append(kwargs)
+                return SimpleNamespace(message_id=1)
+
+            async def send_document(self, **kwargs):
+                media_kwargs_seen.append(kwargs)
+                return SimpleNamespace(message_id=2)
+
+        import tempfile
+        media_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+                tf.write(b"%PDF-1.4 test content")
+                media_path = tf.name
+
+            async def run_test():
+                with patch("telegram.Bot", return_value=FakeBot()):
+                    return await _send_telegram(
+                        "fake-token", "-100123", "check preview",
+                        media_files=[(media_path, False)],
+                        disable_link_previews=True,
+                    )
+
+            result = asyncio.run(run_test())
+            assert result["success"] is True
+            # Text send should have disable_web_page_preview
+            assert text_kwargs_seen[0].get("disable_web_page_preview") is True
+            # Media send should NOT have disable_web_page_preview
+            assert "disable_web_page_preview" not in media_kwargs_seen[0], \
+                "disable_web_page_preview leaked into send_document kwargs"
+        finally:
+            if media_path and os.path.exists(media_path):
+                os.unlink(media_path)

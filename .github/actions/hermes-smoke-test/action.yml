@@ -29,9 +29,13 @@ runs:
     - name: hermes --help
       shell: bash
       run: |
+        # Use the image's real ENTRYPOINT (/init + main-wrapper.sh) so
+        # this exercises the actual production startup path. PR #30136
+        # review caught that an --entrypoint override here had been
+        # silently neutered by the s6-overlay migration — stage2-hook
+        # ignores its CMD args, so the smoke test was a no-op.
         docker run --rm \
           -v /tmp/hermes-test:/opt/data \
-          --entrypoint /opt/hermes/docker/entrypoint.sh \
           "${{ inputs.image }}" --help
 
     - name: hermes dashboard --help
@@ -43,5 +47,4 @@ runs:
         # installed package.
         docker run --rm \
           -v /tmp/hermes-test:/opt/data \
-          --entrypoint /opt/hermes/docker/entrypoint.sh \
           "${{ inputs.image }}" dashboard --help

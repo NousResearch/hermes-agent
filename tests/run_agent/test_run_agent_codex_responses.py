@@ -54,7 +54,6 @@ def _build_agent(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -75,7 +74,6 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -186,6 +184,27 @@ class _FakeCreateStream:
 
     def close(self):
         self.closed = True
+
+
+class _IteratorTypeErrorStream:
+    """Mimic the SDK raising while parsing response.completed.output=None."""
+
+    def __init__(self, events_before_error):
+        self._events_before_error = list(events_before_error)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events_before_error:
+            yield event
+        raise TypeError("'NoneType' object is not iterable")
+
+    def get_final_response(self):  # pragma: no cover - iterator fails first
+        raise AssertionError("get_final_response should not be reached")
 
 
 def _codex_request_kwargs():
@@ -308,7 +327,10 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["parallel_tool_calls"] is True
     assert isinstance(kwargs["prompt_cache_key"], str)
     assert len(kwargs["prompt_cache_key"]) > 0
-    assert "timeout" not in kwargs
+    # ``timeout`` is now wired from ``_resolved_api_call_timeout`` (default 1800s)
+    # so per-provider ``request_timeout_seconds`` actually reaches the SDK.
+    assert isinstance(kwargs.get("timeout"), float)
+    assert kwargs["timeout"] > 0
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
 
@@ -335,7 +357,6 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
 
     kwargs = agent._build_api_kwargs(
         [
@@ -365,7 +386,6 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         agent._cleanup_task_resources = lambda task_id: None
         agent._persist_session = lambda messages, history=None: None
         agent._save_trajectory = lambda messages, user_message, completed: None
-        agent._save_session_log = lambda messages: None
 
         kwargs = agent._build_api_kwargs(
             [
@@ -485,6 +505,40 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(monkeypatch):
+    """Regression for #11179: the SDK can raise while iterating response.completed.
+
+    The failure happens before get_final_response(), so post-loop backfill alone is
+    not enough. Preserve already streamed output_item.done events.
+    """
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream item survived")],
+    )
+    calls = {"stream": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _IteratorTypeErrorStream([
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+        ])
+
+    def _unexpected_create(**kwargs):  # pragma: no cover - recovery should avoid fallback call
+        raise AssertionError("create fallback should not be needed when output items were collected")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_unexpected_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["stream"] == 1
+    assert response.output == [output_item]
+    assert response.status == "completed"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -594,7 +648,6 @@ def _build_xai_oauth_agent(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -1056,6 +1109,29 @@ def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
     from agent.codex_responses_adapter import _preflight_codex_api_kwargs
     result = _preflight_codex_api_kwargs(kwargs)
     assert result["service_tier"] == "priority"
+
+
+def test_preflight_codex_api_kwargs_preserves_positive_timeout(monkeypatch):
+    """Positive numeric timeouts survive preflight so the SDK honors them."""
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["timeout"] = 600.0
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+    result = _preflight_codex_api_kwargs(kwargs)
+    assert result["timeout"] == 600.0
+
+
+def test_preflight_codex_api_kwargs_drops_invalid_timeout(monkeypatch):
+    """Zero, negative, inf, and booleans are all dropped — not passed to SDK."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    for bad in (0, -1, float("inf"), True, False, "300", None):
+        kwargs = _codex_request_kwargs()
+        kwargs["timeout"] = bad
+        result = _preflight_codex_api_kwargs(kwargs)
+        assert "timeout" not in result, f"timeout={bad!r} should be dropped"
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):

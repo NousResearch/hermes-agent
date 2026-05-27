@@ -102,7 +102,6 @@ from plugins.browser.firecrawl.provider import (  # noqa: F401
     FirecrawlBrowserProvider as FirecrawlProvider,
 )
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
-
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
@@ -1386,8 +1385,11 @@ def _reap_orphaned_browser_sessions():
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
+        # Use the process-tree termination helper so Chromium children
+        # (renderer, GPU, etc.) are cleaned up, not just the daemon parent.
         try:
-            os.kill(daemon_pid, signal.SIGTERM)
+            from tools.process_registry import ProcessRegistry
+            ProcessRegistry._terminate_host_pid(daemon_pid)
             logger.info("Reaped orphaned browser daemon PID %d (session %s)",
                         daemon_pid, session_name)
             reaped += 1
@@ -3437,8 +3439,9 @@ def _cleanup_single_browser_session(task_id: str) -> None:
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
                 if os.path.isfile(pid_file):
                     try:
+                        from tools.process_registry import ProcessRegistry
                         daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
-                        os.kill(daemon_pid, signal.SIGTERM)
+                        ProcessRegistry._terminate_host_pid(daemon_pid)
                         logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
                         logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
@@ -3649,6 +3652,24 @@ def check_browser_requirements() -> bool:
     return True
 
 
+def check_browser_vision_requirements() -> bool:
+    """Whether ``browser_vision`` should be advertised to the model.
+
+    Requires BOTH a working browser (``check_browser_requirements``) AND a
+    resolvable vision backend. Without the vision check, the tool stays in
+    the model's tool list even when no vision provider is configured, then
+    fails at call time with a cryptic provider-side error like
+    ``unknown variant `image_url`, expected `text``` (issue #31179).
+    """
+    if not check_browser_requirements():
+        return False
+    try:
+        from tools.vision_tools import check_vision_requirements
+    except ImportError:
+        return False
+    return check_vision_requirements()
+
+
 # ============================================================================
 # Module Test
 # ============================================================================
@@ -3783,7 +3804,7 @@ registry.register(
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_vision_requirements,
     emoji="👁️",
 )
 registry.register(

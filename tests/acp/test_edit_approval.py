@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 from acp_adapter.edit_approval import (
@@ -183,7 +184,10 @@ def test_patch_replace_approval_request_includes_full_file_diff(tmp_path):
 
 def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_path):
     workspace_file = tmp_path / "src.py"
-    tmp_file = Path("/tmp/hermes-acp-auto-approve-test.txt")
+    # Use tempfile.gettempdir() so this test exercises the same code path on
+    # Linux (`/tmp`), macOS (`/private/var/folders/...`) and Windows
+    # (`%LOCALAPPDATA%\Temp`). Before the fix this branch only worked on Linux.
+    tmp_file = Path(tempfile.gettempdir()) / "hermes-acp-auto-approve-test.txt"
     env_file = tmp_path / ".env"
 
     assert should_auto_approve_edit(

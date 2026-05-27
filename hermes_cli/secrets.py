@@ -724,6 +724,29 @@ def register_secrets_subparsers(secrets_parser: argparse.ArgumentParser) -> None
     """Register all subcommands under 'hermes secrets'."""
     sub = secrets_parser.add_subparsers(dest="secrets_command", required=True)
 
+    # source/provider
+    #
+    # Source integrations configure where runtime secrets are fetched from.
+    # They are deliberately nested below ``source`` so the top-level
+    # ``sync/check/preflight`` commands remain the BWS manifest SSOT and
+    # operators do not confuse a provider setup wizard with the policy gate.
+    source_parser = sub.add_parser(
+        "source",
+        aliases=["provider"],
+        help="Configure external secret sources such as Bitwarden",
+    )
+    source_sub = source_parser.add_subparsers(
+        dest="secrets_source",
+        required=True,
+    )
+    bitwarden_parser = source_sub.add_parser(
+        "bitwarden",
+        aliases=["bw"],
+        help="Bitwarden Secrets Manager integration",
+    )
+    from hermes_cli import secrets_cli as _secrets_cli
+    _secrets_cli.register_cli(bitwarden_parser)
+
     # sync
     sync_parser = sub.add_parser("sync", help="Sync .env from BWS according to manifest")
     sync_parser.add_argument("--target", required=True)

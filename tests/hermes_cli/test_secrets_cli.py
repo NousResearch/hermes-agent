@@ -1,8 +1,10 @@
 """Tests for hermes secrets CLI — fixture-based, no real ~/.hermes dependency."""
+import argparse
 import json
 import os
 import tempfile
 import subprocess
+import sys
 import textwrap
 from unittest import mock
 
@@ -114,7 +116,7 @@ def _run_secrets(temp_home: str, *args: str) -> subprocess.CompletedProcess:
     env["HERMES_HOME"] = temp_home
     env["HOME"] = os.path.expanduser("~")  # real home for bws
     return subprocess.run(
-        ["python", "-m", "hermes_cli.main", "secrets"] + list(args),
+        [sys.executable, "-m", "hermes_cli.main", "secrets"] + list(args),
         capture_output=True, text=True, timeout=30,
         env=env,
     )
@@ -123,6 +125,40 @@ def _run_secrets(temp_home: str, *args: str) -> subprocess.CompletedProcess:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+class TestSecretsSourceWiring:
+    def _parse(self, *args: str) -> argparse.Namespace:
+        from hermes_cli.secrets import register_secrets_subparsers
+
+        parser = argparse.ArgumentParser()
+        register_secrets_subparsers(parser)
+        return parser.parse_args(list(args))
+
+    def test_bitwarden_source_is_nested_under_source(self):
+        args = self._parse("source", "bitwarden", "status")
+        assert args.secrets_command == "source"
+        assert args.secrets_source == "bitwarden"
+        assert args.secrets_bw_command == "status"
+        assert callable(args.func)
+
+    def test_provider_bw_alias_routes_to_same_source_handler(self):
+        args = self._parse("provider", "bw", "install", "--force")
+        assert args.secrets_command == "provider"
+        assert args.secrets_source == "bw"
+        assert args.secrets_bw_command == "install"
+        assert args.force is True
+        assert callable(args.func)
+
+    def test_bitwarden_refresh_is_canonical_source_fetch_name(self):
+        args = self._parse("source", "bitwarden", "refresh")
+        assert args.secrets_bw_command == "refresh"
+        assert callable(args.func)
+
+    def test_bitwarden_sync_remains_upstream_compat_alias(self):
+        args = self._parse("source", "bitwarden", "sync")
+        assert args.secrets_bw_command == "sync"
+        assert callable(args.func)
+
 
 class TestSecretsCheck:
     def test_check_passes_with_matching_sidecar(self, temp_home, manifest_path, env_path, sidecar_path):

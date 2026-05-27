@@ -59,6 +59,59 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
+    redact_module = types.ModuleType("agent.redact")
+
+    def fail_redaction(*_args, **_kwargs):
+        raise RuntimeError("redaction unavailable")
+
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+
+    assert server._redact_tui_verbose_text("api_key=secret") == ""
+    assert server._tool_args_text({"api_key": "secret"}) == ""
+    assert server._tool_result_text("token=secret") == ""
+
+
+def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
+    monkeypatch.setattr(server, "_TUI_VERBOSE_TEXT_MAX_CHARS", 12)
+    monkeypatch.setattr(server, "_TUI_VERBOSE_TEXT_MAX_LINES", 2)
+
+    capped = server._cap_tui_verbose_text("one\ntwo\nthree\nfour")
+
+    assert capped.startswith("[showing verbose tail; omitted ")
+    assert capped.endswith("three\nfour")
+    assert "one" not in capped
+
+
+def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
+    redact_module = types.ModuleType("agent.redact")
+
+    def fail_redaction(*_args, **_kwargs):
+        raise RuntimeError("redaction unavailable")
+
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "redaction-test",
+        {"tool_progress_mode": "verbose", "tool_started_at": {}},
+    )
+
+    server._on_tool_start("redaction-test", "tool-1", "terminal", {"command": "pwd"})
+    server._on_tool_complete("redaction-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+
+    assert events[0][0] == "tool.start"
+    assert events[1][0] == "tool.complete"
+    assert "args_text" not in events[0][2]
+    assert "result_text" not in events[1][2]
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 
@@ -1476,8 +1529,10 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     set_toggle = server.handle_request(
         {"id": "2", "method": "config.set", "params": {"key": "mouse"}}
     )
-    assert set_toggle["result"] == {"key": "mouse", "value": "on"}
-    assert writes == [("display.mouse_tracking", True)]
+    # /mouse (no arg) toggles between 'all' and 'off'. Starting from
+    # tui_mouse: False (→ 'off'), the toggle flips to 'all'.
+    assert set_toggle["result"] == {"key": "mouse", "value": "all"}
+    assert writes == [("display.mouse_tracking", "all")]
 
     cfg["display"] = {"mouse_tracking": 0, "tui_mouse": True}
     get_canonical = server.handle_request(
@@ -1489,7 +1544,51 @@ def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
     get_null = server.handle_request(
         {"id": "4", "method": "config.get", "params": {"key": "mouse"}}
     )
-    assert get_null["result"]["value"] == "on"
+    # mouse_tracking present-but-None defers neither to tui_mouse nor to
+    # the legacy off bucket: it falls through to the 'all' default.
+    assert get_null["result"]["value"] == "all"
+
+
+def test_config_mouse_accepts_preset_strings_and_aliases(monkeypatch):
+    cfg = {"display": {"mouse_tracking": "all"}}
+    writes = []
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    # Direct preset.
+    set_wheel = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "wheel"},
+        }
+    )
+    assert set_wheel["result"] == {"key": "mouse", "value": "wheel"}
+    assert writes[-1] == ("display.mouse_tracking", "wheel")
+
+    # Alias for buttons.
+    set_click = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "click"},
+        }
+    )
+    assert set_click["result"] == {"key": "mouse", "value": "buttons"}
+    assert writes[-1] == ("display.mouse_tracking", "buttons")
+
+    # Unknown value → 4002.
+    bad = server.handle_request(
+        {
+            "id": "3",
+            "method": "config.set",
+            "params": {"key": "mouse", "value": "rainbows"},
+        }
+    )
+    assert bad["error"]["code"] == 4002
 
 
 def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
@@ -1518,6 +1617,26 @@ def test_complete_slash_includes_provider_alias():
     )
 
     assert any(item["text"] == "provider" for item in resp["result"]["items"])
+
+
+def test_complete_slash_returns_plain_string_fields():
+    # prompt_toolkit hands us FormattedText (a list subclass) for
+    # display/display_meta; the TUI's CompletionItem contract is plain
+    # strings, and shipping the raw list trips Ink's row layout into
+    # 1-char truncation of the next column (/goal → /goa).
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/g"}}
+    )
+
+    items = resp["result"]["items"]
+    goal = next((it for it in items if it["text"] == "goal"), None)
+    assert goal is not None
+    assert isinstance(goal["display"], str), goal["display"]
+    assert isinstance(goal["meta"], str), goal["meta"]
+    assert goal["display"] == "/goal"
+    for item in items:
+        assert isinstance(item["display"], str), item
+        assert isinstance(item["meta"], str), item
 
 
 def test_complete_slash_includes_tui_details_command():
@@ -1612,6 +1731,48 @@ def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch
     assert server._sessions["sid"]["tool_progress_mode"] == "verbose"
     assert agent.verbose_logging is True
 
+
+
+def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
+    """A model switch against a lazy-created live session must apply to the
+    real agent, not just process env, before the prompt is dispatched.
+    """
+
+    agent_ready = threading.Event()
+    agent = types.SimpleNamespace(model="old/model", provider="old-provider")
+    session = _session(agent=agent)
+    session["agent"] = None
+    session["agent_ready"] = agent_ready
+    server._sessions["sid"] = session
+    calls = []
+
+    def fake_start(sid, target):
+        calls.append(("start", sid))
+        target["agent"] = agent
+        agent_ready.set()
+
+    def fake_apply(sid, target, raw):
+        calls.append(("apply", sid, target.get("agent"), raw))
+        if target.get("agent") is not agent:
+            raise AssertionError("model switch ran before lazy agent was ready")
+        return {"value": "new/model", "warning": ""}
+
+    monkeypatch.setattr(server, "_start_agent_build", fake_start)
+    monkeypatch.setattr(server, "_apply_model_switch", fake_apply)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "model", "value": "new/model"},
+            }
+        )
+
+        assert resp["result"]["value"] == "new/model"
+        assert calls == [("start", "sid"), ("apply", "sid", agent, "new/model")]
+    finally:
+        server._sessions.pop("sid", None)
 
 def test_config_set_model_uses_live_switch_path(monkeypatch):
     server._sessions["sid"] = _session()
@@ -2192,6 +2353,9 @@ def test_commands_catalog_filters_gateway_only_commands_and_keeps_status_visible
     assert "/approve" not in pairs
     assert "/deny" not in pairs
     assert "/sethome" not in pairs
+
+    assert "/update" in pairs
+    assert canon["/update"] == "/update"
 
     assert "/topic" not in canon
     assert "/approve" not in canon
@@ -3721,6 +3885,191 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     assert text in {"", None}, f"expected empty text, got {text!r}"
 
 
+# ── active live TUI sessions ─────────────────────────────────────────
+
+
+def test_session_active_list_reports_live_sessions(monkeypatch):
+    class _DB:
+        def get_session_title(self, key):
+            return {"key-a": "Research", "key-b": "Implement"}.get(key, "")
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    server._sessions["sid-a"] = _session(
+        agent=types.SimpleNamespace(model="model-a"),
+        history=[{"role": "user", "content": "find docs"}],
+        session_key="key-a",
+        created_at=10.0,
+        last_active=20.0,
+    )
+    server._sessions["sid-b"] = _session(
+        agent=types.SimpleNamespace(model="model-b"),
+        history=[{"role": "assistant", "content": "writing code"}],
+        running=True,
+        session_key="key-b",
+        created_at=11.0,
+        last_active=30.0,
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.active_list",
+                "params": {"current_session_id": "sid-b"},
+            }
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    session_rows = resp["result"]["sessions"]
+    assert [row["id"] for row in session_rows] == ["sid-a", "sid-b"]
+
+    rows = {row["id"]: row for row in session_rows}
+    assert rows["sid-a"] == {
+        "current": False,
+        "id": "sid-a",
+        "last_active": 20.0,
+        "message_count": 1,
+        "model": "model-a",
+        "preview": "find docs",
+        "session_key": "key-a",
+        "started_at": 10.0,
+        "status": "idle",
+        "title": "Research",
+    }
+    assert rows["sid-b"]["current"] is True
+    assert rows["sid-b"]["status"] == "working"
+    assert rows["sid-b"]["title"] == "Implement"
+    assert rows["sid-b"]["preview"] == "writing code"
+
+
+def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):
+    """Switching into a still-running live session must hydrate partial output.
+
+    The committed session history is only updated after run_conversation returns,
+    so session.activate needs an explicit in-flight payload sourced from the
+    backend stream callback.
+    """
+    started = threading.Event()
+    release = threading.Event()
+    done = threading.Event()
+
+    class _Agent:
+        model = "model-live"
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            assert prompt == "write a long answer"
+            assert conversation_history == []
+            stream_callback("partial ")
+            stream_callback("answer")
+            started.set()
+            assert release.wait(2), "test timed out waiting to finish fake model turn"
+            return {
+                "final_response": "partial answer complete",
+                "messages": [
+                    {"role": "user", "content": "write a long answer"},
+                    {"role": "assistant", "content": "partial answer complete"},
+                ],
+            }
+
+    server._sessions["sid-live"] = _session(agent=_Agent())
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+
+    def _emit(event, sid, payload=None):
+        if event == "message.complete":
+            done.set()
+
+    monkeypatch.setattr(server, "_emit", _emit)
+
+    try:
+        submit = server.handle_request(
+            {
+                "id": "submit",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid-live", "text": "write a long answer"},
+            }
+        )
+        assert submit["result"]["status"] == "streaming"
+        assert started.wait(2), "fake model did not stream before activation"
+
+        resp = server.handle_request(
+            {
+                "id": "activate",
+                "method": "session.activate",
+                "params": {"session_id": "sid-live"},
+            }
+        )
+
+        inflight = resp["result"].get("inflight")
+        assert inflight == {
+            "assistant": "partial answer",
+            "streaming": True,
+            "user": "write a long answer",
+        }
+        assert resp["result"]["messages"] == []
+
+        release.set()
+        assert done.wait(2), "fake model turn did not complete"
+        completed = server.handle_request(
+            {
+                "id": "activate-done",
+                "method": "session.activate",
+                "params": {"session_id": "sid-live"},
+            }
+        )
+        assert completed["result"].get("inflight") is None
+        assert completed["result"]["messages"] == [
+            {"role": "user", "text": "write a long answer"},
+            {"role": "assistant", "text": "partial answer complete"},
+        ]
+    finally:
+        release.set()
+        done.wait(2)
+        server._sessions.pop("sid-live", None)
+
+
+def test_session_activate_switches_live_session_without_closing_siblings(monkeypatch):
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    server._sessions["sid-a"] = _session(
+        agent=types.SimpleNamespace(model="model-a"),
+        history=[{"role": "user", "content": "old"}],
+        session_key="key-a",
+    )
+    server._sessions["sid-b"] = _session(
+        agent=types.SimpleNamespace(model="model-b"),
+        history=[
+            {"role": "user", "content": "new prompt"},
+            {"role": "assistant", "content": "new answer"},
+        ],
+        running=True,
+        session_key="key-b",
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.activate", "params": {"session_id": "sid-b"}}
+        )
+
+        assert "sid-a" in server._sessions
+        assert "sid-b" in server._sessions
+        assert resp["result"]["session_id"] == "sid-b"
+        assert resp["result"]["session_key"] == "key-b"
+        assert resp["result"]["running"] is True
+        assert resp["result"]["status"] == "working"
+        assert resp["result"]["info"] == {"model": "model-b"}
+        assert resp["result"]["messages"] == [
+            {"role": "user", "text": "new prompt"},
+            {"role": "assistant", "text": "new answer"},
+        ]
+    finally:
+        server._sessions.pop("sid-a", None)
+        server._sessions.pop("sid-b", None)
+
+
 # ── session.most_recent ──────────────────────────────────────────────
 
 
@@ -3911,7 +4260,7 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
+    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
     assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
@@ -3931,7 +4280,7 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
+    assert resp["result"]["messages"] == ["Chromium-family browser is already listening on port 9222"]
     assert urls[0] == "http://127.0.0.1:9222/json/version"
 
 
@@ -3974,10 +4323,10 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
     assert (
         resp["result"]["messages"][0]
-        == "Chrome isn't running with remote debugging — attempting to launch..."
+        == "Chromium-family browser isn't running with remote debugging — attempting to launch..."
     )
     assert any(
-        "No Chrome/Chromium executable was found" in line
+        "No supported Chromium-family browser executable was found" in line
         for line in resp["result"]["messages"]
     )
     assert any(
@@ -4104,8 +4453,8 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
     assert resp["result"]["messages"] == [
-        "Chrome isn't running with remote debugging — attempting to launch...",
-        "Chrome launched and listening on port 9222",
+        "Chromium-family browser isn't running with remote debugging — attempting to launch...",
+        "Chromium-family browser launched and listening on port 9222",
     ]
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
 

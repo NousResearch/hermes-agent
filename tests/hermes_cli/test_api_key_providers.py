@@ -314,6 +314,16 @@ class TestResolveProvider:
         assert resolve_provider("auto") == "openrouter"
 
     def test_auto_does_not_select_copilot_from_github_token(self, monkeypatch):
+        # AWS Bedrock auto-detection (via boto3's credential chain) runs at
+        # the tail of resolve_provider("auto") and will silently pick up
+        # ~/.aws/credentials on developer machines that aren't blanked by
+        # the hermetic conftest. Force-disable it so this test exercises
+        # the specific "GitHub token alone shouldn't auto-pick copilot"
+        # behavior, not the Bedrock fallback.
+        monkeypatch.setattr(
+            "agent.bedrock_adapter.has_aws_credentials",
+            lambda env=None: False,
+        )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
         with pytest.raises(AuthError, match="No inference provider configured"):
             resolve_provider("auto")

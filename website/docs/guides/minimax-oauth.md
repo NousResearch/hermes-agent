@@ -157,10 +157,10 @@ The `minimax-oauth` provider does **not** use `MINIMAX_API_KEY` or `MINIMAX_BASE
 | `MINIMAX_API_KEY` | Used by `minimax` provider only — ignored for `minimax-oauth` |
 | `MINIMAX_CN_API_KEY` | Used by `minimax-cn` provider only — ignored for `minimax-oauth` |
 
-To force the `minimax-oauth` provider at runtime:
+To use `minimax-oauth` as the active provider, set `model.provider: minimax-oauth` in `config.yaml` (use `hermes setup` for the guided flow), or pass `--provider minimax-oauth` for a single invocation:
 
 ```bash
-HERMES_INFERENCE_PROVIDER=minimax-oauth hermes
+hermes --provider minimax-oauth
 ```
 
 ## Models
@@ -180,7 +180,9 @@ Both models support up to 200,000 tokens of context.
 
 Hermes refreshes the token on every session start if it is within 60 seconds of expiry. If the access token is already expired (for example, after a long offline period), the refresh happens automatically on the next request. If refresh fails with `refresh_token_reused` or `invalid_grant`, Hermes marks the session as requiring re-login.
 
-**Fix:** run `hermes auth add minimax-oauth` again to start a fresh login.
+When the refresh failure is terminal (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and quarantines it locally so it doesn't keep replaying the doomed exchange. The agent surfaces a single "re-authentication required" message and stays out of the way until you log in again.
+
+**Fix:** run `hermes auth add minimax-oauth` again to start a fresh login. The quarantine clears on the next successful exchange.
 
 ### Authorization timed out
 

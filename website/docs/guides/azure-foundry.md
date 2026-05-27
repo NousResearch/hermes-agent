@@ -169,8 +169,9 @@ hermes         # uses your az login token
 **Service principal in CI:**
 - Set `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` in the runner env.
 
-**Sovereign clouds (Government, China):**
-- Export `AZURE_AUTHORITY_HOST` (e.g. `https://login.microsoftonline.us` for Azure Government, `https://login.partner.microsoftonline.cn` for Azure China). `azure-identity` reads it directly.
+#### Sovereign clouds (Government, China)
+
+Export `AZURE_AUTHORITY_HOST` (e.g. `https://login.microsoftonline.us` for Azure Government, `https://login.partner.microsoftonline.cn` for Azure China). `azure-identity` reads it directly.
 
 ### Health checks
 
@@ -244,6 +245,8 @@ Important behaviour:
 
 - **`/v1` is stripped from the base URL.** The Anthropic SDK appends `/v1/messages` to every request URL — Hermes removes any trailing `/v1` before handing the URL to the SDK to avoid double-`/v1` paths.
 - **`api-version` is sent via `default_query`, not appended to the URL.** Azure Anthropic requires an `api-version` query string. Baking it into the base URL produces malformed paths like `/anthropic?api-version=.../v1/messages` and returns 404. Hermes passes `api-version=2025-04-15` via the Anthropic SDK's `default_query` instead.
+- **Bearer auth is used instead of `x-api-key`.** Azure's Anthropic-compatible route requires `Authorization: Bearer <key>` rather than Anthropic's native `x-api-key` header. Hermes detects `azure.com` in the base URL and routes the API key through the SDK's `auth_token` field so the right header reaches the upstream.
+- **1M context window beta header is kept.** Azure still gates the 1M-token Claude context (Opus 4.6/4.7, Sonnet 4.6) behind the `anthropic-beta: context-1m-2025-08-07` header. Hermes keeps that beta header on Azure paths (it's stripped from native Anthropic OAuth requests because some subscriptions reject it, but Azure requires it).
 - **OAuth token refresh is disabled.** Azure deployments use static API keys. The `~/.claude/.credentials.json` OAuth token refresh loop that applies to Anthropic Console is explicitly skipped for Azure endpoints to prevent the Claude Code OAuth token from overwriting your Azure key mid-session.
 
 ## Alternative: `provider: anthropic` + Azure base URL
@@ -325,7 +328,7 @@ Verify the same `Azure AI User` (or `Foundry User`) role is assigned on the Foun
 
 ## Related
 
-- [Environment variables](/docs/reference/environment-variables)
-- [Configuration](/docs/user-guide/configuration)
-- [AWS Bedrock](/docs/guides/aws-bedrock) — the other major cloud provider integration
+- [Environment variables](/reference/environment-variables)
+- [Configuration](/user-guide/configuration)
+- [AWS Bedrock](/guides/aws-bedrock) — the other major cloud provider integration
 - [Microsoft: Configure Entra ID for Foundry](https://learn.microsoft.com/azure/ai-foundry/foundry-models/how-to/configure-entra-id) — upstream documentation for the keyless path

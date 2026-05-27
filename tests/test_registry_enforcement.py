@@ -1,8 +1,10 @@
 """Tests for ToolRegistry.set_enforcement_fn / enforcement hook."""
-import asyncio
+
 import json
+
 import pytest
-from tools.registry import ToolRegistry, EnforcementDenied
+
+from tools.registry import EnforcementDenied, ToolRegistry
 
 
 def _make_registry_with_tool(name: str = "test_tool") -> ToolRegistry:

@@ -2355,7 +2355,7 @@ def terminal_tool(
             return json.dumps(result_dict, ensure_ascii=False)
 
     except Exception as e:
-        import traceback
+        import traceback, re
         tb_str = traceback.format_exc()
         logger.error("terminal_tool exception:\n%s", tb_str)
         return json.dumps({

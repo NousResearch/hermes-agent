@@ -71,6 +71,26 @@ class TestManagedNousToolsEnabled:
         )
         assert managed_nous_tools_enabled() is True
 
+    def test_force_fresh_is_forwarded(self, monkeypatch):
+        calls = []
+
+        def fake_account_info(*, force_fresh=False):
+            calls.append(force_fresh)
+            return NousPortalAccountInfo(
+                logged_in=True,
+                source="account_api",
+                fresh=True,
+                paid_service_access=True,
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.nous_account.get_nous_portal_account_info",
+            fake_account_info,
+        )
+
+        assert managed_nous_tools_enabled(force_fresh=True) is True
+        assert calls == [True]
+
     def test_returns_false_on_exception(self, monkeypatch):
         """Should never crash — returns False on any exception."""
         monkeypatch.setattr(

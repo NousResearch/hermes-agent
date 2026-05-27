@@ -1,5 +1,6 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -554,7 +555,6 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
 
 
 def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch):
-    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     config = {"model": {"provider": "nous"}}
 
     monkeypatch.setattr(
@@ -572,18 +572,48 @@ def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch)
     assert providers[0]["name"].startswith("Nous Subscription")
 
 
-def test_visible_providers_hide_nous_subscription_when_feature_flag_is_off(monkeypatch):
-    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: False)
+def test_visible_providers_force_fresh_shows_nous_subscription_after_upgrade(monkeypatch):
+    calls = []
+
+    def fake_subscription_features(config, *, force_fresh=False):
+        calls.append(("features", force_fresh))
+        return SimpleNamespace(
+            nous_auth_present=True,
+            account_info=NousPortalAccountInfo(
+                logged_in=True,
+                source="account_api" if force_fresh else "jwt",
+                fresh=force_fresh,
+                paid_service_access=True if force_fresh else False,
+            ),
+            features={},
+        )
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_nous_subscription_features",
+        fake_subscription_features,
+    )
+
+    providers = _visible_providers(
+        TOOL_CATEGORIES["browser"],
+        {"model": {"provider": "nous"}},
+        force_fresh=True,
+    )
+
+    assert providers[0]["name"].startswith("Nous Subscription")
+    assert ("features", True) in calls
+
+
+def test_visible_providers_hide_nous_subscription_when_paid_access_is_false(monkeypatch):
     config = {"model": {"provider": "nous"}}
 
     monkeypatch.setattr(
         "hermes_cli.nous_subscription.get_nous_portal_account_info",
         lambda: NousPortalAccountInfo(
-            logged_in=True,
-            source="jwt",
-            fresh=False,
-            paid_service_access=True,
-        ),
+                logged_in=True,
+                source="jwt",
+                fresh=False,
+                paid_service_access=False,
+            ),
     )
 
     providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
@@ -612,7 +642,7 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
 
     monkeypatch.setattr(
         "hermes_cli.tools_config._toolset_has_keys",
-        lambda ts_key, config=None: False,
+        lambda ts_key, config=None, **kwargs: False,
     )
 
     def fake_prompt_choice(question, choices, default=0):
@@ -622,7 +652,7 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
     monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
     monkeypatch.setattr(
         "hermes_cli.tools_config._configure_tool_category_for_reconfig",
-        lambda ts_key, cat, config: configured.append(ts_key),
+        lambda ts_key, cat, config, **kwargs: configured.append(ts_key),
     )
     monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
 
@@ -633,7 +663,6 @@ def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypa
 
 
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
-    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous"},
@@ -669,7 +698,7 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.nous_subscription.get_nous_portal_account_info",
-        lambda: NousPortalAccountInfo(
+        lambda *args, **kwargs: NousPortalAccountInfo(
             logged_in=True,
             source="jwt",
             fresh=False,

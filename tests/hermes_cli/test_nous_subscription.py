@@ -34,6 +34,28 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
     assert features.web.current_provider == "exa"
 
 
+def test_get_nous_subscription_features_force_fresh_forwards_account_request(monkeypatch):
+    calls = []
+
+    def fake_account_info(*, force_fresh=False):
+        calls.append(force_fresh)
+        return _account(logged_in=True, paid=True)
+
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", fake_account_info)
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: False)
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
+
+    features = ns.get_nous_subscription_features({}, force_fresh=True)
+
+    assert features.account_info is not None
+    assert features.account_info.paid_service_access is True
+    assert calls == [True]
+
+
 def test_get_nous_subscription_features_prefers_managed_modal_in_auto_mode(monkeypatch):
     monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")

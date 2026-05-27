@@ -237,7 +237,7 @@ class TestConfigWriting:
         monkeypatch.setattr(
             tools_config,
             "get_nous_subscription_features",
-            lambda config: SimpleNamespace(
+            lambda config, **kwargs: SimpleNamespace(
                 features={"image_gen": SimpleNamespace(managed_by_nous=True)}
             ),
         )

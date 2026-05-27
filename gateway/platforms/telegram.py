@@ -3712,19 +3712,19 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    msg = await self._send_media_with_caption_fallback(
                         self._bot.send_voice,
                         {
                             "chat_id": int(chat_id),
                             "voice": audio_file,
-                            "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **voice_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
-                        metadata,
-                        reply_to_id,
-                        "voice",
+                        caption=caption,
+                        metadata=metadata,
+                        reply_to_message_id=reply_to_id,
+                        media_label="voice",
                         reset_media=lambda: audio_file.seek(0),
                     )
                 elif ext in {".mp3", ".m4a"}:
@@ -3738,19 +3738,19 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                    msg = await self._send_media_with_caption_fallback(
                         self._bot.send_audio,
                         {
                             "chat_id": int(chat_id),
                             "audio": audio_file,
-                            "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
-                        metadata,
-                        reply_to_id,
-                        "audio",
+                        caption=caption,
+                        metadata=metadata,
+                        reply_to_message_id=reply_to_id,
+                        media_label="audio",
                         reset_media=lambda: audio_file.seek(0),
                     )
                 else:
@@ -3935,19 +3935,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
             with open(image_path, "rb") as image_file:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                msg = await self._send_media_with_caption_fallback(
                     self._bot.send_photo,
                     {
                         "chat_id": int(chat_id),
                         "photo": image_file,
-                        "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
-                    metadata,
-                    reply_to_id,
-                    "photo",
+                    caption=caption,
+                    metadata=metadata,
+                    reply_to_message_id=reply_to_id,
+                    media_label="photo",
                     reset_media=lambda: image_file.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4031,20 +4031,20 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             with open(file_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                msg = await self._send_media_with_caption_fallback(
                     self._bot.send_document,
                     {
                         "chat_id": int(chat_id),
                         "document": f,
                         "filename": display_name,
-                        "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
-                    metadata,
-                    reply_to_id,
-                    "document",
+                    caption=caption,
+                    metadata=metadata,
+                    reply_to_message_id=reply_to_id,
+                    media_label="document",
                     reset_media=lambda: f.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4079,19 +4079,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
             with open(video_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                msg = await self._send_media_with_caption_fallback(
                     self._bot.send_video,
                     {
                         "chat_id": int(chat_id),
                         "video": f,
-                        "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
-                    metadata,
-                    reply_to_id,
-                    "video",
+                    caption=caption,
+                    metadata=metadata,
+                    reply_to_message_id=reply_to_id,
+                    media_label="video",
                     reset_media=lambda: f.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
@@ -4131,19 +4131,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            msg = await self._send_with_dm_topic_reply_anchor_retry(
+            msg = await self._send_media_with_caption_fallback(
                 self._bot.send_photo,
                 {
                     "chat_id": int(chat_id),
                     "photo": image_url,
-                    "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **photo_thread_kwargs,
                     **self._notification_kwargs(metadata),
                 },
-                metadata,
-                reply_to_id,
-                "URL photo",
+                caption=caption,
+                metadata=metadata,
+                reply_to_message_id=reply_to_id,
+                media_label="URL photo",
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -4168,19 +4168,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=reply_to_id,
                     reply_to_mode=self._reply_to_mode
                 )
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
+                msg = await self._send_media_with_caption_fallback(
                     self._bot.send_photo,
                     {
                         "chat_id": int(chat_id),
                         "photo": image_data,
-                        "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **upload_thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
-                    metadata,
-                    reply_to_id,
-                    "uploaded photo",
+                    caption=caption,
+                    metadata=metadata,
+                    reply_to_message_id=reply_to_id,
+                    media_label="uploaded photo",
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
@@ -4215,19 +4215,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            msg = await self._send_with_dm_topic_reply_anchor_retry(
+            msg = await self._send_media_with_caption_fallback(
                 self._bot.send_animation,
                 {
                     "chat_id": int(chat_id),
                     "animation": animation_url,
-                    "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
                     **animation_thread_kwargs,
                     **self._notification_kwargs(metadata),
                 },
-                metadata,
-                reply_to_id,
-                "animation",
+                caption=caption,
+                metadata=metadata,
+                reply_to_message_id=reply_to_id,
+                media_label="animation",
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:

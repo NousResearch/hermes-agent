@@ -316,8 +316,13 @@ class TestNoDuplicateNotifications:
 class TestPollFixPreserved:
     """Verify the core poll() fix (#10156) is still in effect."""
 
-    def test_poll_function_has_no_completion_consumed_add(self):
-        """AST guard: poll() body must NOT contain _completion_consumed.add()."""
+    def test_poll_function_has_completion_consumed_add(self):
+        """AST guard: poll() body MUST contain _completion_consumed.add().
+
+        Upstream (2bbd53493) re-added _completion_consumed.add to poll() to
+        suppress duplicate notifications.  The old fork-only guard asserted
+        its ABSENCE; this flipped guard asserts its PRESENCE.
+        """
         src = Path("tools/process_registry.py").read_text()
         tree = ast.parse(src)
 
@@ -329,18 +334,19 @@ class TestPollFixPreserved:
 
         assert poll_body is not None, "poll() function not found"
 
-        # Walk the poll function body looking for _completion_consumed.add calls
+        found = False
         for child in ast.walk(poll_body):
             if isinstance(child, ast.Attribute):
-                # Look for .add on _completion_consumed
                 if child.attr == "add":
-                    # Check the value chain leads to _completion_consumed
                     val = child.value
                     if isinstance(val, ast.Attribute) and val.attr == "_completion_consumed":
-                        pytest.fail(
-                            "poll() contains _completion_consumed.add() — "
-                            "the #10156 fix has been regressed"
-                        )
+                        found = True
+                        break
+
+        assert found, (
+            "poll() is missing _completion_consumed.add() — "
+            "upstream expects it for duplicate-notification suppression"
+        )
 
     def test_mark_completion_consumed_method_exists(self):
         """The explicit mark_completion_consumed() method must exist for TUI use."""

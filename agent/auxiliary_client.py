@@ -113,10 +113,23 @@ def _responses_null_output_iterable_error(exc: BaseException) -> bool:
     return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
 
 
-def _responses_backfilled_response(output_items: List[Any], text_parts: List[str], *, has_function_calls: bool, model: str = None) -> Optional[Any]:
+def _responses_usage_from_exception(exc: BaseException) -> Any:
+    """Extract terminal Responses usage from the SDK traceback if available."""
+    tb = exc.__traceback__
+    while tb:
+        event = tb.tb_frame.f_locals.get("sse_event")
+        response = getattr(event, "response", None)
+        usage = getattr(response, "usage", None) if response is not None else None
+        if usage is not None:
+            return usage
+        tb = tb.tb_next
+    return None
+
+
+def _responses_backfilled_response(output_items: List[Any], text_parts: List[str], *, has_function_calls: bool, model: str = None, usage: Any = None) -> Optional[Any]:
     """Build a minimal Responses-like object from already streamed events."""
     if output_items:
-        return SimpleNamespace(output=list(output_items), usage=None, status="completed", model=model)
+        return SimpleNamespace(output=list(output_items), usage=usage, status="completed", model=model)
     if text_parts and not has_function_calls:
         assembled = "".join(text_parts)
         return SimpleNamespace(
@@ -126,7 +139,7 @@ def _responses_backfilled_response(output_items: List[Any], text_parts: List[str
                 status="completed",
                 content=[SimpleNamespace(type="output_text", text=assembled)],
             )],
-            usage=None,
+            usage=usage,
             status="completed",
             model=model,
         )
@@ -848,6 +861,7 @@ class _CodexCompletionsAdapter:
                         collected_text_deltas,
                         has_function_calls=has_function_calls,
                         model=resp_kwargs.get("model"),
+                        usage=_responses_usage_from_exception(exc),
                     )
                     if final is None:
                         raise

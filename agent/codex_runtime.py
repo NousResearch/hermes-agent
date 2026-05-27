@@ -182,12 +182,25 @@ def _responses_null_output_iterable_error(exc: BaseException) -> bool:
     return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
 
 
-def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool_calls: bool, model: str = None):
+def _responses_usage_from_exception(exc: BaseException) -> Any:
+    """Extract terminal Responses usage from the SDK traceback if available."""
+    tb = exc.__traceback__
+    while tb:
+        event = tb.tb_frame.f_locals.get("sse_event")
+        response = getattr(event, "response", None)
+        usage = getattr(response, "usage", None) if response is not None else None
+        if usage is not None:
+            return usage
+        tb = tb.tb_next
+    return None
+
+
+def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool_calls: bool, model: str = None, usage: Any = None):
     """Build a minimal Responses-like object from events already streamed."""
     if output_items:
         return SimpleNamespace(
             output=list(output_items),
-            usage=None,
+            usage=usage,
             status="completed",
             model=model,
         )
@@ -321,6 +334,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     agent._codex_streamed_text_parts,
                     has_tool_calls=has_tool_calls,
                     model=api_kwargs.get("model"),
+                    usage=_responses_usage_from_exception(exc),
                 )
                 if recovered is not None:
                     logger.debug(

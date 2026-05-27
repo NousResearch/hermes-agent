@@ -2562,6 +2562,11 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
             type="message",
             content=[SimpleNamespace(type="output_text", text="aux survived")],
         )
+        usage = SimpleNamespace(
+            input_tokens=17,
+            output_tokens=23,
+            total_tokens=40,
+        )
 
         class NullOutputParseStream:
             def __enter__(self):
@@ -2572,6 +2577,10 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
 
             def __iter__(self):
                 yield SimpleNamespace(type="response.output_item.done", item=output_item)
+                sse_event = SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(output=None, usage=usage),
+                )
                 raise TypeError("'NoneType' object is not iterable")
 
             def get_final_response(self):  # pragma: no cover - iterator fails first
@@ -2590,6 +2599,9 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
         response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
 
         assert response.choices[0].message.content == "aux survived"
+        assert response.usage.prompt_tokens == 17
+        assert response.usage.completion_tokens == 23
+        assert response.usage.total_tokens == 40
         fake_client.responses.create.assert_not_called()
 
 

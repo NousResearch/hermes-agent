@@ -189,8 +189,9 @@ class _FakeCreateStream:
 class _IteratorTypeErrorStream:
     """Mimic the SDK raising while parsing response.completed.output=None."""
 
-    def __init__(self, events_before_error):
+    def __init__(self, events_before_error, *, terminal_event=None):
         self._events_before_error = list(events_before_error)
+        self._terminal_event = terminal_event
 
     def __enter__(self):
         return self
@@ -201,6 +202,7 @@ class _IteratorTypeErrorStream:
     def __iter__(self):
         for event in self._events_before_error:
             yield event
+        sse_event = self._terminal_event
         raise TypeError("'NoneType' object is not iterable")
 
     def get_final_response(self):  # pragma: no cover - iterator fails first
@@ -517,13 +519,22 @@ def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(mo
         status="completed",
         content=[SimpleNamespace(type="output_text", text="stream item survived")],
     )
+    usage = SimpleNamespace(
+        input_tokens=17,
+        output_tokens=23,
+        total_tokens=40,
+    )
     calls = {"stream": 0}
 
     def _fake_stream(**kwargs):
         calls["stream"] += 1
-        return _IteratorTypeErrorStream([
-            SimpleNamespace(type="response.output_item.done", item=output_item),
-        ])
+        return _IteratorTypeErrorStream(
+            [SimpleNamespace(type="response.output_item.done", item=output_item)],
+            terminal_event=SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output=None, usage=usage),
+            ),
+        )
 
     def _unexpected_create(**kwargs):  # pragma: no cover - recovery should avoid fallback call
         raise AssertionError("create fallback should not be needed when output items were collected")
@@ -537,6 +548,7 @@ def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(mo
     assert calls["stream"] == 1
     assert response.output == [output_item]
     assert response.status == "completed"
+    assert response.usage is usage
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

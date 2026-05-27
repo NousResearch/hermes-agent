@@ -68,10 +68,12 @@ Usage:
 
 import json
 import logging
+import hashlib
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
 import re
+import threading
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
@@ -106,6 +108,79 @@ _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona"}
 )
 _secret_capture_callback = None
+
+# Per-session duplicate-load guard.  Skills are often mandatory context, but
+# loading the same large SKILL.md repeatedly in one agent run is pure payload
+# bloat.  When task_id is provided by the dispatcher, return a tiny unchanged
+# stub on exact repeated loads of the same unchanged skill/file.
+_skill_view_dedup_lock = threading.Lock()
+_skill_view_dedup: dict[tuple[Any, ...], str] = {}
+
+
+def _normalized_skill_preprocess_config(
+    preprocess: bool,
+    skill_dir: Path | None,
+    skills_cfg: dict | None,
+) -> tuple[Any, ...]:
+    """Return render-affecting inputs for skill_view dedup scoping."""
+    if not preprocess:
+        return (False, None, None, None, None)
+    cfg = skills_cfg if isinstance(skills_cfg, dict) else {}
+    try:
+        inline_shell_timeout = int(cfg.get("inline_shell_timeout", 10) or 10)
+    except (TypeError, ValueError):
+        inline_shell_timeout = 10
+    return (
+        True,
+        str(skill_dir.resolve()) if skill_dir else None,
+        bool(cfg.get("template_vars", True)),
+        bool(cfg.get("inline_shell", False)),
+        inline_shell_timeout,
+    )
+
+
+def _skill_view_dedup_status(
+    *,
+    task_id: str | None,
+    source_path: Path,
+    file_path: str | None,
+    preprocess: bool,
+    skill_dir: Path | None,
+    skills_cfg: dict | None,
+    content: str,
+    name: str,
+) -> dict[str, Any] | None:
+    """Return a lightweight duplicate-load response, or record this load."""
+    if not task_id:
+        return None
+    try:
+        resolved = str(source_path.resolve())
+    except OSError:
+        return None
+    content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    key = (
+        str(task_id),
+        resolved,
+        file_path or "",
+        *_normalized_skill_preprocess_config(preprocess, skill_dir, skills_cfg),
+    )
+    with _skill_view_dedup_lock:
+        previous_digest = _skill_view_dedup.get(key)
+        _skill_view_dedup[key] = content_digest
+    if previous_digest is not None and previous_digest == content_digest:
+        return {
+            "success": True,
+            "name": name,
+            "status": "unchanged",
+            "message": (
+                "Skill content unchanged since the earlier skill_view result "
+                "in this conversation; refer to that instead of reloading it."
+            ),
+            "path": resolved,
+            "dedup": True,
+            "content_returned": False,
+        }
+    return None
 
 
 def load_env() -> Dict[str, str]:
@@ -820,25 +895,45 @@ def _serve_plugin_skill(
         banner = ""
 
     rendered_content = content
+    skills_cfg: dict | None = None
     if preprocess:
         try:
-            from agent.skill_preprocessing import preprocess_skill_content
+            from agent.skill_preprocessing import (
+                load_skills_config,
+                preprocess_skill_content,
+            )
 
+            skills_cfg = load_skills_config()
             rendered_content = preprocess_skill_content(
                 content,
                 skill_md.parent,
                 session_id=session_id,
+                skills_cfg=skills_cfg,
             )
         except Exception:
             logger.debug(
                 "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
             )
 
+    response_content = f"{banner}{rendered_content}" if banner else rendered_content
+    dedup_result = _skill_view_dedup_status(
+        task_id=session_id,
+        source_path=skill_md,
+        file_path=None,
+        preprocess=preprocess,
+        skill_dir=skill_md.parent,
+        skills_cfg=skills_cfg,
+        content=response_content,
+        name=f"{namespace}:{bare}",
+    )
+    if dedup_result is not None:
+        return json.dumps(dedup_result, ensure_ascii=False)
+
     return json.dumps(
         {
             "success": True,
             "name": f"{namespace}:{bare}",
-            "content": f"{banner}{rendered_content}" if banner else rendered_content,
+            "content": response_content,
             "description": description,
             "linked_files": None,
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
@@ -1208,6 +1303,22 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
+            dedup_result = _skill_view_dedup_status(
+                task_id=task_id,
+                source_path=target_file,
+                file_path=file_path,
+                # Linked files are returned raw today, so normalize their render
+                # context as non-preprocessed even if the caller left preprocess=True.
+                preprocess=False,
+                skill_dir=skill_dir,
+                skills_cfg=None,
+                content=content,
+                name=name,
+            )
+            if dedup_result is not None:
+                dedup_result["file"] = file_path
+                return json.dumps(dedup_result, ensure_ascii=False)
+
             return json.dumps(
                 {
                     "success": True,
@@ -1365,19 +1476,38 @@ def skill_view(
                 )
 
         rendered_content = content
+        skills_cfg: dict | None = None
         if preprocess:
             try:
-                from agent.skill_preprocessing import preprocess_skill_content
+                from agent.skill_preprocessing import (
+                    load_skills_config,
+                    preprocess_skill_content,
+                )
 
+                skills_cfg = load_skills_config()
                 rendered_content = preprocess_skill_content(
                     content,
                     skill_dir,
                     session_id=task_id,
+                    skills_cfg=skills_cfg,
                 )
             except Exception:
                 logger.debug(
                     "Could not preprocess skill content for %s", skill_name, exc_info=True
                 )
+
+        dedup_result = _skill_view_dedup_status(
+            task_id=task_id,
+            source_path=skill_md,
+            file_path=None,
+            preprocess=preprocess,
+            skill_dir=skill_dir,
+            skills_cfg=skills_cfg,
+            content=rendered_content,
+            name=skill_name,
+        )
+        if dedup_result is not None:
+            return json.dumps(dedup_result, ensure_ascii=False)
 
         result = {
             "success": True,

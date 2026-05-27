@@ -1539,6 +1539,25 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
             return messages
 
+        # Auto-compression attempts inside the summary-failure cooldown are
+        # known no-ops before they start: _generate_summary() would return
+        # None without calling the LLM. Abort here, before the lossy tool-output
+        # pruning pre-pass, so a failed/no-op compression attempt preserves the
+        # transcript byte-for-byte. Manual /compress (force=True) already
+        # cleared the cooldown above and can proceed normally.
+        if not force and time.monotonic() < self._summary_failure_cooldown_until:
+            self._last_summary_skipped_by_cooldown = True
+            self._last_summary_dropped_count = 0
+            self._last_summary_fallback_used = False
+            self._last_compress_aborted = True
+            if not self.quiet_mode:
+                logger.warning(
+                    "Summary generation skipped — aborting compression "
+                    "(summary failure cooldown is active). Message history "
+                    "preserved unchanged until the next /compress or /new."
+                )
+            return messages
+
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)

@@ -373,6 +373,88 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_repeated_view_same_task_returns_dedup_stub(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "big-skill", body="x" * 5000)
+            first = json.loads(skill_view("big-skill", task_id="dedup-session"))
+            second = json.loads(skill_view("big-skill", task_id="dedup-session"))
+
+        assert first["success"] is True
+        assert "content" in first
+        assert second["success"] is True
+        assert second["dedup"] is True
+        assert second["content_returned"] is False
+        assert "content" not in second
+
+    def test_repeated_reference_view_same_task_returns_dedup_stub(self, tmp_path):
+        skills_tool_module._skill_view_dedup.clear()
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "ref-skill")
+            refs_dir = skill_dir / "references"
+            refs_dir.mkdir()
+            (refs_dir / "api.md").write_text("# API Docs\n" + "x" * 5000)
+            first = json.loads(
+                skill_view(
+                    "ref-skill",
+                    file_path="references/api.md",
+                    task_id="ref-dedup-session",
+                )
+            )
+            second = json.loads(
+                skill_view(
+                    "ref-skill",
+                    file_path="references/api.md",
+                    task_id="ref-dedup-session",
+                )
+            )
+
+        assert "content" in first
+        assert second["dedup"] is True
+        assert second["file"] == "references/api.md"
+        assert "content" not in second
+
+    def test_dedup_uses_content_digest_not_mtime(self, tmp_path):
+        skills_tool_module._skill_view_dedup.clear()
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "fresh-skill", body="first body")
+            skill_md = skill_dir / "SKILL.md"
+            first = json.loads(skill_view("fresh-skill", task_id="fresh-session"))
+            stat = skill_md.stat()
+            skill_md.write_text(skill_md.read_text().replace("first body", "second body"))
+            os.utime(skill_md, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            second = json.loads(skill_view("fresh-skill", task_id="fresh-session"))
+
+        assert "first body" in first["content"]
+        assert second["success"] is True
+        assert second.get("dedup") is not True
+        assert "second body" in second["content"]
+
+    def test_dedup_key_includes_preprocessing_config(self, tmp_path):
+        skills_tool_module._skill_view_dedup.clear()
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                side_effect=[
+                    {"template_vars": True, "inline_shell": False},
+                    {"template_vars": False, "inline_shell": False},
+                ],
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "render-skill",
+                body="session=${HERMES_SESSION_ID}; dir=${HERMES_SKILL_DIR}",
+            )
+            first = json.loads(skill_view("render-skill", task_id="render-session"))
+            second = json.loads(skill_view("render-skill", task_id="render-session"))
+
+        assert first["success"] is True
+        assert "session=render-session" in first["content"]
+        assert second["success"] is True
+        assert second.get("dedup") is not True
+        assert "session=${HERMES_SESSION_ID}" in second["content"]
+
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

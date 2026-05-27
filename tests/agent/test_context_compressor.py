@@ -1,6 +1,9 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
+from copy import deepcopy
+
 import pytest
+from typing import Any
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
@@ -84,6 +87,9 @@ class TestCompress:
         # increments the count even on summary failure.
         compressor.compress(msgs)
         assert compressor.compression_count == 1
+        # Force the legacy fallback path again instead of the new cooldown abort
+        # path; cooldown abort behavior has its own preservation regression test.
+        compressor._summary_failure_cooldown_until = 0.0
         compressor.compress(msgs)
         assert compressor.compression_count == 2
 
@@ -782,6 +788,61 @@ class TestSummaryFailureTrackingForGatewayWarning:
         c._summary_failure_cooldown_until = 0.0
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             c.compress(msgs)
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+
+    def test_cooldown_skips_abort_without_static_fallback_loss(self):
+        """Auto-compress during summary cooldown must preserve messages exactly.
+
+        The first failure may use the legacy static fallback in default mode,
+        but subsequent automatic attempts inside the cooldown are known not to
+        even call the summarizer. Treat those as an abort so retry loops do not
+        repeatedly replace middle context with unsummarized placeholders. That
+        abort must happen before lossy tool-output pruning too, otherwise old
+        tool output can still be deduped/truncated during a failed no-op.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=1,
+                summary_target_ratio=0.10,
+            )
+        c.tail_token_budget = 30
+
+        msgs: list[dict[str, Any]] = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "head"},
+        ]
+        for i in range(8):
+            msgs.extend([
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": f"call_{i}",
+                            "function": {"name": "terminal", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": f"call_{i}", "content": "x" * 5000},
+                {"role": "user", "content": f"mid {i}"},
+            ])
+        msgs.append({"role": "assistant", "content": "tail"})
+        original_msgs = deepcopy(msgs)
+
+        import time as _time
+        c._summary_failure_cooldown_until = _time.monotonic() + 999.0
+
+        with patch("agent.context_compressor.call_llm") as mock_call_llm:
+            result = c.compress(msgs)
+
+        mock_call_llm.assert_not_called()
+        assert result == original_msgs
+        assert msgs == original_msgs
+        assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
         assert c._last_summary_dropped_count == 0
 

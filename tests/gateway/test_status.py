@@ -551,6 +551,40 @@ class TestScopedLocks:
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
 
+    def test_acquire_scoped_lock_replaces_zombie_process_record(self, tmp_path, monkeypatch):
+        """Zombie process (State: Z) should be treated as stale — os.kill(pid,0)
+        succeeds against zombies but the process is dead."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+        }))
+
+        # Process exists (os.kill succeeds) and start_time matches — looks alive
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+
+        # But /proc/{pid}/status reports zombie state
+        class _FakeProcStatus:
+            def exists(self):
+                return True
+            def read_text(self):
+                return "Name:  hermes\nState:  Z (zombie)\nPid:    99999\n"
+        def _fake_path(path_str):
+            if path_str == f"/proc/99999/status":
+                return _FakeProcStatus()
+            return Path(path_str)
+        monkeypatch.setattr(status, "Path", _fake_path)
+
+        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+
     def test_acquire_scoped_lock_recovers_empty_lock_file(self, tmp_path, monkeypatch):
         """Empty lock file (0 bytes) left by a crashed process should be treated as stale."""
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))

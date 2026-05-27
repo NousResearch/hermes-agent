@@ -173,6 +173,13 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+# Known-safe temporary directory prefixes that are exempt from sensitive-path
+# blocking.  macOS temp dirs live under /private/var/folders/ (the per-user
+# TMPDIR), which would otherwise be caught by the /private/var/ prefix guard.
+_SAFE_TEMP_PREFIXES = (
+    "/private/var/folders/",  # macOS user temp directory
+)
+
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
@@ -185,6 +192,10 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
+    # Allow known-safe temporary directories (e.g. macOS /private/var/folders/)
+    for safe_prefix in _SAFE_TEMP_PREFIXES:
+        if resolved.startswith(safe_prefix) or normalized.startswith(safe_prefix):
+            return None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err

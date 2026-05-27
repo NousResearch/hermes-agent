@@ -649,7 +649,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                             for _line in _proc_status.read_text(encoding="utf-8").splitlines():
                                 if _line.startswith("State:"):
                                     _state = _line.split()[1]
-                                    if _state in {"T", "t"}:  # stopped or tracing stop
+                                    if _state in {"T", "t", "Z", "z"}:  # stopped, tracing stop, or zombie
                                         stale = True
                                     break
                     except (OSError, PermissionError):

@@ -711,8 +711,8 @@ def normalize_usage(
         output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
         details = getattr(response_usage, "prompt_tokens_details", None)
         # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
-        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Vercel
-        # AI Gateway, Cline) expose when routing Claude models — without this
+        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Cline)
+        # expose when routing Claude models — without this
         # fallback, cache writes are undercounted as 0 and cache reads can be
         # missed when the proxy only surfaces them at the top level.
         # Port of cline/cline#10266.

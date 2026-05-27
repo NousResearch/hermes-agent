@@ -83,11 +83,11 @@ delegation:
 
 ## 终端后端配置
 
-Hermes 支持七种终端后端。每种后端决定 agent 的 shell 命令实际在哪里执行 —— 本地机器、Docker 容器、通过 SSH 的远程服务器、Modal 云沙箱（直接或通过 Nous 托管的 gateway）、Daytona 工作区、Vercel Sandbox，或 Singularity/Apptainer 容器。
+Hermes 支持六种终端后端。每种后端决定 agent 的 shell 命令实际在哪里执行 —— 本地机器、Docker 容器、通过 SSH 的远程服务器、Modal 云沙箱（直接或通过 Nous 托管的 gateway）、Daytona 工作区，或 Singularity/Apptainer 容器。
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | singularity
   cwd: "."          # Gateway/cron 工作目录（CLI 始终使用启动目录）
   timeout: 180      # 每条命令的超时时间（秒）
   env_passthrough: []  # 转发到沙箱执行的环境变量名（terminal + execute_code）
@@ -96,7 +96,7 @@ terminal:
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Daytona 后端的容器镜像
 ```
 
-对于 Modal、Daytona 和 Vercel Sandbox 等云沙箱，`container_persistent: true` 表示 Hermes 将尝试在沙箱重建后保留文件系统状态。这并不保证相同的活跃沙箱、PID 空间或后台进程之后仍在运行。
+对于 Modal 和 Daytona 等云沙箱，`container_persistent: true` 表示 Hermes 将尝试在沙箱重建后保留文件系统状态。这并不保证相同的活跃沙箱、PID 空间或后台进程之后仍在运行。
 
 ### 后端概览
 
@@ -107,7 +107,6 @@ terminal:
 | **ssh** | 通过 SSH 的远程服务器 | 网络边界 | 远程开发、强大硬件 |
 | **modal** | Modal 云沙箱 | 完全（云 VM） | 临时云计算、评估 |
 | **daytona** | Daytona 工作区 | 完全（云容器） | 托管云开发环境 |
-| **vercel_sandbox** | Vercel Sandbox | 完全（云 microVM） | 带快照文件系统持久化的云执行 |
 | **singularity** | Singularity/Apptainer 容器 | 命名空间（--containall） | HPC 集群、共享机器 |
 
 ### Local 后端
@@ -231,49 +230,6 @@ terminal:
 **持久化：** 启用后，沙箱在清理时停止（而非删除），并在下次会话时恢复。沙箱名称遵循 `hermes-{task_id}` 模式。
 
 **磁盘限制：** Daytona 强制执行 10 GiB 最大值。超过此值的请求将被截断并发出警告。
-
-### Vercel Sandbox 后端
-
-在 [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) 云 microVM 中运行命令。Hermes 使用普通的终端和文件工具接口；没有 Vercel 特定的面向模型的工具。
-
-```yaml
-terminal:
-  backend: vercel_sandbox
-  vercel_runtime: node24          # node24 | node22 | python3.13
-  cwd: /vercel/sandbox            # 默认工作区根目录
-  container_persistent: true      # 快照/恢复文件系统
-  container_disk: 51200           # 仅共享默认值；不支持自定义磁盘
-```
-
-**必需安装：** 安装可选 SDK 扩展：
-
-```bash
-pip install 'hermes-agent[vercel]'
-```
-
-**必需认证：** 使用 `VERCEL_TOKEN`、`VERCEL_PROJECT_ID` 和 `VERCEL_TEAM_ID` 三者全部配置访问令牌认证。这是在 Render、Railway、Docker 及类似宿主上部署和正常长期运行 Hermes 进程的受支持设置。
-
-对于一次性本地开发，Hermes 也接受短期 Vercel OIDC token：
-
-```bash
-VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" hermes chat
-```
-
-在已链接的 Vercel 项目目录中，可以省略项目名称：
-
-```bash
-VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
-```
-
-OIDC token 是短期的，不应作为文档化的部署路径使用。
-
-**运行时：** `terminal.vercel_runtime` 支持 `node24`、`node22` 和 `python3.13`。未设置时，Hermes 默认使用 `node24`。
-
-**持久化：** 当 `container_persistent: true` 时，Hermes 在清理期间对沙箱文件系统进行快照，并从该快照为同一任务恢复后续沙箱。快照内容可以包括复制到沙箱中的 Hermes 同步凭据、技能和缓存文件。这仅保留文件系统状态；不保留活跃沙箱身份、PID 空间、shell 状态或正在运行的后台进程。
-
-**后台命令：** `terminal(background=true)` 使用 Hermes 的通用非本地后台进程流程。您可以在沙箱存活期间通过普通进程工具生成、轮询、等待、查看日志和终止进程。Hermes 不提供清理或重启后的原生 Vercel 分离进程恢复。
-
-**磁盘大小：** Vercel Sandbox 目前不支持 Hermes 的 `container_disk` 资源旋钮。将 `container_disk` 保持未设置或使用共享默认值 `51200`；非默认值会导致诊断和后端创建失败，而不是被静默忽略。
 
 ### Singularity/Apptainer 后端
 
@@ -818,7 +774,7 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 
 当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 或 `OPENAI_API_KEY` 进行认证）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
 
-辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](/reference/environment-variables)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`google-gemini-cli`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`ai-gateway`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
+辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](/reference/environment-variables)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`google-gemini-cli`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
 
 :::tip MiniMax OAuth
 `minimax-oauth` 通过浏览器 OAuth 登录（无需 API 密钥）。运行 `hermes model` 并选择 **MiniMax (OAuth)** 进行认证。辅助任务自动使用 `MiniMax-M2.7-highspeed`。参阅 [MiniMax OAuth 指南](../guides/minimax-oauth.md)。

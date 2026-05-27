@@ -18,7 +18,6 @@ from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load
 from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
-from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
@@ -380,23 +379,6 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
-    elif terminal_env == "vercel_sandbox":
-        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME") or terminal_cfg.get("vercel_runtime") or "node24"
-        persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")
-        if persist is None:
-            persist_enabled = bool(terminal_cfg.get("container_persistent", True))
-        else:
-            persist_enabled = persist.lower() in {"1", "true", "yes", "on"}
-        auth_status = describe_vercel_auth()
-        sdk_ok = importlib.util.find_spec("vercel") is not None
-        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[vercel]')"
-        print(f"  Runtime:      {runtime}")
-        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
-        print(f"  Auth:         {check_mark(auth_status.ok)} {auth_status.label}")
-        for line in auth_status.detail_lines:
-            print(f"  Auth detail:  {line}")
-        print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
-        print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

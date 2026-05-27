@@ -290,6 +290,112 @@ class TestAutoModeRespectsOverride:
             assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
 
 
+# ─── Ollama capability-probe fallback (models.dev catalog miss) ──────────────
+
+
+class TestOllamaVisionFallback:
+    """When models.dev has no entry for a model, the routing falls back to the
+    live Ollama ``/api/show`` capability probe so locally-served vision models
+    with custom tags (e.g. ``gemma4:latest``) route natively instead of via
+    the lossy text pipeline.
+    """
+
+    def test_lookup_probes_endpoint_on_catalog_miss(self):
+        from agent.image_routing import _lookup_supports_vision
+        cfg = {
+            "model": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=True) as probe:
+            assert _lookup_supports_vision(
+                "ollama-launch", "gemma4:latest", cfg
+            ) is True
+        probe.assert_called_once_with(
+            "gemma4:latest", "http://localhost:11434/v1", "ollama"
+        )
+
+    def test_lookup_probes_endpoint_with_named_provider_v12(self):
+        from agent.image_routing import _lookup_supports_vision
+        cfg = {
+            "providers": {
+                "ollama-launch": {
+                    "api": "http://192.168.1.210:11434/v1",
+                    "api_key": "secret-key",
+                }
+            }
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=True) as probe:
+            assert _lookup_supports_vision(
+                "ollama-launch", "gemma4:latest", cfg
+            ) is True
+        probe.assert_called_once_with(
+            "gemma4:latest", "http://192.168.1.210:11434/v1", "secret-key"
+        )
+
+    def test_lookup_probes_endpoint_with_legacy_custom_providers(self):
+        from agent.image_routing import _lookup_supports_vision
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "my-local-ollama",
+                    "url": "http://127.0.0.1:11434/v1",
+                    "key_env": "OLLAMA_SECRET_KEY",
+                }
+            ]
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=True) as probe, \
+             patch.dict("os.environ", {"OLLAMA_SECRET_KEY": "env-secret"}):
+            assert _lookup_supports_vision(
+                "my-local-ollama", "qwen3.6:35b", cfg
+            ) is True
+        probe.assert_called_once_with(
+            "qwen3.6:35b", "http://127.0.0.1:11434/v1", "env-secret"
+        )
+
+    def test_lookup_no_probe_without_base_url(self):
+        from agent.image_routing import _lookup_supports_vision
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision") as probe:
+            assert _lookup_supports_vision("custom", "gemma4:latest", {}) is None
+            probe.assert_not_called()
+
+    def test_lookup_prefers_catalog_over_probe(self):
+        """When the catalog knows the model, the endpoint isn't probed."""
+        from agent.image_routing import _lookup_supports_vision
+        from types import SimpleNamespace
+        caps = SimpleNamespace(supports_vision=True)
+        cfg = {
+            "model": {"base_url": "https://api.anthropic.com", "api_key": "key"},
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=caps), \
+             patch("agent.model_metadata.endpoint_supports_vision") as probe:
+            assert _lookup_supports_vision(
+                "anthropic", "claude-sonnet-4", cfg
+            ) is True
+            probe.assert_not_called()
+
+    def test_auto_routes_native_for_ollama_vision_model_not_in_catalog(self):
+        cfg = {
+            "agent": {"image_input_mode": "auto"},
+            "model": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
+            "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": ""}},
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=True):
+            assert decide_image_input_mode("ollama-launch", "gemma4:latest", cfg) == "native"
+
+    def test_auto_routes_text_when_endpoint_reports_no_vision(self):
+        cfg = {
+            "agent": {"image_input_mode": "auto"},
+            "model": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=False):
+            assert decide_image_input_mode("ollama-launch", "llama3:latest", cfg) == "text"
+
+
 # ─── build_native_content_parts ──────────────────────────────────────────────
 
 

@@ -500,7 +500,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return True
 
     # OpenAI Chat Completions and Responses
-    if p in {"openai", "openai-chat", "openai-codex", "azure-openai"}:
+    if p in {"openai", "openai-chat", "openai-codex", "azure-openai", "custom", "ollama", "ollama-launch"}:
         return True
 
     # Gemini — gate on model name; older Gemini variants did not support

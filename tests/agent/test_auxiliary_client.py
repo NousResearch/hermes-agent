@@ -2641,12 +2641,39 @@ class TestVisionAutoSkipsKimiCoding:
         assert client is fake_kimi_client
         gcc_mock.assert_called_once()
 
+    def test_ollama_cloud_skips_to_aggregator_chain(self, monkeypatch):
+        """Ollama Cloud should fall through to the aggregator chain for vision."""
+        fake_or_client = MagicMock(name="openrouter_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "ollama-cloud",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "glm-5.1:cloud",
+        )
+        rpc_mock = MagicMock(side_effect=AssertionError(
+            "resolve_provider_client should NOT be called for ollama-cloud"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", rpc_mock,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            lambda p, m=None: (fake_or_client, "gemini")
+            if p == "openrouter"
+            else (None, None),
+        )
+
+        provider, client, _ = resolve_vision_provider_client()
+        assert provider == "openrouter"
+        assert client is fake_or_client
+
     def test_skip_set_covers_exactly_known_entries(self):
         """Guard against accidental widening of the skip list."""
         from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
         assert _PROVIDERS_WITHOUT_VISION == frozenset({
             "kimi-coding",
             "kimi-coding-cn",
+            "ollama-cloud",
         })
 
 
@@ -3427,3 +3454,28 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+def test_resolve_custom_runtime_with_named_custom_provider():
+    """``_resolve_custom_runtime`` should first try the default-configured
+    provider (which may be a named custom provider like ``ollama-launch``)
+    before falling back to an explicit ``requested="custom"`` call.
+    """
+    from agent.auxiliary_client import _resolve_custom_runtime
+
+    mock_runtime_first = {
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "base_url": "http://192.168.1.210:11434/v1",
+        "api_key": "ollama-key",
+    }
+
+    with patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        return_value=mock_runtime_first,
+    ) as mock_resolve:
+        base, key, mode = _resolve_custom_runtime()
+        assert base == "http://192.168.1.210:11434/v1"
+        assert key == "ollama-key"
+        assert mode == "chat_completions"
+        mock_resolve.assert_called_once_with(requested=None)

@@ -1116,6 +1116,65 @@ def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Opti
     return None
 
 
+# Process-lifetime cache for endpoint-reported vision capability, keyed by
+# ``model@base_url``. Only definitive True/False results are cached so
+# transient probe failures (server down, timeout) get retried on the next
+# call rather than locking in a sticky "unknown".
+_ENDPOINT_VISION_CACHE: Dict[str, bool] = {}
+
+
+def _query_ollama_capabilities(model: str, base_url: str, api_key: str = "") -> Optional[List[str]]:
+    """Return an Ollama server's ``/api/show`` capabilities list for *model*.
+
+    Ollama reports a top-level ``capabilities`` array, e.g.
+    ``["completion", "vision", "tools", "thinking"]``. Provider-agnostic:
+    works against any Ollama-compatible endpoint regardless of hostname.
+    Returns ``None`` for non-Ollama servers (they 404/405 the POST) or when
+    the field is absent.
+    """
+    import httpx
+
+    server_url = base_url.rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    headers = _auth_headers(api_key)
+    try:
+        with httpx.Client(timeout=5.0, headers=headers) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": model})
+            if resp.status_code != 200:
+                return None
+            caps = resp.json().get("capabilities")
+            if isinstance(caps, list):
+                return [str(c).lower() for c in caps]
+    except Exception:
+        pass
+    return None
+
+
+def endpoint_supports_vision(model: str, base_url: str, api_key: str = "") -> Optional[bool]:
+    """Return whether an Ollama endpoint reports vision support for *model*.
+
+    Fallback for image-routing capability checks when models.dev has no
+    entry for the model (e.g. a locally-served Ollama tag like
+    ``gemma4:latest``). Returns ``True``/``False`` when the endpoint
+    reports its capabilities, or ``None`` when capability can't be
+    determined. Cached for the process lifetime keyed by
+    ``model@base_url``; ``None`` results are not cached.
+    """
+    if not model or not base_url:
+        return None
+    key = f"{model}@{base_url}"
+    if key in _ENDPOINT_VISION_CACHE:
+        return _ENDPOINT_VISION_CACHE[key]
+    caps = _query_ollama_capabilities(model, base_url, api_key=api_key)
+    if caps is None:
+        return None
+    result = "vision" in caps
+    _ENDPOINT_VISION_CACHE[key] = result
+    return result
+
+
 def _model_name_suggests_kimi(model: str) -> bool:
     """Return True if the model name looks like a Kimi-family model.
 

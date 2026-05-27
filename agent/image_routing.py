@@ -266,7 +266,10 @@ def _lookup_supports_vision(
 
     Consults the user's ``supports_vision`` override in config.yaml first
     (so custom/local models declared as vision-capable don't fall through to
-    text routing in ``auto`` mode), then falls back to models.dev.
+    text routing in ``auto`` mode), then falls back to models.dev. On a
+    models.dev catalog miss, falls back to probing the live Ollama endpoint
+    so locally-served vision models with custom tags (e.g. ``gemma4:latest``)
+    route natively instead of through the lossy text pipeline.
     """
     override = _supports_vision_override(cfg, provider, model)
     if override is not None:
@@ -278,10 +281,72 @@ def _lookup_supports_vision(
         caps = get_model_capabilities(provider, model)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
-        return None
-    if caps is None:
-        return None
-    return bool(caps.supports_vision)
+        caps = None
+
+    if caps is not None:
+        return bool(caps.supports_vision)
+
+    # Catalog miss — fall back to the live Ollama endpoint capability probe
+    # if we can resolve a base_url from cfg.
+    if isinstance(cfg, dict):
+        base_url = ""
+        api_key = ""
+
+        providers = cfg.get("providers") or {}
+        model_cfg = cfg.get("model") or {}
+        config_provider = str(model_cfg.get("provider") or "").strip()
+
+        candidates: list = []
+        for p in (provider, config_provider):
+            if p and p != "custom" and p not in candidates:
+                candidates.append(p)
+        if provider and provider not in candidates:
+            candidates.append(provider)
+
+        provider_cfg = None
+        if isinstance(providers, dict):
+            for cand in candidates:
+                if cand in providers:
+                    provider_cfg = providers[cand]
+                    break
+
+        if not isinstance(provider_cfg, dict):
+            custom_provs = cfg.get("custom_providers") or []
+            if isinstance(custom_provs, list):
+                for cand in candidates:
+                    for p in custom_provs:
+                        if isinstance(p, dict) and str(p.get("name") or "").strip().lower() == cand.lower():
+                            provider_cfg = p
+                            break
+                    if provider_cfg:
+                        break
+
+        if isinstance(provider_cfg, dict):
+            for url_key in ("base_url", "url", "api"):
+                val = provider_cfg.get(url_key)
+                if isinstance(val, str) and val.strip():
+                    base_url = val.strip()
+                    break
+
+            api_key = str(provider_cfg.get("api_key") or "").strip()
+            if not api_key:
+                key_env = str(provider_cfg.get("key_env") or provider_cfg.get("api_key_env") or "").strip()
+                if key_env:
+                    import os
+                    api_key = os.environ.get(key_env, "")
+
+        if not base_url:
+            if isinstance(model_cfg, dict):
+                base_url = str(model_cfg.get("base_url") or "").strip()
+                api_key = str(model_cfg.get("api_key") or "").strip()
+
+        if base_url:
+            try:
+                from agent.model_metadata import endpoint_supports_vision
+                return endpoint_supports_vision(model, base_url, api_key)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("image_routing: endpoint vision probe failed for %s — %s", model, exc)
+    return None
 
 
 def decide_image_input_mode(

@@ -207,3 +207,77 @@ class TestModelSupportsVision:
         with patch("hermes_cli.config.load_config", return_value={"model": {"supports_vision": False}}), \
              patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
             assert agent._model_supports_vision() is False
+
+
+class TestModelSupportsVisionOllamaFallback:
+    """On a models.dev catalog miss, ``_model_supports_vision`` falls back to
+    the live Ollama endpoint capability probe so locally-served vision models
+    with custom tags aren't treated as text-only (which would strip image
+    parts).
+    """
+
+    def _ollama_agent(self) -> AIAgent:
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.model = "gemma4:latest"
+        agent.base_url = "http://localhost:11434/v1"
+        agent.api_key = "ollama"
+        return agent
+
+    def test_probes_endpoint_on_catalog_miss(self):
+        agent = self._ollama_agent()
+        cfg = {"model": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=True) as probe:
+            assert agent._model_supports_vision() is True
+        probe.assert_called_once_with("gemma4:latest", "http://localhost:11434/v1", "ollama")
+
+    def test_endpoint_reports_no_vision_returns_false(self):
+        agent = self._ollama_agent()
+        cfg = {"model": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=False):
+            assert agent._model_supports_vision() is False
+
+    def test_probe_unknown_returns_false(self):
+        agent = self._ollama_agent()
+        cfg = {"model": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=None):
+            assert agent._model_supports_vision() is False
+
+    def test_image_parts_preserved_for_ollama_vision_model(self):
+        """Regression: a local Ollama vision model not in models.dev must keep
+        its image_url parts on the chat.completions path (previously stripped
+        to a text description, so the model never saw the pixels).
+        """
+        agent = self._ollama_agent()
+        cfg = {"model": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=True):
+            out = agent._prepare_messages_for_non_vision_model([IMG_PARTS_USER_MSG])
+        assert out[0]["content"][1]["type"] == "image_url"
+
+    def test_lookup_supports_vision_with_custom_provider_rewriting(self):
+        """Verify that ``_lookup_supports_vision`` can resolve the base URL of
+        custom named providers (like ``ollama-launch``) even when the
+        passed provider has been rewritten to ``custom``.
+        """
+        from agent.image_routing import _lookup_supports_vision
+        cfg = {
+            "model": {"provider": "ollama-launch"},
+            "providers": {
+                "ollama-launch": {
+                    "api": "http://192.168.1.210:11434/v1",
+                    "api_key": "ollama-key",
+                }
+            },
+        }
+        with patch("agent.models_dev.get_model_capabilities", return_value=None), \
+             patch("agent.model_metadata.endpoint_supports_vision", return_value=True) as probe:
+            assert _lookup_supports_vision("custom", "gemma4:26b", cfg) is True
+        probe.assert_called_once_with("gemma4:26b", "http://192.168.1.210:11434/v1", "ollama-key")

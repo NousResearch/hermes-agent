@@ -1247,3 +1247,78 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# ─── endpoint_supports_vision (Ollama /api/show capability probe) ────────────
+
+
+class TestEndpointSupportsVision:
+    """Probe an Ollama endpoint's reported ``capabilities`` to decide vision
+    support for models that models.dev doesn't list (custom local tags).
+    """
+
+    def setup_method(self):
+        from agent import model_metadata as mm
+        mm._ENDPOINT_VISION_CACHE.clear()
+
+    def _client(self, payload, status=200):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.json.return_value = payload
+        client = MagicMock()
+        client.post.return_value = resp
+        client.__enter__.return_value = client
+        client.__exit__.return_value = False
+        return client
+
+    def test_vision_capability_true(self):
+        from agent.model_metadata import endpoint_supports_vision
+        client = self._client({"capabilities": ["completion", "vision", "tools"]})
+        with patch("httpx.Client", return_value=client):
+            assert endpoint_supports_vision(
+                "gemma4:latest", "http://host:11434/v1", "ollama"
+            ) is True
+
+    def test_text_only_model_false(self):
+        from agent.model_metadata import endpoint_supports_vision
+        client = self._client({"capabilities": ["completion", "tools"]})
+        with patch("httpx.Client", return_value=client):
+            assert endpoint_supports_vision("llama3:latest", "http://host:11434/v1") is False
+
+    def test_non_ollama_endpoint_returns_none(self):
+        from agent.model_metadata import endpoint_supports_vision
+        client = self._client({}, status=404)
+        with patch("httpx.Client", return_value=client):
+            assert endpoint_supports_vision("gpt-4o", "https://api.openai.com/v1", "sk") is None
+
+    def test_missing_capabilities_field_returns_none(self):
+        from agent.model_metadata import endpoint_supports_vision
+        client = self._client({"model_info": {}})  # no "capabilities" key
+        with patch("httpx.Client", return_value=client):
+            assert endpoint_supports_vision("m", "http://host:11434/v1") is None
+
+    def test_network_error_returns_none_and_is_not_cached(self):
+        from agent import model_metadata as mm
+        with patch("httpx.Client", side_effect=RuntimeError("boom")):
+            assert mm.endpoint_supports_vision("m", "http://host:11434/v1") is None
+        assert "m@http://host:11434/v1" not in mm._ENDPOINT_VISION_CACHE
+
+    def test_result_is_cached_after_first_probe(self):
+        from agent import model_metadata as mm
+        client = self._client({"capabilities": ["vision"]})
+        with patch("httpx.Client", return_value=client) as mk:
+            assert mm.endpoint_supports_vision("m", "http://host:11434/v1") is True
+            assert mm.endpoint_supports_vision("m", "http://host:11434/v1") is True
+            assert mk.call_count == 1  # second call served from cache
+
+    def test_strips_v1_suffix_and_targets_api_show(self):
+        from agent.model_metadata import endpoint_supports_vision
+        client = self._client({"capabilities": ["vision"]})
+        with patch("httpx.Client", return_value=client):
+            endpoint_supports_vision("m", "http://host:11434/v1")
+        assert client.post.call_args[0][0] == "http://host:11434/api/show"
+
+    def test_empty_args_return_none(self):
+        from agent.model_metadata import endpoint_supports_vision
+        assert endpoint_supports_vision("", "http://host:11434/v1") is None
+        assert endpoint_supports_vision("m", "") is None

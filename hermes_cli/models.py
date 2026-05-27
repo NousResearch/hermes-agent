@@ -269,6 +269,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "z-ai/glm5",
         "openai/gpt-oss-120b",
     ],
+    "bytedance": [
+        "bytedance-seed-code",
+        "dola-seed-2.0-pro",
+        "dola-seed-2.0-lite",
+        "dola-seed-2.0-code",
+        "glm-5.1",
+        "glm-4.7",
+        "gpt-oss-120b",
+        "kimi-k2.5",
+    ],
     "kimi-coding": [
         "kimi-k2.6",
         "kimi-k2.5",

@@ -200,6 +200,7 @@ def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool
                 status="completed",
                 content=[SimpleNamespace(type="output_text", text=assembled)],
             )],
+            output_text=assembled,
             usage=None,
             status="completed",
             model=model,

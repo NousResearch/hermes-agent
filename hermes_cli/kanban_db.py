@@ -6052,13 +6052,17 @@ def dispatch_once(
     failures the task is auto-blocked with the last error as its reason —
     prevents the dispatcher from thrashing forever on an unfixable task.
 
-    ``max_spawn`` is a **live concurrency cap**, not a per-tick spawn budget:
-    it counts tasks already in ``status='running'`` plus this tick's spawns
-    against the limit. So ``max_spawn=4`` means "at most 4 workers running
-    at any time across the whole board" — matching the gateway's stated
-    intent ("limit concurrent kanban tasks"). With a per-tick interpretation
-    a 60-second tick interval could grow concurrency by N every minute on a
-    busy board and accumulate without bound.
+    ``max_spawn`` is a **per-dispatch spawn budget**: it limits how many new
+    workers this dispatcher tick may launch, independent of workers that were
+    already in ``status='running'`` before the tick started.
+
+    ``max_in_progress`` is the **live concurrency cap**: it counts tasks
+    already in ``status='running'`` plus this tick's spawns against the limit.
+    So ``max_in_progress=4`` means "at most 4 workers running at any time
+    across the whole board".
+
+    When both are set, the dispatcher spawns at most
+    ``min(max_spawn, max_in_progress - currently_running)`` workers this tick.
 
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
@@ -6093,15 +6097,8 @@ def dispatch_once(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
-    # Count tasks already running so max_spawn enforces concurrency rather
-    # than a per-tick spawn budget. See the docstring above for the full
-    # rationale; the short version is that a 60-second tick interval with a
-    # per-tick budget of N would grow concurrency by N every tick on a busy
-    # board, since "running" tasks aren't reclaimed by completion alone —
-    # they sit in status='running' until the worker calls
-    # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
-    if max_spawn is not None:
+    if max_in_progress is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
@@ -6117,16 +6114,16 @@ def dispatch_once(
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
     # pile up and time out.
+    spawn_budget = max_spawn
     if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
-        if in_progress >= max_in_progress:
+        if running_count >= max_in_progress:
             return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
+        # ``max_spawn`` is a per-tick budget while ``max_in_progress`` is the
+        # live cap including already-running tasks. Only the remaining live
+        # capacity may be used for fresh spawns this tick.
+        remaining = max_in_progress - running_count
+        if spawn_budget is None or spawn_budget > remaining:
+            spawn_budget = remaining
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -6165,7 +6162,7 @@ def dispatch_once(
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
     for row in ready_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if spawn_budget is not None and spawned >= spawn_budget:
             break
         row_assignee = row["assignee"]
         if not row_assignee:
@@ -6341,16 +6338,16 @@ def dispatch_once(
     # sdlc-review skill) that verifies the PR and either merges (→ done)
     # or rejects (→ back to running for the worker to fix).
     #
-    # Same concurrency model as ready dispatch: review spawns count
-    # against max_spawn alongside ready tasks, so the total number of
-    # running workers stays bounded.
+    # Same concurrency model as ready dispatch: review spawns consume the same
+    # per-tick spawn budget as ready tasks, while max_in_progress still counts
+    # already-running workers plus both ready/review spawns this tick.
     review_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'review' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     for row in review_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
+        if spawn_budget is not None and spawned >= spawn_budget:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])

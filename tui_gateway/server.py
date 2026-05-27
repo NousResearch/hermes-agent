@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from tools.approval import detect_dangerous_command
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
@@ -4954,8 +4955,16 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            cmd = qc.get("command", "")
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            if is_dangerous:
+                return _err(
+                    rid,
+                    4005,
+                    f"blocked: {desc}. Use the agent for dangerous commands.",
+                )
             r = subprocess.run(
-                qc.get("command", ""),
+                cmd,
                 shell=True,
                 capture_output=True,
                 text=True,
@@ -6969,16 +6978,11 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
-    try:
-        from tools.approval import detect_dangerous_command
-
-        is_dangerous, _, desc = detect_dangerous_command(cmd)
-        if is_dangerous:
-            return _err(
-                rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
-            )
-    except ImportError:
-        pass
+    is_dangerous, _, desc = detect_dangerous_command(cmd)
+    if is_dangerous:
+        return _err(
+            rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
+        )
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()

@@ -214,7 +214,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 
 
 def _probe_single_server(
-    name: str, config: dict, connect_timeout: float = 30
+    name: str, config: dict, connect_timeout: Optional[float] = None
 ) -> List[Tuple[str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
@@ -233,9 +233,14 @@ def _probe_single_server(
     )
 
     config = _resolve_mcp_server_config(config)
+    if connect_timeout is None:
+        raw_timeout = config.get("connect_timeout", 30)
+        try:
+            connect_timeout = max(1.0, float(raw_timeout))
+        except (TypeError, ValueError):
+            connect_timeout = 30.0
 
     _ensure_mcp_loop()
-
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():

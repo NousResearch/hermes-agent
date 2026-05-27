@@ -445,6 +445,44 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_probe_uses_configured_connect_timeout(self, monkeypatch):
+        """OAuth-capable probes must not hard-code a short 30s timeout."""
+        import asyncio
+        from hermes_cli import mcp_config
+        import tools.mcp_tool as mcp_tool
+
+        captured = {}
+
+        class FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                captured["shutdown"] = True
+
+        async def fake_connect(name, config):
+            return FakeServer()
+
+        def fake_run_on_mcp_loop(coro, timeout):
+            captured["outer_timeout"] = timeout
+            return asyncio.run(coro)
+
+        async def fake_wait_for(awaitable, timeout):
+            captured["inner_timeout"] = timeout
+            return await awaitable
+
+        monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(mcp_tool, "_stop_mcp_loop", lambda: None)
+        monkeypatch.setattr(mcp_tool, "_connect_server", fake_connect)
+        monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", fake_run_on_mcp_loop)
+        monkeypatch.setattr(mcp_config.asyncio, "wait_for", fake_wait_for)
+
+        assert mcp_config._probe_single_server(
+            "supabase", {"connect_timeout": 300}
+        ) == []
+        assert captured["inner_timeout"] == 300.0
+        assert captured["outer_timeout"] == 310.0
+        assert captured["shutdown"] is True
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation

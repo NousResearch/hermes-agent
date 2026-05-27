@@ -246,7 +246,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
+                try:
+                    final_response = stream.get_final_response()
+                except TypeError:
+                    # OpenAI SDK's parse_response crashes with TypeError when
+                    # response.output is None (Codex backend omits the
+                    # response.completed terminal event). Set output to [] so
+                    # the backfill below reconstructs from collected stream
+                    # items, preserving data and avoiding a fresh API call.
+                    final_response = SimpleNamespace(output=[])
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.

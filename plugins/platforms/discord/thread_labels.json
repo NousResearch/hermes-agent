@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "labels": {
+    "wtupdate": {
+      "display": "WT Update",
+      "scope": "worktree",
+      "description": "Thread contains a worktree status/update for handoff or review."
+    },
+    "wtsignoff": {
+      "display": "WT Signoff",
+      "scope": "worktree",
+      "description": "Thread contains final worktree signoff and completion evidence."
+    }
+  }
+}

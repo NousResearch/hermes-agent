@@ -51,6 +51,8 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from hermes_cli.close_thread import run_close_thread
+from plugins.platforms.discord.thread_labels import extract_thread_labels
 from utils import atomic_json_write
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -3068,6 +3070,13 @@ class DiscordAdapter(BasePlatformAdapter):
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
+        @tree.command(name="close-thread", description="Archive and lock the current thread")
+        @discord.app_commands.describe(reason="Optional reason shown in Discord audit logs")
+        async def slash_close_thread(interaction: discord.Interaction, reason: str = ""):
+            # defer() is performed inside the handler *after* the auth gate
+            # so a rejected invoker can receive an ephemeral rejection.
+            await self._handle_close_thread_slash(interaction, reason)
+
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
         @discord.app_commands.describe(prompt="The prompt to queue")
         async def slash_queue(interaction: discord.Interaction, prompt: str):
@@ -3516,6 +3525,98 @@ class DiscordAdapter(BasePlatformAdapter):
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
+
+    async def _handle_close_thread_slash(
+        self,
+        interaction: discord.Interaction,
+        reason: str = "",
+    ) -> None:
+        """Close a Discord thread only after writing the durable closeout packet."""
+        if not await self._check_slash_authorization(interaction, "/close-thread"):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        channel = getattr(interaction, "channel", None)
+        is_thread = channel is not None and (
+            (discord is not None and isinstance(channel, discord.Thread)) or
+            (
+                # Unit tests and some Discord shims use lightweight thread-like
+                # objects.  Require the close-only capabilities instead of a broad
+                # id/name duck type so ordinary text channels are still rejected.
+                hasattr(channel, "edit") and hasattr(channel, "parent")
+            )
+        )
+        if not is_thread:
+            await interaction.followup.send(
+                "/close-thread can only be used inside a Discord thread.",
+                ephemeral=True,
+            )
+            return
+
+        requested_by = getattr(getattr(interaction, "user", None), "display_name", "unknown")
+        user_id = getattr(getattr(interaction, "user", None), "id", None)
+        guild = getattr(interaction, "guild", None)
+        parent = getattr(channel, "parent", None)
+        thread_id = getattr(channel, "id", None)
+        thread_name = getattr(channel, "name", None)
+        source = {
+            "requested_by": requested_by,
+            "user_id": str(user_id) if user_id is not None else None,
+            "guild_id": str(getattr(guild, "id", "")) if guild is not None else None,
+            "guild_name": getattr(guild, "name", None),
+            "channel_id": str(getattr(parent, "id", "")) if parent is not None else str(thread_id or ""),
+            "channel_name": getattr(parent, "name", None),
+            "thread_id": str(thread_id) if thread_id is not None else None,
+            "thread_name": thread_name,
+            "thread_labels": extract_thread_labels(thread_name),
+            "message_id": str(getattr(interaction, "id", "")) if getattr(interaction, "id", None) is not None else None,
+            "close_reason": (reason or "").strip() or None,
+        }
+        session = {
+            "profile": os.getenv("HERMES_PROFILE") or "gateway",
+            "command_surface": "discord_slash",
+            "request_id": str(getattr(interaction, "id", "")) if getattr(interaction, "id", None) is not None else None,
+        }
+
+        try:
+            closeout_text = await asyncio.to_thread(
+                run_close_thread,
+                "/close-thread --mode close",
+                source=source,
+                session=session,
+            )
+        except Exception as exc:
+            logger.error("[%s] Failed to write closeout for Discord thread %s: %s", self.name, thread_id, exc)
+            await interaction.followup.send(
+                f"Failed to write closeout packet; thread was not closed: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        if "Status: BLOCKED" in closeout_text:
+            await interaction.followup.send(
+                f"Closeout is BLOCKED; thread was not closed.\n\n{closeout_text}",
+                ephemeral=True,
+            )
+            return
+
+        audit_reason = (reason or "").strip() or f"Requested by {requested_by} via /close-thread"
+        try:
+            await channel.edit(
+                archived=True,
+                locked=True,
+                reason=audit_reason,
+            )
+        except Exception as exc:
+            logger.error("[%s] Failed to close Discord thread %s: %s", self.name, getattr(channel, "id", "?"), exc)
+            await interaction.followup.send(
+                f"Closeout written, but failed to close thread: {exc}\n\n{closeout_text}",
+                ephemeral=True,
+            )
+            return
+
+        link = f"<#{thread_id}>" if thread_id else f"**{getattr(channel, 'name', 'thread')}**"
+        await interaction.followup.send(f"{closeout_text}\n\nClosed thread {link}", ephemeral=True)
 
     async def _dispatch_thread_session(
         self,
@@ -4324,13 +4425,18 @@ class DiscordAdapter(BasePlatformAdapter):
         guild_name = getattr(guild, "name", None)
         parent_name = getattr(parent, "name", None)
 
+        label_suffix = ""
+        labels = extract_thread_labels(thread_name)
+        if labels:
+            label_suffix = " [labels: " + ", ".join(label["id"] for label in labels) + "]"
+
         if self._is_forum_parent(parent) and guild_name and parent_name:
-            return f"{guild_name} / {parent_name} / {thread_name}"
+            return f"{guild_name} / {parent_name} / {thread_name}{label_suffix}"
         if parent_name and guild_name:
-            return f"{guild_name} / #{parent_name} / {thread_name}"
+            return f"{guild_name} / #{parent_name} / {thread_name}{label_suffix}"
         if parent_name:
-            return f"{parent_name} / {thread_name}"
-        return thread_name
+            return f"{parent_name} / {thread_name}{label_suffix}"
+        return f"{thread_name}{label_suffix}"
 
     # ------------------------------------------------------------------
     # Attachment download helpers
@@ -4552,7 +4658,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            # free_response_channels controls mention gating only. Do not let it
+            # suppress auto-threading; otherwise free_response_channels='*'
+            # makes auto_thread=true ineffective in every top-level channel.
+            skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

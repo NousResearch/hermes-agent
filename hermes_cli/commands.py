@@ -111,6 +111,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
+    CommandDef("close-thread", "Archive and lock the current Discord thread", "Session",
+               gateway_only=True, aliases=("closethread", "close_thread", "close-tread"), args_hint="[reason]"),
+    CommandDef("signoff", "Run the local workspace signoff summary helper", "Session",
+               gateway_only=True, args_hint="[wtsignoff args]"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 
@@ -493,6 +497,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
+        if cmd.name in _TELEGRAM_MENU_SKIP_COMMANDS:
+            continue
         # Built-in arg-taking commands are included — their handlers show
         # usage text when invoked without arguments, and hiding them from
         # the menu hurts discoverability (issue #24312).
@@ -580,6 +586,12 @@ _TG_NAME_LIMIT = _CMD_NAME_LIMIT
 # command names.  This regex strips everything else after initial conversion.
 _TG_INVALID_CHARS = re.compile(r"[^a-z0-9_]")
 _TG_MULTI_UNDERSCORE = re.compile(r"_{2,}")
+_TELEGRAM_MENU_SKIP_COMMANDS = frozenset({
+    # These are intentionally platform-scoped operational commands rather than
+    # general Telegram bot-menu entries.
+    "close-thread",
+    "signoff",
+})
 
 
 def _sanitize_telegram_name(raw: str) -> str:
@@ -1006,6 +1018,12 @@ def discord_skill_commands_by_category(
 _SLACK_MAX_SLASH_COMMANDS = 50
 _SLACK_NAME_LIMIT = 32
 _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
+_SLACK_NATIVE_SKIP_COMMANDS = frozenset({
+    # Hermes-only operational commands that are intentionally kept behind
+    # /hermes on Slack so they do not consume first-class slash slots.
+    "close-thread",
+    "signoff",
+})
 _SLACK_RESERVED_COMMANDS = frozenset({
     # Built-in Slack slash commands that cannot be registered by apps.
     # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
@@ -1072,11 +1090,15 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
+        if cmd.name in _SLACK_NATIVE_SKIP_COMMANDS:
+            continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
     # Second pass: aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
+            continue
+        if cmd.name in _SLACK_NATIVE_SKIP_COMMANDS:
             continue
         for alias in cmd.aliases:
             # Skip aliases that only differ from canonical by case/punctuation

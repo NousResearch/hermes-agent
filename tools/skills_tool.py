@@ -87,8 +87,15 @@ logger = logging.getLogger(__name__)
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
+#
+# NOTE: callers such as cron profile jobs can switch Hermes home at runtime via
+# the context-local override in hermes_constants.get_hermes_home(). Keep the
+# import-time snapshot for backward-compatible test monkeypatching, but resolve
+# the active local skills dir dynamically when the snapshot still points at the
+# original profile home.
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
+_INITIAL_SKILLS_DIR = SKILLS_DIR
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -122,6 +129,20 @@ def load_env() -> Dict[str, str]:
                 key, _, value = line.partition("=")
                 env_vars[key.strip()] = value.strip().strip("\"'")
     return env_vars
+
+
+def _get_local_skills_dir() -> Path:
+    """Return the active local skills root for the current Hermes profile.
+
+    ``SKILLS_DIR`` is kept as a module-level compatibility hook because many
+    tests monkeypatch it directly. When callers have not patched it, resolve the
+    path from the current ``get_hermes_home()`` value so profile-scoped cron
+    jobs and other context-local home overrides see the correct skills tree.
+    """
+    configured = Path(SKILLS_DIR)
+    if configured != _INITIAL_SKILLS_DIR:
+        return configured
+    return get_hermes_home() / "skills"
 
 
 class SkillReadinessStatus(str, Enum):
@@ -453,7 +474,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """
     # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
     # then fall back to external dirs from config.
-    dirs_to_check = [SKILLS_DIR]
+    dirs_to_check = [_get_local_skills_dir()]
     try:
         from agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
@@ -568,8 +589,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
+    local_skills_dir = _get_local_skills_dir()
+    if local_skills_dir.exists():
+        dirs_to_scan.append(local_skills_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
@@ -687,8 +709,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
-        if not SKILLS_DIR.exists():
-            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        local_skills_dir = _get_local_skills_dir()
+        if not local_skills_dir.exists():
+            local_skills_dir.mkdir(parents=True, exist_ok=True)
             return json.dumps(
                 {
                     "success": True,
@@ -941,8 +964,9 @@ def skill_view(
 
         # Build list of all skill directories to search
         all_dirs = []
-        if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
+        local_skills_dir = _get_local_skills_dir()
+        if local_skills_dir.exists():
+            all_dirs.append(local_skills_dir)
         all_dirs.extend(get_external_skills_dirs())
 
         if not all_dirs:
@@ -1062,7 +1086,7 @@ def skill_view(
         # Security: warn if skill is loaded from outside trusted directories
         # (local skills dir + configured external_dirs are all trusted)
         _outside_skills_dir = True
-        _trusted_dirs = [SKILLS_DIR.resolve()]
+        _trusted_dirs = [local_skills_dir.resolve()]
         try:
             _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
         except Exception:
@@ -1291,7 +1315,7 @@ def skill_view(
             linked_files["scripts"] = script_files
 
         try:
-            rel_path = str(skill_md.relative_to(SKILLS_DIR))
+            rel_path = str(skill_md.relative_to(local_skills_dir))
         except ValueError:
             # External skill — use path relative to the skill's own parent dir
             rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name

@@ -258,6 +258,42 @@ class TestRunJobProfileContext:
         assert observed["scheduler_home_during_init"] == str(profile_home.resolve())
         assert observed["scheduler_home_during_run"] == str(profile_home.resolve())
         assert observed["skip_context_files"] is True
+
+    def test_build_job_prompt_loads_profile_local_skill_tree(
+        self, isolated_cron_profile_home
+    ):
+        import cron.scheduler as sched
+
+        root, profile_home = isolated_cron_profile_home
+        default_skill = root / "skills" / "research-agent-loop"
+        profile_skill = (
+            profile_home / "skills" / "research" / "research-agent-loop"
+        )
+        default_skill.mkdir(parents=True)
+        profile_skill.mkdir(parents=True)
+
+        (default_skill / "SKILL.md").write_text(
+            "---\nname: research-agent-loop\ndescription: default tree\n---\n\nDEFAULT SKILL BODY\n",
+            encoding="utf-8",
+        )
+        (profile_skill / "SKILL.md").write_text(
+            "---\nname: research-agent-loop\ndescription: profile tree\n---\n\nPROFILE SKILL BODY\n",
+            encoding="utf-8",
+        )
+
+        job = {
+            "id": "abc",
+            "name": "profile-prompt",
+            "profile": "support",
+            "prompt": "run the profile skill",
+            "skills": ["research-agent-loop"],
+        }
+
+        with sched._job_profile_context(job["id"], job["profile"]):
+            prompt = sched._build_job_prompt(job)
+
+        assert "PROFILE SKILL BODY" in prompt
+        assert "DEFAULT SKILL BODY" not in prompt
         assert os.environ["HERMES_HOME"] == str(root)
         assert sched._get_hermes_home() == root
 

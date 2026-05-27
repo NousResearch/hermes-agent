@@ -237,7 +237,10 @@ async def host_header_middleware(request: Request, call_next):
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
-    path = request.url.path
+    # Use the raw ASGI path, not ``request.url.path``.  Starlette < 1.0.1
+    # reconstructs request.url from the untrusted Host header; CVE-2026-48710
+    # (BadHost) can poison request.url.path and bypass path-based auth checks.
+    path = request.scope.get("path", "")
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
             return JSONResponse(

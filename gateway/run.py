@@ -7478,6 +7478,12 @@ class GatewayRunner:
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
+
+        if canonical == "close-thread":
+            return await self._handle_close_thread_command(event)
+
+        if canonical == "signoff":
+            return await self._handle_signoff_command(event)
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
@@ -9626,6 +9632,37 @@ class GatewayRunner:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_close_thread_command(self, event: MessageEvent) -> str:
+        """Handle /close-thread by writing a local closeout packet and response."""
+        from hermes_cli.close_thread import run_close_thread
+
+        source = event.source
+        payload = {
+            "requested_by": getattr(source, "user_name", None) or getattr(source, "user_id", None),
+            "user_id": getattr(source, "user_id", None),
+            "guild_id": getattr(source, "guild_id", None),
+            "guild_name": getattr(source, "guild_name", None),
+            "channel_id": getattr(source, "chat_id", None),
+            "channel_name": getattr(source, "chat_name", None),
+            "thread_id": getattr(source, "thread_id", None),
+            "thread_name": getattr(source, "thread_name", None),
+            "message_id": getattr(event, "message_id", None),
+        }
+        session = {
+            "profile": os.getenv("HERMES_PROFILE") or "gateway",
+            "command_surface": "gateway",
+            "request_id": getattr(event, "platform_update_id", None),
+        }
+        try:
+            return await asyncio.to_thread(
+                run_close_thread,
+                event.text or "/close-thread",
+                source=payload,
+                session=session,
+            )
+        except Exception as exc:  # pragma: no cover
+            return f"⚠ close-thread error: {exc}"
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -11045,6 +11082,44 @@ class GatewayRunner:
         if hasattr(raw, "guild") and raw.guild:
             return raw.guild.id
         return None
+
+    async def _handle_signoff_command(self, event: MessageEvent) -> str:
+        """Handle /signoff by invoking the local wtsignoff helper."""
+        executable = os.environ.get("HERMES_SIGNOFF_BIN", "/Users/admin/.local/bin/wtsignoff")
+        command_text = (event.text or "/signoff").strip()
+        try:
+            parts = shlex.split(command_text)
+        except ValueError as exc:
+            return f"Invalid /signoff arguments: {exc}"
+        args = parts[1:] if len(parts) > 1 else []
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                executable,
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            return f"wtsignoff was not found at `{executable}`."
+        except OSError as exc:
+            return f"Failed to start wtsignoff: {exc}"
+
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+            return "wtsignoff timed out after 120s."
+
+        out = stdout.decode("utf-8", errors="replace").strip()
+        err = stderr.decode("utf-8", errors="replace").strip()
+        text = out or err or "wtsignoff completed with no output."
+        if proc.returncode:
+            text = f"wtsignoff exited with code {proc.returncode}:\n{text}"
+        return text
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

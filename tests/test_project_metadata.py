@@ -112,6 +112,18 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
 
 
+def test_dashboard_web_extra_pins_badhost_patched_starlette():
+    """Dashboard installs must force Starlette past CVE-2026-48710.
+
+    FastAPI's broad Starlette range can otherwise resolve to vulnerable
+    Starlette < 1.0.1, where malformed Host headers can poison
+    ``request.url.path`` in middleware.
+    """
+    optional_dependencies = _load_optional_dependencies()
+
+    assert "starlette==1.0.1" in optional_dependencies["web"]
+
+
 def test_dashboard_plugin_manifests_and_assets_are_packaged():
     """Bundled dashboard plugins need their manifests and built assets in
     wheel installs so /api/dashboard/plugins can discover them outside a

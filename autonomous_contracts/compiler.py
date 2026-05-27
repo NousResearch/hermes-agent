@@ -109,6 +109,7 @@ def compile_ledger_seed(
             evidenceRequired=list(sprint.evidenceRequired),
             allowedPaths=list(sprint.allowedPaths),
             forbiddenPaths=list(sprint.forbiddenPaths),
+            mcpGrants=list(sprint.mcpGrants),
             review=sprint.review,
             closeout=sprint.closeout,
         )
@@ -136,6 +137,7 @@ def compile_ledger_seed(
         contractLock=lock,
         sprints=records,
         gates=gate_records,
+        mcpRuntime=validated.mcpRuntime,
     )
 
 
@@ -179,6 +181,7 @@ def generate_worker_packet(
         context=context or {},
         acceptanceCriteria=list(sprint.acceptance),
         verificationCommands=commands,
+        mcpGrants=list(sprint.mcpGrants),
         stopConditions=list(sprint.stopConditions),
         outputRequirements=output_requirements,
     )

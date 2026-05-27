@@ -99,6 +99,14 @@ def sample_contract() -> dict:
             "reconcileContainers": True,
             "recordCleanupEvidence": True,
         },
+        "mcpRuntime": {
+            "policy": "sprint_packet_explicit_grants_only",
+            "activeBaselineServers": ["context7"],
+            "clientHomes": {"hermes-pm": "/tmp/sample-pm"},
+            "grantSchema": "configs/mcp/worker-mcp-grants.schema.json",
+            "smokeTestScript": "scripts/check-mcp-readiness.mjs",
+            "forbiddenByDefault": ["github"],
+        },
         "gates": [
             {
                 "id": "G.APPROVED",
@@ -155,6 +163,17 @@ def sample_contract() -> dict:
                     {"id": "PRE.1.STOP1", "text": "Tool missing.", "escalation": "galt"}
                 ],
                 "evidenceRequired": ["command_log", "file_snapshot", "handoff"],
+                "mcpGrants": [
+                    {
+                        "server": "context7",
+                        "clients": ["hermes-pm"],
+                        "access": "docs_read",
+                        "required": True,
+                        "purpose": "Documentation lookup for sprint-scoped implementation.",
+                        "allowedSprintCategories": ["PRE"],
+                        "sideEffects": "none",
+                    }
+                ],
                 "review": {"required": False},
                 "closeout": {"requiresCleanupAudit": True, "requiresGaltGate": False},
             }
@@ -166,6 +185,8 @@ def test_validate_contract_accepts_minimum_v1_shape() -> None:
     contract = validate_contract(sample_contract())
     assert contract.contractId == "sample-contract"
     assert contract.project.pmProfile == "sample-pm"
+    assert contract.mcpRuntime is not None
+    assert contract.sprints[0].mcpGrants[0].server == "context7"
 
 
 def test_validate_contract_rejects_duplicate_sprint_ids() -> None:
@@ -197,6 +218,8 @@ def test_compile_ledger_seed_is_deterministic_and_scoped() -> None:
     assert seed.sprints[0].objective == "Verify host tools and write tooling report."
     assert seed.sprints[0].acceptance[1].verification == "file_exists"
     assert seed.sprints[0].allowedPaths == ["docs/**", ".contract-ledger/**"]
+    assert seed.sprints[0].mcpGrants[0].server == "context7"
+    assert seed.mcpRuntime is not None
     assert seed.gates[0].gateId == "G.APPROVED"
     assert seed.gates[0].resolved is False
     assert seed.cleanupRegistry.records == []
@@ -230,6 +253,7 @@ def test_generate_worker_packet_excludes_master_contract() -> None:
     dumped = packet.model_dump()
     assert packet.projectId == "sample-project"
     assert packet.verificationCommands == ["python3 --version"]
+    assert packet.mcpGrants[0].server == "context7"
     assert [criterion.id for criterion in packet.acceptanceCriteria] == ["PRE.1.AC1", "PRE.1.AC2"]
     assert packet.acceptanceCriteria[1].path == "docs/TOOLING_VERSIONS.md"
     assert "sprints" not in dumped

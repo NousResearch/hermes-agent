@@ -35,7 +35,14 @@ SprintState = Literal[
     "superseded",
 ]
 WorkerRole = Literal["implementer", "reviewer", "dogfood", "research"]
-CleanupState = Literal["active_needed", "closed", "archived", "retained_with_reason", "orphaned_blocker"]
+CleanupState = Literal[
+    "active_needed",
+    "open",
+    "closed",
+    "archived",
+    "retained_with_reason",
+    "orphaned_blocker",
+]
 CleanupType = Literal[
     "tmux_session",
     "worktree",
@@ -46,6 +53,7 @@ CleanupType = Literal[
     "cron_job",
     "container",
     "temp_file",
+    "generated_artifact",
     "browser_session",
 ]
 
@@ -140,6 +148,25 @@ class CleanupPolicy(StrictModel):
     recordCleanupEvidence: bool = True
 
 
+class McpGrant(StrictModel):
+    server: NonEmptyStr
+    clients: list[NonEmptyStr] = Field(default_factory=list)
+    access: NonEmptyStr
+    required: bool = True
+    purpose: NonEmptyStr
+    allowedSprintCategories: list[NonEmptyStr] = Field(default_factory=list)
+    sideEffects: NonEmptyStr = "none"
+
+
+class McpRuntime(StrictModel):
+    policy: NonEmptyStr
+    activeBaselineServers: list[NonEmptyStr] = Field(default_factory=list)
+    clientHomes: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
+    grantSchema: str | None = None
+    smokeTestScript: str | None = None
+    forbiddenByDefault: list[NonEmptyStr] = Field(default_factory=list)
+
+
 class Gate(StrictModel):
     id: NonEmptyStr
     type: GateType
@@ -176,6 +203,8 @@ class AcceptanceCriterion(StrictModel):
 
 
 class ReviewPolicy(StrictModel):
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
+
     required: bool = False
 
 
@@ -203,6 +232,7 @@ class Sprint(StrictModel):
     gates: list[NonEmptyStr] = Field(default_factory=list)
     stopConditions: list[dict[str, Any]] = Field(default_factory=list)
     evidenceRequired: list[NonEmptyStr] = Field(default_factory=list)
+    mcpGrants: list[McpGrant] = Field(default_factory=list)
     review: ReviewPolicy = Field(default_factory=ReviewPolicy)
     closeout: CloseoutPolicy = Field(default_factory=CloseoutPolicy)
 
@@ -228,6 +258,7 @@ class Contract(StrictModel):
     budgets: BudgetPolicy
     kanban: KanbanPolicy = Field(default_factory=KanbanPolicy)
     cleanupPolicy: CleanupPolicy = Field(default_factory=CleanupPolicy)
+    mcpRuntime: McpRuntime | None = None
     gates: list[Gate] = Field(default_factory=list)
     sections: list[Section]
     sprints: list[Sprint]
@@ -242,6 +273,7 @@ class ContractLock(StrictModel):
     approvedAt: str
     ledgerInitializedAt: str
     active: bool = True
+    amendmentReason: str | None = None
 
     @classmethod
     def new(cls, contract: Contract, contractSha256: str, approvedBy: str, approvedAt: datetime | None = None) -> "ContractLock":
@@ -279,8 +311,22 @@ class LedgerSprintRecord(StrictModel):
     evidenceRequired: list[NonEmptyStr] = Field(default_factory=list)
     allowedPaths: list[NonEmptyStr] = Field(default_factory=list)
     forbiddenPaths: list[NonEmptyStr] = Field(default_factory=list)
+    mcpGrants: list[McpGrant] = Field(default_factory=list)
     review: ReviewPolicy = Field(default_factory=ReviewPolicy)
     closeout: CloseoutPolicy = Field(default_factory=CloseoutPolicy)
+    workerPacket: str | None = None
+    handoffArtifact: str | None = None
+    handoff: str | None = None
+    verificationEvidence: list[NonEmptyStr] = Field(default_factory=list)
+    amendmentEvidence: list[NonEmptyStr] = Field(default_factory=list)
+    cleanupEvidence: list[NonEmptyStr] = Field(default_factory=list)
+    reviewEvidence: dict[str, Any] | None = None
+    completedBy: str | None = None
+    completedAt: str | None = None
+    startedBy: str | None = None
+    startedAt: str | None = None
+    closedBy: str | None = None
+    reviewException: str | None = None
 
 
 class LedgerGateRecord(StrictModel):
@@ -327,6 +373,8 @@ class LedgerSeed(StrictModel):
     sprints: list[LedgerSprintRecord]
     gates: list[LedgerGateRecord]
     cleanupRegistry: CleanupRegistry = Field(default_factory=CleanupRegistry)
+    mcpRuntime: McpRuntime | None = None
+    amendments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkerPacket(StrictModel):
@@ -343,5 +391,6 @@ class WorkerPacket(StrictModel):
     context: dict[str, Any] = Field(default_factory=dict)
     acceptanceCriteria: list[AcceptanceCriterion]
     verificationCommands: list[NonEmptyStr] = Field(default_factory=list)
+    mcpGrants: list[McpGrant] = Field(default_factory=list)
     stopConditions: list[dict[str, Any]] = Field(default_factory=list)
     outputRequirements: list[NonEmptyStr]

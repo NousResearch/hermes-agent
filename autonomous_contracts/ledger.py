@@ -80,6 +80,12 @@ def create_schema(conn: sqlite3.Connection) -> None:
             evidence_required_json TEXT NOT NULL,
             allowed_paths_json TEXT NOT NULL,
             forbidden_paths_json TEXT NOT NULL,
+            mcp_grants_json TEXT NOT NULL DEFAULT '[]',
+            worker_packet TEXT,
+            handoff_artifact TEXT,
+            verification_evidence_json TEXT NOT NULL DEFAULT '[]',
+            completed_by TEXT,
+            source_completed_at TEXT,
             review_json TEXT NOT NULL,
             closeout_json TEXT NOT NULL,
             started_at TEXT,
@@ -127,6 +133,18 @@ def create_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sprints)")}
+    migrations = {
+        "mcp_grants_json": "ALTER TABLE sprints ADD COLUMN mcp_grants_json TEXT NOT NULL DEFAULT '[]'",
+        "worker_packet": "ALTER TABLE sprints ADD COLUMN worker_packet TEXT",
+        "handoff_artifact": "ALTER TABLE sprints ADD COLUMN handoff_artifact TEXT",
+        "verification_evidence_json": "ALTER TABLE sprints ADD COLUMN verification_evidence_json TEXT NOT NULL DEFAULT '[]'",
+        "completed_by": "ALTER TABLE sprints ADD COLUMN completed_by TEXT",
+        "source_completed_at": "ALTER TABLE sprints ADD COLUMN source_completed_at TEXT",
+    }
+    for column, ddl in migrations.items():
+        if column not in existing_columns:
+            conn.execute(ddl)
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("schema_version", str(SCHEMA_VERSION)))
 
 
@@ -175,6 +193,8 @@ def initialize_ledger(path: str | Path, seed: LedgerSeed, *, actor: str = "galt"
             "contract_sha256": seed.contractSha256,
             "project_id": seed.projectId,
             "contract_lock_json": _json(seed.contractLock.model_dump(mode="json") if seed.contractLock else None),
+            "mcp_runtime_json": _json(seed.mcpRuntime.model_dump(mode="json") if seed.mcpRuntime else None),
+            "amendments_json": _json(seed.amendments),
             "initialized_at": _now(),
         }
         conn.executemany("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", meta.items())
@@ -188,8 +208,11 @@ def initialize_ledger(path: str | Path, seed: LedgerSeed, *, actor: str = "galt"
                     material_type, objective, depends_on_json, gates_json,
                     required_inputs_json, required_context_json, implementation_requirements_json,
                     acceptance_json, stop_conditions_json, evidence_required_json,
-                    allowed_paths_json, forbidden_paths_json, review_json, closeout_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    allowed_paths_json, forbidden_paths_json, mcp_grants_json,
+                    worker_packet, handoff_artifact, verification_evidence_json,
+                    completed_by, source_completed_at, review_json, closeout_json,
+                    started_at, completed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sprint.sprintId,
@@ -211,8 +234,16 @@ def initialize_ledger(path: str | Path, seed: LedgerSeed, *, actor: str = "galt"
                     _json(sprint.evidenceRequired),
                     _json(sprint.allowedPaths),
                     _json(sprint.forbiddenPaths),
+                    _json([grant.model_dump(mode="json", exclude_none=True) for grant in sprint.mcpGrants]),
+                    sprint.workerPacket,
+                    sprint.handoffArtifact,
+                    _json(sprint.verificationEvidence),
+                    sprint.completedBy,
+                    sprint.completedAt,
                     _json(sprint.review.model_dump(mode="json")),
                     _json(sprint.closeout.model_dump(mode="json")),
+                    sprint.startedAt,
+                    sprint.completedAt,
                     now,
                 ),
             )
@@ -325,7 +356,7 @@ def transition_sprint(
         if new_state in terminal_success:
             open_cleanup = list(
                 conn.execute(
-                    "SELECT id FROM cleanup WHERE sprint_id=? AND state IN ('active_needed', 'orphaned_blocker')",
+                    "SELECT id FROM cleanup WHERE sprint_id=? AND state IN ('active_needed', 'open', 'orphaned_blocker')",
                     (sprint_id,),
                 )
             )
@@ -469,6 +500,12 @@ def export_state(path: str | Path) -> dict[str, Any]:
                     "gates": json.loads(row["gates_json"]),
                     "allowedPaths": json.loads(row["allowed_paths_json"]),
                     "forbiddenPaths": json.loads(row["forbidden_paths_json"]),
+                    "mcpGrants": json.loads(row["mcp_grants_json"]),
+                    "workerPacket": row["worker_packet"],
+                    "handoffArtifact": row["handoff_artifact"],
+                    "verificationEvidence": json.loads(row["verification_evidence_json"]),
+                    "completedBy": row["completed_by"],
+                    "sourceCompletedAt": row["source_completed_at"],
                     "startedAt": row["started_at"],
                     "completedAt": row["completed_at"],
                     "updatedAt": row["updated_at"],

@@ -1322,6 +1322,22 @@ AUTHOR_MAP = {
     "dearmayo@localhost": "ffr31mr",  # PR #32103 (SubdirectoryHintTracker workspace boundary)
     "TheOnlyMika@users.noreply.github.com": "TheOnlyMika",  # PR #32155 (dashboard XSS + defusedxml)
     "krislidimo@gmail.com": "krislidimo",  # PR #29775 (tighten Telegram table row-group spacing; drop redundant first bullet)
+    "2182712990@qq.com": "Stellar-yu",  # upstream sync (Docker audio bridge notes)
+    "baxter@bitreserve.ai": "BaxBit",  # upstream sync (Svix webhook signatures)
+    "ethie@nous": "ethernet",  # upstream sync (TUI clipboard)
+    "glen@workmanfirearms.com": "sgtworkman",  # upstream sync (cron API provenance)
+    "jiahuigu@sjtu.edu.cn": "Jiahui-Gu",  # upstream sync (darwinian-evolver pickle guard)
+    "jorge.fuenmayort@gmail.com": "jfuenmayor",  # upstream sync (skill trust hardening)
+    "justinccdev@gmail.com": "justincc",  # upstream sync (tool result names)
+    "kdkcfp@gmail.com": "slowtokki0409",  # upstream sync (runtime file ignores)
+    "pepelax@users.noreply.github.com": "pepelax",  # upstream sync (Telegram send proxy)
+    "peter.yuqin@gmail.com": "Peter",  # upstream sync (transcription symlink guard)
+    "pochi-gio@users.noreply.github.com": "pochi-gio",  # upstream sync (Korean Kanban docs)
+    "roadhero@users.noreply.github.com": "roadhero",  # upstream sync (env passthrough hardening)
+    "rodrigoeq@hotmail.com": "rodrigoeqnit",  # upstream sync (approval hardening)
+    "soliva.johnpaul@icloud.com": "jonpol01",  # upstream sync (Docker env propagation)
+    "sunil.nitie@gmail.com": "Sunil123135",  # upstream sync (Windows Docker Desktop compose)
+    "weichangyuwcy@gmail.com": "chyuwei",  # upstream sync (TUI TTS indicator)
 }
 
 

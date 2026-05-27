@@ -20,6 +20,7 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -165,6 +166,9 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
 
+    terminal_event_response = None
+    collected_output_items: list[Any] = []
+
     with client.responses.stream(
         model=_CODEX_CHAT_MODEL,
         store=False,
@@ -189,23 +193,72 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
             "tools": [{"type": "image_generation"}],
         },
     ) as stream:
-        for event in stream:
-            event_type = getattr(event, "type", "")
-            if event_type == "response.output_item.done":
-                item = getattr(event, "item", None)
-                if getattr(item, "type", None) == "image_generation_call":
-                    result = getattr(item, "result", None)
-                    if isinstance(result, str) and result:
-                        image_b64 = result
-            elif event_type == "response.image_generation_call.partial_image":
-                partial = getattr(event, "partial_image_b64", None)
-                if isinstance(partial, str) and partial:
-                    image_b64 = partial
-        final = stream.get_final_response()
+        try:
+            for event in stream:
+                event_type = getattr(event, "type", "")
+                if event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if item is not None:
+                        collected_output_items.append(item)
+                    if getattr(item, "type", None) == "image_generation_call":
+                        result = getattr(item, "result", None)
+                        if isinstance(result, str) and result:
+                            image_b64 = result
+                elif event_type == "response.image_generation_call.partial_image":
+                    partial = getattr(event, "partial_image_b64", None)
+                    if isinstance(partial, str) and partial:
+                        image_b64 = partial
+                elif event_type == "response.completed":
+                    terminal_event_response = getattr(event, "response", None)
+            try:
+                final = stream.get_final_response()
+            except TypeError as exc:
+                if (
+                    str(exc) == "'NoneType' object is not iterable"
+                    and terminal_event_response is not None
+                ):
+                    final = terminal_event_response
+                else:
+                    raise
+        except TypeError as exc:
+            if str(exc) == "'NoneType' object is not iterable":
+                logger.warning(
+                    "Codex SDK parser bug detected in image_generation stream: terminal response carried output=None after streamed items. Recovering from streamed payload."
+                )
+                if terminal_event_response is not None:
+                    final = terminal_event_response
+                    _terminal_output = getattr(final, "output", None)
+                    if collected_output_items and (not isinstance(_terminal_output, list) or not _terminal_output):
+                        final.output = list(collected_output_items)
+                    elif getattr(final, "output", None) is None:
+                        final.output = []
+                elif collected_output_items:
+                    _response_kwargs: dict[str, Any] = {"output": list(collected_output_items)}
+                    _status = next(
+                        (
+                            _item_status
+                            for item in collected_output_items
+                            for _item_status in [getattr(item, "status", None)]
+                            if isinstance(_item_status, str) and _item_status.strip()
+                        ),
+                        None,
+                    )
+                    if isinstance(_status, str) and _status.strip():
+                        _response_kwargs["status"] = _status.strip()
+                    final = SimpleNamespace(**_response_kwargs)
+                else:
+                    raise
+            else:
+                raise
+
+    output_items = getattr(final, "output", None)
+    if collected_output_items and not isinstance(output_items, list):
+        final.output = list(collected_output_items)
+        output_items = final.output
 
     # Final-response sweep covers the case where the stream finished before
     # we observed the ``output_item.done`` event for the image call.
-    for item in getattr(final, "output", None) or []:
+    for item in output_items or []:
         if getattr(item, "type", None) == "image_generation_call":
             result = getattr(item, "result", None)
             if isinstance(result, str) and result:

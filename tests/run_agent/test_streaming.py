@@ -862,6 +862,200 @@ class TestCodexStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == 3
 
+    def test_codex_stream_recovers_when_sdk_final_parse_hits_none_output(self):
+        """chatgpt.com/backend-api/codex can emit ``response.completed`` with
+        ``response.output=None`` even though ``response.output_item.done``
+        already carried the real message item. The OpenAI SDK then raises
+        ``TypeError: 'NoneType' object is not iterable`` from
+        ``stream.get_final_response()``. Hermes must recover from the streamed
+        items instead of surfacing the SDK parser failure to the user.
+        """
+        from run_agent import AIAgent
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="Hello from Codex!")],
+        )
+        completed_response = SimpleNamespace(
+            output=None,
+            status="completed",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        )
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter([
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(type="response.completed", response=completed_response),
+        ]))
+        mock_stream.get_final_response.side_effect = TypeError("'NoneType' object is not iterable")
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = mock_stream
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        setattr(agent, "api_mode", "codex_responses")
+        agent._interrupt_requested = False
+
+        response = agent._run_codex_stream({}, client=mock_client)
+        output = getattr(response, "output", None)
+
+        assert response is completed_response
+        assert isinstance(output, list)
+        assert output == [message_item]
+
+    def test_codex_stream_recovers_when_sdk_raises_during_iteration(self):
+        """The OpenAI SDK can raise the same ``NoneType`` parser failure while
+        iterating the stream itself, before ``get_final_response()`` is ever
+        called. Hermes should salvage the already-collected output items.
+        """
+        from run_agent import AIAgent
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="Hello from Codex!")],
+        )
+
+        class _BrokenIterStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=message_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - should not run
+                raise AssertionError("get_final_response should not be called")
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = _BrokenIterStream()
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        setattr(agent, "api_mode", "codex_responses")
+        agent._interrupt_requested = False
+
+        response = agent._run_codex_stream({}, client=mock_client)
+        output = getattr(response, "output", None)
+
+        assert isinstance(output, list)
+        assert output == [message_item]
+        assert getattr(response, "status", None) is None
+
+    def test_codex_stream_iteration_parse_failure_preserves_item_status_when_no_terminal_response(self):
+        """If only streamed output items survive the SDK parser crash, preserve
+        any item-level status instead of fabricating a bare successful object.
+        """
+        from run_agent import AIAgent
+
+        message_item = SimpleNamespace(
+            type="message",
+            status="incomplete",
+            content=[SimpleNamespace(type="output_text", text="partial")],
+        )
+
+        class _BrokenIterStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=message_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - should not run
+                raise AssertionError("get_final_response should not be called")
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = _BrokenIterStream()
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        setattr(agent, "api_mode", "codex_responses")
+        agent._interrupt_requested = False
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert getattr(response, "status", None) == "incomplete"
+
+    def test_codex_stream_iteration_parse_failure_prefers_terminal_event_payload_when_seen(self):
+        """If the SDK trips after we already observed ``response.completed``,
+        Hermes should keep that terminal response so status/usage survive.
+        """
+        from run_agent import AIAgent
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="Hello from Codex!")],
+        )
+        terminal_response = SimpleNamespace(
+            output=None,
+            status="incomplete",
+            usage=SimpleNamespace(input_tokens=13, output_tokens=8, total_tokens=21),
+        )
+
+        class _BrokenAfterCompletedStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=message_item)
+                yield SimpleNamespace(type="response.completed", response=terminal_response)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - should not run
+                raise AssertionError("get_final_response should not be called")
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = _BrokenAfterCompletedStream()
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        setattr(agent, "api_mode", "codex_responses")
+        agent._interrupt_requested = False
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response is not None
+        assert response is terminal_response
+        assert response.output == [message_item]
+        assert response.status == "incomplete"
+        assert response.usage.total_tokens == 21
+
     def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
         from run_agent import AIAgent
         import httpx
@@ -944,6 +1138,54 @@ class TestCodexStreamCallbacks:
         )
 
         assert touch_calls.count("receiving stream response") == len(events)
+
+    def test_codex_create_stream_fallback_backfills_none_output_terminal_response(self):
+        """The fallback path iterates raw SSE events directly, so it sees the
+        completed response object before any SDK parsing. When that terminal
+        response carries ``output=None`` the fallback must still stitch in the
+        streamed ``response.output_item.done`` payload instead of returning a
+        broken response that later crashes in normalization.
+        """
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        setattr(agent, "api_mode", "codex_responses")
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="Hello")],
+        )
+        terminal_response = SimpleNamespace(output=None, status="completed")
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(type="response.completed", response=terminal_response),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+
+            def close(self_inner):
+                return None
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = _FakeCreateStream()
+
+        response = agent._run_codex_create_stream_fallback(
+            {"model": "test/model", "instructions": "hi", "input": []},
+            client=mock_client,
+        )
+        output = getattr(response, "output", None)
+
+        assert response is terminal_response
+        assert output == [message_item]
 
 
 class TestAnthropicStreamCallbacks:

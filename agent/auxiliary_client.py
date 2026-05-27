@@ -791,30 +791,128 @@ class _CodexCompletionsAdapter:
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
+            terminal_event_response = None
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+                try:
+                    for _event in stream:
+                        _check_cancelled()
+                        _etype = getattr(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = getattr(_event, "item", None)
+                            if _done is not None:
+                                collected_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = getattr(_event, "delta", "")
+                            if _delta:
+                                collected_text_deltas.append(_delta)
+                        elif "function_call" in _etype:
+                            has_function_calls = True
+                        elif _etype == "response.completed":
+                            terminal_event_response = getattr(_event, "response", None)
                     _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
+                    try:
+                        final = stream.get_final_response()
+                    except TypeError as exc:
+                        if (
+                            str(exc) == "'NoneType' object is not iterable"
+                            and terminal_event_response is not None
+                        ):
+                            logger.debug(
+                                "Codex auxiliary: recovered from SDK final-response parse failure using terminal event payload"
+                            )
+                            final = terminal_event_response
+                        else:
+                            raise
+                except TypeError as exc:
+                    if str(exc) == "'NoneType' object is not iterable":
+                        logger.warning(
+                            "Codex SDK parser bug detected in auxiliary stream: terminal response carried output=None after streamed items/text. Recovering from streamed payload."
+                        )
+                        if terminal_event_response is not None:
+                            logger.debug(
+                                "Codex auxiliary: recovered from SDK parser failure using terminal event payload"
+                            )
+                            final = terminal_event_response
+                            _terminal_output = getattr(final, "output", None)
+                            if collected_output_items and (not isinstance(_terminal_output, list) or not _terminal_output):
+                                final.output = list(collected_output_items)
+                            elif collected_text_deltas and not has_function_calls and (not isinstance(_terminal_output, list) or not _terminal_output):
+                                assembled = "".join(collected_text_deltas)
+                                _status = getattr(terminal_event_response, "status", None)
+                                logger.debug(
+                                    "Codex auxiliary: recovered from SDK parser failure using %d streamed text deltas (%d chars)",
+                                    len(collected_text_deltas), len(assembled),
+                                )
+                                _message_kwargs = {
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [SimpleNamespace(type="output_text", text=assembled)],
+                                }
+                                if isinstance(_status, str) and _status.strip():
+                                    _message_kwargs["status"] = _status.strip()
+                                final.output = [SimpleNamespace(**_message_kwargs)]
+                            elif getattr(final, "output", None) is None:
+                                final.output = []
+                        elif collected_output_items:
+                            logger.debug(
+                                "Codex auxiliary: recovered from SDK parser failure using %d collected output items",
+                                len(collected_output_items),
+                            )
+                            _response_kwargs: dict[str, Any] = {"output": list(collected_output_items)}
+                            _status = next(
+                                (
+                                    _item_status
+                                    for item in collected_output_items
+                                    for _item_status in [getattr(item, "status", None)]
+                                    if isinstance(_item_status, str) and _item_status.strip()
+                                ),
+                                None,
+                            )
+                            if isinstance(_status, str) and _status.strip():
+                                _response_kwargs["status"] = _status.strip()
+                            final = SimpleNamespace(**_response_kwargs)
+                        elif collected_text_deltas and not has_function_calls:
+                            assembled = "".join(collected_text_deltas)
+                            _status = getattr(terminal_event_response, "status", None)
+                            logger.debug(
+                                "Codex auxiliary: recovered from SDK parser failure using %d streamed text deltas (%d chars)",
+                                len(collected_text_deltas), len(assembled),
+                            )
+                            _message_kwargs = {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [SimpleNamespace(type="output_text", text=assembled)],
+                            }
+                            if isinstance(_status, str) and _status.strip():
+                                _message_kwargs["status"] = _status.strip()
+                            _response_kwargs: dict[str, Any] = {
+                                "output": [SimpleNamespace(**_message_kwargs)],
+                            }
+                            _usage = getattr(terminal_event_response, "usage", None)
+                            if isinstance(_status, str) and _status.strip():
+                                _response_kwargs["status"] = _status.strip()
+                            if _usage is not None:
+                                _response_kwargs["usage"] = _usage
+                            final = SimpleNamespace(**_response_kwargs)
+                        else:
+                            raise
+                    else:
+                        raise
 
-            # Backfill empty output from collected stream events
+            # Backfill output from collected stream events
             _output = getattr(final, "output", None)
+            if collected_output_items and not isinstance(_output, list):
+                final.output = list(collected_output_items)
+                logger.debug(
+                    "Codex auxiliary: backfilled %d output items after missing/non-list terminal output",
+                    len(collected_output_items),
+                )
+                _output = final.output
             if isinstance(_output, list) and not _output:
                 if collected_output_items:
                     final.output = list(collected_output_items)
@@ -827,10 +925,15 @@ class _CodexCompletionsAdapter:
                     # a function_call response with incidental text should not
                     # be collapsed into a plain-text message.
                     assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
-                        type="message", role="assistant", status="completed",
-                        content=[SimpleNamespace(type="output_text", text=assembled)],
-                    )]
+                    _message_kwargs = {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [SimpleNamespace(type="output_text", text=assembled)],
+                    }
+                    _status = getattr(final, "status", None)
+                    if isinstance(_status, str) and _status.strip():
+                        _message_kwargs["status"] = _status.strip()
+                    final.output = [SimpleNamespace(**_message_kwargs)]
                     logger.debug(
                         "Codex auxiliary: synthesized from %d deltas (%d chars)",
                         len(collected_text_deltas), len(assembled),

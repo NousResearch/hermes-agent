@@ -2371,6 +2371,158 @@ class TestCodexAdapterReasoningTranslation:
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
 
+    def test_recovers_when_sdk_final_parse_hits_none_output(self):
+        """Auxiliary Codex calls use ``responses.stream()`` too, so they must
+        recover from the SDK's ``TypeError`` when ChatGPT Codex emits a
+        terminal response with ``output=None`` despite having streamed the real
+        ``response.output_item.done`` payload already.
+        """
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        completed_response = SimpleNamespace(
+            output=None,
+            status="completed",
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(type="response.output_item.done", item=message_item),
+                    SimpleNamespace(type="response.completed", response=completed_response),
+                ])
+
+            def get_final_response(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **kwargs: _FakeStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
+
+        resp = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert resp.choices[0].message.content == "hi"
+        assert resp.usage.total_tokens == 2
+
+    def test_recovers_when_sdk_raises_during_iteration(self):
+        """The SDK can raise the same parser error during stream iteration,
+        before ``get_final_response()`` runs. The adapter should still salvage
+        the already-collected output item instead of bubbling the TypeError.
+        """
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+
+        class _BrokenIterStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=message_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - should not run
+                raise AssertionError("get_final_response should not be called")
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **kwargs: _BrokenIterStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
+
+        resp = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert resp.choices[0].message.content == "hi"
+
+    def test_iteration_parse_failure_preserves_item_status_when_no_terminal_response(self):
+        """If only streamed output items survive the parser crash, preserve
+        any item-level status instead of inventing a bare success object.
+        """
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message",
+            status="incomplete",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+
+        class _BrokenIterStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=message_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - should not run
+                raise AssertionError("get_final_response should not be called")
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **kwargs: _BrokenIterStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
+
+        resp = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert resp.choices[0].message.content == "hi"
+
+    def test_iteration_parse_failure_prefers_terminal_event_payload_when_seen(self):
+        """If the terminal response event was already observed before the SDK
+        crashes, keep that object so recovered usage/status metadata survive.
+        """
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        terminal_response = SimpleNamespace(
+            output=None,
+            status="incomplete",
+            usage=SimpleNamespace(input_tokens=7, output_tokens=4, total_tokens=11),
+        )
+
+        class _BrokenAfterCompletedStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=message_item)
+                yield SimpleNamespace(type="response.completed", response=terminal_response)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - should not run
+                raise AssertionError("get_final_response should not be called")
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **kwargs: _BrokenAfterCompletedStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
+
+        resp = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert resp is not None
+        assert resp.choices[0].message.content == "hi"
+        assert resp.usage.total_tokens == 11
+
 
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on

@@ -245,6 +245,125 @@ class TestGenerate:
         assert result["success"] is True
         assert Path(result["image"]).exists()
 
+    def test_completed_event_with_none_output_recovers_image(self, provider, monkeypatch):
+        """ChatGPT Codex can send ``response.completed`` with
+        ``response.output=None``; the plugin should recover from the streamed
+        ``response.output_item.done`` event instead of crashing inside the SDK.
+        """
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        output_item = SimpleNamespace(
+            type="image_generation_call",
+            status="completed",
+            id="ig_final",
+            result=_b64_png(),
+        )
+        terminal_response = SimpleNamespace(output=None, status="completed", output_text="")
+
+        class _BrokenFinalStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(type="response.output_item.done", item=output_item),
+                    SimpleNamespace(type="response.completed", response=terminal_response),
+                ])
+
+            def get_final_response(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        fake_client = SimpleNamespace(
+            responses=SimpleNamespace(
+                stream=lambda **kwargs: _BrokenFinalStream()
+            )
+        )
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert Path(result["image"]).exists()
+
+    def test_iteration_parse_failure_recovers_image(self, provider, monkeypatch):
+        """The SDK can raise the ``NoneType`` parser failure while iterating
+        the stream, before ``get_final_response()`` is called. The plugin
+        should still recover the streamed image_generation item.
+        """
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        output_item = SimpleNamespace(
+            type="image_generation_call",
+            status="completed",
+            id="ig_iter",
+            result=_b64_png(),
+        )
+
+        class _BrokenIterStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=output_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - should not run
+                raise AssertionError("get_final_response should not be called")
+
+        fake_client = SimpleNamespace(
+            responses=SimpleNamespace(
+                stream=lambda **kwargs: _BrokenIterStream()
+            )
+        )
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert Path(result["image"]).exists()
+
+    def test_partial_image_only_typeerror_with_terminal_none_output_keeps_preview(self, provider, monkeypatch):
+        """If only preview frames arrived before the SDK trips on a terminal
+        response carrying ``output=None``, keep the latest partial image rather
+        than throwing the preview away."""
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        partial_event = SimpleNamespace(
+            type="response.image_generation_call.partial_image",
+            partial_image_b64=_b64_png(),
+        )
+        terminal_response = SimpleNamespace(output=None, status="completed", output_text="")
+
+        class _BrokenPartialOnlyStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield partial_event
+                yield SimpleNamespace(type="response.completed", response=terminal_response)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - should not run
+                raise AssertionError("get_final_response should not be called")
+
+        fake_client = SimpleNamespace(
+            responses=SimpleNamespace(
+                stream=lambda **kwargs: _BrokenPartialOnlyStream()
+            )
+        )
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate("a cat")
+        assert result["success"] is True
+        assert Path(result["image"]).exists()
+
     def test_empty_response_returns_error(self, provider, monkeypatch):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
 

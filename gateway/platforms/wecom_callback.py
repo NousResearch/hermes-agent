@@ -17,7 +17,17 @@ import logging
 import socket as _socket
 import time
 from typing import Any, Dict, List, Optional
-from xml.etree import ElementTree as ET
+# Security: parse untrusted, pre-auth request bodies (WeCom callbacks) with
+# defusedxml to block billion-laughs / entity-expansion (and XXE) DoS. The
+# parsing API (fromstring) is a drop-in for the stdlib calls used below;
+# response-building XML lives in wecom_crypto.py and is not parsed here.
+try:
+    import defusedxml.ElementTree as ET
+
+    DEFUSEDXML_AVAILABLE = True
+except ImportError:
+    ET = None  # type: ignore[assignment]
+    DEFUSEDXML_AVAILABLE = False
 
 try:
     from aiohttp import web
@@ -49,7 +59,7 @@ MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
 def check_wecom_callback_requirements() -> bool:
-    return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
+    return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE and DEFUSEDXML_AVAILABLE
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):

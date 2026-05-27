@@ -19,7 +19,7 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 - **[OpenRouter](https://openrouter.ai/)** — access hundreds of models through one API key (recommended for flexibility)
 - **Nous Portal** — Nous Research's own inference endpoint
 - **OpenAI** — GPT-5.4, GPT-5-codex, GPT-4.1, GPT-4o, etc.
-- **Anthropic** — Claude models (direct API, OAuth via `hermes login anthropic`, OpenRouter, or any compatible proxy)
+- **Anthropic** — Claude models (direct API, OAuth via `hermes auth add anthropic`, OpenRouter, or any compatible proxy)
 - **Google** — Gemini models (direct API via `gemini` provider, the `google-gemini-cli` OAuth provider, OpenRouter, or compatible proxy)
 - **z.ai / ZhipuAI** — GLM models
 - **Kimi / Moonshot AI** — Kimi models

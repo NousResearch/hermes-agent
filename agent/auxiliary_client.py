@@ -815,7 +815,7 @@ class _CodexCompletionsAdapter:
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)
-            if not isinstance(_output, list) or not _output:
+            if _output is None or (isinstance(_output, list) and not _output):
                 if collected_output_items:
                     final.output = list(collected_output_items)
                     logger.debug(

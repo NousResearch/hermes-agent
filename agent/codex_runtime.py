@@ -26,6 +26,11 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _needs_output_backfill(output: Any) -> bool:
+    """Return true only for backend shapes known to lose streamed output."""
+    return output is None or (isinstance(output, list) and not output)
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -251,7 +256,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if not isinstance(_out, list) or not _out:
+                if _needs_output_backfill(_out):
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -337,7 +342,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise
         except TypeError as exc:
             err_text = str(exc)
-            sdk_output_none = "'NoneType' object is not iterable" in err_text
+            sdk_output_none = exc.args == ("'NoneType' object is not iterable",)
             if sdk_output_none and attempt < max_stream_retries:
                 logger.debug(
                     "Responses stream parser hit output=None "
@@ -434,7 +439,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is not None:
                 # Backfill empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if not isinstance(_out, list) or not _out:
+                if _needs_output_backfill(_out):
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(

@@ -34,10 +34,9 @@ class _FakeResponses:
 
 
 class _FakeAgent:
-    _interrupt_requested = False
-    _codex_streamed_text_parts = []
-
     def __init__(self):
+        self._interrupt_requested = False
+        self._codex_streamed_text_parts = []
         self.fallback_calls = []
 
     def _touch_activity(self, *_args, **_kwargs):
@@ -78,3 +77,12 @@ def test_codex_stream_does_not_swallow_unrelated_type_error():
         run_codex_stream(agent, {"model": "gpt-5.5"}, client=client)
 
     assert agent.fallback_calls == []
+
+
+def test_output_backfill_keeps_non_empty_non_list_output():
+    from agent.codex_runtime import _needs_output_backfill
+
+    assert _needs_output_backfill(None)
+    assert _needs_output_backfill([])
+    assert not _needs_output_backfill([SimpleNamespace(type="message")])
+    assert not _needs_output_backfill((SimpleNamespace(type="message"),))

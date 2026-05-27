@@ -84,6 +84,122 @@ def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> b
     return provider_model == str(agent_model or "").strip().lower()
 
 
+def _provider_has_credentials(
+    provider: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Check if a provider has the credentials needed to authenticate.
+    
+    Returns False if the provider requires an API key but none is configured,
+    allowing the fallback chain to skip unconfigured providers up-front instead
+    of discovering each one fails at runtime.
+    
+    Handles:
+      - Built-in providers (checks api_key_env_vars from ProviderDef)
+      - custom:* providers (checks base_url + key_env/api_key in custom_providers)
+      - OAuth providers (skipped here; auth.json resolution happens later)
+    """
+    if not provider:
+        return False
+    
+    provider_lower = provider.strip().lower()
+    
+    # Handle custom:* providers
+    if provider_lower.startswith("custom:"):
+        custom_name = provider_lower[7:]  # strip "custom:"
+        if not custom_providers:
+            return False
+        for cp in custom_providers:
+            cp_name = (cp.get("name") or "").strip().lower()
+            if cp_name != custom_name:
+                continue
+            # Check if base_url is configured and resolvable
+            base_url_template = (cp.get("base_url") or "").strip()
+            if not base_url_template:
+                return False
+            # If template uses ${ENV_VAR}, expand it
+            if "${" in base_url_template:
+                base_url = os.path.expandvars(base_url_template)
+                if base_url == base_url_template or not base_url:
+                    return False  # env var not set
+            # Check for API key (required for OpenAI-compatible endpoints)
+            key_env = (cp.get("key_env") or cp.get("api_key_env") or "").strip()
+            api_key = (cp.get("api_key") or "").strip()
+            if api_key:
+                return True  # explicit key in config
+            if key_env:
+                return bool(os.environ.get(key_env))
+            # No key_env specified — provider might use dummy/skip auth
+            return True
+        return False  # custom:* name not found in custom_providers
+    
+    # Try to look up built-in provider
+    try:
+        from hermes_cli.providers import get_provider
+        pdef = get_provider(provider_lower)
+        if pdef is None:
+            return True  # unknown provider, let downstream handle it
+        # OAuth providers authenticate via auth.json, not env vars
+        if pdef.auth_type.startswith("oauth"):
+            return True  # OAuth resolution happens later
+        # Check all declared env vars; any one set is sufficient
+        for env_var in pdef.api_key_env_vars:
+            if os.environ.get(env_var):
+                return True
+        return len(pdef.api_key_env_vars) == 0  # no vars required (e.g., local)
+    except Exception:
+        return True  # if lookup fails, don't filter (let downstream error)
+
+
+def _provider_credential_hint(
+    provider: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Return a short human-readable hint naming the env var / action needed.
+
+    Used by startup diagnostics to tell the user *how* to fix a skipped
+    fallback entry.  Returns "" when nothing useful can be suggested.
+    """
+    if not provider:
+        return ""
+    provider_lower = provider.strip().lower()
+
+    # custom:* — name the env var the base_url template depends on, or
+    # the key_env / api_key_env if set.
+    if provider_lower.startswith("custom:"):
+        custom_name = provider_lower[7:]
+        for cp in custom_providers or []:
+            if (cp.get("name") or "").strip().lower() != custom_name:
+                continue
+            base_url_template = (cp.get("base_url") or "").strip()
+            if "${" in base_url_template:
+                # Extract the first env-var reference: ${FOO} or ${FOO:-default}
+                import re as _re
+                _m = _re.search(r"\$\{([A-Z_][A-Z0-9_]*)(?::?-[^}]*)?\}", base_url_template)
+                if _m:
+                    return _m.group(1)
+            key_env = (cp.get("key_env") or cp.get("api_key_env") or "").strip()
+            if key_env:
+                return key_env
+            if not base_url_template:
+                return "add base_url to custom_providers"
+            return "add key_env to custom_providers"
+        return f"define '{custom_name}' in custom_providers"
+
+    try:
+        from hermes_cli.providers import get_provider
+        pdef = get_provider(provider_lower)
+        if pdef is None:
+            return ""
+        if pdef.auth_type.startswith("oauth"):
+            return "`hermes auth add " + provider_lower + "`"
+        if pdef.api_key_env_vars:
+            return " or ".join(pdef.api_key_env_vars)
+        return ""
+    except Exception:
+        return ""
+
+
 def _custom_provider_extra_body_for_agent(
     *,
     provider: str,
@@ -885,26 +1001,82 @@ def init_agent(
     # when the primary is exhausted (rate-limit, overload, connection
     # failure).  Supports both legacy single-dict ``fallback_model`` and
     # new list ``fallback_providers`` format.
+    #
+    # Pre-filter: skip any entry whose provider has no configured credentials
+    # (e.g. ``deepseek`` without ``DEEPSEEK_API_KEY``, ``custom:lan-peer``
+    # without ``LAN_PEER_BASE_URL``).  Without this, the runtime fallback
+    # loop discovers each failure one-by-one via 401/402/429 errors, which
+    # adds latency and confuses users with a wall of red error logs.
+    # See: fix/fallback-skip-unconfigured.
     if isinstance(fallback_model, list):
-        agent._fallback_chain = [
+        raw_chain = [
             f for f in fallback_model
             if isinstance(f, dict) and f.get("provider") and f.get("model")
         ]
     elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-        agent._fallback_chain = [fallback_model]
+        raw_chain = [fallback_model]
     else:
-        agent._fallback_chain = []
+        raw_chain = []
+
+    # Resolve custom_providers for credential check (lazy — only if chain
+    # contains custom:* entries).
+    _fb_custom_providers: Optional[List[Dict[str, Any]]] = None
+    if any(
+        isinstance(f, dict) and str(f.get("provider", "")).startswith("custom:")
+        for f in raw_chain
+    ):
+        try:
+            from hermes_cli.config import load_config as _load_fb_cfg
+            _fb_cfg = _load_fb_cfg()
+            _fb_custom_providers = _fb_cfg.get("custom_providers")
+            if not isinstance(_fb_custom_providers, list):
+                _fb_custom_providers = []
+        except Exception:
+            _fb_custom_providers = []
+
+    # Filter: keep only entries whose provider has credentials configured.
+    _fb_skipped = []
+    agent._fallback_chain = []
+    for _fb_entry in raw_chain:
+        _fb_prov = str(_fb_entry.get("provider", ""))
+        if _provider_has_credentials(_fb_prov, _fb_custom_providers):
+            agent._fallback_chain.append(_fb_entry)
+        else:
+            _fb_skipped.append(_fb_prov)
+    if _fb_skipped and not agent.quiet_mode:
+        logger.info(
+            "Fallback chain: skipped %d unconfigured provider(s): %s",
+            len(_fb_skipped), ", ".join(_fb_skipped),
+        )
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
-    if agent._fallback_chain and not agent.quiet_mode:
-        if len(agent._fallback_chain) == 1:
-            fb = agent._fallback_chain[0]
-            print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
-        else:
-            print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
-                  " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
+    if not agent.quiet_mode:
+        if agent._fallback_chain:
+            if len(agent._fallback_chain) == 1:
+                fb = agent._fallback_chain[0]
+                print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
+            else:
+                print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
+                      " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
+        # Visible guidance when providers were skipped due to missing credentials.
+        # The runtime fallback loop would otherwise discover each 401/402 one-by-one,
+        # which is the #1 source of "wall of red errors" confusion. Surface it here
+        # so users know which entries are inert and how to fix it.
+        if _fb_skipped:
+            if not agent._fallback_chain:
+                print(f"⚠️  Fallback chain: all {len(_fb_skipped)} entries skipped (unconfigured)")
+            else:
+                print(f"⚠️  Fallback chain: skipped {len(_fb_skipped)} unconfigured: {', '.join(_fb_skipped)}")
+            # Per-entry hint showing which env var would make it work. This turns
+            # "why is my fallback broken" into "oh, I need DEEPSEEK_API_KEY".
+            for _fb_prov in _fb_skipped:
+                _fb_hint = _provider_credential_hint(_fb_prov, _fb_custom_providers)
+                if _fb_hint:
+                    print(f"   • {_fb_prov} — set {_fb_hint} in ~/.hermes/.env")
+                else:
+                    print(f"   • {_fb_prov} — remove with `hermes fallback remove`")
 
     # Get available tools with filtering
     agent.tools = _ra().get_tool_definitions(

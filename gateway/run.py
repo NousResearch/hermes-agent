@@ -15151,7 +15151,49 @@ class GatewayRunner:
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("memory", "provider"),
     )
+    _HONCHO_CACHE_BUSTING_KEYS: tuple[str, ...] = (
+        "honcho.peer_name",
+        "honcho.ai_peer",
+        "honcho.pin_peer_name",
+        "honcho.runtime_peer_prefix",
+        "honcho.user_peer_aliases",
+    )
+    _HONCHO_CACHE_BUSTING_CONFIG_CACHE: Dict[tuple[str, int], Dict[str, Any]] = {}
+
+    @classmethod
+    def _empty_honcho_cache_busting_config(cls) -> Dict[str, Any]:
+        return {key: None for key in cls._HONCHO_CACHE_BUSTING_KEYS}
+
+    @classmethod
+    def _extract_honcho_cache_busting_config(cls) -> Dict[str, Any]:
+        """Read honcho.json-backed cache keys, memoized by config mtime."""
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+
+            config_path = resolve_config_path()
+            cache_key = None
+            if config_path.exists():
+                cache_key = (str(config_path), config_path.stat().st_mtime_ns)
+                cached = cls._HONCHO_CACHE_BUSTING_CONFIG_CACHE.get(cache_key)
+                if cached is not None:
+                    return dict(cached)
+
+            hcfg = HonchoClientConfig.from_global_config(config_path=config_path)
+            aliases = hcfg.user_peer_aliases or {}
+            out = {
+                "honcho.peer_name": hcfg.peer_name,
+                "honcho.ai_peer": hcfg.ai_peer,
+                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
+                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
+                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
+            }
+            if cache_key is not None:
+                cls._HONCHO_CACHE_BUSTING_CONFIG_CACHE[cache_key] = dict(out)
+            return out
+        except Exception:
+            return cls._empty_honcho_cache_busting_config()
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
@@ -15182,27 +15224,20 @@ class GatewayRunner:
         except Exception:
             out["tools.registry_generation"] = None
 
+        memory_cfg = cfg.get("memory")
+        memory_provider = memory_cfg.get("provider") if isinstance(memory_cfg, dict) else None
+        if str(memory_provider or "").lower() != "honcho":
+            out.update(cls._empty_honcho_cache_busting_config())
+            return out
+
         # Honcho identity-mapping keys live in honcho.json, not user_config.
         # HonchoSessionManager freezes the resolved peer_name / ai_peer /
         # pin / aliases / prefix at construction; without busting here,
         # mid-flight honcho.json edits go unread until the next unrelated
-        # cache eviction.
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig
-
-            hcfg = HonchoClientConfig.from_global_config()
-            out["honcho.peer_name"] = hcfg.peer_name
-            out["honcho.ai_peer"] = hcfg.ai_peer
-            out["honcho.pin_peer_name"] = bool(hcfg.pin_peer_name)
-            out["honcho.runtime_peer_prefix"] = hcfg.runtime_peer_prefix or ""
-            aliases = hcfg.user_peer_aliases or {}
-            out["honcho.user_peer_aliases"] = sorted(aliases.items()) if isinstance(aliases, dict) else []
-        except Exception:
-            out["honcho.peer_name"] = None
-            out["honcho.ai_peer"] = None
-            out["honcho.pin_peer_name"] = None
-            out["honcho.runtime_peer_prefix"] = None
-            out["honcho.user_peer_aliases"] = None
+        # cache eviction.  Only read that file when Honcho is the active
+        # memory provider; otherwise this path runs for every gateway message
+        # even though the parsed values cannot affect the cached agent.
+        out.update(cls._extract_honcho_cache_busting_config())
 
         return out
 

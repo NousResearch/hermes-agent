@@ -9,7 +9,11 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
+import hashlib
+import json
+import os
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -275,6 +279,66 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config({})
 
         assert out["tools.registry_generation"] == 12345
+
+    def test_non_honcho_provider_does_not_read_honcho_config(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        GatewayRunner._HONCHO_CACHE_BUSTING_CONFIG_CACHE.clear()
+        monkeypatch.setattr(
+            HonchoClientConfig,
+            "from_global_config",
+            classmethod(lambda cls, **kwargs: pytest.fail("Honcho config should not be loaded")),
+        )
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"memory": {"provider": "built_in"}}
+        )
+
+        assert out["memory.provider"] == "built_in"
+        for key in GatewayRunner._HONCHO_CACHE_BUSTING_KEYS:
+            assert out[key] is None
+
+    def test_honcho_cache_busting_config_is_memoized_by_mtime(self, monkeypatch, tmp_path):
+        from gateway.run import GatewayRunner
+        from plugins.memory.honcho import client as honcho_client
+
+        GatewayRunner._HONCHO_CACHE_BUSTING_CONFIG_CACHE.clear()
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text("{}", encoding="utf-8")
+        calls = []
+
+        def fake_from_global_config(cls, **kwargs):
+            calls.append(kwargs.get("config_path"))
+            return SimpleNamespace(
+                peer_name=f"user-{len(calls)}",
+                ai_peer="assistant",
+                pin_peer_name=True,
+                runtime_peer_prefix="rt",
+                user_peer_aliases={"u": "User"},
+            )
+
+        monkeypatch.setattr(honcho_client, "resolve_config_path", lambda: config_path)
+        monkeypatch.setattr(
+            honcho_client.HonchoClientConfig,
+            "from_global_config",
+            classmethod(fake_from_global_config),
+        )
+
+        cfg = {"memory": {"provider": "honcho"}}
+        first = GatewayRunner._extract_cache_busting_config(cfg)
+        second = GatewayRunner._extract_cache_busting_config(cfg)
+
+        assert first["honcho.peer_name"] == "user-1"
+        assert second["honcho.peer_name"] == "user-1"
+        assert calls == [config_path]
+
+        stat = config_path.stat()
+        os.utime(config_path, ns=(stat.st_atime_ns + 1, stat.st_mtime_ns + 1))
+        third = GatewayRunner._extract_cache_busting_config(cfg)
+
+        assert third["honcho.peer_name"] == "user-2"
+        assert calls == [config_path, config_path]
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the

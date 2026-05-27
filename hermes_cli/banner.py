@@ -151,8 +151,57 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
-def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+def _git_current_branch(repo_dir: Path) -> Optional[str]:
+    """Return the current branch name, or None when detached/unknown."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    branch = (result.stdout or "").strip()
+    if not branch or branch == "HEAD":
+        return None
+    return branch
+
+
+def _git_ref_exists(repo_dir: Path, rev: str) -> bool:
+    """Return whether a git revision exists locally."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", rev],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _resolve_local_git_compare_ref(repo_dir: Path) -> Optional[str]:
+    """Pick the remote ref that update-related banner state should track."""
+    branch = _git_current_branch(repo_dir)
+    if branch and branch != "main":
+        branch_ref = f"origin/{branch}"
+        if _git_ref_exists(repo_dir, branch_ref):
+            return branch_ref
+
+    default_ref = "origin/main"
+    if _git_ref_exists(repo_dir, default_ref):
+        return default_ref
+    return None
+
+
+def _check_via_local_git(repo_dir: Path, compare_ref: Optional[str] = None) -> Optional[int]:
+    """Count commits behind the active remote ref in a local checkout."""
     try:
         subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
@@ -162,9 +211,13 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
 
+    compare_ref = compare_ref or _resolve_local_git_compare_ref(repo_dir)
+    if not compare_ref:
+        return None
+
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{compare_ref}"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -222,7 +275,8 @@ def check_for_updates() -> Optional[int]:
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
     it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind ``origin/main``.
+    git checkout and count commits behind the current branch's remote ref,
+    falling back to ``origin/main`` when needed.
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
@@ -231,8 +285,15 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    repo_dir = None
+    compare_ref = None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    if not embedded_rev:
+        repo_dir = _resolve_repo_dir()
+        if repo_dir is not None:
+            compare_ref = _resolve_local_git_compare_ref(repo_dir)
+
+    # Read cache — invalidate if the embedded rev or tracked compare ref changed.
     now = time.time()
     try:
         if cache_file.exists():
@@ -240,6 +301,7 @@ def check_for_updates() -> Optional[int]:
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
+                and cached.get("compare_ref") == compare_ref
             ):
                 return cached.get("behind")
     except Exception:
@@ -248,19 +310,22 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $HERMES_HOME/hermes-agent/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
-        repo_dir = Path(__file__).parent.parent.resolve()
-        if not (repo_dir / ".git").exists():
-            repo_dir = hermes_home / "hermes-agent"
-        if not (repo_dir / ".git").exists():
+        if repo_dir is None:
             behind = check_via_pypi()
         else:
-            behind = _check_via_local_git(repo_dir)
+            behind = _check_via_local_git(repo_dir, compare_ref=compare_ref)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "ts": now,
+                    "behind": behind,
+                    "rev": embedded_rev,
+                    "compare_ref": compare_ref,
+                }
+            )
+        )
     except Exception:
         pass
 
@@ -305,7 +370,11 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     if repo_dir is None:
         return None
 
-    upstream = _git_short_hash(repo_dir, "origin/main")
+    compare_ref = _resolve_local_git_compare_ref(repo_dir)
+    if not compare_ref:
+        return None
+
+    upstream = _git_short_hash(repo_dir, compare_ref)
     local = _git_short_hash(repo_dir, "HEAD")
     if not upstream or not local:
         return None
@@ -313,7 +382,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     ahead = 0
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            ["git", "rev-list", "--count", f"{compare_ref}..HEAD"],
             capture_output=True,
             text=True,
             timeout=5,

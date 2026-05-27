@@ -123,35 +123,27 @@ def check_system_tools():
     section("System Tools")
     ok = True
 
-    # Opus codec
+    # Opus codec — delegate to the shared loader so the doctor script
+    # and the runtime adapter see the same resolution order (#30723).
     if _discord_available:
         try:
             import discord
-            opus_loaded = discord.opus.is_loaded()
-            if not opus_loaded:
-                import ctypes.util
-                opus_path = ctypes.util.find_library("opus")
-                if not opus_path:
-                    # Platform-specific fallback paths
-                    candidates = [
-                        "/opt/homebrew/lib/libopus.dylib",   # macOS Apple Silicon
-                        "/usr/local/lib/libopus.dylib",      # macOS Intel
-                        "/usr/lib/x86_64-linux-gnu/libopus.so.0",  # Debian/Ubuntu x86
-                        "/usr/lib/aarch64-linux-gnu/libopus.so.0", # Debian/Ubuntu ARM
-                        "/usr/lib/libopus.so",               # Arch Linux
-                        "/usr/lib64/libopus.so",             # RHEL/Fedora
-                    ]
-                    for p in candidates:
-                        if os.path.isfile(p):
-                            opus_path = p
-                            break
-                if opus_path:
-                    discord.opus.load_opus(opus_path)
-                    opus_loaded = discord.opus.is_loaded()
+            from plugins.platforms.discord.opus_loader import (
+                OPUS_LIBRARY_ENV_VAR,
+                ensure_discord_opus_loaded,
+            )
+
+            override_path = os.getenv(OPUS_LIBRARY_ENV_VAR)
+            opus_loaded = ensure_discord_opus_loaded(discord_module=discord)
             if opus_loaded:
-                check("Opus codec", True)
+                detail = f"loaded from {override_path}" if override_path else None
+                check("Opus codec", True, detail or "")
             else:
-                check("Opus codec", False, "brew install opus / apt install libopus0")
+                hint = (
+                    f"set {OPUS_LIBRARY_ENV_VAR}=/path/to/libopus.so "
+                    "(NixOS) or brew install opus / apt install libopus0"
+                )
+                check("Opus codec", False, hint)
                 ok = False
         except Exception as e:
             check("Opus codec", False, str(e))

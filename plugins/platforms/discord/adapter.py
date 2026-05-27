@@ -601,29 +601,16 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
             return False
 
-        # Load opus codec for voice channel support
-        if not discord.opus.is_loaded():
-            import ctypes.util
-            opus_path = ctypes.util.find_library("opus")
-            # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
-            # so fall back to known Homebrew paths if needed.
-            if not opus_path:
-                _homebrew_paths = (
-                    "/opt/homebrew/lib/libopus.dylib",  # Apple Silicon
-                    "/usr/local/lib/libopus.dylib",     # Intel Mac
-                )
-                if sys.platform == "darwin":
-                    for _hp in _homebrew_paths:
-                        if os.path.isfile(_hp):
-                            opus_path = _hp
-                            break
-            if opus_path:
-                try:
-                    discord.opus.load_opus(opus_path)
-                except Exception:
-                    logger.warning("Opus codec found at %s but failed to load", opus_path)
-            if not discord.opus.is_loaded():
-                logger.warning("Opus codec not found — voice channel playback disabled")
+        # Load opus codec for voice channel support. The resolver lives
+        # in plugins.platforms.discord.opus_loader and honours
+        # DISCORD_OPUS_LIBRARY first (NixOS / Nix-store layouts where
+        # ctypes.util.find_library returns None — issue #30723), then
+        # falls back through ctypes discovery and per-platform candidate
+        # paths. Returning False is non-fatal: text features still work,
+        # only voice playback is disabled and the warning explains the
+        # exact fix.
+        from plugins.platforms.discord.opus_loader import ensure_discord_opus_loaded
+        ensure_discord_opus_loaded(discord_module=discord)
 
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)

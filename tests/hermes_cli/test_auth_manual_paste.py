@@ -520,6 +520,77 @@ def test_xai_loopback_login_timeout_noninteractive_reraises(monkeypatch):
     assert exc.value.code == "xai_callback_timeout"
 
 
+def test_xai_loopback_login_timeout_empty_paste_reraises(monkeypatch):
+    """Empty paste in the timeout fallback must re-raise the original
+    timeout — not fall through to validation where an all-None dict
+    would produce a misleading state-mismatch or missing-code error."""
+    monkeypatch.setattr(
+        auth_mod, "_xai_oauth_discovery",
+        lambda *_a, **_k: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+
+    class _StubServer:
+        def shutdown(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    class _StubThread:
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_start_callback_server",
+        lambda: (
+            _StubServer(),
+            _StubThread(),
+            {
+                "code": None,
+                "state": None,
+                "error": None,
+                "error_description": None,
+            },
+            "http://127.0.0.1:56121/callback",
+        ),
+    )
+
+    captured: dict = {"prompt_calls": 0}
+
+    def _raise_timeout(*_a, **_k):
+        raise auth_mod.AuthError(
+            "xAI authorization timed out waiting for the local callback.",
+            provider="xai-oauth",
+            code="xai_callback_timeout",
+        )
+
+    monkeypatch.setattr(auth_mod, "_xai_wait_for_callback", _raise_timeout)
+
+    def _fake_empty_paste(_redirect_uri):
+        captured["prompt_calls"] += 1
+        return {
+            "code": None,
+            "state": None,
+            "error": None,
+            "error_description": None,
+        }
+
+    monkeypatch.setattr(auth_mod, "_prompt_manual_callback_paste", _fake_empty_paste)
+    monkeypatch.setattr(
+        auth_mod.sys, "stdin", type("StubStdin", (), {"isatty": lambda self: True})()
+    )
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with pytest.raises(auth_mod.AuthError) as exc:
+            auth_mod._xai_oauth_loopback_login(manual_paste=False)
+    assert exc.value.code == "xai_callback_timeout"
+    assert captured["prompt_calls"] == 1
+
+
 # ---------------------------------------------------------------------------
 # _print_loopback_ssh_hint — now also mentions --manual-paste
 # ---------------------------------------------------------------------------

@@ -3371,6 +3371,23 @@ def _refresh_codex_auth_tokens(
     return updated_tokens
 
 
+def _valid_codex_token_pair(tokens: Any) -> Optional[Dict[str, str]]:
+    if not isinstance(tokens, dict):
+        return None
+    access_token = tokens.get("access_token") or tokens.get("access")
+    refresh_token = tokens.get("refresh_token") or tokens.get("refresh")
+    if not isinstance(access_token, str) or not access_token.strip():
+        return None
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        return None
+    if _codex_access_token_is_expiring(access_token, 0):
+        return None
+    return {
+        "access_token": access_token.strip(),
+        "refresh_token": refresh_token.strip(),
+    }
+
+
 def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     """Try to read tokens from ~/.codex/auth.json (Codex CLI shared file).
     
@@ -3385,24 +3402,237 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
     try:
         payload = json.loads(auth_path.read_text())
-        tokens = payload.get("tokens")
-        if not isinstance(tokens, dict):
+        tokens = _valid_codex_token_pair(payload.get("tokens"))
+        if not tokens:
+            logger.debug("Codex CLI tokens at %s are missing or expired — skipping import.", auth_path)
             return None
-        access_token = tokens.get("access_token")
-        refresh_token = tokens.get("refresh_token")
-        if not access_token or not refresh_token:
-            return None
-        # Reject expired tokens — importing stale tokens from ~/.codex/
-        # that can't be refreshed leaves the user stuck with "Login successful!"
-        # but no working credentials.
-        if _codex_access_token_is_expiring(access_token, 0):
-            logger.debug(
-                "Codex CLI tokens at %s are expired — skipping import.", auth_path,
-            )
-            return None
-        return dict(tokens)
+        return tokens
     except Exception:
         return None
+
+
+_OPENCLAW_OAUTH_PROFILE_SECRET_REF_SOURCE = "openclaw-credentials"
+_OPENCLAW_OAUTH_PROFILE_SECRET_DIRNAME = "auth-profiles"
+_OPENCLAW_OAUTH_PROFILE_SECRET_KEY_ENV = "OPENCLAW_AUTH_PROFILE_SECRET_KEY"
+_OPENCLAW_OAUTH_PROFILE_SECRET_KEYCHAIN_SERVICE = "OpenClaw Auth Profile Secrets"
+_OPENCLAW_OAUTH_PROFILE_SECRET_KEYCHAIN_ACCOUNT = "oauth-profile-master-key"
+_OPENCLAW_OAUTH_PROFILE_SECRET_KEY_FILE_NAME = "auth-profile-secret-key"
+
+
+def _openclaw_home() -> Path:
+    configured = os.getenv("OPENCLAW_HOME", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".openclaw"
+
+
+def _openclaw_auth_profiles_path(openclaw_home: Optional[Path] = None) -> Path:
+    root = openclaw_home or _openclaw_home()
+    return root / "agents" / "main" / "agent" / "auth-profiles.json"
+
+
+def _openclaw_oauth_secret_path(ref: Dict[str, Any], openclaw_home: Optional[Path] = None) -> Path:
+    root = openclaw_home or _openclaw_home()
+    return root / "credentials" / _OPENCLAW_OAUTH_PROFILE_SECRET_DIRNAME / f"{ref.get('id')}.json"
+
+
+def _b64url_decode(value: str) -> bytes:
+    raw = value.encode("ascii")
+    return base64.urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+
+
+def _read_openclaw_mac_oauth_secret_key() -> Optional[str]:
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                _OPENCLAW_OAUTH_PROFILE_SECRET_KEYCHAIN_SERVICE,
+                "-a",
+                _OPENCLAW_OAUTH_PROFILE_SECRET_KEYCHAIN_ACCOUNT,
+                "-w",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        return None
+    return None
+
+
+def _openclaw_fallback_oauth_secret_key_file_candidates() -> List[Path]:
+    home = Path.home()
+    if sys.platform == "win32":
+        base = Path(os.getenv("APPDATA", str(home / "AppData" / "Roaming")))
+        return [base / "OpenClaw" / _OPENCLAW_OAUTH_PROFILE_SECRET_KEY_FILE_NAME]
+    if sys.platform == "darwin":
+        return [
+            home / "Library" / "Application Support" / "OpenClaw" / _OPENCLAW_OAUTH_PROFILE_SECRET_KEY_FILE_NAME,
+            home / ".openclaw-auth-profile-secrets" / _OPENCLAW_OAUTH_PROFILE_SECRET_KEY_FILE_NAME,
+        ]
+    base = Path(os.getenv("XDG_CONFIG_HOME", str(home / ".config")))
+    return [
+        base / "openclaw" / _OPENCLAW_OAUTH_PROFILE_SECRET_KEY_FILE_NAME,
+        home / ".openclaw-auth-profile-secrets" / _OPENCLAW_OAUTH_PROFILE_SECRET_KEY_FILE_NAME,
+    ]
+
+
+def _read_openclaw_oauth_secret_key_seed() -> Optional[str]:
+    env_key = os.getenv(_OPENCLAW_OAUTH_PROFILE_SECRET_KEY_ENV, "").strip()
+    if env_key:
+        return env_key
+    keychain_key = _read_openclaw_mac_oauth_secret_key()
+    if keychain_key:
+        return keychain_key
+    for candidate in _openclaw_fallback_oauth_secret_key_file_candidates():
+        try:
+            if candidate.is_file():
+                value = candidate.read_text(encoding="utf-8").strip()
+                if value:
+                    return value
+        except Exception:
+            continue
+    return None
+
+
+def _decrypt_openclaw_oauth_profile_secret(
+    encrypted: Dict[str, Any],
+    *,
+    ref: Dict[str, Any],
+    profile_id: str,
+    provider: str,
+) -> Optional[Dict[str, str]]:
+    if not isinstance(encrypted, dict) or encrypted.get("algorithm") != "aes-256-gcm":
+        return None
+    key_seed = _read_openclaw_oauth_secret_key_seed()
+    if not key_seed:
+        return None
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except Exception:
+        logger.debug("cryptography is unavailable; cannot decrypt OpenClaw OAuth profile secret")
+        return None
+    try:
+        key = hashlib.sha256(f"openclaw:auth-profile-oauth:{key_seed}".encode("utf-8")).digest()
+        aad = f"{ref.get('id')}\0{profile_id}\0{provider}".encode("utf-8")
+        nonce = _b64url_decode(str(encrypted.get("iv", "")))
+        ciphertext = _b64url_decode(str(encrypted.get("ciphertext", "")))
+        tag = _b64url_decode(str(encrypted.get("tag", "")))
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext + tag, aad)
+        material = json.loads(plaintext.decode("utf-8"))
+        return _valid_codex_token_pair(material)
+    except Exception:
+        return None
+
+
+def _read_openclaw_oauth_profile_secret(
+    credential: Dict[str, Any],
+    *,
+    profile_id: str,
+    openclaw_home: Path,
+) -> Optional[Dict[str, str]]:
+    ref = credential.get("oauthRef")
+    if not isinstance(ref, dict):
+        return None
+    if ref.get("source") != _OPENCLAW_OAUTH_PROFILE_SECRET_REF_SOURCE or ref.get("provider") != "openai-codex":
+        return None
+    ref_id = ref.get("id")
+    if not isinstance(ref_id, str) or not ref_id:
+        return None
+    secret_path = _openclaw_oauth_secret_path(ref, openclaw_home)
+    if not secret_path.is_file():
+        return None
+    try:
+        payload = json.loads(secret_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    # Older/dev OpenClaw stores may contain plaintext material; current stores
+    # encrypt openai-codex OAuth material with AES-GCM.
+    tokens = _valid_codex_token_pair(payload)
+    if tokens:
+        return tokens
+    encrypted = payload.get("encrypted")
+    if isinstance(encrypted, dict):
+        provider = str(payload.get("provider") or credential.get("provider") or "openai-codex")
+        payload_profile_id = str(payload.get("profileId") or profile_id)
+        return _decrypt_openclaw_oauth_profile_secret(
+            encrypted,
+            ref=ref,
+            profile_id=payload_profile_id,
+            provider=provider,
+        )
+    return None
+
+
+def _import_openclaw_codex_tokens() -> Optional[Dict[str, str]]:
+    """Import a usable OpenAI Codex OAuth token pair from OpenClaw auth profiles.
+
+    OpenClaw may keep the access/refresh material inline in auth-profiles.json
+    or in ~/.openclaw/credentials/auth-profiles/<id>.json behind an oauthRef.
+    This function only reads OpenClaw files; it never mutates them.
+    """
+    openclaw_home = _openclaw_home()
+    profiles_path = _openclaw_auth_profiles_path(openclaw_home)
+    if not profiles_path.is_file():
+        return None
+    try:
+        payload = json.loads(profiles_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    profiles = payload.get("profiles") if isinstance(payload, dict) else None
+    if not isinstance(profiles, dict):
+        profiles = payload if isinstance(payload, dict) else {}
+    candidates: List[Tuple[str, Dict[str, Any]]] = []
+    last_good = payload.get("lastGood") if isinstance(payload, dict) else None
+    if isinstance(last_good, dict):
+        profile_id = last_good.get("openai-codex")
+        if isinstance(profile_id, str) and isinstance(profiles.get(profile_id), dict):
+            candidates.append((profile_id, profiles[profile_id]))
+    for profile_id, credential in profiles.items():
+        if isinstance(profile_id, str) and isinstance(credential, dict):
+            candidates.append((profile_id, credential))
+    seen: set[str] = set()
+    for profile_id, credential in candidates:
+        if profile_id in seen:
+            continue
+        seen.add(profile_id)
+        if credential.get("type") != "oauth" or credential.get("provider") != "openai-codex":
+            continue
+        tokens = _valid_codex_token_pair(credential)
+        if tokens:
+            return tokens
+        tokens = _read_openclaw_oauth_profile_secret(
+            credential,
+            profile_id=profile_id,
+            openclaw_home=openclaw_home,
+        )
+        if tokens:
+            return tokens
+    return None
+
+
+def _recover_codex_tokens_from_external_sources() -> Optional[Dict[str, str]]:
+    for importer in (_import_codex_cli_tokens, _import_openclaw_codex_tokens):
+        try:
+            tokens = importer()
+        except Exception:
+            logger.debug("Codex external auth recovery source failed", exc_info=True)
+            tokens = None
+        if tokens:
+            return tokens
+    return None
+
+
+def _save_recovered_codex_tokens(tokens: Dict[str, str]) -> Dict[str, str]:
+    _save_codex_tokens(tokens)
+    return dict(tokens)
 
 
 def resolve_codex_runtime_credentials(
@@ -3411,8 +3641,26 @@ def resolve_codex_runtime_credentials(
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
-    """Resolve runtime credentials from Hermes's own Codex token store."""
-    data = _read_codex_tokens()
+    """Resolve runtime credentials from Hermes's Codex token store.
+
+    If Hermes's stored Codex OAuth state is invalid or its refresh token has
+    been consumed elsewhere, attempt a read-only recovery from external Codex
+    stores (Codex CLI first, then OpenClaw auth profiles) and persist the
+    recovered token pair back into Hermes's auth store.
+    """
+    recovered_from_external = False
+    try:
+        data = _read_codex_tokens()
+    except AuthError as exc:
+        if not exc.relogin_required:
+            raise
+        recovered = _recover_codex_tokens_from_external_sources()
+        if not recovered:
+            raise
+        tokens = _save_recovered_codex_tokens(recovered)
+        data = {"tokens": tokens, "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+        recovered_from_external = True
+
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
@@ -3432,7 +3680,17 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                try:
+                    tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                except AuthError as exc:
+                    if not exc.relogin_required:
+                        raise
+                    recovered = _recover_codex_tokens_from_external_sources()
+                    if not recovered:
+                        raise
+                    tokens = _save_recovered_codex_tokens(recovered)
+                    recovered_from_external = True
+                    data = {"tokens": tokens, "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
                 access_token = str(tokens.get("access_token", "") or "").strip()
 
     base_url = (
@@ -3444,7 +3702,7 @@ def resolve_codex_runtime_credentials(
         "provider": "openai-codex",
         "base_url": base_url,
         "api_key": access_token,
-        "source": "hermes-auth-store",
+        "source": "external-auth-recovery" if recovered_from_external else "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }

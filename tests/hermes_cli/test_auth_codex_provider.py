@@ -79,11 +79,157 @@ def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkey
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nonexistent-codex"))
+    monkeypatch.setenv("OPENCLAW_HOME", str(tmp_path / "nonexistent-openclaw"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
     assert exc.value.code == "codex_auth_missing_access_token"
     assert exc.value.relogin_required is True
+
+
+def test_resolve_codex_runtime_credentials_recovers_missing_access_token_from_codex_cli(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
+    _setup_hermes_auth(hermes_home, access_token="", refresh_token="stale-refresh")
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {"access_token": "cli-access", "refresh_token": "cli-refresh"},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("OPENCLAW_HOME", str(tmp_path / "nonexistent-openclaw"))
+
+    creds = resolve_codex_runtime_credentials()
+
+    assert creds["api_key"] == "cli-access"
+    saved = _read_codex_tokens()["tokens"]
+    assert saved["access_token"] == "cli-access"
+    assert saved["refresh_token"] == "cli-refresh"
+
+
+def test_resolve_codex_runtime_credentials_recovers_refresh_failure_from_codex_cli(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
+    expiring_token = _jwt_with_exp(int(time.time()) - 10)
+    _setup_hermes_auth(hermes_home, access_token=expiring_token, refresh_token="consumed-refresh")
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {"access_token": "cli-access", "refresh_token": "cli-refresh"},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("OPENCLAW_HOME", str(tmp_path / "nonexistent-openclaw"))
+
+    def _fake_refresh(tokens, timeout_seconds):
+        raise AuthError(
+            "Codex refresh token was already consumed by another client",
+            provider="openai-codex",
+            code="refresh_token_reused",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _fake_refresh)
+
+    creds = resolve_codex_runtime_credentials()
+
+    assert creds["api_key"] == "cli-access"
+    saved = _read_codex_tokens()["tokens"]
+    assert saved["refresh_token"] == "cli-refresh"
+
+
+def test_resolve_codex_runtime_credentials_recovers_missing_access_token_from_openclaw_inline_profile(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    openclaw_home = tmp_path / "openclaw"
+    profile_dir = openclaw_home / "agents" / "main" / "agent"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    _setup_hermes_auth(hermes_home, access_token="", refresh_token="stale-refresh")
+    (profile_dir / "auth-profiles.json").write_text(json.dumps({
+        "version": 1,
+        "profiles": {
+            "openai-codex:darius.vk@gmail.com": {
+                "type": "oauth",
+                "provider": "openai-codex",
+                "access": "openclaw-access",
+                "refresh": "openclaw-refresh",
+            }
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nonexistent-codex"))
+    monkeypatch.setenv("OPENCLAW_HOME", str(openclaw_home))
+
+    creds = resolve_codex_runtime_credentials()
+
+    assert creds["api_key"] == "openclaw-access"
+    saved = _read_codex_tokens()["tokens"]
+    assert saved["access_token"] == "openclaw-access"
+    assert saved["refresh_token"] == "openclaw-refresh"
+
+
+def test_resolve_codex_runtime_credentials_recovers_from_openclaw_encrypted_oauth_ref(tmp_path, monkeypatch):
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import hashlib
+    import os
+
+    hermes_home = tmp_path / "hermes"
+    openclaw_home = tmp_path / "openclaw"
+    profile_dir = openclaw_home / "agents" / "main" / "agent"
+    secret_dir = openclaw_home / "credentials" / "auth-profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    secret_dir.mkdir(parents=True, exist_ok=True)
+    _setup_hermes_auth(hermes_home, access_token="", refresh_token="stale-refresh")
+
+    profile_id = "openai-codex:darius.vk@gmail.com"
+    ref_id = "a" * 32
+    key_seed = "test-openclaw-secret-seed"
+    key = hashlib.sha256(f"openclaw:auth-profile-oauth:{key_seed}".encode("utf-8")).digest()
+    nonce = os.urandom(12)
+    aad = f"{ref_id}\0{profile_id}\0openai-codex".encode("utf-8")
+    plaintext = json.dumps({"access": "encrypted-access", "refresh": "encrypted-refresh"}).encode("utf-8")
+    encrypted_blob = AESGCM(key).encrypt(nonce, plaintext, aad)
+    ciphertext, tag = encrypted_blob[:-16], encrypted_blob[-16:]
+
+    def _b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+    (profile_dir / "auth-profiles.json").write_text(json.dumps({
+        "version": 1,
+        "lastGood": {"openai-codex": profile_id},
+        "profiles": {
+            profile_id: {
+                "type": "oauth",
+                "provider": "openai-codex",
+                "oauthRef": {
+                    "source": "openclaw-credentials",
+                    "provider": "openai-codex",
+                    "id": ref_id,
+                },
+            }
+        },
+    }))
+    (secret_dir / f"{ref_id}.json").write_text(json.dumps({
+        "version": 1,
+        "profileId": profile_id,
+        "provider": "openai-codex",
+        "encrypted": {
+            "algorithm": "aes-256-gcm",
+            "iv": _b64url(nonce),
+            "tag": _b64url(tag),
+            "ciphertext": _b64url(ciphertext),
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nonexistent-codex"))
+    monkeypatch.setenv("OPENCLAW_HOME", str(openclaw_home))
+    monkeypatch.setenv("OPENCLAW_AUTH_PROFILE_SECRET_KEY", key_seed)
+
+    creds = resolve_codex_runtime_credentials()
+
+    assert creds["api_key"] == "encrypted-access"
+    saved = _read_codex_tokens()["tokens"]
+    assert saved["access_token"] == "encrypted-access"
+    assert saved["refresh_token"] == "encrypted-refresh"
 
 
 def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, monkeypatch):

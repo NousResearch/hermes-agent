@@ -73,4 +73,151 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
+
+    update_subparsers = update_parser.add_subparsers(dest="update_subcommand")
+    update_auto_parser = update_subparsers.add_parser(
+        "auto",
+        help="Auto-update run-now and scheduler commands",
+        description=(
+            "Auto-update commands. run-now reuses the existing update flow. "
+            "enable installs a user-level schedule (launchd on macOS, systemd "
+            "user timer on Linux when available). These commands do not install "
+            "WebUI hooks, rollback, or a Hermes daemon."
+        ),
+    )
+    update_auto_subparsers = update_auto_parser.add_subparsers(
+        dest="auto_subcommand",
+        required=True,
+    )
+
+    update_auto_enable = update_auto_subparsers.add_parser(
+        "enable",
+        help="Enable scheduled auto-update",
+        description=(
+            "Enable a user-level schedule. The update time runs `hermes update "
+            "auto run-now`; optional plan times run a check-only notice so the "
+            "same auto-update manager can announce an upcoming update before "
+            "applying it."
+        ),
+    )
+    update_auto_enable.add_argument(
+        "--time",
+        required=True,
+        metavar="HH:MM",
+        help="Local 24-hour time to run the scheduled update, for example 04:00.",
+    )
+    update_auto_enable.add_argument(
+        "--plan-time",
+        action="append",
+        default=[],
+        metavar="HH:MM",
+        help=(
+            "Optional local 24-hour time to run a check-only planned-update "
+            "notice. Can be passed more than once."
+        ),
+    )
+    update_auto_enable.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_enable"],
+        ).cmd_auto_enable(args)
+    )
+
+    update_auto_disable = update_auto_subparsers.add_parser(
+        "disable",
+        help="Disable scheduled auto-update",
+        description=(
+            "Disable and remove only the Hermes auto-update user-level schedule. "
+            "This does not remove unrelated launchd, systemd, or cron jobs."
+        ),
+    )
+    update_auto_disable.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_disable"],
+        ).cmd_auto_disable(args)
+    )
+
+    update_auto_status = update_auto_subparsers.add_parser(
+        "status",
+        help="Show auto-update scheduler and last-run status",
+        description=(
+            "Show the auto-update status file, including the last run, planned "
+            "notice, version fields, backup path, error, scheduler type/path, "
+            "and log path."
+        ),
+    )
+    update_auto_status.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_status"],
+        ).cmd_auto_status(args)
+    )
+
+    update_auto_plan = update_auto_subparsers.add_parser(
+        "plan",
+        help="Check for updates and print a concise planned-update notice",
+        description=(
+            "Run the check-only half of auto-update. If an update is available, "
+            "print a concise notice suitable for cron/launchd/systemd delivery; "
+            "no files are changed and the real update is left for the scheduled "
+            "run-now time."
+        ),
+    )
+    update_auto_plan.add_argument(
+        "--branch",
+        default=None,
+        metavar="NAME",
+        help="Check this branch instead of the default (main).",
+    )
+    update_auto_plan.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_plan"],
+        ).cmd_auto_plan(args)
+    )
+
+    update_auto_run_scheduled = update_auto_subparsers.add_parser(
+        "run-scheduled",
+        help="Run the scheduled auto-update dispatcher",
+        description=(
+            "Internal scheduler entrypoint. Dispatches to plan or run-now based "
+            "on the configured update time and plan-time values."
+        ),
+    )
+    update_auto_run_scheduled.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_run_scheduled"],
+        ).cmd_auto_run_scheduled(args)
+    )
+
+    update_auto_run_now = update_auto_subparsers.add_parser(
+        "run-now",
+        help="Run one manual non-agentic auto-update pass now",
+        description=(
+            "Run one manual non-agentic update pass now. This reuses the existing "
+            "`hermes update` flow, requires a pre-update backup before applying "
+            "changes, uses no LLM/model calls, and writes status/log files."
+        ),
+    )
+    update_auto_run_now.add_argument(
+        "--branch",
+        default=None,
+        metavar="NAME",
+        help="Update against this branch instead of the default (main).",
+    )
+    update_auto_run_now.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Pass through the existing Windows concurrent-process override.",
+    )
+    update_auto_run_now.set_defaults(
+        func=lambda args: __import__(
+            "hermes_cli.update_auto",
+            fromlist=["cmd_auto_run_now"],
+        ).cmd_auto_run_now(args)
+    )
+
     update_parser.set_defaults(func=cmd_update)

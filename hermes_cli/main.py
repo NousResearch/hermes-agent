@@ -9173,36 +9173,53 @@ def _resolve_update_branch(args) -> str:
     return (getattr(args, "branch", None) or "main").strip() or "main"
 
 
-def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
-    """Implement ``hermes update --check``: fetch and report without installing.
+def _get_update_check_result(
+    branch: str = "main",
+    *,
+    branch_explicit: bool = False,
+    announce: bool = False,
+) -> dict:
+    """Return structured data for the existing ``hermes update --check`` path.
+
+    ``hermes update auto run-now`` needs the same fetch/compare behaviour as the
+    human-facing preview command without scraping stdout. Keep the shared logic
+    here so the preview and unattended auto-update path cannot drift.
 
     ``branch`` selects which branch the check compares against. Default is
     "main"; callers can pass another branch to ask "are there new commits
     on origin/<branch>?" without performing the update.
 
     ``branch_explicit`` is True iff the caller passed --branch on the CLI.
-    Installs that can't honor non-default branches (e.g. Docker) surface a
-    one-line notice instead of silently dropping the flag.
     """
     from hermes_cli.config import detect_install_method, recommended_update_command_for_method
     method = detect_install_method(PROJECT_ROOT)
     if method == "docker":
-        # Docker can't ``git fetch`` from within the container.  Surface the
-        # same long-form ``docker pull`` guidance ``hermes update`` (apply
-        # path) uses — telling the user to "reinstall via curl" or that
-        # ".git is missing" would point them at the wrong remediation.
         from hermes_cli.config import format_docker_update_message
-        print(format_docker_update_message())
-        sys.exit(1)
-
+        raise RuntimeError(format_docker_update_message())
     if method in {"nix", "nixos"}:
-        print(recommended_update_command_for_method(method))
-        sys.exit(1)
+        raise RuntimeError(recommended_update_command_for_method(method))
+    if method == "pip":
+        from hermes_cli import __version__
+        from hermes_cli.banner import check_via_pypi
+
+        result = check_via_pypi()
+        if result is None:
+            raise RuntimeError("Could not reach PyPI to check for updates.")
+        return {
+            "install_method": "pip",
+            "branch": branch,
+            "branch_explicit": branch_explicit,
+            "branch_ignored": bool(branch_explicit and branch != "main"),
+            "current_version": __version__,
+            "latest_version": "",
+            "compare_ref": "pypi",
+            "behind": int(result),
+            "update_available": bool(result),
+        }
 
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
-        print("✗ Not a git repository — cannot check for updates.")
-        sys.exit(1)
+        raise RuntimeError("Not a git repository — cannot check for updates.")
 
     git_cmd = ["git"]
     if sys.platform == "win32":
@@ -9211,14 +9228,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # Fetch only the branch we compare against; prefer upstream as the canonical
     # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
     # thousands of auto-generated branches, so scope the fetch to <branch>.
-    # Note: upstream/<branch> may not exist for non-main branches (a fork's
-    # bb/gui has no upstream counterpart), so when the caller picks a
-    # non-default branch we skip the upstream probe and use origin directly.
-    # Installer checkouts are shallow (`git clone --depth 1`). A plain
-    # `git fetch` would unshallow the repo (dragging in the whole history —
-    # the exact cost the shallow clone avoided) and the rev-list count below
-    # would then report a huge bogus "behind" number. Detect shallow up front:
-    # fetch with --depth 1 to preserve the boundary and report presence-only.
+    # Installer checkouts are shallow (`git clone --depth 1`); preserve that
+    # boundary and report presence-only behindness rather than unshallowing.
     is_shallow = (
         subprocess.run(
             git_cmd + ["rev-parse", "--is-shallow-repository"],
@@ -9231,7 +9242,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     depth_args = ["--depth", "1"] if is_shallow else []
 
     if branch == "main":
-        print("→ Fetching from upstream...")
+        if announce:
+            print("→ Fetching from upstream...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch"] + depth_args + ["upstream", branch],
             cwd=PROJECT_ROOT,
@@ -9239,47 +9251,37 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             text=True,
         )
         if fetch_result.returncode != 0:
-            # Fallback to origin if upstream doesn't exist
-            print("→ Fetching from origin...")
+            if announce:
+                print("→ Fetching from origin...")
             fetch_result = subprocess.run(
                 git_cmd + ["fetch"] + depth_args + ["origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
             )
-            upstream_exists = False
             compare_branch = f"origin/{branch}"
         else:
-            upstream_exists = True
             compare_branch = f"upstream/{branch}"
     else:
-        # Non-default branch: compare against origin/<branch> directly.
-        print("→ Fetching from origin...")
+        if announce:
+            print("→ Fetching from origin...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch"] + depth_args + ["origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
         )
-        upstream_exists = False
         compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
         if "Could not resolve host" in stderr or "unable to access" in stderr:
-            print("✗ Network error — cannot reach the remote repository.")
-        elif "Authentication failed" in stderr or "could not read Username" in stderr:
-            print("✗ Authentication failed — check your git credentials or SSH key.")
-        else:
-            print("✗ Failed to fetch.")
-            if stderr:
-                print(f"  {stderr.splitlines()[0]}")
-        sys.exit(1)
+            raise RuntimeError("Network error — cannot reach the remote repository.")
+        if "Authentication failed" in stderr or "could not read Username" in stderr:
+            raise RuntimeError("Authentication failed — check your git credentials or SSH key.")
+        first = stderr.splitlines()[0] if stderr else "unknown error"
+        raise RuntimeError(f"Failed to fetch: {first}")
 
-    # Verify the compare ref actually exists before asking rev-list about it.
-    # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
-    # (with check=True) raises CalledProcessError, surfacing a Python
-    # traceback. Friendlier to detect-and-report.
     verify_result = subprocess.run(
         git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
         cwd=PROJECT_ROOT,
@@ -9287,40 +9289,113 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         text=True,
     )
     if verify_result.returncode != 0:
-        print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
-        sys.exit(1)
+        raise RuntimeError(
+            f"Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}."
+        )
 
-    if is_shallow:
-        # No history to count across the shallow boundary. Compare tip SHAs and
-        # report presence-only (mirrors the banner's _check_via_local_git).
-        head_sha = subprocess.run(
-            git_cmd + ["rev-parse", "HEAD"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True,
-        ).stdout.strip()
-        target_sha = subprocess.run(
-            git_cmd + ["rev-parse", compare_branch],
-            cwd=PROJECT_ROOT, capture_output=True, text=True,
-        ).stdout.strip()
-        if head_sha and target_sha and head_sha == target_sha:
-            print("✓ Already up to date.")
-        else:
-            print(f"⚕ Update available (behind {compare_branch}).")
-            from hermes_cli.config import recommended_update_command
-
-            print(f"  Run '{recommended_update_command()}' to install.")
-        return
-
-    rev_result = subprocess.run(
-        git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
+    head_sha = subprocess.run(
+        git_cmd + ["rev-parse", "HEAD"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
         check=True,
-    )
-    behind = int(rev_result.stdout.strip())
+    ).stdout.strip()
+    target_sha = subprocess.run(
+        git_cmd + ["rev-parse", compare_branch],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
 
+    if is_shallow:
+        update_available = bool(head_sha and target_sha and head_sha != target_sha)
+        behind = 1 if update_available else 0
+    else:
+        rev_result = subprocess.run(
+            git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        behind = int(rev_result.stdout.strip())
+        update_available = behind > 0
+
+    return {
+        "install_method": "git",
+        "branch": branch,
+        "branch_explicit": branch_explicit,
+        "branch_ignored": False,
+        "current_version": head_sha[:7],
+        "latest_version": target_sha[:7],
+        "compare_ref": compare_branch,
+        "behind": behind,
+        "update_available": update_available,
+        "shallow": is_shallow,
+    }
+
+
+def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+    """Implement ``hermes update --check``: fetch and report without installing.
+
+    ``branch`` selects which branch the check compares against. Default is
+    "main"; callers can pass another branch to ask "are there new commits
+    on origin/<branch>?" without performing the update.
+
+    ``branch_explicit`` is True iff the caller passed --branch on the CLI.
+    PyPI installs can't honor non-default branches, so when this is True
+    on a PyPI install we surface a one-line notice instead of silently
+    dropping the flag.
+    """
+    try:
+        result = _get_update_check_result(
+            branch=branch,
+            branch_explicit=branch_explicit,
+            announce=True,
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if msg.startswith("Could not reach PyPI"):
+            print("✗ Could not reach PyPI to check for updates.")
+        elif msg.startswith("Not a git repository"):
+            print("✗ Not a git repository — cannot check for updates.")
+        elif msg.startswith("Network error"):
+            print("✗ Network error — cannot reach the remote repository.")
+        elif msg.startswith("Authentication failed"):
+            print(f"✗ {msg}")
+        elif msg.startswith("Branch "):
+            print(f"✗ {msg}")
+        elif msg.startswith("Failed to fetch:"):
+            print("✗ Failed to fetch.")
+            detail = msg.partition(":")[2].strip()
+            if detail:
+                print(f"  {detail}")
+        else:
+            print(msg)
+        sys.exit(1)
+
+    if result["install_method"] == "pip":
+        from hermes_cli.config import recommended_update_command
+
+        if result.get("branch_ignored"):
+            print(f"⚠ --branch is ignored for PyPI installs (would have checked '{branch}').")
+        if result["behind"] == 0:
+            print("✓ Already up to date.")
+        else:
+            print("⚕ Update available on PyPI.")
+            print(f"  Run '{recommended_update_command()}' to install.")
+        return
+
+    compare_branch = result["compare_ref"]
+    behind = int(result["behind"])
     if behind == 0:
         print("✓ Already up to date.")
+    elif result.get("shallow"):
+        print(f"⚕ Update available (behind {compare_branch}).")
+        from hermes_cli.config import recommended_update_command
+
+        print(f"  Run '{recommended_update_command()}' to install.")
     else:
         commits_word = "commit" if behind == 1 else "commits"
         print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")

@@ -1553,6 +1553,12 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 
 ```bash
 hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes]
+hermes update auto status
+hermes update auto plan [--branch NAME]
+hermes update auto run-now [--branch NAME]
+hermes update auto run-scheduled
+hermes update auto enable --time HH:MM [--plan-time HH:MM ...]
+hermes update auto disable
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install. Use `--check` to see whether your checkout is behind `origin/main` without installing.
@@ -1575,6 +1581,31 @@ Additional behavior:
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
+
+### `hermes update auto`
+
+`hermes update auto` adds a non-agentic scheduled updater around the existing
+`hermes update` flow. It does not call a model and does not install a Hermes
+daemon; the scheduler runs the same CLI command a human would run.
+
+| Command | Description |
+|---------|-------------|
+| `hermes update auto status` | Show the configured schedule, optional plan schedule, last run/plan status, version fields, backup path, scheduler path, and log path. |
+| `hermes update auto plan [--branch NAME]` | Check for updates and print a concise planned-update notice if an update is available. No files are changed. |
+| `hermes update auto run-now [--branch NAME]` | Run one unattended update pass now. It checks for an update, creates a pre-update backup, reuses `hermes update --yes`, records status/logs, and performs a lightweight post-update health check. |
+| `hermes update auto run-scheduled` | Internal scheduler entrypoint. It dispatches to `plan` or `run-now` based on the configured `--time` and `--plan-time` values. |
+| `hermes update auto enable --time HH:MM [--plan-time HH:MM ...]` | Install a user-level schedule. macOS uses launchd; Linux uses a user systemd timer when available. Pass `--plan-time` one or more times to announce an upcoming update before the real update time. |
+| `hermes update auto disable` | Remove only the Hermes auto-update scheduler files; unrelated launchd/systemd/cron jobs are untouched. |
+
+Example: check at 21:00 and apply the update at 04:00 local time under the same
+auto-update manager:
+
+```bash
+hermes update auto enable --time 04:00 --plan-time 21:00
+```
+
+Status is stored in `HERMES_HOME/state/update-status.json`; append-only human
+logs are written to `HERMES_HOME/logs/update.log`.
 
 ## Maintenance commands
 

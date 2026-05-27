@@ -1361,9 +1361,23 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     old_model = agent.model
     old_provider = agent.provider
 
-    # Clear the per-config context_length override so the new model's
+    # Clear the per-model _config_context_length override so the new model's
     # actual context window is resolved via get_model_context_length()
-    # instead of inheriting the stale value from the previous model.
+    # instead of inheriting a stale per-model value from the previous model.
+    # However, preserve the GLOBAL model.context_length from config.yaml
+    # — that setting applies to ALL models and must survive switches.
+    _global_config_ctx = None
+    _sm_cfg = None
+    _sm_custom_providers = None
+    try:
+        from hermes_cli.config import load_config as _sm_load_cfg, get_compatible_custom_providers
+        _sm_cfg = _sm_load_cfg()
+        _sm_model_cfg = _sm_cfg.get("model", {})
+        if isinstance(_sm_model_cfg, dict) and _sm_model_cfg.get("context_length") is not None:
+            _global_config_ctx = int(_sm_model_cfg["context_length"])
+        _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
+    except Exception:
+        pass
     agent._config_context_length = None
 
     # ── Swap core runtime fields ──
@@ -1453,16 +1467,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Update context compressor ──
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         from agent.model_metadata import get_model_context_length
-        # Re-read custom_providers from live config so per-model
-        # context_length overrides are honored when switching to a
-        # custom provider mid-session (closes #15779).
-        _sm_custom_providers = None
-        try:
-            from hermes_cli.config import load_config, get_compatible_custom_providers
-            _sm_cfg = load_config()
-            _sm_custom_providers = get_compatible_custom_providers(_sm_cfg)
-        except Exception:
-            _sm_custom_providers = None
         # ``agent.api_key`` may be a callable (Azure Foundry Entra ID
         # token provider). ``get_model_context_length`` expects a
         # string for its live-probe paths; for Foundry the context
@@ -1474,7 +1478,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             base_url=agent.base_url,
             api_key=_ctx_api_key,
             provider=agent.provider,
-            config_context_length=getattr(agent, "_config_context_length", None),
+            config_context_length=_global_config_ctx,
             custom_providers=_sm_custom_providers,
         )
         agent.context_compressor.update_model(

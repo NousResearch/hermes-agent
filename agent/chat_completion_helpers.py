@@ -1010,6 +1010,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
         # the stale value from the previous model.  See #22387.
+        # Preserve the GLOBAL model.context_length from config.yaml —
+        # that setting applies to ALL models and must survive fallbacks.
+        _global_config_ctx = None
+        try:
+            from hermes_cli.config import load_config as _fb_load_cfg
+            _fb_model_cfg = _fb_load_cfg().get("model", {})
+            if isinstance(_fb_model_cfg, dict) and _fb_model_cfg.get("context_length") is not None:
+                _global_config_ctx = int(_fb_model_cfg["context_length"])
+        except Exception:
+            pass
         agent._config_context_length = None
         agent.model = fb_model
         agent.provider = fb_provider
@@ -1094,7 +1104,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_context_length = get_model_context_length(
                 agent.model, base_url=agent.base_url,
                 api_key=_fb_ctx_api_key, provider=agent.provider,
-                config_context_length=getattr(agent, "_config_context_length", None),
+                config_context_length=_global_config_ctx,
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
             agent.context_compressor.update_model(
